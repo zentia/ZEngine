@@ -2,6 +2,7 @@
 
 #include "ObjectDefines.h"
 #include "Runtime/Application/Application.h"
+#include "Runtime/BaseClasses/ObjectManager.h"
 #include "Runtime/Function/Framework/Component/Component.h"
 #include "Runtime/Function/Framework/Component/Transform/Transform.h"
 #include "Runtime/Resource/Asset/AssetManager.h"
@@ -94,6 +95,73 @@ bool GameObject::HasComponent(const std::string& component_type_name) const
 Transform* GameObject::GetTransform() const
 {
     return Cast<Transform>(GetComponentByTypeName("Transform"));
+}
+
+Component* GameObject::AddComponentByTypeName(const std::string& component_type_name)
+{
+    const Type* wanted = TypeManager::GetInstance().ClassNameToType(component_type_name.c_str());
+    if (wanted == nullptr)
+    {
+        LOG_WARNING(ZObject, "AddComponent: '{}' is not a registered reflected type", component_type_name.c_str());
+        return nullptr;
+    }
+    if (wanted->GetFactory() == nullptr)
+    {
+        LOG_WARNING(ZObject, "AddComponent: '{}' has no factory (abstract type?)", component_type_name.c_str());
+        return nullptr;
+    }
+
+    // Transform 是每个 GameObject 有且仅有一个的（GetTransform() 只返回第一个，
+    // 编辑器也因此把它从可添加列表里藏起来）。脚本绕过编辑器直接加第二个会让
+    // 层级关系变得不确定，这里挡掉并返回已有的那个 —— 与 Unity 抛异常不同，
+    // 脚本侧更希望拿到能用的东西而不是崩。
+    //
+    // 放在 Produce() 之前，免得白造一个对象再销毁。
+    const Type* transform_type = TypeManager::GetInstance().ClassNameToType("Transform");
+    if (transform_type != nullptr && transform_type->IsBaseOf(wanted->GetRuntimeTypeIndex()))
+    {
+        Transform* existing = GetTransform();
+        if (existing != nullptr)
+        {
+            LOG_WARNING(ZObject, "AddComponent: '{}' already has a Transform, returning the existing one", GetName().c_str());
+            return existing;
+        }
+    }
+
+    ObjectManager* object_manager = GET_SYSTEM(ObjectManager);
+    if (object_manager == nullptr)
+    {
+        LOG_ERROR(ZObject, "AddComponent: '{}' failed, ObjectManager unavailable", component_type_name.c_str());
+        return nullptr;
+    }
+
+    // Produce() -> `new T()` via the generated ProduceHelper，然后分配一个真的
+    //（负数）堆 InstanceID。MemoryManager::CreateObject 会把 m_InstanceID 留在 0，
+    // 那样组件对 PPtr / ImmediatePtr 和场景序列化器都是不可见的。
+    Object* raw = object_manager->Produce(wanted, 0);
+    if (raw == nullptr)
+    {
+        LOG_WARNING(ZObject, "AddComponent: '{}' could not be instantiated", component_type_name.c_str());
+        return nullptr;
+    }
+    object_manager->AllocateAndAssignInstanceID(raw);
+
+    Component* component = Cast<Component>(raw);
+    if (component == nullptr)
+    {
+        LOG_WARNING(ZObject, "AddComponent: '{}' is not a Component", component_type_name.c_str());
+        object_manager->Destroy(raw);
+        return nullptr;
+    }
+
+    // PostLoadResource 必须早于 addComponent：它绑定 m_ParentObject，而子类的
+    // 资源路径解析 / 子系统注册都依赖它。AnimationComponent、TypeScriptComponent、
+    // AudioSourceComponent 在没跑过它之前被访问会崩或静默失效。
+    component->PostLoadResource(this);
+    addComponent(component);
+
+    LOG_INFO(ZObject, "GameObject '{}': added component '{}'", GetName().c_str(), component_type_name.c_str());
+    return component;
 }
 
 bool GameObject::load(const GameObject& object_instance_res)

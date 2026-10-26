@@ -117,6 +117,18 @@ public:
     ZFUNCTION(Name="GetComponent")
     Component* GetComponentByTypeName(const std::string& component_type_name) const;
 
+    /// 按类型名**创建**一个组件并挂到本对象上（Unity `AddComponent<T>()` 的等价物）。
+    ///
+    /// 为什么必须新增这个方法而不是直接把 `addComponent(Component*)` 标 ZFUNCTION：
+    /// 脚本既没有模板也没有 new，拿不到一个 Component 实例，所以一个"接收已有实例"
+    /// 的入口对脚本毫无用处。要的是"给我一个类型名，引擎造好挂上"。
+    ///
+    /// 返回 nullptr 的情况：类型名没注册 / 是抽象类（无 factory）/ 不是 Component 派生。
+    ///
+    /// ZFUNCTION: 暴露成 `AddComponent`，Unity 的拼写。
+    ZFUNCTION(Name="AddComponent")
+    Component* AddComponentByTypeName(const std::string& component_type_name);
+
     /// Convenience wrapper used by the TS Behaviour binding to publish
     /// `this.transform`. Declared here and defined in the .cpp because
     /// Transform.h includes GameObject.h (the dependency points the other way).
