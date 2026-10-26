@@ -2,6 +2,13 @@
 
 > 2026-10-25。仓库里 49 个 `*SmokeTest.cpp` 第一次被逐个编译、链接、运行。此前它们只能靠"提交时作者跑过"，
 > 这台机器上没有可用的原生工具链（MSBuild 被沙箱拦截），大多数链接 ZRuntime 的测试从未在这里跑过。
+>
+> **2026-10-26 增补**：新增 `EnhancedInputFrameDeltaSmokeTest`（11 项，PASS）。测 `EnhancedInputSystem::
+> ComputeFrameDelta`——Tick() 喂给 trigger 的真实帧间 delta（此前硬编码 1/60，导致 TriggerHold 在非 60fps 下
+> 计时错误）。纯 CPU、header-only（`ComputeFrameDelta` 与 `TriggerHold` 都是 inline），**不链接 ZRuntime**，
+> 只依赖 include root。web runner 自动发现（在 `Test/` 目录、以 `SmokeTest.cpp` 结尾），经 `web_smoke_run.py`
+> 链接 libZRuntime.a 跑通 exit 0；emcc 直编直跑同样 11/11。对应 CMake 目标
+> `ZENGINE_BUILD_ENHANCED_INPUT_DELTA_SMOKE_TEST`。
 
 ## 怎么跑
 
