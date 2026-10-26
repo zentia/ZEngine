@@ -542,6 +542,24 @@ list(REMOVE_ITEM SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/Input/Test/EnhancedInputFrameDeltaSmokeTest.cpp")
 list(REMOVE_ITEM REGULAR_SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/Input/Test/EnhancedInputFrameDeltaSmokeTest.cpp")
+# Linux X11 window-layer smoke-test main. Same carve-out rationale: it owns
+# main() and must not be whole-archived into ZRuntime. Built only when
+# ZENGINE_BUILD_LINUX_X11_WINDOW_SMOKE_TEST=ON (see Function/Render/Platform/
+# Linux/Test/CMakeLists.txt). Links ZRuntime to instantiate LinuxApplication.
+list(REMOVE_ITEM SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Platform/Linux/Test/LinuxX11WindowLayerSmokeTest.cpp")
+list(REMOVE_ITEM REGULAR_SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Platform/Linux/Test/LinuxX11WindowLayerSmokeTest.cpp")
+# Physics character/joint smoke-test main. This one was NOT carved out, so its
+# unguarded main() ended up inside ZRuntime.lib and broke every other test that
+# links ZRuntime + defines its own main() with LNK2005 (e.g. the RHI factory
+# registry smoke test, and the Linux X11 window-layer smoke test). Carve it out
+# so ZRuntime stays a clean library; the test still builds as its own exe via
+# ZENGINE_BUILD_PHYSICS_CHARACTER_SMOKE_TEST (Function/Physics/Test/CMakeLists.txt).
+list(REMOVE_ITEM SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Physics/Test/PhysicsCharacterJointSmokeTest.cpp")
+list(REMOVE_ITEM REGULAR_SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Physics/Test/PhysicsCharacterJointSmokeTest.cpp")
 # Runtime material instance smoke-test main. Same carve-out rationale: it owns
 # main(). Built only when ZENGINE_BUILD_MATERIAL_INSTANCE_SMOKE_TEST=ON (see
 # Function/Framework/Component/Mesh/Test/CMakeLists.txt). Unlike the
@@ -1809,6 +1827,11 @@ add_subdirectory(Function/Console/Test)
 # glob above and built only when ZENGINE_BUILD_ENHANCED_INPUT_DELTA_SMOKE_TEST
 # =ON. Header-only (ComputeFrameDelta + TriggerHold), pure CPU, headless.
 add_subdirectory(Function/Input/Test)
+# Linux X11 window-layer smoke test. Own main(); carved out of the ZRuntime glob
+# above and built only when ZENGINE_BUILD_LINUX_X11_WINDOW_SMOKE_TEST=ON. Links
+# ZRuntime to instantiate LinuxApplication (X11 + XRandR multi-monitor); runs
+# headless (unset DISPLAY) or under Xvfb. See wsl_verify_linux.sh.
+add_subdirectory(Function/Render/Platform/Linux/Test)
 
 # Runtime material instance smoke test. Own main(); carved out of the ZRuntime
 # glob above and built only when ZENGINE_BUILD_MATERIAL_INSTANCE_SMOKE_TEST=ON.

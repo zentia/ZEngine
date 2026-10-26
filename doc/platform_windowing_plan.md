@@ -114,19 +114,44 @@ engine/Source/Runtime/Function/Render/Platform/
   构建里编译为空 TU，对 Windows/Apple/Web/Android 零影响。
 
 **⚠️ 未真机实测（诚实定位）**：本机 WSL 被安全策略拦（`wsl.exe` 在黑名单、无注册 distro）、Windows 上无 X11
-SDK，无法编译或运行这段代码。实现严格镜像已 shipping 的 Windows/MacOS 后端接口契约，但 X11 的事件语义、
-XRandR 的主屏判定、xlib surface 与具体合成器/驱动的交互仍属"待真机验证"。
+SDK，无法在本机编译或运行这段代码（Windows 上只验证了 CMake 能配置、目标能定义、ZEditor 能链接——
+Linux 窗口层 TU 在非 Linux 上编译为空）。实现严格镜像已 shipping 的 Windows/MacOS 后端接口契约，但 X11
+的事件语义、XRandR 的主屏判定、xlib surface 与具体合成器/驱动的交互仍属"待真机验证"。**自动化验证
+夹具已就绪**（下方冒烟测试 + `wsl_verify_linux.sh`），在 WSL 或 Linux 桌面跑一次即可把本节从"未实测"
+升级为"真机 PASS"。
 
-**真机验证步骤**（在有 X11 的 Linux 桌面机器上）：
-1. `apt install libx11-dev libxrandr-dev`（或等价），确保 `VULKAN_SDK` 已设。
+**顺带修复的潜在链接 bug**：`Function/Physics/Test/PhysicsCharacterJointSmokeTest.cpp` 的 `main()`
+未被从 ZRuntime glob 中剔除（其它 smoke test 都有 carve-out，独漏它），导致其 `main` 被
+`/WHOLEARCHIVE` 打进 `ZRuntime.lib`，任何"链接 ZRuntime 且自带 main()"的测试（含本 X11 测试、
+以及一直编不过的 `RHIFactoryRegistrySmokeTest`）都在 Windows 上 LNK2005。已在
+`Runtime/CMakeLists.txt` 补上它的 `REMOVE_ITEM` carve-out（测试仍经 `ZENGINE_BUILD_PHYSICS_CHARACTER_SMOKE_TEST`
+单独构建成独立 exe）。修完后 Windows 上 `LinuxX11WindowLayerSmokeTest` 与
+`RHIFactoryRegistrySmokeTest` 均链接通过（后者实测 ALL CHECKS PASSED）。
+
+**自动化冒烟测试（已补齐）**：新增 `Platform/Linux/Test/LinuxX11WindowLayerSmokeTest.cpp`
+（链接 ZRuntime，开关 `ZENGINE_BUILD_LINUX_X11_WINDOW_SMOKE_TEST`），把上面 (a) 无头降级、
+(b) 真窗口、(c) 多显示器枚举 + 子窗口生命周期三条路径固化成 12 项 Check：
+- **无头降级**：用一个不存在的 display(`:99.99`) 强制 `XOpenDisplay` 失败，断言
+  `Initialize()` 返回 false、`GetNativeDisplay()` 保持 null、析构不崩——无需真 X server 即可闭环。
+- **真窗口**（Xvfb 虚拟帧缓冲）：`Initialize()` 成功 → 主窗口/`Display*` 非空、`PollEvents()`
+  抽干队列、`GetMonitorCount()>=1`、`GetPrimaryMonitorWorkArea()` 尺寸>0、按 index/越界/按窗口
+  查显示器均不崩、子窗口建+销毁、剪贴板读取不崩。
+- 非原生 Linux 桌面（Windows/macOS/Emscripten）运行时走 SKIP 分支（return 0，不算失败）——
+  本机替不了 Linux 真机。
+
+**真机验证步骤**（在有 X11 的 Linux 桌面机器上，或 WSL 里一键 `scripts/wsl_verify_linux.sh`）：
+1. `apt install libx11-dev libxrandr-dev libxrender-dev libxcursor-dev libxi-dev libxfixes-dev xvfb`
+   （或等价），确保 `VULKAN_SDK` 已设。`wsl_verify_linux.sh --deps-only` 会自动装齐。
 2. `./build_linux.sh debug`（或 `cmake -B build-linux -S . && cmake --build build-linux`）——确认
    `find_package(X11/Xrandr)` 通过、窗口层 TU 编译、`X11::X11 X11::Xrandr` 链接成功。
-3. 跑一个带窗口的示例（Vulkan 交换链）：确认窗口出现、能移动/缩放、点关闭走正常关闭链、键盘鼠标滚轮有响应。
-4. 多显示器：接第二块屏，把窗口拖到另一块屏，确认 `GetMonitorWorkAreaForWindow` 返回正确的屏、
-   FloatingPanel 不跨屏错位。
-5. 跑 `scripts/wsl_verify_linux.sh`：`RHIFactoryRegistrySmokeTest`（含 Vulkan 分支）应 PASS。
-6. 无头回落：`unset DISPLAY` 后跑 headless 工具/冒烟测试，`XOpenDisplay` 失败 → `Initialize` 返回 false →
-   工厂仍建 application 但无窗口，headless 目标正常跑。
+3. **一键闭环**：`scripts/wsl_verify_linux.sh`——依次跑 `PosixCrashCaptureSmokeTest`(#2)、
+   `RHIFactoryRegistrySmokeTest`(#1/#4)、`LinuxX11WindowLayerSmokeTest` 的无头降级 + Xvfb 真窗口
+   两趟，末尾给 `VERDICT: PASS/FAIL` 汇总。加 `--no-xvfb` 可只跑无头路径。
+4. 手动真窗口（可选）：跑一个带 Vulkan 交换链的示例，确认窗口出现、能移动/缩放、点关闭走正常
+   关闭链、键盘鼠标滚轮有响应；接第二块屏把窗口拖过去，确认 `GetMonitorWorkAreaForWindow`
+   返回正确的屏、FloatingPanel 不跨屏错位。
+5. 无头回落：`unset DISPLAY` 后跑 headless 工具/冒烟测试，`XOpenDisplay` 失败 → `Initialize`
+   返回 false → 工厂仍建 application 但无窗口，headless 目标正常跑。
 
 ## 关键设计决策
 
