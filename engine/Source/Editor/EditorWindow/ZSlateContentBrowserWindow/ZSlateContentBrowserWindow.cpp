@@ -74,9 +74,21 @@ ZSlate::UIColor ThumbColorForNode(const EditorFileNode* node)
         return kThumbFolderColor;
     if (node->m_FileExtension == "scene")
         return kThumbSceneColor;
-    if (node->m_FileExtension == "zasset" || node->m_FileExtension == "zspg")
+    if (node->m_FileExtension == "zasset" || node->m_FileExtension == "zspg" || node->m_FileExtension == "prefab")
         return kThumbAssetColor;
     return kThumbDefaultColor;
+}
+
+// Assets a content-browser drag can carry into the Scene / Hierarchy. `.prefab` was
+// missing: prefabs are created as YAML .prefab (ContentBrowserHelpers::
+// BuildUniquePrefabAssetPath), so no newly made prefab could be dragged anywhere --
+// EditorScenePlacement already handled the extension, the drag never started.
+bool IsSceneDroppableAsset(const EditorFileNode* node)
+{
+    if (node == nullptr)
+        return false;
+    const auto& ext = node->m_FileExtension;
+    return ext == "zasset" || ext == "zspg" || ext == "prefab";
 }
 
 std::shared_ptr<STextBlock> MakeText(const std::string& text, float font_size, const ZSlate::UIColor& color,
@@ -579,8 +591,9 @@ void ZSlateContentBrowserWindow::AddItemRow(EditorFileNode* node,
             m_ForceRebuild = true;
         };
 
-        // .zspg（GPU-Spine 容器）同样能拖进 Scene：EditorScenePlacement 按扩展名分派成 SpineRenderer
-        if (!is_folder && (node->m_FileExtension == "zasset" || node->m_FileExtension == "zspg"))
+        // .zspg（GPU-Spine 容器）/ .prefab（YAML Prefab，新建 Prefab 的默认格式）同样能拖进 Scene：
+        // EditorScenePlacement 按扩展名分派（SpineRenderer / 关联的 Prefab 实例）
+        if (!is_folder && IsSceneDroppableAsset(node))
         {
             const std::string asset_path = std::string(node->m_FilePath.c_str());
             const std::string label = std::string(ContentBrowserHelpers::GetContentBrowserDisplayName(node).c_str());
@@ -760,8 +773,9 @@ std::shared_ptr<SWidget> ZSlateContentBrowserWindow::BuildAssetTile(EditorFileNo
             m_ForceRebuild = true;
         };
 
-        // .zspg（GPU-Spine 容器）同样能拖进 Scene：EditorScenePlacement 按扩展名分派成 SpineRenderer
-        if (!is_folder && (node->m_FileExtension == "zasset" || node->m_FileExtension == "zspg"))
+        // .zspg（GPU-Spine 容器）/ .prefab（YAML Prefab，新建 Prefab 的默认格式）同样能拖进 Scene：
+        // EditorScenePlacement 按扩展名分派（SpineRenderer / 关联的 Prefab 实例）
+        if (!is_folder && IsSceneDroppableAsset(node))
         {
             const std::string asset_path = std::string(node->m_FilePath.c_str());
             const std::string label = std::string(ContentBrowserHelpers::GetContentBrowserDisplayName(node).c_str());
