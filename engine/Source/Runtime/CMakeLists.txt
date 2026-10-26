@@ -1737,10 +1737,15 @@ unset(_ZENGINE_NEEDS_SHADERLAB_SIDETARGET)
 # ---------------------------------------------------------------------------
 if(WIN32)
     add_subdirectory(Function/Render/Interface/DX12/Test)
-    # ShaderLab -> DX12 Unity-compatibility smoke-test. Same opt-in shape as
-    # the bindless test above (see Function/ShaderLab/Test/CMakeLists.txt).
-    add_subdirectory(Function/ShaderLab/Test)
 endif()
+
+# ShaderLab smoke-tests. 这些测试**不**只属于 Windows：ShaderLab 的解析 / 编译
+# 层（ShaderLabParser / ShaderLabCompiler / ShaderLabCbufferReflection）在 Vulkan
+# 与 Metal 配置下同样编进 ZRuntime，而且它们全是纯 CPU 的 —— 把整个目录关在
+# if(WIN32) 里会让跨平台的那几个永远跑不到。
+# 目录内每个测试仍各自用 option 控制，需要 dxcompiler 的那个（UnityCompat）
+# 自己还有 `if(NOT WIN32) return()` 兜底。
+add_subdirectory(Function/ShaderLab/Test)
 
 # ---------------------------------------------------------------------------
 # PR-V2: Vulkan bindless smoke-test side-target.
