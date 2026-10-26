@@ -3,6 +3,7 @@
 #include "Editor/Axis/Axis.h"
 #include "Runtime/BaseClasses/GameObject.h"
 #include "Runtime/Core/Base/EngineSystem.h"
+#include "Runtime/Core/Math/Quaternion.h"
 #include "Runtime/Core/Math/Vector3.h"
 #include "Runtime/Function/Render/RenderObject.h"
 
@@ -97,6 +98,53 @@ public:
     /// on mouse release; Tick() also closes it as a safety net once no button is down.
     void EndGizmoUndo();
 
+    // --- grid snapping ------------------------------------------------------
+    //
+    // Unity holds Ctrl while dragging to snap. Translation snaps to a world
+    // grid, rotation to an angle step, scale to a step. The translate path
+    // accumulates the *unsnapped* drag position across frames: snapping the
+    // already-snapped position every frame would round away any movement
+    // smaller than half a step and the object would refuse to move.
+
+    bool IsSnapEnabled() const { return m_SnapEnabled; }
+    void SetSnapEnabled(bool in_enabled);
+
+    float GetSnapMoveStep() const { return m_SnapMoveStep; }
+    void SetSnapMoveStep(float in_step);
+
+    float GetSnapRotateStepDegrees() const { return m_SnapRotateStepDegrees; }
+    void SetSnapRotateStepDegrees(float in_step);
+
+    float GetSnapScaleStep() const { return m_SnapScaleStep; }
+    void SetSnapScaleStep(float in_step);
+
+    /// Round to the nearest multiple of in_step. A step <= 0 means "no
+    /// snapping", which is how the settings guard against a 0 division.
+    static float SnapValue(float in_value, float in_step);
+
+    Vector3 SnapPosition(const Vector3& in_position) const;
+
+    /// Snaps the rotation angle about its own axis (the gizmo rotates around a
+    /// single axis, so this is the angle the user is actually dragging).
+    Quaternion SnapRotation(const Quaternion& in_rotation) const;
+
+    // --- duplicate / copy / paste -------------------------------------------
+    //
+    // v1 keeps the clipboard as a list of GObjectIDs inside the active level,
+    // so paste is "duplicate from these objects" and does not survive a scene
+    // change. That covers the everyday Ctrl+D / Ctrl+C / Ctrl+V workflow
+    // without dragging the serializer into the editor clipboard.
+
+    /// Deep-copy objects (each with its whole child subtree) as siblings of the
+    /// originals. Returns the ids that were created, in the same order.
+    std::vector<GObjectID> DuplicateGameObjects(const std::vector<GObjectID>& in_object_ids);
+
+    void DuplicateSelectedGameObjects();
+    void CopySelectedGameObjects();
+    void PasteGameObjects();
+
+    bool HasCopiedGameObjects() const { return !m_CopiedObjectIds.empty(); }
+
     void FocusSelectedGObject();
 
     // Unity-style scene file ops (.scene under Assets/).
@@ -160,6 +208,18 @@ private:
     // One gizmo drag == one undo step: opened lazily by the first MoveEntity of a
     // drag (so a click that never moves records nothing), closed by EndGizmoUndo.
     bool m_GizmoUndoOpen {false};
+
+    // Snapping state. m_SnapDragPosition is the unsnapped accumulation of the
+    // current gizmo drag; it is reset when the drag's undo transaction closes.
+    bool m_SnapEnabled {false};
+    float m_SnapMoveStep {0.5f};
+    float m_SnapRotateStepDegrees {15.f};
+    float m_SnapScaleStep {0.1f};
+    Vector3 m_SnapDragPosition {0.f, 0.f, 0.f};
+    bool m_SnapDragValid {false};
+
+    // Editor clipboard: ids in the active level, see CopySelectedGameObjects.
+    std::vector<GObjectID> m_CopiedObjectIds;
 
     bool m_PendingLastSceneRestore {true};
     std::string m_LastMainWindowTitle;

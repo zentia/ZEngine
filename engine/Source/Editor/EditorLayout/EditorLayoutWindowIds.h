@@ -30,6 +30,9 @@ namespace EditorLayoutWindowIds
     inline constexpr const char* kZSlateConsole = "ZSlate Console";
     inline constexpr const char* kZSlateProject = "ZSlate Project";
     inline constexpr const char* kUMGDesigner = "UMG Designer";
+    // Add Component: not part of the default dock layout -- it is opened on demand
+    // and targets whatever the Hierarchy / Scene view has selected.
+    inline constexpr const char* kAddComponent = "Add Component";
 
     // Deprecated alias; prefer kContentBrowser.
     inline constexpr const char* kProject = kContentBrowser;

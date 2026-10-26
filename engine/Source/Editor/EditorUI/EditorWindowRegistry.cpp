@@ -16,6 +16,7 @@
 #include "Editor/EditorWindow/ZSlateBlueprintWindow/ZSlateBlueprintWindow.h"
 #include "Editor/EditorWindow/ZSlateMaterialEditorWindow/ZSlateMaterialEditorWindow.h"
 #include "Editor/EditorWindow/ZSlateHierarchyWindow/ZSlateHierarchyWindow.h"
+#include "Editor/Inspector/AddComponent/AddComponentWindow.h"
 #include "Editor/EditorWindow/ZSlateTimelineWindow/ZSlateTimelineWindow.h"
 // ZSlateInsightsWindow: deleted (Insights -> standalone ZInsights app).
 #include "Runtime/Core/Memory/MemoryManager.h"
@@ -60,6 +61,10 @@ namespace
         // ZSlateInsightsWindow / ZSlateDemoWindow: removed (Insights -> standalone ZInsights).
         {EditorLayoutWindowIds::kUMGDesigner, EditorWindowCategory::General, true,
          typeid(ZSlateUMGDesignerWindow), NewEditorPanel<ZSlateUMGDesignerWindow>},
+        // Add Component is opened on demand (default_open=false): it is a task panel,
+        // not somewhere you want taking dock space on every launch.
+        {EditorLayoutWindowIds::kAddComponent, EditorWindowCategory::General, false,
+         typeid(AddComponentWindow), NewEditorPanel<AddComponentWindow>},
     };
 }  // namespace
 

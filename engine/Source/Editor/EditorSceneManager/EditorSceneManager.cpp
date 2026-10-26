@@ -16,6 +16,10 @@
 
 #include "Runtime/Core/Base/Macro.h"
 #include "Runtime/Core/Math/AxisAligned.h"
+#include "Runtime/Core/Math/Math.h"
+
+#include <cmath>
+#include <string>
 #include "Runtime/Function/Framework/Component/Mesh/MeshRenderer.h"
 #include "Runtime/Function/Framework/Component/Transform/Transform.h"
 #include "Runtime/Function/Framework/Level/Level.h"
@@ -971,7 +975,229 @@ void EditorSceneManager::EndGizmoUndo()
         return;
     }
     m_GizmoUndoOpen = false;
+    // A drag is over: the next one starts accumulating from the object's real
+    // position again.
+    m_SnapDragValid = false;
     EditorUndo::EndTransaction();
+}
+
+void EditorSceneManager::SetSnapEnabled(bool in_enabled)
+{
+    if (m_SnapEnabled == in_enabled)
+    {
+        return;
+    }
+
+    m_SnapEnabled = in_enabled;
+    m_SnapDragValid = false;
+}
+
+void EditorSceneManager::SetSnapMoveStep(float in_step)
+{
+    m_SnapMoveStep = std::max(in_step, 0.f);
+    m_SnapDragValid = false;
+}
+
+void EditorSceneManager::SetSnapRotateStepDegrees(float in_step)
+{
+    m_SnapRotateStepDegrees = std::max(in_step, 0.f);
+}
+
+void EditorSceneManager::SetSnapScaleStep(float in_step)
+{
+    m_SnapScaleStep = std::max(in_step, 0.f);
+}
+
+float EditorSceneManager::SnapValue(float in_value, float in_step)
+{
+    if (in_step <= 0.f)
+    {
+        return in_value;
+    }
+
+    return std::round(in_value / in_step) * in_step;
+}
+
+Vector3 EditorSceneManager::SnapPosition(const Vector3& in_position) const
+{
+    if (m_SnapMoveStep <= 0.f)
+    {
+        return in_position;
+    }
+
+    return Vector3(SnapValue(in_position.x, m_SnapMoveStep),
+                   SnapValue(in_position.y, m_SnapMoveStep),
+                   SnapValue(in_position.z, m_SnapMoveStep));
+}
+
+Quaternion EditorSceneManager::SnapRotation(const Quaternion& in_rotation) const
+{
+    if (m_SnapRotateStepDegrees <= 0.f)
+    {
+        return in_rotation;
+    }
+
+    Radian angle;
+    Vector3 axis;
+    in_rotation.ToAngleAxis(angle, axis);
+
+    if (axis.squaredLength() < 1e-8f)
+    {
+        // No meaningful axis (identity-ish rotation): snapping the angle would
+        // just re-derive the same rotation.
+        return in_rotation;
+    }
+
+    static constexpr float kPi = 3.14159265358979323846f;
+    const float degrees = angle.valueRadians() * 180.f / kPi;
+    const float snapped_degrees = SnapValue(degrees, m_SnapRotateStepDegrees);
+
+    Quaternion snapped;
+    snapped.FromAngleAxis(Radian(snapped_degrees * kPi / 180.f), axis);
+    return snapped;
+}
+
+namespace
+{
+    bool GameObjectNameExists(const Level& in_level, const eastl::string& in_name)
+    {
+        for (const auto& entry : in_level.getAllGObjects())
+        {
+            const std::shared_ptr<GameObject>& gobject = entry.second;
+            if (gobject != nullptr && gobject->GetName() == in_name)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// Unity's naming for copies: "Cube", then "Cube (1)", "Cube (2)", ...
+    eastl::string MakeUniqueGameObjectName(const Level& in_level, const eastl::string& in_base_name)
+    {
+        if (!GameObjectNameExists(in_level, in_base_name))
+        {
+            return in_base_name;
+        }
+
+        for (int suffix = 1; suffix < 100000; suffix++)
+        {
+            eastl::string candidate = in_base_name;
+            candidate += " (";
+            candidate += std::to_string(suffix).c_str();
+            candidate += ")";
+
+            if (!GameObjectNameExists(in_level, candidate))
+            {
+                return candidate;
+            }
+        }
+
+        return in_base_name;
+    }
+}  // namespace
+
+std::vector<GObjectID> EditorSceneManager::DuplicateGameObjects(const std::vector<GObjectID>& in_object_ids)
+{
+    std::vector<GObjectID> created_ids;
+
+    Level* level = GET_SYSTEM(WorldManager)->getCurrentActiveLevel();
+    if (level == nullptr || in_object_ids.empty())
+    {
+        return created_ids;
+    }
+
+    EditorUndo::ScopedTransaction transaction(in_object_ids.size() == 1 ? "Duplicate" : "Duplicate Objects");
+
+    for (GObjectID source_id : in_object_ids)
+    {
+        std::shared_ptr<GameObject> source = level->GetGObjectByID(source_id).lock();
+        if (source == nullptr)
+        {
+            continue;
+        }
+
+        // Level::CreateObject() copies through GameObject::load(), the same path
+        // the level loader uses, so every component on the duplicate is a new
+        // instance rather than a second reference to the original's.
+        const GObjectID new_id = level->CreateObject(*source);
+        if (new_id == k_invalid_gobject_id)
+        {
+            LOG_ERROR(ZEditor, "Duplicate: creating the copy of object {} failed", source_id);
+            continue;
+        }
+
+        std::shared_ptr<GameObject> duplicate = level->GetGObjectByID(new_id).lock();
+        if (duplicate == nullptr)
+        {
+            continue;
+        }
+
+        duplicate->SetName(MakeUniqueGameObjectName(*level, source->GetName()));
+
+        // Land next to the original: same parent, so the copy is a sibling.
+        Transform* source_transform = source->tryGetComponent(Transform);
+        Transform* duplicate_transform = duplicate->tryGetComponent(Transform);
+        if (source_transform != nullptr && duplicate_transform != nullptr)
+        {
+            duplicate_transform->SetParent(source_transform->GetParent());
+        }
+
+        EditorUndo::RegisterCreatedGameObject(new_id, "Duplicate");
+        created_ids.push_back(new_id);
+    }
+
+    if (created_ids.empty())
+    {
+        transaction.Cancel();
+        return created_ids;
+    }
+
+    // Unity selects the copies, not the originals, so Ctrl+D Ctrl+D Ctrl+D
+    // keeps working without re-selecting.
+    SetGObjectSelection(created_ids, created_ids.back());
+    GET_SYSTEM(WorldManager)->MarkCurrentLevelDirty();
+
+    return created_ids;
+}
+
+void EditorSceneManager::DuplicateSelectedGameObjects()
+{
+    DuplicateGameObjects(m_SelectedGobjectIds);
+}
+
+void EditorSceneManager::CopySelectedGameObjects()
+{
+    m_CopiedObjectIds = m_SelectedGobjectIds;
+}
+
+void EditorSceneManager::PasteGameObjects()
+{
+    if (m_CopiedObjectIds.empty())
+    {
+        return;
+    }
+
+    Level* level = GET_SYSTEM(WorldManager)->getCurrentActiveLevel();
+    if (level == nullptr)
+    {
+        return;
+    }
+
+    // The clipboard holds ids, so anything deleted (or from a level that was
+    // reloaded since) is silently dropped rather than pasting a stale object.
+    std::vector<GObjectID> alive_ids;
+    alive_ids.reserve(m_CopiedObjectIds.size());
+    for (GObjectID copied_id : m_CopiedObjectIds)
+    {
+        if (level->GetGObjectByID(copied_id).lock() != nullptr)
+        {
+            alive_ids.push_back(copied_id);
+        }
+    }
+
+    DuplicateGameObjects(alive_ids);
 }
 
 void EditorSceneManager::SetSceneView2D(bool enabled)
@@ -1232,7 +1458,22 @@ void EditorSceneManager::MoveEntity(float new_mouse_pos_x,
                                                               engine_window_size.x,
                                                               engine_window_size.y);
         const float world_along_axis = delta_mouse_move_uv.dotProduct(screen_axis_dir) * pixel_to_world;
-        transform_component->SetPosition(world_pivot + world_axis * world_along_axis);
+
+        Vector3 new_position = world_pivot + world_axis * world_along_axis;
+        if (m_SnapEnabled && m_SnapMoveStep > 0.f)
+        {
+            // Accumulate unsnapped, then snap: rounding the already-snapped
+            // position each frame would swallow every step smaller than half a
+            // cell and the object would not move at all.
+            if (!m_SnapDragValid)
+            {
+                m_SnapDragPosition = world_pivot;
+                m_SnapDragValid = true;
+            }
+            m_SnapDragPosition += world_axis * world_along_axis;
+            new_position = SnapPosition(m_SnapDragPosition);
+        }
+        transform_component->SetPosition(new_position);
         m_SelectedObjectMatrix = transform_component->GetLocalToWorldMatrix();
         DrawSelectedEntityAxis();
         return;
@@ -1296,6 +1537,11 @@ void EditorSceneManager::MoveEntity(float new_mouse_pos_x,
 
         new_model_matrix.Decomposition(new_translation, new_scale, new_rotation);
 
+        if (m_SnapEnabled && m_SnapRotateStepDegrees > 0.f)
+        {
+            new_rotation = SnapRotation(new_rotation);
+        }
+
         transform_component->SetLocalPosition(new_translation);
         transform_component->SetLocalRotation(new_rotation);
         transform_component->SetLocalScale(new_scale);
@@ -1354,6 +1600,11 @@ void EditorSceneManager::MoveEntity(float new_mouse_pos_x,
         Vector3 local_scale = transform_component->GetLocalScale();
         const int axis_index = static_cast<int>(cursor_on_axis);
         local_scale[axis_index] = std::max(0.001f, local_scale[axis_index] + drag_world * scale_per_world);
+
+        if (m_SnapEnabled && m_SnapScaleStep > 0.f)
+        {
+            local_scale[axis_index] = std::max(0.001f, SnapValue(local_scale[axis_index], m_SnapScaleStep));
+        }
 
         transform_component->SetLocalScale(local_scale);
         m_SelectedObjectMatrix = transform_component->GetLocalToWorldMatrix();

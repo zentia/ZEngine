@@ -137,6 +137,47 @@ namespace EditorUndoRecords
     };
 
     // ---------------------------------------------------------------------------------
+    // ComponentLifetimeRecord -- add / remove of ONE component on one GameObject.
+    // ---------------------------------------------------------------------------------
+    // Backs the Inspector's Add Component (and, later, "Remove Component"). While the
+    // component is detached the record OWNS it and deletes it when the record is
+    // discarded -- the mirror of GameObjectLifetimeRecord holding a removed subtree.
+    // Re-attaching therefore restores the very same instance: its InstanceID, any
+    // PPtr pointing at it from elsewhere, and every field edit made since the add all
+    // survive an undo/redo round trip.
+    //
+    // The host is addressed by GObjectID (resolved against the active level at apply
+    // time), never by pointer -- a level reload would leave a pointer dangling, an id
+    // simply fails to resolve and the record becomes a no-op.
+    class ComponentLifetimeRecord : public IUndoRecord
+    {
+    public:
+        /// `component` must already be attached to the GameObject `host_id`.
+        explicit ComponentLifetimeRecord(Component* component, GObjectID host_id);
+        ~ComponentLifetimeRecord() override;
+
+        /// Detach the component now (the "remove component" direction). Returns 1 when
+        /// a slot was actually removed.
+        size_t Remove();
+
+        void Apply() override;
+        bool Finalize() override { return m_Component != nullptr; }
+        size_t GetMemoryBytes() const override { return sizeof(*this); }
+
+    private:
+        GameObject* ResolveHost() const;
+        void Attach();
+        void Detach();
+
+        Component* m_Component {nullptr};
+        GObjectID m_HostId {k_invalid_gobject_id};
+        /// Slot the component occupied when it was detached, so a re-attach keeps the
+        /// authored component order instead of appending.
+        size_t m_Index {0};
+        bool m_Attached {true};
+    };
+
+    // ---------------------------------------------------------------------------------
     // SelectionContext -- the GameObject selection before / after each transaction.
     // ---------------------------------------------------------------------------------
     class SelectionContext : public IUndoContext

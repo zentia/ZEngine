@@ -498,6 +498,127 @@ namespace EditorUndoRecords
     }
 
     // =================================================================================
+    // ComponentLifetimeRecord
+    // =================================================================================
+
+    ComponentLifetimeRecord::ComponentLifetimeRecord(Component* component, GObjectID host_id)
+        : m_Component(component)
+        , m_HostId(host_id)
+        , m_Attached(component != nullptr)
+    {
+    }
+
+    ComponentLifetimeRecord::~ComponentLifetimeRecord()
+    {
+        // Only a DETACHED component is ours: while it is attached its lifetime belongs
+        // to the object graph / serialization driver, exactly like every other
+        // component in the scene (GameObject::~GameObject does not delete its
+        // components either). Deleting on the attached side would leave the host with
+        // a dangling ImmediatePtr.
+        if (m_Component != nullptr && !m_Attached)
+        {
+            if (ObjectManager* object_manager = GET_SYSTEM(ObjectManager))
+            {
+                object_manager->Destroy(m_Component);
+            }
+        }
+        m_Component = nullptr;
+    }
+
+    GameObject* ComponentLifetimeRecord::ResolveHost() const
+    {
+        Level* level = GetActiveLevel();
+        if (level == nullptr || m_HostId == k_invalid_gobject_id)
+        {
+            return nullptr;
+        }
+        return level->GetGObjectByID(m_HostId).lock().get();
+    }
+
+    void ComponentLifetimeRecord::Detach()
+    {
+        GameObject* host = ResolveHost();
+        if (host == nullptr || m_Component == nullptr)
+        {
+            // Nothing we can address anymore: drop the component so Finalize() reports
+            // the record as a no-op and it is discarded without touching anything.
+            m_Component = nullptr;
+            m_Attached = false;
+            return;
+        }
+
+        auto& components = host->EditorGetComponentsRef();
+        for (size_t i = 0; i < components.size(); ++i)
+        {
+            if (static_cast<Component*>(components[i]) == m_Component)
+            {
+                m_Index = i;
+                components.erase(components.begin() + static_cast<std::ptrdiff_t>(i));
+                m_Attached = false;
+                return;
+            }
+        }
+
+        // Not on the host (already removed by someone else): not ours to own.
+        m_Component = nullptr;
+        m_Attached = false;
+    }
+
+    void ComponentLifetimeRecord::Attach()
+    {
+        GameObject* host = ResolveHost();
+        if (host == nullptr || m_Component == nullptr)
+        {
+            return;
+        }
+
+        auto& components = host->EditorGetComponentsRef();
+        for (const auto& slot : components)
+        {
+            if (static_cast<Component*>(slot) == m_Component)
+            {
+                m_Attached = true;  // already there; do not duplicate the slot
+                return;
+            }
+        }
+
+        const size_t index = std::min(m_Index, components.size());
+        components.insert(components.begin() + static_cast<std::ptrdiff_t>(index), m_Component);
+        m_Attached = true;
+
+        // m_ParentObject is deliberately NOT re-published through PostLoadResource:
+        // detaching never cleared it, and re-running it would re-register the
+        // component with its subsystem (audio voice, physics body, script binding)
+        // a second time.
+    }
+
+    size_t ComponentLifetimeRecord::Remove()
+    {
+        if (m_Component == nullptr || !m_Attached)
+        {
+            return 0;
+        }
+        Detach();
+        return m_Attached ? 0 : 1;
+    }
+
+    void ComponentLifetimeRecord::Apply()
+    {
+        if (m_Component == nullptr)
+        {
+            return;
+        }
+        if (m_Attached)
+        {
+            Detach();
+        }
+        else
+        {
+            Attach();
+        }
+    }
+
+    // =================================================================================
     // SelectionContext
     // =================================================================================
 

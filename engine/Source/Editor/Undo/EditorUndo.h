@@ -30,8 +30,7 @@
 // or to span several frames (gizmo drags).
 //
 // What is NOT covered yet: asset edits (materials, textures, data tables are written
-// straight to disk by their inspectors), component add/remove (there is no editor UI
-// for it), and anything done while playing.
+// straight to disk by their inspectors), and anything done while playing.
 // =====================================================================================
 
 #include "Editor/Undo/UndoSystem.h"
@@ -127,6 +126,20 @@ namespace EditorUndo
 
     /// Call right after an object was added to the active level.
     void RegisterCreatedGameObject(GObjectID object_id, const std::string& title = "Create GameObject");
+
+    /// Call right after a Component was attached to a GameObject in the active level
+    /// (Unity Undo.RegisterCreatedObjectUndo for an AddComponent). Undoing detaches
+    /// the component again; redoing re-attaches the same instance with every edit
+    /// that was made to it in between.
+    ///
+    /// `component` must already be in `host_id`'s component list -- the record
+    /// snapshots the "attached" state, not the component's fields.
+    void RegisterCreatedComponent(Component* component, GObjectID host_id, const std::string& title = "Add Component");
+
+    /// Detach a component from its GameObject through the undo system (the
+    /// Inspector's "Remove Component"). Returns 1 when a slot was actually removed.
+    /// Works -- without an undo step -- even when recording is off.
+    size_t RemoveComponent(Component* component, GObjectID host_id, const std::string& title = "Remove Component");
 
     /// Delete objects from the active level through the undo system (each one with
     /// its whole child subtree, Unity semantics; an id whose ancestor is also listed

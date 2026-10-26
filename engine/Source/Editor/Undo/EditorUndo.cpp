@@ -15,6 +15,7 @@
 #include <unordered_set>
 #include "Runtime/BaseClasses/Cast.h"
 
+using EditorUndoRecords::ComponentLifetimeRecord;
 using EditorUndoRecords::ComponentSnapshotRecord;
 using EditorUndoRecords::GameObjectLifetimeRecord;
 using EditorUndoRecords::GetActiveLevel;
@@ -313,6 +314,37 @@ namespace EditorUndo
             return;
         }
         GetSystem()->GetCore().AddRecord(std::make_unique<GameObjectLifetimeRecord>(object_id), title);
+    }
+
+    void RegisterCreatedComponent(Component* component, GObjectID host_id, const std::string& title)
+    {
+        if (component == nullptr || host_id == k_invalid_gobject_id || !IsRecording())
+        {
+            return;
+        }
+        // The record addresses the component by InstanceID, so a freshly produced
+        // component (or one made with MemoryManager::CreateObject) needs an id first.
+        EditorUndoRecords::EnsureInstanceID(component);
+        GetSystem()->GetCore().AddRecord(
+            std::make_unique<ComponentLifetimeRecord>(component, host_id), title);
+    }
+
+    size_t RemoveComponent(Component* component, GObjectID host_id, const std::string& title)
+    {
+        if (component == nullptr || host_id == k_invalid_gobject_id)
+        {
+            return 0;
+        }
+
+        auto record = std::make_unique<ComponentLifetimeRecord>(component, host_id);
+        const size_t removed = record->Remove();
+        if (IsRecording())
+        {
+            GetSystem()->GetCore().AddRecord(std::move(record), title);
+        }
+        // else: the record dies here and releases the detached component -- a plain
+        // remove, exactly what happened before undo existed.
+        return removed;
     }
 
     size_t DestroyGameObjects(const std::vector<GObjectID>& object_ids, const std::string& title)

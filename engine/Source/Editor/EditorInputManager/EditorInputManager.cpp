@@ -374,6 +374,20 @@ void EditorInputManager::OnKeyInEditorMode(int key, int scancode, int action, in
 
 void EditorInputManager::OnKey(int key, int scancode, int action, int mods)
 {
+    // Snap while Ctrl (Cmd on macOS) is held, Unity's behaviour. The modifier
+    // has no keycode of its own here, so the flag follows the modifier bit of
+    // every key event: on release GLFW reports the post-release modifier state,
+    // which is how letting go of Ctrl turns snapping back off.
+    if (!g_isPlaying)
+    {
+        EditorSceneManager* scene_manager = GET_SYSTEM(EditorSceneManager);
+        if (scene_manager != nullptr)
+        {
+            const bool ctrl_held = (mods & KeyCodes::MOD_CONTROL_VAL) != 0 || (mods & KeyCodes::MOD_SUPER_VAL) != 0;
+            scene_manager->SetSnapEnabled(ctrl_held && action != KeyCodes::RELEASE);
+        }
+    }
+
     // Undo / redo: Ctrl+Z, Ctrl+Y, Ctrl+Shift+Z (Cmd on macOS). Key repeat steps
     // through the history like Unity / UE. Skipped while a text field has focus so
     // the field keeps the shortcut, and in play mode (play edits are not recorded).
@@ -390,6 +404,35 @@ void EditorInputManager::OnKey(int key, int scancode, int action, int mods)
         else
         {
             EditorUndo::Undo();
+        }
+        return;
+    }
+
+    // Duplicate / copy / paste: Ctrl+D, Ctrl+C, Ctrl+V (Cmd on macOS). Handled
+    // before the editor-mode key map below so Ctrl+C does not also switch the
+    // gizmo to scale mode and Ctrl+D does not also drive the camera right.
+    if (action == KeyCodes::PRESS && !g_isPlaying &&
+        ((mods & KeyCodes::MOD_CONTROL_VAL) || (mods & KeyCodes::MOD_SUPER_VAL)) &&
+        (key == KeyCodes::KEY_D || key == KeyCodes::KEY_C || key == KeyCodes::KEY_V) &&
+        !ZSlate::EditorSlateHost::Get().IsNativeTextInputActive())
+    {
+        EditorSceneManager* scene_manager = GET_SYSTEM(EditorSceneManager);
+        if (scene_manager != nullptr)
+        {
+            switch (key)
+            {
+                case KeyCodes::KEY_D:
+                    scene_manager->DuplicateSelectedGameObjects();
+                    break;
+                case KeyCodes::KEY_C:
+                    scene_manager->CopySelectedGameObjects();
+                    break;
+                case KeyCodes::KEY_V:
+                    scene_manager->PasteGameObjects();
+                    break;
+                default:
+                    break;
+            }
         }
         return;
     }
