@@ -213,8 +213,12 @@ int main()
     // ---- 着色器：引擎实际加载的那两份文件 ----
     DX12ShaderCompiler compiler;
     const std::string dir = ZENGINE_SPINE_HLSL_DIR;
-    const DX12ShaderCompileResult vs = compiler.CompileFromFile(dir + "/spine_gpu.vert.hlsl", ShaderStage::Vertex);
-    const DX12ShaderCompileResult ps = compiler.CompileFromFile(dir + "/spine_gpu.frag.hlsl", ShaderStage::Fragment);
+    // 公式层在 shader/include/spine_skinning.h（GLSL 与 HLSL 共用），编译时要带 include 路径。
+    const std::vector<std::string> include_paths = {ZENGINE_SHADER_INCLUDE_DIR};
+    const DX12ShaderCompileResult vs =
+        compiler.CompileFromFile(dir + "/spine_gpu.vert.hlsl", ShaderStage::Vertex, include_paths);
+    const DX12ShaderCompileResult ps =
+        compiler.CompileFromFile(dir + "/spine_gpu.frag.hlsl", ShaderStage::Fragment, include_paths);
     if (!vs.success || !ps.success)
     {
         std::printf("  [FAIL] DXC: %s %s\n", vs.error_message.c_str(), ps.error_message.c_str());

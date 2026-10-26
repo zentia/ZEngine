@@ -65,7 +65,8 @@ if(ZENGINE_BUILD_SPINE_SKINNING_PARITY_TEST AND WIN32)
     set_target_properties(${_raster_target} PROPERTIES CXX_STANDARD 23 FOLDER "Engine/Tests")
     target_link_libraries(${_raster_target} PRIVATE ZRuntime d3d12 dxgi)
     target_compile_definitions(${_raster_target} PRIVATE
-        ZENGINE_SPINE_HLSL_DIR="${ENGINE_ROOT_DIR}/shader/hlsl/rp2")
+        ZENGINE_SPINE_HLSL_DIR="${ENGINE_ROOT_DIR}/shader/hlsl/rp2"
+        ZENGINE_SHADER_INCLUDE_DIR="${ENGINE_ROOT_DIR}/shader/include")
     if(TARGET ZEnginePCH)
         target_link_libraries(${_raster_target} PRIVATE ZEnginePCH)
         target_include_directories(${_raster_target} PRIVATE ${ENGINE_ROOT_DIR}/Source/CommonPCH)
