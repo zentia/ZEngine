@@ -15,9 +15,15 @@
 #include <EASTL/string.h>
 #include <EASTL/vector.h>
 
+#include <cstdint>
 #include <type_traits>
 #include "AIPerceptionComponent.generated.h"
 
+/// ZENUM: m_PerceptionMode is a ZPROPERTY of this type, and an enum that is not
+/// a ZENUM is silently skipped when the field property table is built -- the
+/// Inspector could switch tag/all but scripts could not. Marking it publishes
+/// `perceptionMode: AIPerceptionMode` on the component.
+ZENUM()
 enum class AIPerceptionMode : unsigned char
 {
   /// Only objects whose name carries the matching tag are perceived.
@@ -56,14 +62,79 @@ public:
 
   // ---- runtime access ------------------------------------------------------
 
+  /// 不导出：`eastl::vector<AIPerceptionTarget>` 没有 Converter，也没有"结构体
+  /// 数组"这一层的 marshalling。脚本读感知请用下面那组 GetTargetXxx(index) ——
+  /// 和 SpineRenderer 读动画事件是同一套路子（那边也是事件结构体数组）。
   const eastl::vector<AIPerceptionTarget>& GetPerceivedTargets() const { return m_Targets; }
+  ZFUNCTION()
   bool HasAnyVisibleTarget() const { return m_HasAnyVisibleTarget; }
 
   /// Re-scan immediately instead of waiting for the next interval. Cheap enough
   /// to call from gameplay (e.g. after taking damage).
+  ZFUNCTION()
   void ForceRefresh();
 
+  // ---- 脚本读感知结果（下标访问）-------------------------------------------
+  //
+  // 下标越界一律返回缺省值（k_invalid_gobject_id / ZERO / 0 / false）而不是崩：
+  // 感知列表每帧都变，脚本在 OnUpdate 里拿到的下标可能已经失效。宁可给一个能
+  // 判断的哨兵，也不要让一个越界把进程带走。
+
+  /// 本帧感知到的目标数量。
+  ZFUNCTION()
+  int32_t GetTargetCount() const { return static_cast<int32_t>(m_Targets.size()); }
+  /// 没有目标时 = k_invalid_gobject_id（一个很大的数）。
+  ZFUNCTION()
+  GObjectID GetTargetObjectId(int32_t index) const
+  {
+    const AIPerceptionTarget* target = TargetAt(index);
+    return target != nullptr ? target->object_id : k_invalid_gobject_id;
+  }
+  ZFUNCTION()
+  Vector3 GetTargetPosition(int32_t index) const
+  {
+    const AIPerceptionTarget* target = TargetAt(index);
+    return target != nullptr ? target->position : Vector3::ZERO;
+  }
+  ZFUNCTION()
+  float GetTargetDistance(int32_t index) const
+  {
+    const AIPerceptionTarget* target = TargetAt(index);
+    return target != nullptr ? target->distance : 0.f;
+  }
+  /// 距上次确认可见过了多少秒；0 = 此刻正可见。
+  ZFUNCTION()
+  float GetTargetLastSeenAge(int32_t index) const
+  {
+    const AIPerceptionTarget* target = TargetAt(index);
+    return target != nullptr ? target->last_seen_age : 0.f;
+  }
+  /// 此刻是否有视线（sight 通道 + 射线没被挡）。
+  ZFUNCTION()
+  bool GetTargetIsVisible(int32_t index) const
+  {
+    const AIPerceptionTarget* target = TargetAt(index);
+    return target != nullptr && target->is_visible;
+  }
+  /// 是否由听觉通道感知到（在听觉半径内但未必看得见）。
+  ZFUNCTION()
+  bool GetTargetIsHeard(int32_t index) const
+  {
+    const AIPerceptionTarget* target = TargetAt(index);
+    return target != nullptr && HasChannel(target->channels, AIPerceptionChannel::hearing);
+  }
+
 private:
+  /// 越界返回 nullptr；调用方负责给缺省值。不导出（是访问器，不是 API）。
+  const AIPerceptionTarget* TargetAt(int32_t index) const
+  {
+    if (index < 0 || static_cast<size_t>(index) >= m_Targets.size())
+    {
+      return nullptr;
+    }
+    return &m_Targets[static_cast<size_t>(index)];
+  }
+
   void RefreshTargets();
   void CollectCandidates(eastl::vector<AIPerceptionTarget>& out_candidates) const;
   bool IsWithinVisionCone(const Transform* owner_transform,
