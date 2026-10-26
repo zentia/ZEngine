@@ -696,7 +696,8 @@ int ShaderCompiler::GetGlslangShaderStage(ShaderStage stage) const
 ShaderCompileResult ShaderCompiler::CompileFromFile(const std::string& file_path,
                                                     ShaderStage stage,
                                                     const std::vector<std::string>& include_paths,
-                                                    const ShaderMacros& macros)
+                                                    const ShaderMacros& macros,
+                                                    const std::string& entry_point)
 {
     ShaderCompileResult result;
 
@@ -713,16 +714,17 @@ ShaderCompileResult ShaderCompiler::CompileFromFile(const std::string& file_path
     std::string source_code = buffer.str();
     file.close();
 
-    return CompileFromSource(source_code, stage, file_path, include_paths, macros);
+    return CompileFromSource(source_code, stage, file_path, include_paths, macros, entry_point);
 }
 
 ShaderCompileResult ShaderCompiler::CompileFromSource(const std::string& source_code,
                                                       ShaderStage stage,
                                                       const std::string& shader_name,
                                                       const std::vector<std::string>& include_paths,
-                                                      const ShaderMacros& macros)
+                                                      const ShaderMacros& macros,
+                                                      const std::string& entry_point)
 {
-    return CompileInternal(source_code, stage, shader_name, include_paths, macros);
+    return CompileInternal(source_code, stage, shader_name, include_paths, macros, entry_point);
 }
 
 std::string ShaderCompiler::BuildDefinesString(const ShaderMacros& macros) const
@@ -749,7 +751,8 @@ ShaderCompileResult ShaderCompiler::CompileInternal(const std::string& source_co
                                                     ShaderStage stage,
                                                     const std::string& shader_name,
                                                     const std::vector<std::string>& include_paths,
-                                                    const ShaderMacros& macros)
+                                                    const ShaderMacros& macros,
+                                                    const std::string& entry_point)
 {
     ShaderCompileResult result;
 
@@ -766,7 +769,7 @@ ShaderCompileResult ShaderCompiler::CompileInternal(const std::string& source_co
         std::error_code ec;
         if (std::filesystem::exists(shader_name, ec) && !ec)
         {
-            cache_file = BuildCacheFilePath(shader_name, stage, macros);
+            cache_file = BuildCacheFilePath(shader_name, stage, macros, entry_point);
             cache_eligible = !cache_file.empty();
         }
     }
@@ -857,8 +860,11 @@ ShaderCompileResult ShaderCompiler::CompileInternal(const std::string& source_co
     const char* source_cstr = final_source.c_str();
     shader.setStrings(&source_cstr, 1);
 
-    // Set entry point (default is "main")
-    shader.setEntryPoint("main");
+    // Set entry point. Engine-authored .vert/.frag all use "main"; ShaderLab
+    // sources name theirs via `#pragma vertex/fragment`, and VulkanRHI forwards
+    // that here. glslang's own default is also "main", so an empty string is
+    // normalised rather than passed through as-is.
+    shader.setEntryPoint(entry_point.empty() ? "main" : entry_point.c_str());
 
     // Set source file name for error reporting
     if (!shader_name.empty())
@@ -996,7 +1002,8 @@ const std::filesystem::path& ShaderCompiler::GetDefaultCacheDirectory()
 
 std::filesystem::path ShaderCompiler::BuildCacheFilePath(const std::string& source_file,
                                                          ShaderStage stage,
-                                                         const ShaderMacros& macros) const
+                                                         const ShaderMacros& macros,
+                                                         const std::string& entry_point) const
 {
     if (m_CacheDirectory.empty() || source_file.empty())
     {
@@ -1015,13 +1022,18 @@ std::filesystem::path ShaderCompiler::BuildCacheFilePath(const std::string& sour
     }
     const std::string src_hash = toHex16(fnv1a64(toLower(abs.generic_string())));
 
-    // Variant key: stage + sorted defines. Entry point is hard-coded to
-    // "main" by the glslang path (shader.setEntryPoint("main") in
-    // compileInternal), so it doesn't need to participate in the key.
+    // Variant key: stage + sorted defines + entry point.
+    //
+    // 入口点**必须**进 key：同一份 .shader 的 vertex / fragment 两个阶段共用
+    // 一个源文件名，只有 stage 和入口名能把它们区分开。以前入口恒为 "main"，
+    // 所以不参与；现在 ShaderLab 会用 `#pragma vertex StandardVert` 之类的名字，
+    // 漏掉就会出现"两个不同入口共用一份缓存 SPIR-V"。
     const int stage_int = static_cast<int>(stage);
     std::string variant_str = std::to_string(stage_int);
     variant_str += '|';
     variant_str += stringifyDefines(macros);
+    variant_str += '|';
+    variant_str += entry_point.empty() ? "main" : entry_point;
     const std::string variant_hash = toHex16(fnv1a64(variant_str));
 
     // Filename layout: <src>_<stage>_<variant>.spv
