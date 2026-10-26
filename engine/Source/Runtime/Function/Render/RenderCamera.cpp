@@ -149,6 +149,7 @@ Matrix4x4 RenderCamera::GetPersProjMatrix() const
     Matrix4x4 fix_mat(1, 0, 0, 0, 0, -1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1);
     Matrix4x4 proj_mat = fix_mat * Math::MakePerspectiveMatrix(Radian(Degree(m_Fovy)), m_Aspect, m_Znear, m_Zfar);
 
+    ApplyTaaJitter(proj_mat);
     return proj_mat;
 }
 
@@ -181,7 +182,85 @@ Matrix4x4 RenderCamera::GetProjectionMatrixForAspect(float aspect) const
     const float half_w = half_h * aspect;
     Matrix4x4 ortho =
         Math::MakeOrthographicProjectionMatrix(-half_w, half_w, -half_h, half_h, m_Zfar, m_Znear);
-    return fix_mat * ortho;
+    Matrix4x4 proj_mat = fix_mat * ortho;
+    ApplyTaaJitter(proj_mat);
+    return proj_mat;
+}
+
+Matrix4x4 RenderCamera::GetProjectionMatrixNoJitter() const
+{
+    Matrix4x4 projection = GetProjectionMatrix();
+    if (!m_TaaEnabled)
+    {
+        return projection;
+    }
+
+    // The jitter is a single additive term in the third column, so removing it is exact:
+    // undo what ApplyTaaJitter did rather than duplicating the projection maths.
+    projection.m_Mat[0][2] += m_TaaJitter.x;
+    projection.m_Mat[1][2] += m_TaaJitter.y;
+    return projection;
+}
+
+void RenderCamera::ApplyTaaJitter(Matrix4x4& projection) const
+{
+    if (!m_TaaEnabled)
+    {
+        return;
+    }
+    projection.m_Mat[0][2] -= m_TaaJitter.x;
+    projection.m_Mat[1][2] -= m_TaaJitter.y;
+}
+
+namespace
+{
+/// Van der Corput / Halton radical inverse. Cheap, deterministic, and the standard
+/// choice for TAA jitter because successive samples never repeat on a short cycle.
+float HaltonSequence(uint32_t index, uint32_t base)
+{
+    float result = 0.0f;
+    float fraction = 1.0f;
+    uint32_t remaining = index;
+    while (remaining > 0u)
+    {
+        fraction /= static_cast<float>(base);
+        result += fraction * static_cast<float>(remaining % base);
+        remaining /= base;
+    }
+    return result;
+}
+}  // namespace
+
+void RenderCamera::SetTaaEnabled(bool enabled)
+{
+    m_TaaEnabled = enabled;
+    if (!enabled)
+    {
+        // Leaving a stale offset behind would keep every frame shifted by a sub-pixel for
+        // as long as TAA is off -- a permanent half-pixel blur of the whole scene.
+        m_TaaJitter = Vector2(0.0f, 0.0f);
+        m_TaaFrameIndex = 0;
+    }
+}
+
+void RenderCamera::AdvanceTaaJitter(uint32_t width, uint32_t height)
+{
+    if (!m_TaaEnabled || width == 0u || height == 0u)
+    {
+        m_TaaJitter = Vector2(0.0f, 0.0f);
+        return;
+    }
+
+    // Halton index 0 is (0,0), which is the un-jittered centre -- start at 1 so the very
+    // first frame is already offset.
+    ++m_TaaFrameIndex;
+    const float x = HaltonSequence(m_TaaFrameIndex, 2u);
+    const float y = HaltonSequence(m_TaaFrameIndex, 3u);
+
+    // Halton lives in [0,1). Centre it on the pixel, then convert a one-pixel offset into
+    // NDC (NDC spans 2 units across the whole target).
+    m_TaaJitter = Vector2((x - 0.5f) * 2.0f / static_cast<float>(width),
+                          (y - 0.5f) * 2.0f / static_cast<float>(height));
 }
 
 void RenderCamera::AdjustOrthoHalfHeight(float wheel_delta)

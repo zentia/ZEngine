@@ -377,6 +377,8 @@ void DesktopRenderPipelineModule::Setup(const RenderPipelineInitInfo& init_info)
     m_Pipeline.m_CombineUiPass = std::make_shared<CombineUIPass>();
     m_Pipeline.m_PickPass = std::make_shared<PickPass>();
     m_Pipeline.m_FxaaPass = std::make_shared<FXAAPass>();
+    m_Pipeline.m_BloomPass = std::make_shared<BloomPass>();
+    m_Pipeline.m_TaaPass = std::make_shared<TAAPass>();
     m_Pipeline.m_ParticlePass = std::make_shared<ParticlePass>();
 
     RenderPassCommonInfo pass_common_info;
@@ -392,6 +394,8 @@ void DesktopRenderPipelineModule::Setup(const RenderPipelineInitInfo& init_info)
     m_Pipeline.m_CombineUiPass->SetCommonInfo(pass_common_info);
     m_Pipeline.m_PickPass->SetCommonInfo(pass_common_info);
     m_Pipeline.m_FxaaPass->SetCommonInfo(pass_common_info);
+    m_Pipeline.m_BloomPass->SetCommonInfo(pass_common_info);
+    m_Pipeline.m_TaaPass->SetCommonInfo(pass_common_info);
     m_Pipeline.m_ParticlePass->SetCommonInfo(pass_common_info);
 
     m_Pipeline.m_PointLightShadowPass->Initialize(nullptr);
@@ -441,9 +445,34 @@ void DesktopRenderPipelineModule::Setup(const RenderPipelineInitInfo& init_info)
     // (RP1's backup_odd) and target (RP2's backup_even) image views plus
     // the swapchain extent. The init render_pass field is unused here
     // (legacy ToneMappingPass needed it to bind into main_camera's RP).
+    // TAA: first link of the pre-tonemap chain. It reads RP1's HDR colour + the scene
+    // depth (RP1 hands it off as DEPTH_STENCIL_READ_ONLY_OPTIMAL precisely for this) and
+    // keeps its own history, so it only needs the format and the extent + two views.
+    TAAPassInitInfo taa_init_info;
+    taa_init_info.hdr_format = RHI_FORMAT_R16G16B16A16_SFLOAT;
+    m_Pipeline.m_TaaPass->Initialize(&taa_init_info);
+    main_camera_pass->SetTaaPass(std::static_pointer_cast<TAAPass>(m_Pipeline.m_TaaPass));
+    static_cast<TAAPass*>(m_Pipeline.m_TaaPass.get())
+        ->UpdateAfterFramebufferRecreate(m_Pipeline.m_Rhi->GetSwapchainInfo().extent.width,
+                                         m_Pipeline.m_Rhi->GetSwapchainInfo().extent.height,
+                                         _main_camera_pass->GetFramebufferImageViews()[_main_camera_pass_backup_buffer_odd],
+                                         m_Pipeline.m_Rhi->GetDepthImageInfo().depth_image_view);
+
+    // Bloom: next link. Its input is the TAA resolve when TAA is on, the raw HDR scene
+    // otherwise -- GetHdrSourceForBloom() owns that decision.
+    BloomPassInitInfo bloom_init_info;
+    bloom_init_info.hdr_format = RHI_FORMAT_R16G16B16A16_SFLOAT;
+    m_Pipeline.m_BloomPass->Initialize(&bloom_init_info);
+    main_camera_pass->SetBloomPass(std::static_pointer_cast<BloomPass>(m_Pipeline.m_BloomPass));
+    static_cast<BloomPass*>(m_Pipeline.m_BloomPass.get())
+        ->UpdateAfterFramebufferRecreate(m_Pipeline.m_Rhi->GetSwapchainInfo().extent.width,
+                                         m_Pipeline.m_Rhi->GetSwapchainInfo().extent.height,
+                                         main_camera_pass->GetHdrSourceForBloom());
+
     BindlessTonemapPassInitInfo tone_mapping_init_info;
-    tone_mapping_init_info.source_hdr_view =
-        _main_camera_pass->GetFramebufferImageViews()[_main_camera_pass_backup_buffer_odd];
+    // Same source as MainCameraPass::GetHdrSourceForTonemap() resolves to after a resize:
+    // the bloom composite when bloom is live, the raw HDR scene otherwise.
+    tone_mapping_init_info.source_hdr_view = main_camera_pass->GetHdrSourceForTonemap();
     tone_mapping_init_info.target_ldr_view =
         _main_camera_pass->GetFramebufferImageViews()[_main_camera_pass_backup_buffer_even];
     tone_mapping_init_info.target_ldr_format = RHI_FORMAT_R16G16B16A16_SFLOAT;
@@ -498,6 +527,11 @@ void DesktopRenderPipelineModule::Shutdown()
     m_Pipeline.m_CombineUiPass.reset();
     m_Pipeline.m_UiPass.reset();
     m_Pipeline.m_FxaaPass.reset();
+    // ~BloomPass releases its own mip chain (RenderPassBase has no virtual dtor), so a
+    // plain reset is enough; it goes before tone mapping, which samples its output.
+    m_Pipeline.m_BloomPass.reset();
+    // ~TAAPass releases its own resolve + history targets (no virtual dtor on the base).
+    m_Pipeline.m_TaaPass.reset();
     m_Pipeline.m_ColorGradingPass.reset();
     m_Pipeline.m_ToneMappingPass.reset();
     m_Pipeline.m_PickPass.reset();

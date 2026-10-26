@@ -64,6 +64,21 @@ void RenderResource::UpdatePerFrameBuffer(std::shared_ptr<RenderScene> render_sc
         }
     }
 
+    // Advance the TAA sub-pixel jitter before the projection is built, so the matrix the
+    // scene renders with and the one TAAPass reprojects with are the same one. A no-op
+    // (jitter stays zero) while TAA is off.
+    // One advance per frame: UpdatePerFrameBuffer runs once per camera (editor + game),
+    // and a second advance would give the two viewports different jitter while they share
+    // a single TAA history.
+    if (viewport_type == ViewportType::game)
+    {
+        if (RHI* rhi = GET_SYSTEM(RHI))
+        {
+            const RHIExtent2D& extent = rhi->GetSwapchainInfo().extent;
+            camera->AdvanceTaaJitter(extent.width, extent.height);
+        }
+    }
+
     Matrix4x4 proj_matrix = camera->GetProjectionMatrix();
     if (viewport_aspect > 0.0f)
     {

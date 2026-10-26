@@ -167,6 +167,7 @@ elseif(APPLE)
     # 下面只排除真正拉 Vulkan / DX12 头的文件（逐个用 Apple 的真实编译参数验过）：
     #   MainCameraPass / ColorGradingPass / CombineUIPass / FXAAPass / PickPass
     #                                                     -> include VulkanRHI.h
+    #   BloomPass / TAAPass                               -> include VulkanRHI.h
     #   DX12MainCameraPass / BindlessTonemapPass -> d3d12 / DX12RHI.h
     #
     # ParticlePass 原来也在这个名单里，现已解耦放出：它 include VulkanRHI.h 只为
@@ -189,7 +190,7 @@ elseif(APPLE)
     # 注意 MainCameraPass\\.cpp$ 不会误伤 MainCameraRp1Pass.cpp /
     # MainCameraFramebufferResources.cpp / MainCameraPassShaderCommon.cpp。
     set(ZENGINE_APPLE_EXCLUDED_PASSES
-        "(^|.*/)Function/Render/Passes/(DX12.*|BindlessTonemapPass|MainCameraPass|ColorGradingPass|CombineUIPass|FXAAPass|PickPass)\\.cpp$")
+        "(^|.*/)Function/Render/Passes/(DX12.*|BindlessTonemapPass|MainCameraPass|ColorGradingPass|CombineUIPass|FXAAPass|PickPass|BloomPass|TAAPass)\\.cpp$")
     list(FILTER SOURCE_FILES EXCLUDE REGEX "${ZENGINE_APPLE_EXCLUDED_PASSES}")
     list(FILTER SOURCE_FILES EXCLUDE REGEX "(^|.*/)Function/Render/Texture/VirtualTexture.*\\.cpp$")
     list(FILTER SOURCE_FILES EXCLUDE REGEX "(^|.*/)Function/Render/[Dd]ebug[Dd]raw/DebugDrawBuffer\\.cpp$")

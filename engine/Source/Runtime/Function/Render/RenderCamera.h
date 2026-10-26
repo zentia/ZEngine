@@ -89,6 +89,25 @@ public:
     Matrix4x4 GetProjectionMatrix() const;
     /// Same as GetProjectionMatrix but with an explicit aspect override (scene sub-viewport).
     Matrix4x4 GetProjectionMatrixForAspect(float aspect) const;
+    /// Projection with the TAA jitter removed. Anything that must not wobble sub-pixel --
+    /// picking being the one that exists today -- asks for this instead.
+    Matrix4x4 GetProjectionMatrixNoJitter() const;
+
+    // ---- TAA sub-pixel jitter -------------------------------------------------------
+    // TAA is only worth anything if successive frames sample different sub-pixel
+    // positions; without jitter the resolve converges to the same image and there is no
+    // anti-aliasing at all.
+    //
+    // Off by default: jittering the projection is a visible change to every pixel the
+    // scene writes, so it must only be on once the resolve is actually running.
+    void SetTaaEnabled(bool enabled);
+    bool IsTaaEnabled() const { return m_TaaEnabled; }
+    /// Jitter in NDC units (a fraction of a pixel). Set by AdvanceTaaJitter.
+    void SetTaaJitter(const Vector2& jitter_ndc) { m_TaaJitter = jitter_ndc; }
+    Vector2 GetTaaJitter() const { return m_TaaJitter; }
+    /// Advance the Halton(2,3) sequence and rescale it to one pixel of `width`x`height`.
+    /// Cheap no-op (and zeroes the jitter) when TAA is off.
+    void AdvanceTaaJitter(uint32_t width, uint32_t height);
 
     bool IsOrthographic() const { return m_Orthographic; }
     void SetOrthographic(bool orthographic) { m_Orthographic = orthographic; }
@@ -112,6 +131,16 @@ protected:
     float m_OrthoHalfHeight {10.0f};
 
     std::mutex m_ViewMatrixMutex;
+
+private:
+    /// Subtract the jitter from the projection's third column. With column vectors
+    /// (clip = P * v) and w_clip = -v.z, adding `j` to NDC x means x_clip -= j * v.z,
+    /// which is exactly this entry.
+    void ApplyTaaJitter(Matrix4x4& projection) const;
+
+    Vector2 m_TaaJitter {0.0f, 0.0f};
+    bool m_TaaEnabled {false};
+    uint32_t m_TaaFrameIndex {0};
 
 private:
     struct CopiableState

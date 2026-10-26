@@ -1,6 +1,8 @@
 #pragma once
 
 #include "Runtime/Function/Render/Passes/BindlessTonemapPass.h"
+#include "Runtime/Function/Render/Passes/BloomPass.h"
+#include "Runtime/Function/Render/Passes/TAAPass.h"
 #include "Runtime/Function/Render/Passes/ColorGradingPass.h"
 #include "Runtime/Function/Render/Passes/CombineUIPass.h"
 #include "Runtime/Function/Render/Passes/FXAAPass.h"
@@ -116,9 +118,37 @@ public:
     void AppendToDrawList(RHIDrawList& out_draw_list, const RenderPassContext& context) override;
 
     void DrawRp1();
+    void DrawTaa();
+    void DrawBloom();
     void DrawTonemap();
     void DrawRp2(uint32_t current_swapchain_image_index,
                  const std::vector<RenderCallback>& post_ui_callbacks = {});
+
+    // Bloom sits between RP1 (which writes the HDR scene) and tone mapping, so it is
+    // handed over the same way the sibling subpasses are -- see SetPostPasses. It is
+    // NOT a subpass though: BloomPass owns its own render pass and mip chain, which is
+    // what lets it drop into either RP2 path.
+    void SetBloomPass(std::shared_ptr<BloomPass> pass);
+    BloomPass* GetBloomPass() const { return m_BloomPass.get(); }
+    /// Turn bloom on/off. Toggling re-points tone mapping between the raw HDR scene and
+    /// the bloom output, so it may only be called outside a frame.
+    void EnableBloom(bool enabled);
+
+    /// The image bloom should read: the TAA resolve when TAA is on and ready, otherwise
+    /// RP1's raw HDR scene. TAA runs before bloom on purpose -- resolving after tone
+    /// mapping would make the variance clip fight the tone curve.
+    /// Re-point bloom and tone mapping at the current head of the HDR chain.
+    void RewireHdrChain();
+    RHIImageView* GetHdrSourceForBloom() const;
+    void SetTaaPass(std::shared_ptr<TAAPass> pass);
+    TAAPass* GetTaaPass() const { return m_TaaPass.get(); }
+    void EnableTaa(bool enabled);
+
+    /// The image tone mapping should sample: the bloom composite when bloom is on and
+    /// ready, otherwise whatever bloom would have read. Public because the render-path
+    /// module has to wire BindlessTonemapPass with the same view -- one source of truth,
+    /// so Setup() and UpdateAfterFramebufferRecreate() cannot disagree.
+    RHIImageView* GetHdrSourceForTonemap() const;
 
     RHIImageView* m_PointLightShadowColorImageView;
     RHIImageView* m_DirectionalLightShadowColorImageView;
@@ -203,6 +233,10 @@ private:
     // 本 pass 持有并在 RP2 的 subpass 边界上依次调用。
     std::shared_ptr<ColorGradingPass> m_ColorGradingPass;
     std::shared_ptr<FXAAPass> m_FxaaPass;
+    std::shared_ptr<BloomPass> m_BloomPass;
+    std::shared_ptr<TAAPass> m_TaaPass;
+    bool m_EnableBloom {true};
+    bool m_EnableTaa {false};
     std::shared_ptr<BindlessTonemapPass> m_ToneMappingPass;
     std::shared_ptr<RenderPass> m_UiPass;
     std::shared_ptr<CombineUIPass> m_CombineUiPass;

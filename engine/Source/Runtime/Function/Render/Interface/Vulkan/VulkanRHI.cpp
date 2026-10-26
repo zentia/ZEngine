@@ -3935,8 +3935,13 @@ void VulkanRHI::CreateFramebufferImageAndView()
                             m_SwapchainExtent.height,
                             (VkFormat)m_DepthImageFormat,
                             VK_IMAGE_TILING_OPTIMAL,
+                            // SAMPLED_BIT is required by the depth-reprojection TAA pass:
+                            // with no barrier API in the RHI there is no way to sample the
+                            // depth buffer unless it is created samplable in the first
+                            // place, and RP1 hands it off as
+                            // DEPTH_STENCIL_READ_ONLY_OPTIMAL for exactly that reason.
                             VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT | VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
-                                VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                                VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
                             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
                             ((VulkanImage*)m_DepthImage)->getResource(),
                             m_DepthImageMemory,

@@ -212,6 +212,8 @@ protected:
     std::shared_ptr<RenderPassBase> m_NanitePass;
     std::shared_ptr<RenderPassBase> m_ColorGradingPass;
     std::shared_ptr<RenderPassBase> m_FxaaPass;
+    std::shared_ptr<RenderPassBase> m_BloomPass;
+    std::shared_ptr<RenderPassBase> m_TaaPass;
     std::shared_ptr<RenderPassBase> m_ToneMappingPass;
     std::shared_ptr<RenderPassBase> m_UiPass;
     std::shared_ptr<RenderPassBase> m_CombineUiPass;

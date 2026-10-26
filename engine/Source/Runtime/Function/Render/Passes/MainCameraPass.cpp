@@ -824,8 +824,13 @@ void MainCameraPass::SetupAttachments()
                                m_Rhi->GetSwapchainInfo().extent.height,
                                m_Framebuffer.attachments[buffer_index].format,
                                RHI_IMAGE_TILING_OPTIMAL,
+                               // SAMPLED_BIT: backup_odd / backup_even are read as textures
+                               // by BindlessTonemapPass today and by BloomPass now that
+                               // bloom is wired in. They were missing the usage bit before
+                               // -- the bindless sampler got away with it, a plain
+                               // COMBINED_IMAGE_SAMPLER descriptor does not.
                                RHI_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | RHI_IMAGE_USAGE_INPUT_ATTACHMENT_BIT |
-                                   RHI_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT,
+                                   RHI_IMAGE_USAGE_SAMPLED_BIT | RHI_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT,
                                RHI_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
                                m_Framebuffer.attachments[buffer_index].image,
                                m_Framebuffer.attachments[buffer_index].mem,
@@ -981,7 +986,12 @@ void MainCameraPass::SetupRenderPass1()
     depth_attachment_description.stencilLoadOp = RHI_ATTACHMENT_LOAD_OP_DONT_CARE;
     depth_attachment_description.stencilStoreOp = RHI_ATTACHMENT_STORE_OP_DONT_CARE;
     depth_attachment_description.initialLayout = RHI_IMAGE_LAYOUT_UNDEFINED;
-    depth_attachment_description.finalLayout = RHI_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    // READ_ONLY, not ATTACHMENT: TAAPass samples the depth buffer to reproject, and the
+    // RHI has no barrier API, so the hand-off has to happen in the render pass itself.
+    // main_camera_framebuffer_resources.cpp already ends its depth attachment this way,
+    // and the next frame re-clears it (loadOp = CLEAR, initialLayout = UNDEFINED), so
+    // nothing downstream depends on it coming back as ATTACHMENT_OPTIMAL.
+    depth_attachment_description.finalLayout = RHI_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
 
     RHISubpassDescription subpasses[_main_camera_rp1_subpass_count] = {};
 
@@ -3261,14 +3271,18 @@ void MainCameraPass::UpdateAfterFramebufferRecreate()
     //
     // ⚠️ 与 `Setup()` 里的初始接线**逐字一致**（同一个下标、同一个语义），否则第一次
     // resize 前后画面就不一样了 —— 这类 bug 只在 resize 之后才出现，无头测不出来。
-    if (m_ToneMappingPass)
+    if (m_TaaPass)
     {
-        m_ToneMappingPass->UpdateAfterFramebufferRecreate(
-            m_Framebuffer.attachments[_main_camera_pass_backup_buffer_odd].view,
-            m_Framebuffer.attachments[_main_camera_pass_backup_buffer_even].view,
-            m_Rhi->GetSwapchainInfo().extent.width,
-            m_Rhi->GetSwapchainInfo().extent.height);
+        // TAA owns a full-res resolve target plus two history slots, so it needs the new
+        // extent, the new HDR scene view and the (recreated) depth view.
+        m_TaaPass->UpdateAfterFramebufferRecreate(m_Rhi->GetSwapchainInfo().extent.width,
+                                                  m_Rhi->GetSwapchainInfo().extent.height,
+                                                  m_Framebuffer.attachments[_main_camera_pass_backup_buffer_odd].view,
+                                                  m_Rhi->GetDepthImageInfo().depth_image_view);
     }
+    // Bloom and tone mapping hang off the head of the HDR chain, which TAA may have
+    // changed -- RewireHdrChain is the single place that resolves it.
+    RewireHdrChain();
     if (m_ColorGradingPass)
     {
         m_ColorGradingPass->UpdateAfterFramebufferRecreate(
@@ -3300,6 +3314,102 @@ void MainCameraPass::SetPostPasses(std::shared_ptr<ColorGradingPass> color_gradi
     m_CombineUiPass = std::move(combine_ui_pass);
 }
 
+void MainCameraPass::SetBloomPass(std::shared_ptr<BloomPass> pass)
+{
+    m_BloomPass = std::move(pass);
+}
+
+void MainCameraPass::EnableBloom(bool enabled)
+{
+    if (m_EnableBloom == enabled)
+    {
+        return;
+    }
+    m_EnableBloom = enabled;
+
+    if (m_BloomPass != nullptr)
+    {
+        m_BloomPass->SetEnabled(enabled);
+    }
+    if (m_ToneMappingPass != nullptr)
+    {
+        // Re-point tone mapping, or turning bloom off would leave it sampling a texture
+        // nothing writes this frame.
+        m_ToneMappingPass->UpdateAfterFramebufferRecreate(
+            GetHdrSourceForTonemap(),
+            m_Framebuffer.attachments[_main_camera_pass_backup_buffer_even].view,
+            m_Rhi->GetSwapchainInfo().extent.width,
+            m_Rhi->GetSwapchainInfo().extent.height);
+    }
+}
+
+RHIImageView* MainCameraPass::GetHdrSourceForBloom() const
+{
+    if (m_TaaPass != nullptr && m_EnableTaa && m_TaaPass->IsValid())
+    {
+        RHIImageView* taa_output = m_TaaPass->GetOutputImageView();
+        if (taa_output != nullptr)
+        {
+            return taa_output;
+        }
+    }
+    return m_Framebuffer.attachments[_main_camera_pass_backup_buffer_odd].view;
+}
+
+RHIImageView* MainCameraPass::GetHdrSourceForTonemap() const
+{
+    if (m_BloomPass != nullptr && m_EnableBloom && m_BloomPass->IsValid())
+    {
+        RHIImageView* bloom_output = m_BloomPass->GetOutputImageView();
+        if (bloom_output != nullptr)
+        {
+            return bloom_output;
+        }
+    }
+    return GetHdrSourceForBloom();
+}
+
+void MainCameraPass::SetTaaPass(std::shared_ptr<TAAPass> pass)
+{
+    m_TaaPass = std::move(pass);
+}
+
+void MainCameraPass::EnableTaa(bool enabled)
+{
+    if (m_EnableTaa == enabled)
+    {
+        return;
+    }
+    m_EnableTaa = enabled;
+
+    if (m_TaaPass != nullptr)
+    {
+        m_TaaPass->SetEnabled(enabled);
+        m_TaaPass->UpdatePerFrame(m_MainCameraPerFrame.proj_view_matrix, true);
+    }
+    RewireHdrChain();
+}
+
+void MainCameraPass::RewireHdrChain()
+{
+    // One place that re-points the whole pre-tonemap chain, so "TAA changed" and "the
+    // swapchain was resized" cannot end up with different wirings.
+    if (m_BloomPass != nullptr)
+    {
+        m_BloomPass->UpdateAfterFramebufferRecreate(m_Rhi->GetSwapchainInfo().extent.width,
+                                                    m_Rhi->GetSwapchainInfo().extent.height,
+                                                    GetHdrSourceForBloom());
+    }
+    if (m_ToneMappingPass != nullptr)
+    {
+        m_ToneMappingPass->UpdateAfterFramebufferRecreate(
+            GetHdrSourceForTonemap(),
+            m_Framebuffer.attachments[_main_camera_pass_backup_buffer_even].view,
+            m_Rhi->GetSwapchainInfo().extent.width,
+            m_Rhi->GetSwapchainInfo().extent.height);
+    }
+}
+
 void MainCameraPass::AppendToDrawList(RHIDrawList& out_draw_list, const RenderPassContext& context)
 {
     // per-frame 开关在 **Build 期**落到成员上，与旧代码在 BuildDrawLists 里做的时机一致；
@@ -3312,6 +3422,10 @@ void MainCameraPass::AppendToDrawList(RHIDrawList& out_draw_list, const RenderPa
     VulkanRHI* vulkan_rhi = static_cast<VulkanRHI*>(m_Rhi);
 
     out_draw_list.Add("MainCamera.RP1", [this]() { DrawRp1(); });
+
+    out_draw_list.Add("MainCamera.TAA", [this]() { DrawTaa(); });
+
+    out_draw_list.Add("MainCamera.Bloom", [this]() { DrawBloom(); });
 
     out_draw_list.Add("MainCamera.Tonemap", [this]() { DrawTonemap(); });
 
@@ -3425,6 +3539,33 @@ void MainCameraPass::DrawRp1()
     m_Rhi->PopEvent(m_Rhi->GetCurrentCommandBuffer());
 
     m_Rhi->CmdEndRenderPassPFN(m_Rhi->GetCurrentCommandBuffer());
+}
+
+void MainCameraPass::DrawTaa()
+{
+    if (m_TaaPass == nullptr || !m_EnableTaa || !m_TaaPass->IsValid())
+    {
+        return;
+    }
+
+    // The pass keeps the previous view-projection itself; all it needs from here is the
+    // one the scene was actually rendered with this frame -- jitter included, which is
+    // what makes the reprojection line up.
+    m_TaaPass->UpdatePerFrame(m_MainCameraPerFrame.proj_view_matrix, false);
+    m_TaaPass->Draw();
+}
+
+void MainCameraPass::DrawBloom()
+{
+    if (m_BloomPass == nullptr || !m_EnableBloom || !m_BloomPass->IsValid())
+    {
+        return;
+    }
+
+    // Own render pass + own mip chain, so this is a full draw-list entry rather than a
+    // subpass: it reads RP1's HDR scene colour and leaves the composite in
+    // SHADER_READ_ONLY_OPTIMAL for tone mapping to pick up.
+    m_BloomPass->Draw();
 }
 
 void MainCameraPass::DrawTonemap()
