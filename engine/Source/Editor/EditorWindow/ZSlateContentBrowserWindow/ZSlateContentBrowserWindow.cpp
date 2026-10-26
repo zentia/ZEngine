@@ -133,7 +133,9 @@ ZSlateContentBrowserWindow::ZSlateContentBrowserWindow(EditorUI* editor_ui)
                 m_PendingMaterialShaderPath,
                 m_HasPendingMaterialFromShader,
                 m_PendingImportDialog,
-                m_AssetTreeDirty)
+                m_AssetTreeDirty,
+                m_PendingSelectPath,
+                m_HasPendingSelect)
 {
     s_Instance = this;
     LoadViewPrefs();
@@ -1100,7 +1102,42 @@ void ZSlateContentBrowserWindow::OnGUI()
         m_EditorFileService.BuildEngineFileTree();
         m_AssetTreeDirty = false;
         RebindSelectionAfterTreeRebuild(selected_path, browsed_path);
+        // Every other node pointer died with the old tree.
+        m_HasPendingContext = false;
+        m_PendingContextNode = nullptr;
         m_ForceRebuild = true;
+
+        // An action asked for a selection (new prefab / material / file, reimport,
+        // delete fallback): select it by path in the NEW tree.
+        if (m_HasPendingSelect)
+        {
+            m_HasPendingSelect = false;
+            EditorFileNode* node = m_PendingSelectPath.empty()
+                                       ? nullptr
+                                       : ContentBrowserHelpers::FindContentBrowserNodeAcrossRoots(
+                                             m_EditorFileService, m_PendingSelectPath.generic_string());
+            m_PendingSelectPath.clear();
+            if (node != nullptr)
+            {
+                m_SelectedNode = node;
+                if (ContentBrowserHelpers::IsFolderNode(node))
+                {
+                    m_BrowsedFolderNode = node;
+                    GET_SYSTEM(EditorSceneManager)->OnAssetSelected(std::filesystem::path(), "");
+                }
+                else
+                {
+                    if (EditorFileNode* parent = ContentBrowserHelpers::FindParentFolderNode(m_EditorFileService, node))
+                        m_BrowsedFolderNode = parent;
+                    GET_SYSTEM(EditorSceneManager)->OnAssetSelected(node->m_FilePath.c_str(), node->displayTypeLabel());
+                }
+            }
+            else
+            {
+                GET_SYSTEM(EditorSceneManager)->OnAssetSelected(std::filesystem::path(), "");
+            }
+            EnsureBrowsedFolder();
+        }
     }
 
     if (m_EditorFileService.getEditorRootNode() == nullptr)

@@ -259,6 +259,16 @@ if(NOT Z_PLATFORM_WINDOWS)
     message(STATUS "POSIX crash capture: -fno-omit-frame-pointer -funwind-tables -rdynamic")
 endif()
 
+# Windows Release: emit a PDB next to the exe. The crash handler (StackWalk64 +
+# dbghelp) resolves Release frames only through it -- without one a Release crash
+# report names the nearest EXPORT for every frame ("puerts::ScriptFunctionInfo
+# +0xf5133"), which is useless. /Zi does not change codegen; /DEBUG would switch the
+# linker to /OPT:NOREF,NOICF, so REF/ICF are restated to keep the Release image.
+if(MSVC)
+    add_compile_options($<$<CONFIG:Release>:/Zi>)
+    add_link_options($<$<CONFIG:Release>:/DEBUG:FULL> $<$<CONFIG:Release>:/OPT:REF> $<$<CONFIG:Release>:/OPT:ICF>)
+endif()
+
 # Print platform information
 message(STATUS "Platform: ${Z_PLATFORM_NAME}")
 message(STATUS "Architecture: ${Z_ARCH_NAME}")
