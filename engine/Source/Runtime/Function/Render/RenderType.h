@@ -1956,6 +1956,37 @@ struct RenderShaderPassData
     bool m_Zwrite {true};
 };
 
+/// 一个 shader 属性在运行时材质上的声明：名字 + 类型 + 默认值 + 常量缓冲落点。
+///
+/// 这是 ShaderRes::ShaderPropertyDesc 在渲染侧的镜像。不直接复用那个结构体
+/// 是因为它住在 Resource/ResType 里、拖着 Object / 反射的头文件，而 RenderType.h
+/// 被 RHI 层和一堆后端 TU 引用 —— 让它反过来依赖资源层会把依赖方向拧成环。
+///
+/// 落点由导入期算好（见 ShaderImporter::FillCbufferOffsets）。没有它，脚本只能
+/// 设 MaterialCustomParamNames.h 里写死的几个槽位。
+struct RenderShaderPropertyDesc
+{
+    eastl::string m_Name;
+    eastl::string m_DisplayName;
+    /// "Float" / "Range" / "Color" / "Vector" / "2D" / "Cube" / "3D"。
+    eastl::string m_Type {"Float"};
+    float m_DefaultFloat {0.0f};
+    float m_RangeMin {0.0f};
+    float m_RangeMax {1.0f};
+    float m_DefaultColor[4] {1.0f, 1.0f, 1.0f, 1.0f};
+    eastl::string m_DefaultTexture;
+    bool m_DefaultToggle {false};
+
+    /// 在 UnityPerMaterial 常量缓冲里的字节偏移。<0 = 这个属性不落在 UBO 里。
+    int32_t m_CbufferOffset {-1};
+    uint32_t m_CbufferSize {0};
+    /// 分量数 1..4（矩阵记行数）。0 = 未知。
+    uint32_t m_CbufferComponents {0};
+    eastl::string m_CbufferName;
+
+    bool HasCbufferSlot() const { return m_CbufferOffset >= 0 && m_CbufferSize > 0; }
+};
+
 struct RenderMaterialData
 {
     eastl::string m_Shader {"StandardLit"};
@@ -1977,6 +2008,23 @@ struct RenderMaterialData
     bool m_EnableMetal {false};
     eastl::vector<eastl::string> m_EnabledShaderKeywords;
     std::vector<RenderShaderPassData> m_ShaderPasses;
+
+    /// 这个材质所用 shader 声明的全部属性（含 UBO 落点）。
+    /// 内置 StandardLit 为空；自定义 ShaderLab 资产才有内容。
+    std::vector<RenderShaderPropertyDesc> m_Properties;
+
+    const RenderShaderPropertyDesc* FindProperty(const eastl::string& name) const
+    {
+        for (const RenderShaderPropertyDesc& property : m_Properties)
+        {
+            if (property.m_Name == name)
+            {
+                return &property;
+            }
+        }
+        return nullptr;
+    }
+
     std::shared_ptr<TextureData> m_BaseColorTexture;
     std::shared_ptr<TextureData> m_MetallicRoughnessTexture;
     std::shared_ptr<TextureData> m_NormalTexture;

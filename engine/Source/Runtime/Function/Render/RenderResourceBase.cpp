@@ -41,6 +41,19 @@ namespace
         return {};
     }
 
+    /// 项目根（<project>/），与 GetProjectAssetRoot()（<project>/Assets）区分开。
+    /// ShaderLab 的源码目录 Shaders/ 是 Assets/ 的**兄弟**，不是子目录。
+    std::filesystem::path GetProjectRoot()
+    {
+        ProjectInfo* project_info = GET_SYSTEM(ProjectInfo);
+        if (project_info != nullptr && !project_info->project_path.empty())
+        {
+            return std::filesystem::absolute(std::filesystem::path(project_info->project_path.c_str()))
+                .lexically_normal();
+        }
+        return {};
+    }
+
     std::filesystem::path ResolveProjectAssetPath(const eastl::string& asset_path)
     {
         if (asset_path.empty())
@@ -57,9 +70,54 @@ namespace
         const std::filesystem::path asset_root = GetProjectAssetRoot();
         if (!asset_root.empty())
         {
-            return (asset_root / path).lexically_normal();
+            const std::filesystem::path under_assets = (asset_root / path).lexically_normal();
+
+            std::error_code error_code;
+            if (std::filesystem::exists(under_assets, error_code) && !error_code)
+            {
+                return under_assets;
+            }
+
+            // ShaderLab 的 include 根是项目相对的 "Shaders"，位于 <project>/ 下而
+            // 不是 <project>/Assets/ 下。以前直接拼在 Assets 后面，得到
+            // <project>/Assets/Shaders —— 一个不存在的目录，于是 shader 里所有
+            // 项目相对路径的 #include 都 file not found。
+            const std::filesystem::path project_root = GetProjectRoot();
+            if (!project_root.empty())
+            {
+                const std::filesystem::path under_project = (project_root / path).lexically_normal();
+                if (std::filesystem::exists(under_project, error_code) && !error_code)
+                {
+                    return under_project;
+                }
+            }
+            return under_assets;
         }
         return std::filesystem::absolute(path).lexically_normal();
+    }
+
+    /// ShaderRes::ShaderPropertyDesc -> RenderShaderPropertyDesc。
+    /// 逐字段拷贝，不做任何推断：落点是导入期算好的，这里再猜一遍只会猜错。
+    RenderShaderPropertyDesc BuildRuntimeShaderProperty(const ShaderPropertyDesc& source)
+    {
+        RenderShaderPropertyDesc property;
+        property.m_Name = source.m_Name;
+        property.m_DisplayName = source.m_DisplayName;
+        property.m_Type = source.m_Type;
+        property.m_DefaultFloat = source.m_DefaultFloat;
+        property.m_RangeMin = source.m_RangeMin;
+        property.m_RangeMax = source.m_RangeMax;
+        property.m_DefaultColor[0] = source.m_DefaultColor.x;
+        property.m_DefaultColor[1] = source.m_DefaultColor.y;
+        property.m_DefaultColor[2] = source.m_DefaultColor.z;
+        property.m_DefaultColor[3] = source.m_DefaultAlpha;
+        property.m_DefaultTexture = source.m_DefaultTexture;
+        property.m_DefaultToggle = source.m_DefaultToggle;
+        property.m_CbufferOffset = source.m_CbufferOffset;
+        property.m_CbufferSize = source.m_CbufferSize;
+        property.m_CbufferComponents = source.m_CbufferComponents;
+        property.m_CbufferName = source.m_CbufferName;
+        return property;
     }
 
     std::filesystem::path ResolveRuntimeAssetPath(const eastl::string& asset_path)
@@ -572,6 +630,15 @@ RenderMaterialData RenderResourceBase::LoadMaterialData(const MaterialSourceDesc
         else
         {
             ret.m_IncludeDirectory = shader_asset.m_IncludeDirectory;
+        }
+
+        // shader 声明的属性（含 UBO 落点）。内置 StandardLit 没有属性表，
+        // m_Properties 保持为空，FindProperty() 一律返回 nullptr。
+        ret.m_Properties.clear();
+        ret.m_Properties.reserve(shader_asset.m_Properties.size());
+        for (const ShaderPropertyDesc& shader_property : shader_asset.m_Properties)
+        {
+            ret.m_Properties.emplace_back(BuildRuntimeShaderProperty(shader_property));
         }
 
         ret.m_ShaderPasses.clear();
