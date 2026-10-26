@@ -2528,12 +2528,15 @@ void MainCameraRp1Pass::DrawForwardLightingPass(const std::array<bool, 2>& skybo
 
 void MainCameraRp1Pass::SetupRenderGraphPath()
 {
-    // Opt-in, mirroring ZENGINE_RG_RP2: the hand-written chain is the one that has been
-    // shipping, and the graph path needs a per-frame visual diff before it can be default.
+    // Default ON: the render-graph RP1 path was verified bit-identical to the hand-written
+    // chain by the in-frame A/B capture (DX12RenderGraphAbCapture + scripts/rg_ab_compare.py)
+    // on 2026-10-26 -- rp1.backup_odd readbacks matched to the byte, zero debug-layer
+    // errors. Set ZENGINE_RG_RP1=0 to force the hand-written chain (kept as the fallback
+    // and for A/B comparison; the capture drives both paths directly regardless of this).
     const char* env = std::getenv("ZENGINE_RG_RP1");
-    const bool requested = env != nullptr && env[0] != '\0' && env[0] != '0';
+    const bool disabled = (env != nullptr && env[0] == '0');
     m_UseRenderGraph = false;
-    if (!requested)
+    if (disabled)
     {
         return;
     }
@@ -2541,11 +2544,11 @@ void MainCameraRp1Pass::SetupRenderGraphPath()
     if (!SetRenderGraphPathEnabled(true))
     {
         LOG_WARNING(ZRender,
-                    "MainCameraRp1Pass: ZENGINE_RG_RP1 is set but the render graph path is DX12-only; "
+                    "MainCameraRp1Pass: render graph RP1 path is DX12-only; "
                     "keeping the hand-written RP1 chain");
         return;
     }
-    LOG_INFO(ZRender, "MainCameraRp1Pass: RP1 is driven by the render graph (ZENGINE_RG_RP1=1)");
+    LOG_INFO(ZRender, "MainCameraRp1Pass: RP1 is driven by the render graph");
 }
 
 bool MainCameraRp1Pass::SetRenderGraphPathEnabled(bool enabled)
