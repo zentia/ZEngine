@@ -54,7 +54,16 @@ uint32_t SamplerIndexForSlot(const MslSamplerIndexMap& map, uint32_t slot)
 
 #ifdef __APPLE__
     #define Component AppleComponent
-    #import <Cocoa/Cocoa.h>
+    #include <TargetConditionals.h>
+    // iOS 用 UIKit（UIView + CAMetalLayer 作为子层）；macOS 用 AppKit（NSView
+    // 的 wantsLayer/layer）。二者不能混引：iOS SDK 里根本没有 NSWindow/NSView。
+    #if defined(Z_PLATFORM_IOS) || (defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE)
+        #define ZENGINE_METAL_IOS 1
+        #import <UIKit/UIKit.h>
+    #else
+        #define ZENGINE_METAL_IOS 0
+        #import <Cocoa/Cocoa.h>
+    #endif
     #include <dispatch/dispatch.h>
     #undef Component
 #endif
@@ -252,43 +261,90 @@ bool MetalRHI::AllocateDescriptorSets(const RHIDescriptorSetAllocateInfo* pAlloc
 // ---------------------------------------------------------------------------
 namespace
 {
-    // The Cocoa view that hosts the CAMetalLayer: the main window's content view.
-    NSView* GetSwapchainHostView()
+#if ZENGINE_METAL_IOS
+    using HostView = UIView;
+#else
+    using HostView = NSView;
+#endif
+
+    // The view that hosts the CAMetalLayer.
+    //
+    // macOS: the engine owns the window, so we take the NSWindow's content view.
+    // iOS:   there is no engine-owned window (CreatePlatformApplication() returns
+    //        nullptr) -- the UIKit app pushes its UIView in through
+    //        WindowSystem::SetHostWindowHandle, which the Player shell calls from
+    //        the app delegate. It can arrive after boot, so nil is expected early.
+    HostView* GetSwapchainHostView()
     {
         auto* window_system = GET_SYSTEM(WindowSystem);
         if (window_system == nullptr)
         {
             return nil;
         }
+#if ZENGINE_METAL_IOS
+        return (__bridge UIView*)window_system->GetHostWindowHandle();
+#else
         NSWindow* ns_window = (__bridge NSWindow*)window_system->GetNativeWindowHandle();
         if (ns_window == nil)
         {
             return nil;
         }
         return ns_window.contentView;
+#endif
+    }
+
+    // Attach the layer to the view. AppKit lets you *replace* the view's layer;
+    // UIKit owns the UIView's layer and only accepts sublayers.
+    void AttachMetalLayer(HostView* view, CAMetalLayer* layer)
+    {
+#if ZENGINE_METAL_IOS
+        layer.frame = view.bounds;
+        [view.layer addSublayer:layer];
+#else
+        view.wantsLayer = YES;
+        view.layer      = layer;
+#endif
     }
 
     // Sync the layer drawable size (and the RHI extent / viewport / scissor) with
     // the view's current backing size. Returns false when the view has no area.
     bool SyncLayerMetrics(CAMetalLayer* layer,
-                          NSView*      view,
-                          RHIExtent2D& extent,
-                          RHIViewport* viewports,
-                          RHIRect2D*   scissors)
+                          HostView*     view,
+                          RHIExtent2D&  extent,
+                          RHIViewport*  viewports,
+                          RHIRect2D*    scissors)
     {
         if (layer == nil || view == nil)
         {
             return false;
         }
+
+        double  width = 0.0;
+        double  height = 0.0;
+        CGFloat scale = 1.0;
+#if ZENGINE_METAL_IOS
+        // UIView has no convertRectToBacking: (that is AppKit). The backing size
+        // is the point size times the layer's contentsScale -- which we set from
+        // the screen's native scale so the drawable matches the physical pixels.
+        scale = layer.contentsScale > 0.0 ? layer.contentsScale : [UIScreen mainScreen].nativeScale;
+        if (scale <= 0.0)
+        {
+            scale = 1.0;
+        }
+        const CGRect bounds = view.bounds;
+        width  = bounds.size.width * scale;
+        height = bounds.size.height * scale;
+#else
         const NSRect backing = [view convertRectToBacking:view.bounds];
-        const double width  = backing.size.width;
-        const double height = backing.size.height;
+        width  = backing.size.width;
+        height = backing.size.height;
+        scale  = view.window != nil ? view.window.backingScaleFactor : 1.0;
+#endif
         if (width <= 0.0 || height <= 0.0)
         {
             return false;
         }
 
-        const CGFloat scale = view.window != nil ? view.window.backingScaleFactor : 1.0;
         layer.contentsScale  = scale > 0.0 ? scale : 1.0;
         layer.drawableSize   = CGSizeMake(width, height);
 
@@ -400,10 +456,10 @@ void MetalRHI::DestroySceneDepthImage()
 void MetalRHI::CreateSwapchain()
 {
 #ifdef __APPLE__
-    NSView* view = GetSwapchainHostView();
+    HostView* view = GetSwapchainHostView();
     if (view == nil)
     {
-        LOG_WARNING(ZRender, "MetalRHI::CreateSwapchain -- no Cocoa content view yet (window not created?)");
+        LOG_WARNING(ZRender, "MetalRHI::CreateSwapchain -- no host view yet (window not created / host view not attached?)");
         return;
     }
     m_SwapchainView = (__bridge void*)view;
@@ -416,8 +472,7 @@ void MetalRHI::CreateSwapchain()
         // UI overlay / readback need the drawable to stay readable.
         m_MetalLayer.framebufferOnly     = NO;
         m_MetalLayer.maximumDrawableCount = k_max_frames_in_flight;
-        view.wantsLayer = YES;
-        view.layer      = m_MetalLayer;
+        AttachMetalLayer(view, m_MetalLayer);
     }
 
     m_SwapchainImageFormat = RHI_FORMAT_B8G8R8A8_UNORM;
@@ -435,7 +490,7 @@ void MetalRHI::CreateSwapchain()
 void MetalRHI::RecreateSwapchain()
 {
 #ifdef __APPLE__
-    NSView* view = m_SwapchainView != nullptr ? (__bridge NSView*)m_SwapchainView : GetSwapchainHostView();
+    HostView* view = m_SwapchainView != nullptr ? (__bridge HostView*)m_SwapchainView : GetSwapchainHostView();
     if (view == nil || m_MetalLayer == nil)
     {
         CreateSwapchain();
@@ -3000,7 +3055,7 @@ bool MetalRHI::PrepareBeforePass(std::function<void()> passUpdateAfterRecreateSw
         return true;
     }
 
-    NSView* view = m_SwapchainView != nullptr ? (__bridge NSView*)m_SwapchainView : nil;
+    HostView* view = m_SwapchainView != nullptr ? (__bridge HostView*)m_SwapchainView : nil;
     if (view != nil)
     {
         const NSRect backing = [view convertRectToBacking:view.bounds];
@@ -3164,7 +3219,7 @@ void MetalRHI::ClearSwapchain()
         [m_CurrentDrawable release];
         m_CurrentDrawable = nil;
     }
-    NSView* view = m_SwapchainView != nullptr ? (__bridge NSView*)m_SwapchainView : nil;
+    HostView* view = m_SwapchainView != nullptr ? (__bridge HostView*)m_SwapchainView : nil;
     if (view != nil && view.layer == m_MetalLayer)
     {
         view.layer = nil;

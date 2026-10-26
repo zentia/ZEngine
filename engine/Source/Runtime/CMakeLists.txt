@@ -1114,16 +1114,21 @@ function(configure_runtime_library target)
     target_link_libraries(${target} PUBLIC Jolt)
     if(APPLE)
         target_link_libraries(${target} PUBLIC "-framework Metal" "-framework MetalKit" "-framework QuartzCore" "-framework Foundation")
+        # SPIR-V -> MSL for the Metal backend (shader modules are SPIR-V).
+        #
+        # iOS 同样需要：过去这一段只在 macOS 的 else() 分支里，iOS 链接时
+        # spirv_cross / spirv_cross::CompilerMSL 的符号全部未定义。缩进当初把
+        # 归属写歪了（endif 的层级看起来像在 if(IOS) 里），实际语义就是
+        # "只有 macOS 才链"。
+        if(TARGET spirv-cross-msl)
+            target_link_libraries(${target} PRIVATE spirv-cross-msl)
+        endif()
         if(IOS)
             target_link_libraries(${target} PUBLIC "-framework UIKit")
         else()
             target_link_libraries(${target} PUBLIC "-framework AppKit")
-            # SPIR-V -> MSL for the Metal backend (shader modules are SPIR-V).
-            if(TARGET spirv-cross-msl)
-                target_link_libraries(${target} PRIVATE spirv-cross-msl)
-            endif()
-            endif()
-            elseif(ZENGINE_USE_VULKAN)
+        endif()
+    elseif(ZENGINE_USE_VULKAN)
         target_link_libraries(${target} PUBLIC ${vulkan_lib})
     endif()
     if(WIN32)

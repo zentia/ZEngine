@@ -67,7 +67,9 @@ unset(_ZENGINE_LINK_VULKAN_SDK_GLSLANG_LIBS_DEFAULT)
 option(ZENGINE_ENABLE_WERROR "Treat warnings as errors (enable /WX on MSVC)" OFF)
 
 set(_ZENGINE_MOBILE_PLATFORM OFF)
-if(ANDROID OR Z_PLATFORM_OHOS OR OHOS OR CMAKE_SYSTEM_NAME STREQUAL "OHOS")
+# iOS 同样是移动端：体积优化（-Oz / gc-sections）与符号隐藏都要生效，
+# 否则 App Store 包体白大一圈，且引擎内部符号全暴露在 Mach-O 里。
+if(ANDROID OR IOS OR Z_PLATFORM_OHOS OR OHOS OR CMAKE_SYSTEM_NAME STREQUAL "OHOS")
   set(_ZENGINE_MOBILE_PLATFORM ON)
 endif()
 option(ZENGINE_MOBILE_SIZE_OPTIMIZE "Optimize mobile shared libraries for smaller package size" ${_ZENGINE_MOBILE_PLATFORM})
@@ -320,6 +322,10 @@ add_subdirectory(Source/Modules)
 add_subdirectory(Source/CommonPCH)
 
 add_subdirectory(Source/Runtime)
+# ZPlayer: platform-agnostic player shell (boot + per-frame tick). Added on every
+# platform: the desktop ZGame links it for the shared startup sequence, and the
+# Android / iOS hosts link it as the only thing they need to boot the engine.
+add_subdirectory(Source/Player)
 if(EMSCRIPTEN OR CMAKE_SYSTEM_NAME STREQUAL "Emscripten")
   # Web (mini-program / browser): the desktop Editor is a GLFW host that pulls
   # in Vulkan/DX12/Metal/GLFW backends and cannot link under Emscripten. We
@@ -327,7 +333,19 @@ if(EMSCRIPTEN OR CMAKE_SYSTEM_NAME STREQUAL "Emscripten")
   # canvas and links libZRuntime.a - see engine/Source/WebLauncher/.
   message(STATUS "Web (Emscripten) build: skipping Editor/Profiler; adding ZWebLauncher target")
   add_subdirectory(Source/WebLauncher)
-elseif(ANDROID OR IOS OR Z_PLATFORM_OHOS OR OHOS OR CMAKE_SYSTEM_NAME STREQUAL "OHOS")
+elseif(ANDROID)
+  # Android (P0-1): the desktop Editor/Profiler are GLFW hosts and cannot link
+  # here. ZGameAndroid is the NativeActivity host library -- it links ZRuntime
+  # via ZPlayer and is what Gradle packages into the APK.
+  message(STATUS "Android build: skipping Editor/Profiler; adding ZGameAndroid host library")
+  add_subdirectory(Source/Player/Android)
+elseif(IOS)
+  # iOS (P0-1): the desktop Editor/Profiler are GLFW hosts and cannot link here.
+  # ZGameIOS is a MACOSX_BUNDLE executable -- CMake emits a real .app (and, with
+  # -G Xcode, an archivable project), which is what the iOS packaging chain needs.
+  message(STATUS "iOS build: skipping Editor/Profiler; adding ZGameIOS app target")
+  add_subdirectory(Source/Player/IOS)
+elseif(Z_PLATFORM_OHOS OR OHOS OR CMAKE_SYSTEM_NAME STREQUAL "OHOS")
   message(STATUS "Mobile build: skipping Editor and Profiler targets")
 elseif(APPLE)
   message(STATUS "macOS Metal build: adding Editor target")

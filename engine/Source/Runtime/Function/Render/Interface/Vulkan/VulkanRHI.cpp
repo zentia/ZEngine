@@ -14,6 +14,13 @@
 #include <filesystem>
 #include <iostream>
 
+#if defined(__ANDROID__)
+    // ANativeWindow + vkCreateAndroidSurfaceKHR. vulkan/vulkan.h defines
+    // VK_USE_PLATFORM_ANDROID_KHR on its own when __ANDROID__ is set, so the
+    // surface entry point is available without an extra define.
+    #include <android/native_window.h>
+#endif
+
 // https://gcc.gnu.org/onlinedocs/cpp/Stringizing.html
 #define ZENGINE_XSTR(s) ZENGINE_STR(s)
 #define ZENGINE_STR(s)  #s
@@ -110,9 +117,39 @@ static VkResult CreateVulkanSurface(VkInstance instance, GenericWindow* window, 
     (void)instance; (void)window; (void)outSurface;
     LOG_ERROR(ZVulkan, "Linux Vulkan surface creation not yet implemented (need X11/Wayland)");
     return VK_ERROR_FEATURE_NOT_PRESENT;
-#elif defined(Z_PLATFORM_ANDROID) || defined(Z_PLATFORM_OHOS)
+#elif defined(Z_PLATFORM_ANDROID)
+    // Android: the host owns the ANativeWindow (NativeActivity / GameActivity).
+    // There is no engine GenericWindow here -- CreatePlatformApplication()
+    // returns nullptr on mobile -- so the handle comes from WindowSystem's host
+    // slot, which the Player shell fills in. It can legitimately arrive *after*
+    // the engine booted (surfaceCreated is a host callback), hence VK_NOT_READY
+    // rather than a hard failure: the caller retries on the next swapchain setup.
+    ANativeWindow* native_window = nullptr;
+    if (auto* window_system = GET_SYSTEM(WindowSystem); window_system != nullptr)
+    {
+        native_window = static_cast<ANativeWindow*>(window_system->GetHostWindowHandle());
+    }
+    if (native_window == nullptr && window != nullptr)
+    {
+        native_window = static_cast<ANativeWindow*>(window->GetNativeHandle());
+    }
+    if (native_window == nullptr)
+    {
+        LOG_ERROR(ZVulkan, "Android: no ANativeWindow attached yet; the host must supply one before the swapchain is created");
+        return VK_NOT_READY;
+    }
+
+    VkAndroidSurfaceCreateInfoKHR createInfo{};
+    createInfo.sType  = VK_STRUCTURE_TYPE_ANDROID_SURFACE_CREATE_INFO_KHR;
+    createInfo.pNext  = nullptr;
+    createInfo.flags  = 0;
+    createInfo.window = native_window;
+    return vkCreateAndroidSurfaceKHR(instance, &createInfo, nullptr, outSurface);
+#elif defined(Z_PLATFORM_OHOS)
+    // OHOS: XComponent 提供的 native window 走 OH_NativeWindow，与 Android 的
+    // ANativeWindow 不是同一个类型，需要 OHOS SDK 头。先保留显式未实现。
     (void)instance; (void)window; (void)outSurface;
-    LOG_ERROR(ZVulkan, "Android/OHOS Vulkan surface creation not yet implemented");
+    LOG_ERROR(ZVulkan, "OHOS Vulkan surface creation not yet implemented (needs OH_NativeWindow)");
     return VK_ERROR_FEATURE_NOT_PRESENT;
 #elif defined(Z_PLATFORM_MACOS)
     (void)instance; (void)window; (void)outSurface;

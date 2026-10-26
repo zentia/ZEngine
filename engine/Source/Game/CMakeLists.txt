@@ -34,7 +34,9 @@ target_include_directories(${TARGET_NAME} PRIVATE
 )
 
 # ZRuntime: 全部引擎系统。GameEngine 由 RegisterGameRuntime() 注册。
-target_link_libraries(${TARGET_NAME} PUBLIC ZRuntime)
+# ZPlayer: 启动序列（启动 cvar / 挂载 bundles / 打开 startup_level）与移动端
+# Player 壳共用同一份实现，见 engine/Source/Player/。
+target_link_libraries(${TARGET_NAME} PUBLIC ZRuntime ZPlayer)
 
 if(WIN32)
     # opengl32: ZRuntime 的部分渲染路径仍然引用（与 ZEditor 保持一致）

@@ -1,0 +1,7 @@
+# 打包时由 zbuild_ios.py 填充：项目内容（含 Build/iOS/Bundles）拷到本目录下的
+# zengine/ 子目录，CMake 再把整棵声明成 .app 的 bundle resource。
+#
+# iOSMain.mm 从 [[NSBundle mainBundle] resourcePath]/zengine 读它。
+#
+# 这个 .gitkeep 保证目录在 git 里存在（内容不入库）。
+../staging/zengine/

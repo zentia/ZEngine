@@ -781,7 +781,10 @@ inline void AppendExeDir(char* out, unsigned out_sz)
         return;
     }
 #if defined(__APPLE__)
-    unsigned long cap = static_cast<unsigned long>(out_sz - 1);
+    // _NSGetExecutablePath 要的是 uint32_t*，不是 size_t*。64 位 macOS/iOS 上
+    // unsigned long 是 8 字节，传它的地址根本编译不过（这里过去是 unsigned long，
+    // 于是 macOS 上任何包含本头的 TU 都失败）。
+    uint32_t cap = static_cast<uint32_t>(out_sz - 1);
     if (cap == 0)
     {
         return;
