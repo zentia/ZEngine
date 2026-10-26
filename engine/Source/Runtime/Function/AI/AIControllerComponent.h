@@ -10,6 +10,9 @@
 
 #include "Runtime/Core/Math/Vector3.h"
 #include "Runtime/Core/Serialize/SerializeTraitsBase.h"
+// Complete type, not a forward declaration: RequestAction() is inline and
+// calls GameObject::GetID() on its argument.
+#include "Runtime/BaseClasses/GameObject.h"
 #include "Runtime/Function/AI/AIBlackboard.h"
 #include "Runtime/Function/AI/AITypes.h"
 #include "Runtime/Function/AI/BehaviourTree.h"
@@ -118,15 +121,18 @@ public:
   // 也发动作请求）。想要脚本独占动作通道，就把行为树配成不发请求，或者脚本
   // 每帧都写。
 
-  /// 请求执行一个具名动作（技能 / 动画标签），`target_id` 可传
-  /// k_invalid_gobject_id 表示没有目标。执行层（GAS / AbilitySystemComponent）
-  /// 按名字和目标 id 自己去解析。
+  /// 请求执行一个具名动作（技能 / 动画标签）。`target` 可传 null 表示没有目标。
+  ///
+  /// 收 `GameObject*` 而不是 `GObjectID`：脚本手里拿的是活对象（感知给的也是对象），
+  /// 没有理由让它再去弄一个引擎内部句柄。id 转换在这里做完，执行层
+  /// （GAS / AbilitySystemComponent）看到的仍然是 `AIActionRequest.target_id` ——
+  /// 那条 C++ 内部契约保持原样，不动。
   ZFUNCTION()
-  void RequestAction(const eastl::string& action_name, GObjectID target_id)
+  void RequestAction(const eastl::string& action_name, GameObject* target)
   {
     AIActionRequest request;
     request.action_name = action_name;
-    request.target_id = target_id;
+    request.target_id = (target != nullptr) ? target->GetID() : k_invalid_gobject_id;
     m_Blackboard.SetActionRequest(request);
   }
   /// 撤掉还没被消费的动作请求。
@@ -154,9 +160,10 @@ public:
   /// 有没有"主目标"= 最近的那个可见目标。没有 = false。
   ZFUNCTION()
   bool HasPrimaryTarget() const { return m_Blackboard.HasPrimaryTarget(); }
-  /// 主目标的 GObjectID；没有 = k_invalid_gobject_id（一个很大的数）。
+  /// 主目标对象；没有 / 已被销毁 = null。理由同 AIPerceptionComponent::GetTargetObject：
+  /// 给活对象，不给 GObjectID。
   ZFUNCTION()
-  GObjectID GetPrimaryTargetId() const { return m_Blackboard.GetPrimaryTargetId(); }
+  GameObject* GetPrimaryTarget() const;
   ZFUNCTION()
   bool HasLineOfSightToTarget() const { return m_Blackboard.HasLineOfSightToTarget(); }
   /// 到主目标的距离；没有主目标 = 0。
@@ -243,6 +250,9 @@ public:
   uint32_t GetFailedPathCount() const { return m_FailedPathCount; }
 
 private:
+  /// id -> 活对象（走 WorldManager 的当前关卡）。没有 / 已销毁 = nullptr。
+  GameObject* ResolveObject(GObjectID object_id) const;
+
   void RebuildTreeIfNeeded();
   void PushPerceptionToBlackboard();
   void PrewarmBlackboard();
