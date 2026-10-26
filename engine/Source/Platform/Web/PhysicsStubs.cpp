@@ -46,6 +46,15 @@ class ObjectLayerPairFilterImpl
 };
 
 // -----------------------------------------------------------------------------
+// The contact listener lives in PhysicsScene.cpp on native builds; on Web the
+// whole file is stripped, so an empty placeholder keeps
+// std::unique_ptr<PhysicsContactListener> destructible inside ~PhysicsScene().
+// -----------------------------------------------------------------------------
+class PhysicsContactListener
+{
+};
+
+// -----------------------------------------------------------------------------
 // PhysicsManager
 // -----------------------------------------------------------------------------
 bool PhysicsManager::Initialize()
@@ -187,6 +196,40 @@ void PhysicsScene::GetShapeBoundingBoxes(uint32_t /*body_id*/,
                                          std::vector<AxisAlignedBox>& out_bounding_boxes) const
 {
     out_bounding_boxes.clear();
+}
+
+// -----------------------------------------------------------------------------
+// Triggers and joints (P0-2).
+//
+// There is no Jolt on Web, so a sensor can never report anything and a joint
+// can never be solved. Both APIs stay linkable and behave as "nothing
+// happened", which is what the gameplay layer already expects from the rest of
+// this file.
+// -----------------------------------------------------------------------------
+bool PhysicsScene::SetRigidBodySensor(uint32_t /*body_id*/, bool /*is_sensor*/)
+{
+    return false;
+}
+
+bool PhysicsScene::IsRigidBodySensor(uint32_t /*body_id*/, bool& out_is_sensor)
+{
+    out_is_sensor = false;
+    return false;
+}
+
+void PhysicsScene::PollTriggerEvents(std::vector<PhysicsTriggerEvent>& out_events)
+{
+    out_events.clear();
+}
+
+uint32_t PhysicsScene::CreateJoint(const PhysicsJointDesc& /*in_desc*/)
+{
+    return s_InvalidJointId;
+}
+
+bool PhysicsScene::RemoveJoint(uint32_t /*joint_id*/)
+{
+    return false;
 }
 
 #endif  // __EMSCRIPTEN__

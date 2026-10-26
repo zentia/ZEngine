@@ -1554,6 +1554,10 @@ add_subdirectory(Resource/Cache/Test)
 # no physics, no RHI -- so it links on every host.
 add_subdirectory(Function/AI/Test)
 
+# Physics P0-2 smoke test (character controller, triggers, joints). Opt in with
+# -DZENGINE_BUILD_PHYSICS_CHARACTER_SMOKE_TEST=ON; headless, no RHI.
+add_subdirectory(Function/Physics/Test)
+
 # Audio DSP smoke test (PR-A1). Own main(); carved out of the ZRuntime glob
 # above and built only when ZENGINE_BUILD_AUDIO_SMOKE_TEST=ON. Links ZRuntime
 # for the target helper but exercises only the dependency-free DSP layer, so it

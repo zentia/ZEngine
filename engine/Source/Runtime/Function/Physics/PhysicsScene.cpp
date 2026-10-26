@@ -24,8 +24,161 @@
 #include "Jolt/RegisterTypes.h"
 #include "Runtime/Function/Physics/Jolt/Utils.h"
 #include "Runtime/Function/Physics/PhysicsConfig.h"
+#include "Jolt/Physics/Body/Body.h"
+#include "Jolt/Physics/Collision/ContactListener.h"
+#include "Jolt/Physics/Constraints/DistanceConstraint.h"
+#include "Jolt/Physics/Constraints/FixedConstraint.h"
+#include "Jolt/Physics/Constraints/HingeConstraint.h"
+#include "Jolt/Physics/Constraints/PointConstraint.h"
+#include "Jolt/Physics/Constraints/SliderConstraint.h"
 #include "Runtime/Resource/ResType/Components/RigidBody.h"
 #include "core/base/Macro.h"
+
+#include <unordered_map>
+#include <utility>
+
+namespace
+{
+    /// Any unit vector perpendicular to in_axis. Jolt wants a "normal axis"
+    /// beside the hinge/slider axis purely to build a constraint frame, so the
+    /// direction does not matter as long as it is not parallel.
+    JPH::Vec3 MakePerpendicularAxis(const JPH::Vec3& in_axis)
+    {
+        const float y = in_axis.GetY();
+        const JPH::Vec3 reference = (y < 0.9f && y > -0.9f) ? JPH::Vec3::sAxisY() : JPH::Vec3::sAxisX();
+        return reference.Cross(in_axis).Normalized();
+    }
+}  // namespace
+
+// -----------------------------------------------------------------------------
+// Trigger (sensor) event collection
+//
+// Jolt calls the contact listener from inside PhysicsSystem::Update(), which
+// means from worker threads, so everything shared with the game thread sits
+// behind a mutex.
+//
+// The enter/exit pairing needs care because OnContactRemoved() is not allowed
+// to touch the bodies at all (Jolt has them locked / half-destroyed by then).
+// Instead of asking "is this body a sensor?" at removal time, we remember which
+// pairs we reported an enter for and emit the matching exit when the pair goes
+// away. A body that is deleted while overlapping is handled by FlushBody().
+// -----------------------------------------------------------------------------
+class PhysicsContactListener final : public JPH::ContactListener
+{
+public:
+    void OnContactAdded(const JPH::Body& in_body1,
+                        const JPH::Body& in_body2,
+                        [[maybe_unused]] const JPH::ContactManifold& in_manifold,
+                        [[maybe_unused]] JPH::ContactSettings& io_settings) override
+    {
+        const bool body1_is_sensor = in_body1.IsSensor();
+        const bool body2_is_sensor = in_body2.IsSensor();
+
+        if (!body1_is_sensor && !body2_is_sensor)
+        {
+            // Ordinary collision: not a trigger, nothing to report.
+            return;
+        }
+
+        const uint32_t trigger_id =
+            (body1_is_sensor ? in_body1 : in_body2).GetID().GetIndexAndSequenceNumber();
+        const uint32_t other_id = (body1_is_sensor ? in_body2 : in_body1).GetID().GetIndexAndSequenceNumber();
+
+        Add(trigger_id, other_id);
+    }
+
+    void OnContactRemoved(const JPH::SubShapeIDPair& in_sub_shape_pair) override
+    {
+        Remove(in_sub_shape_pair.GetBody1ID().GetIndexAndSequenceNumber(),
+               in_sub_shape_pair.GetBody2ID().GetIndexAndSequenceNumber());
+    }
+
+    /// Hand the queued events to the caller and start a fresh queue.
+    void Poll(std::vector<PhysicsTriggerEvent>& out_events)
+    {
+        std::lock_guard<std::mutex> guard(m_Mutex);
+        out_events.swap(m_Events);
+        m_Events.clear();
+    }
+
+    /// A body is going away: close out every trigger pair it took part in so
+    /// gameplay does not keep believing something is still inside a trigger.
+    void FlushBody(uint32_t in_body_id)
+    {
+        std::lock_guard<std::mutex> guard(m_Mutex);
+
+        for (auto it = m_Active.begin(); it != m_Active.end();)
+        {
+            const PhysicsTriggerEvent& active = it->second;
+
+            if (active.m_TriggerBodyId == in_body_id || active.m_OtherBodyId == in_body_id)
+            {
+                PhysicsTriggerEvent exit_event = active;
+                exit_event.m_IsEnter = false;
+                m_Events.push_back(exit_event);
+                it = m_Active.erase(it);
+            }
+            else
+            {
+                ++it;
+            }
+        }
+    }
+
+private:
+    /// Order-independent key for a body pair.
+    static uint64_t MakeKey(uint32_t in_body_a, uint32_t in_body_b)
+    {
+        if (in_body_a > in_body_b)
+        {
+            std::swap(in_body_a, in_body_b);
+        }
+
+        return (static_cast<uint64_t>(in_body_a) << 32) | static_cast<uint64_t>(in_body_b);
+    }
+
+    void Add(uint32_t in_trigger_id, uint32_t in_other_id)
+    {
+        std::lock_guard<std::mutex> guard(m_Mutex);
+
+        const uint64_t key = MakeKey(in_trigger_id, in_other_id);
+        if (m_Active.find(key) != m_Active.end())
+        {
+            // Already inside: Jolt can report the same pair again while the
+            // contact persists on a different sub shape.
+            return;
+        }
+
+        PhysicsTriggerEvent enter_event;
+        enter_event.m_TriggerBodyId = in_trigger_id;
+        enter_event.m_OtherBodyId = in_other_id;
+        enter_event.m_IsEnter = true;
+
+        m_Active.emplace(key, enter_event);
+        m_Events.push_back(enter_event);
+    }
+
+    void Remove(uint32_t in_body_a, uint32_t in_body_b)
+    {
+        std::lock_guard<std::mutex> guard(m_Mutex);
+
+        const uint64_t key = MakeKey(in_body_a, in_body_b);
+        const auto found = m_Active.find(key);
+        if (found == m_Active.end())
+        {
+            return;
+        }
+
+        PhysicsTriggerEvent exit_event = found->second;
+        exit_event.m_IsEnter = false;
+        m_Events.push_back(exit_event);
+        m_Active.erase(found);
+    }
+
+    std::mutex m_Mutex;
+    std::unordered_map<uint64_t, PhysicsTriggerEvent> m_Active;
+    std::vector<PhysicsTriggerEvent> m_Events;
+};
 
 PhysicsScene::PhysicsScene(const Vector3& gravity)
 {
@@ -55,10 +208,33 @@ PhysicsScene::PhysicsScene(const Vector3& gravity)
 
     m_Physics.m_JoltPhysicsSystem->SetGravity(toVec3(gravity));
     m_Config.m_Gravity = gravity;
+
+    m_ContactListener = std::make_unique<PhysicsContactListener>();
+    m_Physics.m_JoltPhysicsSystem->SetContactListener(m_ContactListener.get());
 }
 
 PhysicsScene::~PhysicsScene()
 {
+    // Constraints first: they reference bodies, and the manager does not own
+    // them, so each one has to be detached and released by hand.
+    for (JPH::Constraint* joint : m_Joints)
+    {
+        if (joint == nullptr)
+        {
+            continue;
+        }
+
+        m_Physics.m_JoltPhysicsSystem->RemoveConstraint(joint);
+        joint->Release();
+    }
+    m_Joints.clear();
+
+    if (m_Physics.m_JoltPhysicsSystem != nullptr)
+    {
+        m_Physics.m_JoltPhysicsSystem->SetContactListener(nullptr);
+    }
+    m_ContactListener.reset();
+
     delete m_Physics.m_JoltPhysicsSystem;
     delete m_Physics.m_JoltJobSystem;
     delete m_Physics.m_TempAllocator;
@@ -421,10 +597,197 @@ void PhysicsScene::Tick(float delta_time)
     for (uint32_t body_id : m_PendingRemoveBodies)
     {
         LOG_INFO(ZPhysics, "Remove Body {}", body_id)
+
+        // Close out trigger pairs before the body id can be recycled: a deleted
+        // body never gets an OnContactRemoved for its last contacts.
+        if (m_ContactListener != nullptr)
+        {
+            m_ContactListener->FlushBody(body_id);
+        }
+
         body_interface.RemoveBody(JPH::BodyID(body_id));
         body_interface.DestroyBody(JPH::BodyID(body_id));
     }
     m_PendingRemoveBodies.clear();
+}
+
+bool PhysicsScene::SetRigidBodySensor(uint32_t body_id, bool is_sensor)
+{
+    if (body_id == s_InvalidRigidbodyId)
+    {
+        return false;
+    }
+
+    JPH::BodyInterface& body_interface = m_Physics.m_JoltPhysicsSystem->GetBodyInterface();
+    body_interface.SetIsSensor(JPH::BodyID(body_id), is_sensor);
+    return true;
+}
+
+bool PhysicsScene::IsRigidBodySensor(uint32_t body_id, bool& out_is_sensor) const
+{
+    if (body_id == s_InvalidRigidbodyId)
+    {
+        return false;
+    }
+
+    JPH::BodyLockRead body_lock(m_Physics.m_JoltPhysicsSystem->GetBodyLockInterface(), JPH::BodyID(body_id));
+    if (!body_lock.Succeeded())
+    {
+        return false;
+    }
+
+    out_is_sensor = body_lock.GetBody().IsSensor();
+    return true;
+}
+
+void PhysicsScene::PollTriggerEvents(std::vector<PhysicsTriggerEvent>& out_events)
+{
+    out_events.clear();
+
+    if (m_ContactListener == nullptr)
+    {
+        return;
+    }
+
+    m_ContactListener->Poll(out_events);
+}
+
+uint32_t PhysicsScene::CreateJoint(const PhysicsJointDesc& in_desc)
+{
+    if (in_desc.m_BodyA == s_InvalidRigidbodyId || in_desc.m_BodyB == s_InvalidRigidbodyId ||
+        in_desc.m_BodyA == in_desc.m_BodyB)
+    {
+        LOG_ERROR(ZPhysics, "CreateJoint: invalid body pair ({}, {})", in_desc.m_BodyA, in_desc.m_BodyB);
+        return s_InvalidJointId;
+    }
+
+    // Constraint settings take world-space points and turn them into each
+    // body's local frame while the constraint is created, which is why both
+    // bodies have to be locked for the whole switch below.
+    JPH::BodyLockWrite lock_a(m_Physics.m_JoltPhysicsSystem->GetBodyLockInterface(), JPH::BodyID(in_desc.m_BodyA));
+    JPH::BodyLockWrite lock_b(m_Physics.m_JoltPhysicsSystem->GetBodyLockInterface(), JPH::BodyID(in_desc.m_BodyB));
+
+    if (!lock_a.Succeeded() || !lock_b.Succeeded())
+    {
+        LOG_ERROR(ZPhysics, "CreateJoint: body not found ({}, {})", in_desc.m_BodyA, in_desc.m_BodyB);
+        return s_InvalidJointId;
+    }
+
+    JPH::Body& jph_body_a = lock_a.GetBody();
+    JPH::Body& jph_body_b = lock_b.GetBody();
+
+    JPH::Constraint* jph_constraint = nullptr;
+
+    switch (in_desc.m_Type)
+    {
+        case PhysicsJointType::fixed:
+        {
+            JPH::FixedConstraintSettings settings;
+            settings.mAutoDetectPoint = in_desc.m_AutoDetectPoint;
+            if (!in_desc.m_AutoDetectPoint)
+            {
+                settings.mPoint1 = JPH::RVec3(toVec3(in_desc.m_PivotA));
+                settings.mPoint2 = JPH::RVec3(toVec3(in_desc.m_PivotB));
+            }
+            jph_constraint = settings.Create(jph_body_a, jph_body_b);
+            break;
+        }
+        case PhysicsJointType::hinge:
+        {
+            JPH::HingeConstraintSettings settings;
+            settings.mPoint1 = JPH::RVec3(toVec3(in_desc.m_PivotA));
+            settings.mPoint2 = JPH::RVec3(toVec3(in_desc.m_PivotB));
+            settings.mHingeAxis1 = toVec3(in_desc.m_AxisA.normalisedCopy());
+            settings.mHingeAxis2 = toVec3(in_desc.m_AxisB.normalisedCopy());
+            // Hinge needs a normal that is perpendicular to the axis; any
+            // perpendicular direction works, Jolt only uses it to build the
+            // constraint frame.
+            settings.mNormalAxis1 = MakePerpendicularAxis(settings.mHingeAxis1);
+            settings.mNormalAxis2 = MakePerpendicularAxis(settings.mHingeAxis2);
+            if (in_desc.m_MinLimit <= 0.f && in_desc.m_MaxLimit >= 0.f)
+            {
+                settings.mLimitsMin = in_desc.m_MinLimit;
+                settings.mLimitsMax = in_desc.m_MaxLimit;
+            }
+            jph_constraint = settings.Create(jph_body_a, jph_body_b);
+            break;
+        }
+        case PhysicsJointType::point:
+        {
+            JPH::PointConstraintSettings settings;
+            settings.mPoint1 = JPH::RVec3(toVec3(in_desc.m_PivotA));
+            settings.mPoint2 = JPH::RVec3(toVec3(in_desc.m_PivotB));
+            jph_constraint = settings.Create(jph_body_a, jph_body_b);
+            break;
+        }
+        case PhysicsJointType::slider:
+        {
+            JPH::SliderConstraintSettings settings;
+            settings.mAutoDetectPoint = in_desc.m_AutoDetectPoint;
+            settings.mPoint1 = JPH::RVec3(toVec3(in_desc.m_PivotA));
+            settings.mPoint2 = JPH::RVec3(toVec3(in_desc.m_PivotB));
+            settings.mSliderAxis1 = toVec3(in_desc.m_AxisA.normalisedCopy());
+            settings.mSliderAxis2 = toVec3(in_desc.m_AxisB.normalisedCopy());
+            settings.mNormalAxis1 = MakePerpendicularAxis(settings.mSliderAxis1);
+            settings.mNormalAxis2 = MakePerpendicularAxis(settings.mSliderAxis2);
+            if (in_desc.m_MinLimit < 0.f && in_desc.m_MaxLimit > 0.f)
+            {
+                settings.mLimitsMin = in_desc.m_MinLimit;
+                settings.mLimitsMax = in_desc.m_MaxLimit;
+            }
+            jph_constraint = settings.Create(jph_body_a, jph_body_b);
+            break;
+        }
+        case PhysicsJointType::distance:
+        {
+            JPH::DistanceConstraintSettings settings;
+            settings.mPoint1 = JPH::RVec3(toVec3(in_desc.m_PivotA));
+            settings.mPoint2 = JPH::RVec3(toVec3(in_desc.m_PivotB));
+            // Negative means "derive the range from the two pivots", which is
+            // what an unconfigured desc asks for.
+            if (in_desc.m_MinLimit >= 0.f && in_desc.m_MaxLimit >= in_desc.m_MinLimit)
+            {
+                settings.mMinDistance = in_desc.m_MinLimit;
+                settings.mMaxDistance = in_desc.m_MaxLimit;
+            }
+            jph_constraint = settings.Create(jph_body_a, jph_body_b);
+            break;
+        }
+        default:
+            break;
+    }
+
+    if (jph_constraint == nullptr)
+    {
+        LOG_ERROR(ZPhysics, "CreateJoint: Jolt refused to build the constraint");
+        return s_InvalidJointId;
+    }
+
+    m_Physics.m_JoltPhysicsSystem->AddConstraint(jph_constraint);
+    m_Joints.push_back(jph_constraint);
+
+    // Ids are 1-based so that 0 can stay the "invalid" sentinel.
+    return static_cast<uint32_t>(m_Joints.size());
+}
+
+bool PhysicsScene::RemoveJoint(uint32_t joint_id)
+{
+    if (joint_id == s_InvalidJointId || joint_id > m_Joints.size())
+    {
+        return false;
+    }
+
+    JPH::Constraint* jph_constraint = m_Joints[joint_id - 1];
+    if (jph_constraint == nullptr)
+    {
+        return false;
+    }
+
+    m_Physics.m_JoltPhysicsSystem->RemoveConstraint(jph_constraint);
+    jph_constraint->Release();
+    m_Joints[joint_id - 1] = nullptr;
+
+    return true;
 }
 
 bool PhysicsScene::Raycast(Vector3 ray_origin,

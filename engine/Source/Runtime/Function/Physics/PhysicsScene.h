@@ -5,8 +5,11 @@
 // the two filter implementations and use unique_ptr members so the header is
 // self-contained on Web. Native builds keep the value-typed filter members
 // exactly as before to preserve ABI/initialisation order.
+#include <memory>
+#include <mutex>
+#include <vector>
+
 #if defined(__EMSCRIPTEN__)
-    #include <memory>
 class ObjectVsBroadPhaseLayerFilterImpl;
 class ObjectLayerPairFilterImpl;
 #else
@@ -22,6 +25,7 @@ namespace JPH
     class JobSystem;
     class TempAllocator;
     class BroadPhaseLayerInterface;
+    class Constraint;
 #ifdef ENABLE_PHYSICS_DEBUG_RENDERER
     class DebugRenderer;
 #endif
@@ -36,6 +40,57 @@ class RigidBodyShape;
 enum class RigidBodyActorType : unsigned char;
 
 static constexpr uint32_t s_InvalidRigidbodyId = 0xffffffff;
+static constexpr uint32_t s_InvalidJointId = 0;
+
+/// One trigger (sensor) boundary crossing for this frame.
+struct PhysicsTriggerEvent
+{
+    /// The body flagged as a sensor.
+    uint32_t m_TriggerBodyId {s_InvalidRigidbodyId};
+    /// The body that entered or left it.
+    uint32_t m_OtherBodyId {s_InvalidRigidbodyId};
+    /// true = OnTriggerEnter, false = OnTriggerExit.
+    bool m_IsEnter {true};
+};
+
+/// The constraint types exposed to gameplay. They map 1:1 onto Jolt's
+/// two-body constraints; everything else (gears, pulleys, paths) can be added
+/// later without changing the API shape.
+enum class PhysicsJointType : unsigned char
+{
+    fixed,     ///< Welds two bodies together (Unity FixedJoint).
+    hinge,     ///< Rotation about one axis, with optional limits (HingeJoint).
+    point,     ///< Keeps two points coincident (ball socket).
+    slider,    ///< Translation along one axis, with optional limits.
+    distance   ///< Keeps two points within a distance range (SpringJoint).
+};
+
+/// Description of a joint. All pivots/axes are in world space: they are
+/// converted to each body's local frame when the constraint is created.
+struct PhysicsJointDesc
+{
+    PhysicsJointType m_Type {PhysicsJointType::fixed};
+    uint32_t m_BodyA {s_InvalidRigidbodyId};
+    uint32_t m_BodyB {s_InvalidRigidbodyId};
+
+    /// Attachment points. Ignored for fixed/slider when m_AutoDetectPoint is
+    /// true — Jolt then freezes the current relative pose.
+    Vector3 m_PivotA;
+    Vector3 m_PivotB;
+
+    /// Hinge/slider axis, in world space. For a hinge both bodies usually share
+    /// the same axis; m_AxisB exists for the case where they do not.
+    Vector3 m_AxisA {0.f, 1.f, 0.f};
+    Vector3 m_AxisB {0.f, 1.f, 0.f};
+
+    /// hinge: [-pi, 0] / [0, pi] radians. slider: [-inf, 0] / [0, inf] units.
+    /// distance: [min, max] distance. Negative means "derive from the pivots".
+    float m_MinLimit {-1.f};
+    float m_MaxLimit {-1.f};
+
+    /// Let Jolt compute the attachment points from the current body poses.
+    bool m_AutoDetectPoint {true};
+};
 
 struct PhysicsHitInfo
 {
@@ -44,6 +99,8 @@ struct PhysicsHitInfo
     float hit_distance {0.f};
     uint32_t body_id {s_InvalidRigidbodyId};
 };
+
+class PhysicsContactListener;
 
 class PhysicsScene
 {
@@ -109,6 +166,38 @@ public:
 
     void Tick(float delta_time);
 
+    /// The underlying Jolt system. Exposed so the character controller and the
+    /// joint layer can create Jolt objects that belong to this scene; nothing
+    /// outside Function/Physics should need it.
+    JPH::PhysicsSystem* GetJoltPhysicsSystem() { return m_Physics.m_JoltPhysicsSystem; }
+    const JPH::PhysicsSystem* GetJoltPhysicsSystem() const { return m_Physics.m_JoltPhysicsSystem; }
+
+    // --- triggers -----------------------------------------------------------
+    //
+    // A trigger is a rigid body flagged as a Jolt sensor: it reports contacts
+    // but never produces a collision response, so things pass straight through
+    // it. Note that Jolt only reports sensor contacts against *moving* bodies,
+    // which matches Unity (a trigger needs something to walk into it).
+
+    /// @return false when the body does not exist.
+    bool SetRigidBodySensor(uint32_t body_id, bool is_sensor);
+
+    /// @return false when the body does not exist; out_is_sensor untouched.
+    bool IsRigidBodySensor(uint32_t body_id, bool& out_is_sensor) const;
+
+    /// Drain this frame's trigger events. The queue is emptied by the call, so
+    /// call it once per frame from a single place.
+    void PollTriggerEvents(std::vector<PhysicsTriggerEvent>& out_events);
+
+    // --- joints -------------------------------------------------------------
+
+    /// @return the new joint's id, or s_InvalidJointId when either body is
+    /// missing, the two ids are the same, or the constraint could not be built.
+    uint32_t CreateJoint(const PhysicsJointDesc& in_desc);
+
+    /// Detach and destroy a joint. Returns false when the id is unknown.
+    bool RemoveJoint(uint32_t joint_id);
+
     /// cast a ray and find the hits
     /// @ray_origin: origin of ray
     /// @ray_direction: ray direction
@@ -159,4 +248,13 @@ protected:
     PhysicsConfig m_Config;
 
     std::vector<uint32_t> m_PendingRemoveBodies;
+
+    /// Registered on the Jolt system so sensors can produce trigger events.
+    /// Kept behind a unique_ptr because the header only forward-declares it
+    /// (and because on Web the whole thing is replaced by a stub).
+    std::unique_ptr<PhysicsContactListener> m_ContactListener;
+
+    /// Constraints owned by this scene. Jolt's ConstraintManager does not take
+    /// ownership, so entries are released by hand.
+    std::vector<JPH::Constraint*> m_Joints;
 };
