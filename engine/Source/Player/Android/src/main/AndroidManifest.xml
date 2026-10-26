@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  ZEngine Android Player (P0-1)
+
+  NativeActivity 形态：Java 侧零代码，系统加载 libZGameAndroid.so 并调用
+  android_main()（见 ../../AndroidMain.cpp）。所以 Activity 的类名直接写
+  android.app.NativeActivity，库名由 android.app.lib_name 给出。
+
+  android:hasCode="false" 是这种形态的标准写法 —— APK 里没有 dex 需要加载。
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Vulkan 1.0 从 API 24 起可用；引擎的 Android RHI 只有 Vulkan 后端，
+         所以这里是硬性要求而不是可选特性。 -->
+    <uses-feature
+        android:name="android.hardware.vulkan.level"
+        android:version="1"
+        android:required="true" />
+
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <application
+        android:label="@string/app_name"
+        android:hasCode="false"
+        android:allowBackup="false"
+        android:isGame="true"
+        android:theme="@android:style/Theme.NoTitleBar.Fullscreen">
+
+        <activity
+            android:name="android.app.NativeActivity"
+            android:label="@string/app_name"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:screenOrientation="sensorLandscape"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|density|keyboardHidden|uiMode"
+            android:resizeableActivity="false">
+
+            <!-- 与 ZGameAndroid 这个 CMake target 对应：系统据此找
+                 libZGameAndroid.so（去掉 lib 前缀与 .so 后缀的库名）。 -->
+            <meta-data
+                android:name="android.app.lib_name"
+                android:value="ZGameAndroid" />
+
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+
+</manifest>

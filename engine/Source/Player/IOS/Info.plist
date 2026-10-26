@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  ZEngine iOS Player (P0-1)
+
+  CMake 用 MACOSX_BUNDLE_INFO_PLIST 引用本文件，并把 ${...} 变量替换成
+  ZGameIOS target 上的同名属性（MACOSX_BUNDLE_BUNDLE_NAME 等），所以这些
+  ${} 不是占位符注释，别手改成字面值。
+-->
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>
+    <string>${MACOSX_BUNDLE_BUNDLE_NAME}</string>
+    <key>CFBundleDisplayName</key>
+    <string>${MACOSX_BUNDLE_BUNDLE_NAME}</string>
+    <key>CFBundleIdentifier</key>
+    <string>${MACOSX_BUNDLE_GUI_IDENTIFIER}</string>
+    <key>CFBundleExecutable</key>
+    <string>${MACOSX_BUNDLE_EXECUTABLE_NAME}</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>${MACOSX_BUNDLE_SHORT_VERSION_STRING}</string>
+    <key>CFBundleVersion</key>
+    <string>${MACOSX_BUNDLE_BUNDLE_VERSION}</string>
+
+    <!-- 纯 native App：没有 storyboard，入口是 IOSMain.mm 的 UIApplicationMain。 -->
+    <key>LSRequiresIPhoneOS</key>
+    <true/>
+    <key>MinimumOSVersion</key>
+    <string>16.0</string>
+
+    <!-- 1 = iPhone, 2 = iPad -->
+    <key>UIDeviceFamily</key>
+    <array>
+        <integer>1</integer>
+        <integer>2</integer>
+    </array>
+
+    <!-- 引擎的 iOS RHI 只有 Metal 后端，这是硬性要求。 -->
+    <key>UIRequiredDeviceCapabilities</key>
+    <array>
+        <string>metal</string>
+    </array>
+
+    <!-- 横屏游戏；要竖屏/自适应就改这里（同时改 IOSMain.mm 的 bounds 处理）。 -->
+    <key>UISupportedInterfaceOrientations</key>
+    <array>
+        <string>UIInterfaceOrientationLandscapeLeft</string>
+        <string>UIInterfaceOrientationLandscapeRight</string>
+    </array>
+
+    <key>UIStatusBarHidden</key>
+    <true/>
+    <key>UIViewControllerBasedStatusBarAppearance</key>
+    <false/>
+
+    <!-- 别让系统在"电话/切换 App 返回"时把帧率压到 30fps。 -->
+    <key>CADisableMinimumFrameDurationOnPhoneAppSwitch</key>
+    <true/>
+
+    <!-- Retina：CADisplayLink 与 CAMetalLayer 都按 nativeScale 算。 -->
+    <key>NSHighResolutionCapable</key>
+    <true/>
+</dict>
+</plist>

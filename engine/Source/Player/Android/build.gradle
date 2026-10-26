@@ -1,0 +1,107 @@
+// =============================================================================
+// ZEngine Android Player — Gradle (AGP) 构建
+// -----------------------------------------------------------------------------
+// 单模块项目：这个目录本身就是 app 模块（没有 :app 子目录）。
+//
+// 用法（构建脚本 tools/android/build_android.py 封装了这些步骤）：
+//   1. 把 <project>/Build/Android 的内容拷进 src/main/assets/zengine/
+//   2. ./gradlew assembleDebug     -> app-debug.apk
+//      ./gradlew bundleRelease     -> app-release.aab
+//
+// externalNativeBuild 指向引擎根的 CMakeLists.txt：AGP 会带着 NDK toolchain
+// 跑整个引擎的 CMake，产出 libZGameAndroid.so（含 ZRuntime + ZPlayer）。
+// =============================================================================
+
+plugins {
+    id 'com.android.application' version '8.5.2'
+}
+
+android {
+    namespace 'com.zengine.player'
+
+    // 按本机安装的 NDK 覆盖：ZENGINE_NDK_VERSION=27.0.12077973 ./gradlew ...
+    ndkVersion (System.getenv("ZENGINE_NDK_VERSION") ?: "27.0.12077973")
+
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "com.zengine.player"
+        minSdk 26          // Vulkan 1.0（android.hardware.vulkan.level=1）
+        targetSdk 34
+        versionCode 1
+        versionName "1.0"
+
+        // P0 只出 arm64：移动端的 Vulkan 目标机器基本都是这个 ABI，省一半构建时间。
+        ndk {
+            abiFilters "arm64-v8a"
+        }
+
+        externalNativeBuild {
+            cmake {
+                // C++23 与引擎其余部分一致；exceptions/rtti 是 Runtime 需要的。
+                cppFlags "-std=c++23", "-fexceptions", "-frtti"
+                arguments "-DANDROID_STL=c++_shared",
+                          "-DZENGINE_BUILD_EDITOR=OFF",
+                          "-DZENGINE_BUILD_NETWORK_SMOKE_TEST=OFF"
+            }
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            // 相对于本文件：Android -> Player -> Source -> engine
+            path "../../../CMakeLists.txt"
+            version "3.22.1"
+        }
+    }
+
+    sourceSets {
+        main {
+            manifest.srcFile "src/main/AndroidManifest.xml"
+            // 构建脚本把项目内容（含 Build/<Platform>/Bundles）放到这里，
+            // AndroidMain.cpp 启动时解到内部目录。
+            assets.srcDirs = ["src/main/assets"]
+        }
+    }
+
+    // libZGameAndroid.so 通常 >100MB（Debug 更大）。不压缩、按页对齐，
+    // 否则安装时还要解压一份，白白占两倍空间且拖慢首次启动。
+    packagingOptions {
+        jniLibs {
+            useLegacyPackaging true
+        }
+        // Debug 符号也留着，方便 ndk-stack / CrashSight 还原。
+        doNotStrip "**.so"
+    }
+
+    // 纯 native，没有 Java 源码，这些 build feature 全关。
+    buildFeatures {
+        buildConfig false
+        aidl false
+        renderScript false
+        resValues false
+        shaders false
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    buildTypes {
+        debug {
+            debuggable true
+            jniDebuggable true
+        }
+        release {
+            minifyEnabled false
+            // 正式出包前换成自己的签名配置；这里退回 debug key 以便直接跑。
+            signingConfig signingConfigs.debug
+        }
+    }
+
+    lint {
+        abortOnError false
+        checkReleaseBuilds false
+    }
+}

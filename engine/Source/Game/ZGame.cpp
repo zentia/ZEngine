@@ -15,12 +15,10 @@
     #include <windows.h>
 #endif
 
-#include "Runtime/AssetBundle/AssetBundleManager.h"
+#include "Player/PlayerShell.h"
 #include "Runtime/Core/Base/CrashHandler.h"
-#include "Runtime/Function/Console/ConsoleManager.h"
 #include "Runtime/Function/Framework/GameFramework/GameEngine.h"
 #include "Runtime/Platform/Encoding/EncodingUtils.h"
-#include "Runtime/Project/ProjectInfo.h"
 #include "Runtime/RegisterRuntime.h"
 
 namespace
@@ -37,15 +35,10 @@ namespace
         bool has_cvar_file {false};
     };
 
-    /// Startup cvar file (<project>/Config/ConsoleVariables.ini by default), applied
-    /// once every system is up so all cvars are registered.
-    void ApplyStartupConsoleVariables(const LaunchOptions& options)
-    {
-        if (ConsoleManager* console = GET_SYSTEM(ConsoleManager))
-        {
-            console->LoadStartupVariables(options.has_cvar_file ? options.cvar_file.c_str() : nullptr);
-        }
-    }
+    // Startup cvar application, packaged-content mounting and startup-level
+    // resolution all live in zengine::player (engine/Source/Player/PlayerShell.cpp)
+    // now: the mobile Player shell boots the engine through exactly the same
+    // seven steps, and a second copy here would only let the two drift apart.
 
 #ifdef _WIN32
     // EncodingUtils exposes GBK->UTF-8 but nothing for wide argv. CommandSystem
@@ -178,73 +171,6 @@ namespace
         return 1;
     }
 
-    // A packaged game ships no `Assets/` tree -- its content is the bundles
-    // under `<project>/Build/<Platform>/Bundles`, and nothing else will ever
-    // mount them. This runs before the startup level is opened because a level
-    // is just another asset: mount afterwards and the level would resolve
-    // against an empty source tree instead.
-    //
-    // Not conditional on a flag: this IS the player. Editor-side mounting would
-    // shadow real files (bundles deliberately win over disk), which is why
-    // nothing mounts them there.
-    void MountPackagedContent()
-    {
-        auto* bundles = GET_SYSTEM(AssetBundleManager);
-        if (bundles == nullptr)
-        {
-            return;  // no bundle registry in this configuration
-        }
-
-        const ProjectInfo* project_info = GET_SYSTEM(ProjectInfo);
-        const std::filesystem::path build_root = project_info != nullptr ? project_info->GetBuildRoot() : std::filesystem::path();
-        if (build_root.empty())
-        {
-            return;
-        }
-
-        bundles->MountBuild(build_root);
-    }
-
-    // UE's GameDefaultMap: the level the packaged game opens on launch.
-    //
-    // Resolution order:
-    //   1. --level <url>   explicit override (handy for QA / scripted runs)
-    //   2. .zproject "startup_level"
-    //   3. nothing -> no level is opened; GameEngine still starts, it just has
-    //      no character to possess.
-    //
-    // Failing to open a *configured* level is fatal (typo / missing asset would
-    // otherwise launch an empty game and look like a silent data bug). Having
-    // no level configured at all is not.
-    bool OpenStartupLevel(const std::string& override_level)
-    {
-        auto* game_engine = GET_SYSTEM(GameEngine);
-        if (game_engine == nullptr)
-        {
-            LOG_ERROR(ZEngine, "ZGame: GameEngine is not registered");
-            return false;
-        }
-
-        eastl::string level_url;
-        if (!override_level.empty())
-        {
-            level_url = override_level.c_str();
-        }
-        else if (auto* project_info = GET_SYSTEM(ProjectInfo); project_info != nullptr)
-        {
-            level_url = project_info->startup_level;
-        }
-
-        if (level_url.empty())
-        {
-            LOG_WARNING(ZEngine,
-                        "ZGame: no startup_level configured in .zproject; launching with an empty world");
-            return true;
-        }
-
-        LOG_INFO(ZEngine, "ZGame: opening startup level {}", level_url.c_str());
-        return game_engine->LoadLevel(std::string(level_url.c_str()));
-    }
 }  // namespace
 
 #ifdef _WIN32
@@ -286,10 +212,10 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int)
     // 游戏层：Runtime 全部系统 + GameEngine（后者会接管关卡里的角色）。
     RegisterGameRuntime(options.preferred_rhi);
     START_SYSTEM();
-    ApplyStartupConsoleVariables(options);
+    zengine::player::ApplyStartupConsoleVariables(options.cvar_file.c_str(), options.has_cvar_file);
 
     // Packaged content has to be mounted before anything opens an asset.
-    MountPackagedContent();
+    zengine::player::MountPackagedContent();
 
     auto* game_engine = GET_SYSTEM(GameEngine);
     if (game_engine == nullptr)
@@ -300,7 +226,7 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int)
         return 1;
     }
 
-    if (!OpenStartupLevel(options.level_override))
+    if (!zengine::player::OpenStartupLevel(options.level_override.c_str()))
     {
         LOG_ERROR(ZEngine, "ZGame: startup level could not be opened");
         LogSystem::ForceFlush();
@@ -354,10 +280,10 @@ int main(int argc, char** argv)
 
     RegisterGameRuntime(options.preferred_rhi);
     START_SYSTEM();
-    ApplyStartupConsoleVariables(options);
+    zengine::player::ApplyStartupConsoleVariables(options.cvar_file.c_str(), options.has_cvar_file);
 
     // Packaged content has to be mounted before anything opens an asset.
-    MountPackagedContent();
+    zengine::player::MountPackagedContent();
 
     auto* game_engine = GET_SYSTEM(GameEngine);
     if (game_engine == nullptr)
@@ -368,7 +294,7 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    if (!OpenStartupLevel(options.level_override))
+    if (!zengine::player::OpenStartupLevel(options.level_override.c_str()))
     {
         LOG_ERROR(ZEngine, "ZGame: startup level could not be opened");
         LogSystem::ForceFlush();

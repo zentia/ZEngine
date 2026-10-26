@@ -153,8 +153,24 @@ GenericWindow* WindowSystem::GetMainWindow() const
 
 void* WindowSystem::GetNativeWindowHandle() const
 {
-    if (!m_Application || !m_Application->GetMainWindow()) return nullptr;
-    return m_Application->GetMainWindow()->GetNativeHandle();
+    if (m_Application && m_Application->GetMainWindow())
+    {
+        return m_Application->GetMainWindow()->GetNativeHandle();
+    }
+    // 无引擎窗口：用宿主推入的表面（移动端 / 嵌入宿主）。见 SetHostWindowHandle。
+    return m_HostWindowHandle;
+}
+
+void WindowSystem::SetHostWindowHandle(void* handle)
+{
+    m_HostWindowHandle = handle;
+    LOG_INFO(ZWindow, "host window handle {}", handle != nullptr ? "attached" : "detached");
+}
+
+void WindowSystem::SetHostWindowSize(int width, int height)
+{
+    m_HostWidth  = width;
+    m_HostHeight = height;
 }
 
 GenericWindow* WindowSystem::CreateChildWindow(const char* title,
@@ -175,14 +191,28 @@ void WindowSystem::DestroyChildWindow(GenericWindow* window)
 
 std::array<int, 2> WindowSystem::GetWindowSize() const
 {
-    if (!m_Application || !m_Application->GetMainWindow()) return {1280, 720};
-    return m_Application->GetMainWindow()->GetSize();
+    if (m_Application && m_Application->GetMainWindow())
+    {
+        return m_Application->GetMainWindow()->GetSize();
+    }
+    if (m_HostWidth > 0 && m_HostHeight > 0)
+    {
+        return {m_HostWidth, m_HostHeight};
+    }
+    return {1280, 720};
 }
 
 std::array<int, 2> WindowSystem::GetFramebufferSize() const
 {
-    if (!m_Application) return {1280, 720};
-    return m_Application->GetFramebufferSize();
+    if (m_Application)
+    {
+        return m_Application->GetFramebufferSize();
+    }
+    if (m_HostWidth > 0 && m_HostHeight > 0)
+    {
+        return {m_HostWidth, m_HostHeight};
+    }
+    return {1280, 720};
 }
 
 void WindowSystem::ShowWindow()
@@ -285,4 +315,16 @@ void WindowSystem::OnWindowFocus(int focused)
 void WindowSystem::OnWindowRefresh()
 {
     for (auto& func : m_OnWindowRefreshFunc) func();
+}
+
+void WindowSystem::PushTouchEvent(int pointer_id, int action, float x, float y)
+{
+    // 移动端没有 GenericWindow 可以挂回调，宿主只能直接推到这里，再由 OnTouch
+    // 转发给 RegisterOnTouchFunc 的监听者（EnhancedInputSystem 就是其中之一）。
+    OnTouch(pointer_id, action, x, y);
+}
+
+void WindowSystem::OnTouch(int pointer_id, int action, float x, float y)
+{
+    for (auto& func : m_OnTouchFunc) func(pointer_id, action, x, y);
 }

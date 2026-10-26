@@ -1,0 +1,5 @@
+# 打包时由构建脚本填充：项目内容（含 Build/Android/Bundles）拷到本目录下的
+# zengine/ 子目录，随 APK 的 assets 一起打进去；AndroidMain.cpp 启动时解到
+# app 内部目录再交给引擎。
+#
+# 这个 .gitkeep 保证目录在 git 里存在。
