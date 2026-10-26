@@ -979,6 +979,10 @@ void RenderResource::MaterializeMaterialInstance(RHI* rhi, RenderEntity entity, 
     ubo.normalScale = entity.m_NormalScale;
     ubo.occlusionStrength = entity.m_OcclusionStrength;
     ubo.emissiveFactor = entity.m_EmissiveFactor;
+    for (uint32_t param_index = 0; param_index < k_MaterialCustomParamCount; ++param_index)
+    {
+        ubo.customParams[param_index] = entity.m_CustomParams[param_index];
+    }
 
     const RHIDeviceSize buffer_size = sizeof(MeshMaterialUniform);
 

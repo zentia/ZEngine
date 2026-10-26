@@ -577,6 +577,13 @@ list(REMOVE_ITEM SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/Framework/Component/Mesh/Test/MaterialInstanceOverrideSmokeTest.cpp")
 list(REMOVE_ITEM REGULAR_SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/Framework/Component/Mesh/Test/MaterialInstanceOverrideSmokeTest.cpp")
+# Runtime property-block smoke-test main. Same carve-out rationale again: it
+# owns main(). Built only when ZENGINE_BUILD_MATERIAL_CUSTOM_PARAM_SMOKE_TEST=ON
+# (see Function/Framework/Component/Mesh/Test/CMakeLists.txt).
+list(REMOVE_ITEM SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Framework/Component/Mesh/Test/MaterialCustomParamSmokeTest.cpp")
+list(REMOVE_ITEM REGULAR_SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Framework/Component/Mesh/Test/MaterialCustomParamSmokeTest.cpp")
 # PR-SK1: skeletal skinning smoke-test main. Same carve-out rationale as every
 # entry above: it owns main() and must not be whole-archived into ZRuntime.
 # Built only when ZENGINE_BUILD_ANIMATION_SMOKE_TEST=ON (see
@@ -1738,10 +1745,15 @@ unset(_ZENGINE_NEEDS_SHADERLAB_SIDETARGET)
 # ---------------------------------------------------------------------------
 if(WIN32)
     add_subdirectory(Function/Render/Interface/DX12/Test)
-    # ShaderLab -> DX12 Unity-compatibility smoke-test. Same opt-in shape as
-    # the bindless test above (see Function/ShaderLab/Test/CMakeLists.txt).
-    add_subdirectory(Function/ShaderLab/Test)
 endif()
+
+# ShaderLab smoke-tests. 这些测试**不**只属于 Windows：ShaderLab 的解析 / 编译
+# 层（ShaderLabParser / ShaderLabCompiler / ShaderLabCbufferReflection）在 Vulkan
+# 与 Metal 配置下同样编进 ZRuntime，而且它们全是纯 CPU 的 —— 把整个目录关在
+# if(WIN32) 里会让跨平台的那几个永远跑不到。
+# 目录内每个测试仍各自用 option 控制，需要 dxcompiler 的那个（UnityCompat）
+# 自己还有 `if(NOT WIN32) return()` 兜底。
+add_subdirectory(Function/ShaderLab/Test)
 
 # ---------------------------------------------------------------------------
 # PR-V2: Vulkan bindless smoke-test side-target.

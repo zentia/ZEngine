@@ -5,6 +5,7 @@
 #include "Runtime/Function/Render/Interface/Vulkan/ShaderCompiler.h"
 #include "Runtime/Function/Render/Interface/Vulkan/VulkanUtil.h"
 #include "Runtime/Function/Render/WindowSystem.h"
+#include "Runtime/Function/ShaderLab/ShaderLabHlslExtract.h"
 #include "Runtime/Profiler/Profiler.h"
 #include "Runtime/Project/ProjectInfo.h"
 
@@ -4107,17 +4108,55 @@ RHIShader* VulkanRHI::CreateShaderModuleFromFile(const std::string& file_path,
     // so we can pass macros directly after converting to the compiler's type
     ShaderMacros compiler_macros(macros.begin(), macros.end());
 
-    (void)entry_point;
     // TODO: pass embed_debug to ShaderCompiler::CompileFromFile to enable
     //       -g flag (SPIR-V debug info) when embed_debug == true.
-    ShaderCompileResult result =
-        m_ShaderCompiler->CompileFromFile(file_path, shader_stage, include_paths, compiler_macros);
 
-    if (!result.success)
+    // `.shader` 是 ShaderLab 源码，不是可以直接喂给 glslang 的 GLSL：整份文件
+    // 外面还包着 Shader / Properties / SubShader / Pass，真正的 GLSL 在
+    // `GLSLPROGRAM ... ENDGLSL` 块里。以前这里不识别扩展名，直接把整份 .shader
+    // 交给 glslang —— 必然编译失败，于是 ShaderLab 资产在 Vulkan 上从没跑通过。
+    //
+    // 注意只取 GLSL 块：HLSLPROGRAM 归 DX12（见 DX12ShaderCompiler 的
+    // IsShaderLabSourcePath 分支），Vulkan 侧没有 HLSL 前端。
+    ShaderCompileResult result;
+    if (ZEngine::ShaderLab::IsShaderLabSourcePath(file_path))
     {
-        LOG_ERROR(ZShader, "Failed to compile shader from file: {}", file_path);
-        LOG_ERROR(ZShader, "Error: {}", result.error_message);
-        return nullptr;
+        const ZEngine::ShaderLab::ShaderLabGlslExtractResult extracted =
+            ZEngine::ShaderLab::ExtractGlslFromShaderLabFile(file_path, shader_stage, entry_point);
+        if (!extracted.ok)
+        {
+            LOG_ERROR(ZShader, "Failed to extract GLSL from ShaderLab file: {}", file_path);
+            LOG_ERROR(ZShader, "Error: {}", extracted.error_message);
+            return nullptr;
+        }
+
+        // 入口名以 #pragma vertex/fragment 为准；调用方传的 entry_point 只在
+        // 源码没写 #pragma 时兜底。
+        result = m_ShaderCompiler->CompileFromSource(extracted.glsl_source,
+                                                     shader_stage,
+                                                     file_path,
+                                                     include_paths,
+                                                     compiler_macros,
+                                                     extracted.entry_point);
+
+        if (!result.success)
+        {
+            LOG_ERROR(ZShader, "Failed to compile ShaderLab GLSL (entry '{}') from file: {}",
+                      extracted.entry_point, file_path);
+            LOG_ERROR(ZShader, "Error: {}", result.error_message);
+            return nullptr;
+        }
+    }
+    else
+    {
+        result = m_ShaderCompiler->CompileFromFile(file_path, shader_stage, include_paths, compiler_macros, entry_point);
+
+        if (!result.success)
+        {
+            LOG_ERROR(ZShader, "Failed to compile shader from file: {}", file_path);
+            LOG_ERROR(ZShader, "Error: {}", result.error_message);
+            return nullptr;
+        }
     }
 
     // Optionally copy SPIR-V bytecode to caller.

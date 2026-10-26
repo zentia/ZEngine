@@ -30,18 +30,25 @@ public:
     ShaderCompiler();
     ~ShaderCompiler();
 
-    // Compile GLSL shader from file path
+    // Compile GLSL shader from file path.
+    //
+    // `entry_point` defaults to "main", which is what every in-tree .vert/.frag
+    // uses. ShaderLab sources declare their entry with `#pragma vertex <name>`,
+    // so the caller must forward it -- glslang needs the real name or it fails
+    // with "missing entry point definition".
     ShaderCompileResult CompileFromFile(const std::string& file_path,
                                         ShaderStage stage,
                                         const std::vector<std::string>& include_paths = {},
-                                        const ShaderMacros& macros = {});
+                                        const ShaderMacros& macros = {},
+                                        const std::string& entry_point = "main");
 
     // Compile GLSL shader from source code string
     ShaderCompileResult CompileFromSource(const std::string& source_code,
                                           ShaderStage stage,
                                           const std::string& shader_name = "",
                                           const std::vector<std::string>& include_paths = {},
-                                          const ShaderMacros& macros = {});
+                                          const ShaderMacros& macros = {},
+                                          const std::string& entry_point = "main");
 
     // Set shader include directory (for #include directives)
     void SetIncludeDirectory(const std::string& include_dir);
@@ -95,17 +102,19 @@ private:
                                         ShaderStage stage,
                                         const std::string& shader_name,
                                         const std::vector<std::string>& include_paths,
-                                        const ShaderMacros& macros);
+                                        const ShaderMacros& macros,
+                                        const std::string& entry_point);
 
     // Helper to build preprocessor defines string from macros
     std::string BuildDefinesString(const ShaderMacros& macros) const;
 
     // Build an absolute on-disk cache filename for (source-file, stage,
-    // defines). Returns an empty path when caching is disabled or when
-    // `source_file` is not a real on-disk file.
+    // defines, entry-point). Returns an empty path when caching is disabled
+    // or when `source_file` is not a real on-disk file.
     std::filesystem::path BuildCacheFilePath(const std::string& source_file,
                                              ShaderStage stage,
-                                             const ShaderMacros& macros) const;
+                                             const ShaderMacros& macros,
+                                             const std::string& entry_point) const;
 
     // Try to load a cached SPIR-V blob into out_spirv. Returns true iff
     // the cache file exists, is non-empty, and is newer than

@@ -247,6 +247,161 @@ if(ZENGINE_BUILD_SHADERLAB_INCLUDE_TEST)
 endif()
 
 # =====================================================================
+# ShaderLab constant-buffer reflection smoke-test
+# ---------------------------------------------------------------------
+# Pins down "property name -> UBO byte offset", the piece that lets a script
+# say SetFloat("_WhateverYourShaderDeclared", v) instead of the hard-coded
+# names in MaterialCustomParamNames.h.
+#
+#   cmake -B build -DZENGINE_BUILD_SHADERLAB_CBUFFER_TEST=ON
+#   cmake --build build --target ShaderLabCbufferReflectionTest
+#
+# Unlike the three above this one does NOT link ZRuntime -- it compiles only
+# ShaderCbufferReflection.cpp, which depends on nothing but <string> / <vector>.
+# That is deliberate: the reflection is pure CPU and must be runnable on a host
+# with no GPU and no shader compiler.
+# =====================================================================
+
+option(ZENGINE_BUILD_SHADERLAB_CBUFFER_TEST
+       "Build the ShaderLab constant-buffer reflection smoke-test executable"
+       OFF)
+
+if(ZENGINE_BUILD_SHADERLAB_CBUFFER_TEST)
+    set(_cbuffer_target ShaderLabCbufferReflectionTest)
+
+    add_executable(${_cbuffer_target}
+        ShaderLabCbufferReflectionTest.cpp
+        ../ShaderCbufferReflection.cpp
+    )
+
+    set_target_properties(${_cbuffer_target} PROPERTIES
+        CXX_STANDARD 23
+        FOLDER "Engine/Tests"
+    )
+
+    # engine/Source is the root for "Function/ShaderLab/..." includes.
+    target_include_directories(${_cbuffer_target} PRIVATE ${ENGINE_ROOT_DIR}/Source)
+
+    if(MSVC)
+        target_compile_options(${_cbuffer_target} PRIVATE /W4)
+    else()
+        target_compile_options(${_cbuffer_target} PRIVATE -Wall)
+    endif()
+
+    add_test(NAME ${_cbuffer_target} COMMAND ${_cbuffer_target})
+
+    message(STATUS "Configured ShaderLab cbuffer reflection smoke-test: ${_cbuffer_target}")
+endif()
+
+# =====================================================================
+# ShaderLab program-extract smoke-test
+# ---------------------------------------------------------------------
+# Pins down "which program block does a backend actually compile". A `.shader`
+# may declare both HLSLPROGRAM (DX12) and GLSLPROGRAM (Vulkan / Metal) in the
+# same Pass; extraction must be language-filtered, or the wrong body gets
+# handed to the wrong compiler and every backend pays for a failed compile
+# before falling back to the built-in shader.
+#
+#   cmake -B build -DZENGINE_BUILD_SHADERLAB_PROGRAM_EXTRACT_TEST=ON
+#   cmake --build build --target ShaderLabProgramExtractTest
+#
+# Backend-free like the cbuffer test (no Vulkan, no DX12, no GPU). It links
+# ZRuntime only because the parser chain pulls in RenderType.h / EASTL.
+# =====================================================================
+
+option(ZENGINE_BUILD_SHADERLAB_PROGRAM_EXTRACT_TEST
+       "Build the ShaderLab program-extract smoke-test executable"
+       OFF)
+
+if(ZENGINE_BUILD_SHADERLAB_PROGRAM_EXTRACT_TEST)
+    set(_extract_target ShaderLabProgramExtractTest)
+
+    add_executable(${_extract_target}
+        ShaderLabProgramExtractTest.cpp
+    )
+
+    set_target_properties(${_extract_target} PROPERTIES
+        CXX_STANDARD 23
+        FOLDER "Engine/Tests"
+    )
+
+    # engine/Source is the root for "Runtime/Function/ShaderLab/..." includes.
+    target_include_directories(${_extract_target} PRIVATE ${ENGINE_ROOT_DIR}/Source)
+
+    # ExtractHlslFromShaderLab* lives in ZRuntime (ShaderLab/*.cpp is globbed
+    # into it); ShaderLabSemanticRewrite.h pulls in RenderType.h -> EASTL.
+    target_link_libraries(${_extract_target} PRIVATE ZRuntime)
+
+    if(TARGET ZEnginePCH)
+        target_link_libraries(${_extract_target} PRIVATE ZEnginePCH)
+        target_include_directories(${_extract_target} PRIVATE ${ENGINE_ROOT_DIR}/Source/CommonPCH)
+        add_dependencies(${_extract_target} ZEnginePCH)
+    endif()
+
+    if(MSVC)
+        target_compile_options(${_extract_target} PRIVATE /W4)
+    else()
+        target_compile_options(${_extract_target} PRIVATE -Wall)
+    endif()
+
+    add_test(NAME ${_extract_target} COMMAND ${_extract_target})
+    message(STATUS "Configured ShaderLab program-extract smoke-test: ${_extract_target}")
+endif()
+
+# =====================================================================
+# ShaderLab property-layout smoke-test
+# ---------------------------------------------------------------------
+# Pins down the JOIN between a ShaderLab `Properties {}` block and the
+# `CBUFFER_START(UnityPerMaterial)` block -- the thing that lets a script call
+# SetFloat("_WhateverYourShaderDeclared", v) on a custom shader. Each block was
+# already reachable on its own, but nothing connected them, so the runtime had
+# property names with no byte offsets.
+#
+#   cmake -B build -DZENGINE_BUILD_SHADERLAB_PROPERTY_LAYOUT_TEST=ON
+#   cmake --build build --target ShaderLabPropertyLayoutTest
+#
+# Backend-free: no Vulkan, no DX12, no GPU. Links ZRuntime because the parser
+# chain pulls in RenderType.h / EASTL.
+# =====================================================================
+
+option(ZENGINE_BUILD_SHADERLAB_PROPERTY_LAYOUT_TEST
+       "Build the ShaderLab property-layout smoke-test executable"
+       OFF)
+
+if(ZENGINE_BUILD_SHADERLAB_PROPERTY_LAYOUT_TEST)
+    set(_layout_target ShaderLabPropertyLayoutTest)
+
+    add_executable(${_layout_target}
+        ShaderLabPropertyLayoutTest.cpp
+    )
+
+    set_target_properties(${_layout_target} PROPERTIES
+        CXX_STANDARD 23
+        FOLDER "Engine/Tests"
+    )
+
+    # engine/Source is the root for "Runtime/Function/ShaderLab/..." includes.
+    target_include_directories(${_layout_target} PRIVATE ${ENGINE_ROOT_DIR}/Source)
+
+    target_link_libraries(${_layout_target} PRIVATE ZRuntime)
+
+    if(TARGET ZEnginePCH)
+        target_link_libraries(${_layout_target} PRIVATE ZEnginePCH)
+        target_include_directories(${_layout_target} PRIVATE ${ENGINE_ROOT_DIR}/Source/CommonPCH)
+        add_dependencies(${_layout_target} ZEnginePCH)
+    endif()
+
+    if(MSVC)
+        target_compile_options(${_layout_target} PRIVATE /W4)
+    else()
+        target_compile_options(${_layout_target} PRIVATE -Wall)
+    endif()
+
+    add_test(NAME ${_layout_target} COMMAND ${_layout_target})
+    message(STATUS "Configured ShaderLab property-layout smoke-test: ${_layout_target}")
+endif()
+
+# =====================================================================
 # ShaderLab Unity-compatibility smoke-test
 # =====================================================================
 

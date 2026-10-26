@@ -334,6 +334,10 @@ RenderEntity RenderScene::BuildRenderEntity(RHI* rhi,
     render_entity.m_NormalScale = game_object_part.m_MaterialDesc.m_NormalScale;
     render_entity.m_OcclusionStrength = game_object_part.m_MaterialDesc.m_OcclusionStrength;
     render_entity.m_EmissiveFactor = game_object_part.m_MaterialDesc.m_EmissiveFactor;
+    for (uint32_t param_index = 0; param_index < k_MaterialCustomParamCount; ++param_index)
+    {
+        render_entity.m_CustomParams[param_index] = game_object_part.m_MaterialDesc.m_CustomParams[param_index];
+    }
 
     const MaterialSourceDesc material_source = BuildMaterialSourceDesc(game_object_part);
     const bool is_material_loaded = m_MaterialAssetIdAllocator.hasElement(material_source);

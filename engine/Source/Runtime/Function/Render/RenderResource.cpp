@@ -891,6 +891,10 @@ void RenderResource::MaterializeMaterialInstance(RHI* rhi, RenderEntity entity, 
             uniform.normalScale = entity.m_NormalScale;
             uniform.occlusionStrength = entity.m_OcclusionStrength;
             uniform.emissiveFactor = entity.m_EmissiveFactor;
+            for (uint32_t param_index = 0; param_index < k_MaterialCustomParamCount; ++param_index)
+            {
+                uniform.customParams[param_index] = entity.m_CustomParams[param_index];
+            }
         }
         rhi->UnmapMemory(staging_buffer_memory);
 

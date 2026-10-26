@@ -2,6 +2,7 @@
 
 #include "Runtime/Core/Math/Matrix4.h"
 #include "Runtime/Function/Framework/Object/ObjectIdAllocator.h"
+#include "Runtime/Function/Render/MaterialCustomParamSlots.h"
 
 #include <EASTL/vector.h>
 #include <vector>
@@ -46,6 +47,11 @@ public:
     Vector3 m_EmissiveFactor {0.0f, 0.0f, 0.0f};
     bool m_IsBlend {false};
     bool m_IsDoubleSided {false};
+
+    /// 运行时属性块的 4 个 vec4 槽。见 MeshMaterialUniform::customParams 的注释：
+    /// 内置 shader 在 keyword 打开时按约定消费（现在只有 `_DISSOLVE_ON` 那一组）。
+    /// 脚本按名字写，名字到 (槽位, 分量) 的翻译在 MaterialCustomParamNames.h。
+    Vector4 m_CustomParams[k_MaterialCustomParamCount] {};
 
     // Resolved Texture2D .zasset paths at the render boundary (from Material PPtr refs).
     eastl::string m_BaseColorTextureFile;

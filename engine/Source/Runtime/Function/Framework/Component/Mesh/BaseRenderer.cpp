@@ -9,6 +9,8 @@
 #include "Runtime/Resource/Asset/AssetManager.h"
 #include "Runtime/Resource/ResType/Data/Material.h"
 
+#include <algorithm>
+
 
 
 namespace
@@ -82,6 +84,43 @@ namespace
         if (override_data.has_double_sided)
         {
             material_desc.m_IsDoubleSided = override_data.double_sided;
+        }
+
+        // 自定义槽按**分量**套用：只改被覆盖的那一个 float，同槽位的其它分量
+        // 继续跟着资产走。
+        for (uint32_t slot = 0; slot < k_MaterialCustomParamCount; ++slot)
+        {
+            for (uint32_t component = 0; component < 4; ++component)
+            {
+                if (override_data.HasCustomComponent(slot, component))
+                {
+                    material_desc.m_CustomParams[slot][component] = override_data.custom_params[slot][component];
+                }
+            }
+        }
+
+        // keyword 覆盖。没被提到的 keyword 继续跟随资产。
+        //
+        // 最后那个 sort 不是顺手加的：MaterialSourceDesc::getHashValue() 是按顺序
+        // hash_combine keyword 的，同一个集合顺序不同就会得到两个不同的 material
+        // asset id —— 也就是两份内容完全一样的共享材质（各带一份纹理上传）。
+        // 排序让"同集合"必然得到"同 hash"。只在真的有 keyword 覆盖时才排，
+        // 纯资产路径的 keyword 顺序保持不动。
+        if (!override_data.keyword_overrides.empty())
+        {
+            auto& keywords = material_desc.m_EnabledShaderKeywords;
+            for (const MaterialKeywordOverride& keyword : override_data.keyword_overrides)
+            {
+                keywords.erase(std::remove_if(keywords.begin(),
+                                              keywords.end(),
+                                              [&](const eastl::string& existing) { return existing == keyword.name; }),
+                               keywords.end());
+                if (keyword.enabled)
+                {
+                    keywords.push_back(keyword.name);
+                }
+            }
+            std::sort(keywords.begin(), keywords.end());
         }
     }
 
@@ -299,7 +338,9 @@ std::vector<GameObjectPartDesc> BaseRenderer::BuildRenderParts(const Transform* 
         {
             const MaterialInstanceOverride& slot_override = m_MaterialOverrides[sub_mesh_index];
             applyMaterialInstanceOverride(slot_override, render_part.m_MaterialDesc);
-            render_part.m_MaterialDesc.m_UseMaterialInstance = slot_override.IsActive();
+            // 是 NeedsMaterialInstance 而不是 IsActive：只开 keyword 的话走另一份
+            // 共享材质变体就够了，不需要 per-part 实例（那样会白白丢掉合批）。
+            render_part.m_MaterialDesc.m_UseMaterialInstance = slot_override.NeedsMaterialInstance();
         }
 
         render_part.m_TransformDesc.m_TransformMatrix = object_transform * sub_mesh.m_Transform.getMatrix();
@@ -592,4 +633,214 @@ bool BaseRenderer::HasMaterialOverride(int slot) const
 {
     const MaterialInstanceOverride* slot_override = OverrideAt(slot);
     return slot_override != nullptr && slot_override->IsActive();
+}
+
+// ---- 运行时属性块 --------------------------------------------------------
+
+bool BaseRenderer::SetFloat(int slot, const eastl::string& name, float value)
+{
+    const MaterialCustomParamLocation* location = MaterialCustomParams::FindFloat(name);
+    if (location == nullptr)
+    {
+        return false;
+    }
+
+    MaterialInstanceOverride* slot_override = MutableOverrideAt(slot);
+    if (slot_override == nullptr)
+    {
+        return false;
+    }
+
+    slot_override->SetCustomComponent(location->slot, location->component, value);
+    SubmitRenderState();
+    return true;
+}
+
+float BaseRenderer::GetFloat(int slot, const eastl::string& name) const
+{
+    const MaterialCustomParamLocation* location = MaterialCustomParams::FindFloat(name);
+    if (location == nullptr)
+    {
+        return 0.0f;
+    }
+
+    const MaterialInstanceOverride* slot_override = OverrideAt(slot);
+    if (slot_override != nullptr && slot_override->HasCustomComponent(location->slot, location->component))
+    {
+        return slot_override->custom_params[location->slot][location->component];
+    }
+
+    const GameObjectMaterialDesc* desc = cachedMaterialDescAt(m_LastMaterialDescs, slot);
+    return desc != nullptr ? desc->m_CustomParams[location->slot][location->component] : 0.0f;
+}
+
+bool BaseRenderer::SetVector(int slot, const eastl::string& name, const Vector4& value)
+{
+    const MaterialCustomParamLocation* location = MaterialCustomParams::FindVector(name);
+    if (location == nullptr)
+    {
+        return false;
+    }
+
+    MaterialInstanceOverride* slot_override = MutableOverrideAt(slot);
+    if (slot_override == nullptr)
+    {
+        return false;
+    }
+
+    // 整个 vec4 一起覆盖：四个分量全打上标记。
+    for (uint32_t component = 0; component < 4; ++component)
+    {
+        slot_override->SetCustomComponent(location->slot, component, value[component]);
+    }
+    SubmitRenderState();
+    return true;
+}
+
+Vector4 BaseRenderer::GetVector(int slot, const eastl::string& name) const
+{
+    const MaterialCustomParamLocation* location = MaterialCustomParams::FindVector(name);
+    if (location == nullptr)
+    {
+        return Vector4(0.0f, 0.0f, 0.0f, 0.0f);
+    }
+
+    const MaterialInstanceOverride* slot_override = OverrideAt(slot);
+    if (slot_override != nullptr)
+    {
+        // 四个分量全被覆盖才算 override 了这个向量；只覆盖了一部分的话逐个分量
+        // 回退到资产值，别把没覆盖的分量说成 0。
+        const GameObjectMaterialDesc* desc = cachedMaterialDescAt(m_LastMaterialDescs, slot);
+        Vector4 result = desc != nullptr ? desc->m_CustomParams[location->slot]
+                                         : Vector4(0.0f, 0.0f, 0.0f, 0.0f);
+        for (uint32_t component = 0; component < 4; ++component)
+        {
+            if (slot_override->HasCustomComponent(location->slot, component))
+            {
+                result[component] = slot_override->custom_params[location->slot][component];
+            }
+        }
+        return result;
+    }
+
+    const GameObjectMaterialDesc* desc = cachedMaterialDescAt(m_LastMaterialDescs, slot);
+    return desc != nullptr ? desc->m_CustomParams[location->slot] : Vector4(0.0f, 0.0f, 0.0f, 0.0f);
+}
+
+bool BaseRenderer::SetColor(int slot, const eastl::string& name, const Vector4& value)
+{
+    return SetVector(slot, name, value);
+}
+
+Vector4 BaseRenderer::GetColor(int slot, const eastl::string& name) const
+{
+    return GetVector(slot, name);
+}
+
+void BaseRenderer::ClearCustomParams(int slot)
+{
+    MaterialInstanceOverride* slot_override = MutableOverrideAt(slot);
+    if (slot_override == nullptr)
+    {
+        return;
+    }
+
+    bool changed = false;
+    for (uint32_t param_slot = 0; param_slot < k_MaterialCustomParamCount; ++param_slot)
+    {
+        if (slot_override->custom_component_mask[param_slot] != 0)
+        {
+            slot_override->custom_component_mask[param_slot] = 0;
+            slot_override->custom_params[param_slot] = Vector4(0.0f, 0.0f, 0.0f, 0.0f);
+            changed = true;
+        }
+    }
+
+    if (changed)
+    {
+        SubmitRenderState();
+    }
+}
+
+// ---- shader keyword -----------------------------------------------------
+
+void BaseRenderer::SetKeywordEnabled(int slot, const eastl::string& keyword, bool enabled)
+{
+    if (keyword.empty())
+    {
+        return;
+    }
+
+    MaterialInstanceOverride* slot_override = MutableOverrideAt(slot);
+    if (slot_override == nullptr)
+    {
+        return;
+    }
+
+    // 已经是这个值就别触发重新 submit —— 换 PSO 比改 UBO 贵得多，而脚本很可能
+    // 在 Update 里每帧调一次 EnableKeyword。
+    if (const MaterialKeywordOverride* existing = slot_override->FindKeyword(keyword))
+    {
+        if (existing->enabled == enabled)
+        {
+            return;
+        }
+    }
+
+    slot_override->SetKeyword(keyword, enabled);
+    SubmitRenderState();
+}
+
+void BaseRenderer::EnableKeyword(int slot, const eastl::string& keyword)
+{
+    SetKeywordEnabled(slot, keyword, true);
+}
+
+void BaseRenderer::DisableKeyword(int slot, const eastl::string& keyword)
+{
+    SetKeywordEnabled(slot, keyword, false);
+}
+
+bool BaseRenderer::HasKeyword(int slot, const eastl::string& keyword) const
+{
+    if (keyword.empty())
+    {
+        return false;
+    }
+
+    // override 优先。
+    const MaterialInstanceOverride* slot_override = OverrideAt(slot);
+    if (slot_override != nullptr)
+    {
+        if (const MaterialKeywordOverride* existing = slot_override->FindKeyword(keyword))
+        {
+            return existing->enabled;
+        }
+    }
+
+    // 没被覆盖就跟随资产：看上一次 BuildRenderParts 算出来的生效 keyword 列表。
+    const GameObjectMaterialDesc* desc = cachedMaterialDescAt(m_LastMaterialDescs, slot);
+    if (desc != nullptr)
+    {
+        for (const eastl::string& enabled_keyword : desc->m_EnabledShaderKeywords)
+        {
+            if (enabled_keyword == keyword)
+            {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+void BaseRenderer::ClearKeywords(int slot)
+{
+    MaterialInstanceOverride* slot_override = MutableOverrideAt(slot);
+    if (slot_override == nullptr || slot_override->keyword_overrides.empty())
+    {
+        return;
+    }
+
+    slot_override->keyword_overrides.clear();
+    SubmitRenderState();
 }
