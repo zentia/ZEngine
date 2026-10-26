@@ -189,28 +189,44 @@ public:
     int32_t GetUserEventCount() const;
     ZFUNCTION()
     eastl::string GetUserEventName(int32_t index) const;
+    /// 不导出：std::vector<SpineAnimationEvent> 没有 Converter（也没有"结构体数组"
+    /// 这一层的 marshalling）。脚本读事件请用上面那组 GetEventXxx(index)。
     const std::vector<SpineAnimationEvent>& GetFrameEvents() const { return m_FrameEvents; }
-    /// C++ 回调：在本组件 Tick 里按派发顺序逐条调用（回调里可以再调播放 API）
+    /// 不导出：std::function 跨语言没有等价物。脚本要接事件就在 OnUpdate 里轮询
+    /// GetEventCount() / GetEventType(i)。
     void SetEventListener(EventListener listener) { m_EventListener = std::move(listener); }
 
     // ---- 资产引用 ----
+    //
+    // 这一整块一个都不用标 ZFUNCTION：这些 getter / setter 背后就是 ZPROPERTY
+    // 字段（m_SkeletonDataAsset / m_AnimationName / m_InitialSkinName /
+    // m_Loop / m_TimeScale / m_Scale / m_Billboard），ZHeaderTool 已经把它们
+    // 发布成 d.ts 里的同名脚本属性，`spine.scale = 0.02` / `spine.billboard =
+    // SpineBillboardMode.Vertical` 直接能写。再补一套 SetScale / GetScale
+    // 只是同一份数据两套拼写，纯 API 膨胀。
+    //
+    // 运行时换动画 / 皮肤请用 SetAnimation() / SetSkin()：那两个只改运行时状态，
+    // 不会把场景弄脏；而写序列化字段在编辑器里会丢失（没有 setDirtyFlag）。
     const eastl::string& GetSkeletonDataAsset() const { return m_SkeletonDataAsset; }
     const eastl::string& GetSkeletonDataGuid() const { return m_SkeletonDataGuid; }
     const eastl::string& GetAnimationNameField() const { return m_AnimationName; }
     const eastl::string& GetInitialSkinName() const { return m_InitialSkinName; }
     SpineBillboardMode GetBillboard() const { return m_Billboard; }
-    /// 编辑器设置（Inspector / 拖放）：改序列化字段，并按新值同步 GUID
+    /// 编辑器设置（Inspector / 拖放）：改序列化字段，并按新值同步 GUID。
+    /// 导出是因为"换骨架资产"需要重新解析 GUID，不是简单赋值。
     ZFUNCTION()
     void SetSkeletonDataAsset(const eastl::string& asset_path);
     void SetAnimationNameField(const eastl::string& animation) { m_AnimationName = animation; }
     void SetInitialSkinName(const eastl::string& skin) { m_InitialSkinName = skin; }
     void SetBillboard(SpineBillboardMode mode) { m_Billboard = mode; }
-    /// 解析后的资产绝对路径（路径不在时按 GUID 重定向）；空 = 没设
+    /// 不导出：解析绝对路径是编辑器 / 诊断用的实现细节。
     std::string ResolveSkeletonPath();
     /// 当前资产的元数据（动画 / 皮肤名，按文件修改时间缓存）；没设 / 读失败 ⇒ 带 error 的空表
     std::shared_ptr<const SpineGpuAssetInfo> GetAssetInfo() const;
 
     /// 渲染器里的实例 id（0 = 还没建）。诊断 / 测试用。
+    /// 不导出：渲染器内部句柄，脚本拿到只能做"还没建"这一个判断，而那件事
+    /// GetSkeletonDataAsset() 为空已经能表达。
     uint32_t GetInstanceId() const { return m_InstanceId; }
 
     /// 编辑器自动 cook 重写了某个 .zspg（绝对路径）⇒ 用它的组件下一次 Tick 重建实例。游戏线程调用。

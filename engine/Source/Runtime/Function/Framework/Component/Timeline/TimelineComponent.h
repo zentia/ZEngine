@@ -23,37 +23,43 @@ public:
     void PostLoadResource(GameObject* parent_object) override;
     void Tick(float delta_time) override;
 
-    // 播放Timeline
+    // ---- 播放控制（ZFUNCTION：过场脚本的唯一入口）----
+    // 注意这些都只作用于 director：没加载出 TimelineAsset 时是空操作，不会崩。
+    ZFUNCTION()
     void Play();
 
-    // 暂停Timeline
+    ZFUNCTION()
     void Pause();
 
-    // 停止Timeline
+    ZFUNCTION()
     void Stop();
 
-    // 设置播放时间
+    ZFUNCTION()
     void SetTime(float time);
 
-    // 获取当前播放时间
+    ZFUNCTION()
     float GetTime() const;
 
-    // 获取播放状态
+    /// TimelinePlayState（Stopped / Playing / Paused）。
+    ZFUNCTION()
     TimelinePlayState GetPlayState() const;
 
-    // 设置播放速度
+    ZFUNCTION()
     void SetSpeed(float speed);
+    ZFUNCTION()
     float GetSpeed() const;
 
-    // 设置是否循环
+    ZFUNCTION()
     void SetLoop(bool loop);
+    ZFUNCTION()
     bool GetLoop() const;
 
-    // 获取Timeline资源
+    /// 不导出：TimelineAsset 不是 Object 派生类，`T*` 的 Converter 要求
+    /// `std::is_base_of<Object, T>`，标了会直接编译失败。脚本也不需要摸资产本身。
     TimelineAsset* GetTimelineAsset() const;
 
-    /// Receives the Timeline's event clips. Kept on the component so it survives the
-    /// director being rebuilt by PostLoadResource (reload / undo).
+    /// 不导出：TimelineEventHandler 是 std::function，跨语言没有等价物。
+    /// 过场要通知脚本，请在 Timeline 里放一条事件轨道并让脚本轮询，或由 C++ 侧转接。
     void SetEventHandler(TimelineEventHandler handler);
 
 protected:

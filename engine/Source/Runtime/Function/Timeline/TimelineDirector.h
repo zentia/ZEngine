@@ -17,6 +17,12 @@ namespace TimelineEval
 }
 
 // Timeline播放状态
+//
+// ZENUM: TimelineComponent.GetPlayState() returns this, and a bare `number` is
+// not a usable script API -- ZHeaderTool publishes the (name, value) table as a
+// global and mirrors it with `declare enum`, so `TimelinePlayState.Playing`
+// both type-checks and evaluates on the TS side.
+ZENUM()
 enum class TimelinePlayState
 {
     Stopped,
