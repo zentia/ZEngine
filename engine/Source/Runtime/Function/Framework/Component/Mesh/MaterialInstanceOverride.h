@@ -4,6 +4,7 @@
 #include "Runtime/Core/Math/Vector4.h"
 #include "Runtime/Function/Render/MaterialCustomParamSlots.h"
 #include "Runtime/Function/ShaderLab/ShaderPropertyBlob.h"
+#include "Runtime/Function/ShaderLab/ShaderTextureSlot.h"
 
 #include <EASTL/string.h>
 
@@ -60,9 +61,49 @@ struct MaterialInstanceOverride
         return false;
     }
 
-    /// 有任何覆盖吗（含 keyword）。给 `HasMaterialOverride()` 这种"这个槽位被
-    /// 动过吗"的查询用。
-    bool IsActive() const { return NeedsMaterialInstance() || !keyword_overrides.empty(); }
+    /// 有任何覆盖吗（含 keyword、贴图槽）。给 `HasMaterialOverride()` 这种"这个
+    /// 槽位被动过吗"的查询用。
+    bool IsActive() const
+    {
+        return NeedsMaterialInstance() || !keyword_overrides.empty() || HasTextureOverride();
+    }
+
+    /// 某个贴图槽被覆盖了吗。
+    ///
+    /// 贴图 override **不算**进 NeedsMaterialInstance：换贴图走的是
+    /// MaterialSourceDesc 的 hash（m_TextureSlotFiles 已经计入 getHashValue），
+    /// 于是拿到另一份**共享**材质变体，不需要 per-part 实例 —— 和 keyword 同一
+    /// 个道理。把贴图算进 NeedsMaterialInstance 会让每个换过贴图的 part 白白
+    /// 失去合批。
+    bool HasTextureOverride() const { return texture_slot_mask != 0; }
+
+    bool HasTextureSlot(uint32_t slot) const
+    {
+        return slot < ZEngine::ShaderLab::k_MaterialTextureSlotCount &&
+               (texture_slot_mask & static_cast<uint8_t>(1u << slot)) != 0;
+    }
+
+    /// 覆盖一个贴图槽。`texture_asset` 是**项目相对**路径（与 m_SharedMaterialAssets
+    /// 同一套约定），解析成绝对路径在 apply 时做。传空串 = 这个槽明确不要自定义
+    /// 贴图（回落 PBR），与"没覆盖过"是不同的状态，所以掩码单独记。
+    void SetTextureSlot(uint32_t slot, const eastl::string& texture_asset)
+    {
+        if (slot >= ZEngine::ShaderLab::k_MaterialTextureSlotCount)
+        {
+            return;
+        }
+        texture_slot_mask |= static_cast<uint8_t>(1u << slot);
+        texture_slot_files[slot] = texture_asset;
+    }
+
+    void ClearTextureSlots()
+    {
+        texture_slot_mask = 0;
+        for (eastl::string& file : texture_slot_files)
+        {
+            file.clear();
+        }
+    }
 
     void Clear() { *this = MaterialInstanceOverride {}; }
 
@@ -88,6 +129,11 @@ struct MaterialInstanceOverride
 
     /// per-renderer 的 keyword 覆盖。空 = 全部跟随资产。
     std::vector<MaterialKeywordOverride> keyword_overrides;
+
+    /// per-renderer 的贴图覆盖，按槽位 0..4。`texture_slot_mask` 的 bit i 表示
+    /// `texture_slot_files[i]` 是"显式设过"的（哪怕设成了空串）。
+    uint8_t texture_slot_mask {0};
+    eastl::string texture_slot_files[ZEngine::ShaderLab::k_MaterialTextureSlotCount];
 
     bool HasCustomComponent(uint32_t slot, uint32_t component) const
     {

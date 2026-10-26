@@ -392,6 +392,14 @@ namespace
                                        &ubo,
                                        material.material_uniform_buffer);
 
+        // DX12 后端目前**不上传真实贴图**：五个槽一律是 1x1 白图（见下面五行）。
+        // 于是 ShaderLab 2D 属性在 DX12 上还没有落点 —— material_data 里的
+        // m_TextureSlotTextures 在这条路径上被忽略。
+        //
+        // 不是"忘了加"：给 DX12 补一条和 Vulkan 等价的贴图上传链（staging →
+        // D3D12 texture → SRV）是独立的工作量，而这条链路上现在连 PBR 贴图都
+        // 还没接。等那条链有了，这里要做的就是把上面那五行换成
+        // ApplyShaderLabTextureSlots 的同款覆盖。
         Dx12CreateWhiteTexture(rhi, material.base_color_texture_image, material.base_color_image_view);
         Dx12CreateWhiteTexture(rhi, material.metallic_roughness_texture_image, material.metallic_roughness_image_view);
         Dx12CreateWhiteTexture(rhi, material.normal_texture_image, material.normal_image_view);

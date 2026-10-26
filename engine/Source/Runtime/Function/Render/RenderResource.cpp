@@ -719,6 +719,45 @@ GpuPBRMaterial& RenderResource::GetOrCreateMaterial(RHI* rhi,
             rhi->FreeMemory(inefficient_staging_buffer_memory);
         }
 
+        // ShaderLab 2D 属性逐槽覆盖上传源。槽位是复用 binding 1..5 的，所以这里
+        // 改的是"往哪个 image view 上传哪张图"，描述符集结构一点没动。空槽保留
+        // 上面那张 PBR 贴图（含 1x1 empty_image 兜底）。
+        {
+            MaterialSlotTextureSource slot_sources[ZEngine::ShaderLab::k_MaterialTextureSlotCount] {
+                {base_color_image_pixels, base_color_image_width, base_color_image_height, base_color_image_format},
+                {metallic_roughness_image_pixels,
+                 metallic_roughness_width,
+                 metallic_roughness_height,
+                 metallic_roughness_format},
+                {normal_roughness_image_pixels,
+                 normal_roughness_width,
+                 normal_roughness_height,
+                 normal_roughness_format},
+                {occlusion_image_pixels, occlusion_image_width, occlusion_image_height, occlusion_image_format},
+                {emissive_image_pixels, emissive_image_width, emissive_image_height, emissive_image_format}};
+            ApplyShaderLabTextureSlots(material_data, slot_sources);
+            base_color_image_pixels = slot_sources[0].pixels;
+            base_color_image_width = slot_sources[0].width;
+            base_color_image_height = slot_sources[0].height;
+            base_color_image_format = slot_sources[0].format;
+            metallic_roughness_image_pixels = slot_sources[1].pixels;
+            metallic_roughness_width = slot_sources[1].width;
+            metallic_roughness_height = slot_sources[1].height;
+            metallic_roughness_format = slot_sources[1].format;
+            normal_roughness_image_pixels = slot_sources[2].pixels;
+            normal_roughness_width = slot_sources[2].width;
+            normal_roughness_height = slot_sources[2].height;
+            normal_roughness_format = slot_sources[2].format;
+            occlusion_image_pixels = slot_sources[3].pixels;
+            occlusion_image_width = slot_sources[3].width;
+            occlusion_image_height = slot_sources[3].height;
+            occlusion_image_format = slot_sources[3].format;
+            emissive_image_pixels = slot_sources[4].pixels;
+            emissive_image_width = slot_sources[4].width;
+            emissive_image_height = slot_sources[4].height;
+            emissive_image_format = slot_sources[4].format;
+        }
+
         // Mip counts come from the cooked TextureData (cooked Texture2D carries a
         // full compressed mip chain; uncompressed stb-decoded textures stay at 1
         // and rely on the RHI's GPU-mipgen contract).

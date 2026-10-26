@@ -818,6 +818,56 @@ GpuPBRMaterial::property_slots / property_defaults / shaderlab_property_layout
 就行。时序前提：反射表要读 `m_LastMaterialDescs`（`BuildRenderParts` 刷的缓存），第一次
 `SubmitRenderState` 之前查不到，会暂时回落到写死的那张表。
 
+### 8.5 贴图属性链路（2D 属性 -> 描述符集槽位）
+
+`2D` 是 `Properties{}` 里最常见的类型，但它的落点与标量完全不同：贴图不在 UBO 里，在描述符集里。
+
+```
+.shader 的 Properties{}
+  │  ShaderImporter：按 **2D 属性的声明顺序**分配 0..4
+  ▼
+ShaderRes::ShaderPropertyDesc::m_TextureSlot   （-1 = 不占槽）
+  │  RenderResourceBase::LoadMaterialData
+  ▼
+RenderMaterialData::m_Properties（m_TextureSlot 跟着走）
+  │  BaseRenderer::populateMaterialDesc → BuildMaterialTextureSlots
+  │    名字 -> 槽位表进 GameObjectMaterialDesc::m_TextureProperties
+  │    槽位 -> 贴图路径进 GameObjectMaterialDesc::m_TextureSlotFiles
+  │      取值优先级：材质资产保存的同名贴图 PPtr > shader 的默认贴图 > 空
+  ▼
+RenderScene::BuildMaterialSourceDesc → MaterialSourceDesc::m_TextureSlotFiles[5]
+  │  进 operator== 与 getHashValue（换贴图 = 另一份共享材质变体）
+  ▼
+RenderResourceBase::LoadMaterialData → m_TextureSlotTextures[5]
+  │  GetOrCreateMaterial → ApplyShaderLabTextureSlots
+  ▼
+材质描述符集 binding 1..5（空槽回落那张对应的 PBR 贴图）
+```
+
+**为什么复用 binding 1..5 而不是另开槽**：
+
+| 约束 | 事实 |
+|---|---|
+| 描述符集 | 材质描述符集一共 6 个 binding：0 = UBO，1..5 = base_color / metallic_roughness / normal / occlusion / emissive，写死在 `MainCameraPass` |
+| 描述符池 | `VulkanRHI::CreateDescriptorPool()` 里 `COMBINED_IMAGE_SAMPLER = 3 + 5 * m_MaxMaterialCount` —— 加一个槽就要同步改这个乘数，而 layout 是所有材质共用的一份 |
+| bindless | `RHIBindlessTextureManager` 的注释要求调用方先 `supportsBindlessTextures()` 守卫，后端不一定支持，不能拿来兜底 |
+
+**代价（写自定义 shader 时必须知道）**：
+
+1. **一个 shader 最多 5 张 2D 贴图**。第 6 张及以后拿不到槽（`m_TextureSlot = -1`，导入期会
+   `LOG_WARNING`），脚本 `SetTexture` 对它们返回 false。
+2. **改 `Properties{}` 里 2D 属性的声明顺序会换槽位**。换槽不是静默错 —— 槽位是导入期算好存进
+   资产的，GLSL 侧的 binding 声明跟着同一张表走；但改了顺序就得重新导入，别指望热重载。
+3. **Cube / 3D 属性不占槽**（描述符集里没有对应的 binding）。
+
+**脚本侧完全具名**：`SetTexture("_BumpMap", "Textures/rock.asset")` 不用管它在第几槽。名字 -> 槽位
+的翻译两张表，与 `SetFloat` 同一套思路：先查 shader 自己声明的 2D 属性（导入期分配的槽位），没命中
+再查 `FindBuiltinTextureSlot` 的内置别名（`_MainTex` / `_BumpMap` / `_EmissionMap` ...）。两张表都不
+认识就返回 false。
+
+换贴图**不要** per-part 材质实例：`MaterialSourceDesc::getHashValue()` 已经把五槽路径计入，于是拿到
+另一份共享材质变体，与 keyword 变体同理，合批不受影响。
+
 ---
 
 ## 九、总结

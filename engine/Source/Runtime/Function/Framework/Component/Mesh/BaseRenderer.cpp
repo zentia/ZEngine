@@ -47,6 +47,15 @@ namespace
             });
     }
 
+    eastl::string resolveAssetPath(const eastl::string& asset_path)
+    {
+        if (asset_path.empty())
+        {
+            return "";
+        }
+        return GET_SYSTEM(AssetManager)->GetFullPath(asset_path).generic_string().c_str();
+    }
+
     /// 把 override 套到已经从资产 populate 过的 desc 上。
     ///
     /// 只动 `has_*` 为 true 的字段 —— 其余保持资产值。这也是为什么 override 结构体
@@ -128,6 +137,16 @@ namespace
             }
             std::sort(keywords.begin(), keywords.end());
         }
+
+        // 贴图覆盖。走的是 MaterialSourceDesc 的 hash（不是 per-part 实例）：换
+        // 一张贴图 = 另一份共享材质变体。没被覆盖的槽继续跟随材质资产。
+        for (uint32_t slot = 0; slot < ZEngine::ShaderLab::k_MaterialTextureSlotCount; ++slot)
+        {
+            if (override_data.HasTextureSlot(slot))
+            {
+                material_desc.m_TextureSlotFiles[slot] = resolveAssetPath(override_data.texture_slot_files[slot]);
+            }
+        }
     }
 
     /// m_LastMaterialDescs 的安全下标。越界返回 nullptr（getter 走默认值分支）。
@@ -143,15 +162,6 @@ namespace
     bool shouldLogMaterialDebug(const eastl::string& material_asset)
     {
         return material_asset.find("white.material.json") != eastl::string::npos;
-    }
-
-    eastl::string resolveAssetPath(const eastl::string& asset_path)
-    {
-        if (asset_path.empty())
-        {
-            return "";
-        }
-        return GET_SYSTEM(AssetManager)->GetFullPath(asset_path).generic_string().c_str();
     }
 
     /// 把 shader 声明的属性 + 材质资产保存的属性值合成"落点表 + 资产值字节"。
@@ -190,6 +200,7 @@ namespace
             property.m_CbufferSize = source.m_CbufferSize;
             property.m_CbufferComponents = source.m_CbufferComponents;
             property.m_CbufferName = source.m_CbufferName;
+            property.m_TextureSlot = source.m_TextureSlot;
 
             for (const MaterialFloatProperty& saved : material.m_FloatProperties)
             {
@@ -223,6 +234,89 @@ namespace
         }
 
         BuildShaderPropertySlots(properties, out_slots, out_values);
+    }
+
+    /// 2D 属性 -> 逐槽贴图路径 + "名字 -> 槽位"表。
+    ///
+    /// 槽位是导入期按 Properties{} 里 2D 属性的**声明顺序**分配的（ShaderTextureSlot.h），
+    /// 这里只负责把每个槽填上实际的贴图路径。取值优先级：
+    ///
+    ///   1. 材质资产保存的同名贴图（Material::m_TextureProperties 的 PPtr）——
+    ///      Unity 语义是"材质改过就是改过"，和 Float/Color 那一套一致；
+    ///   2. shader 声明里的默认贴图（ShaderPropertyDesc::m_DefaultTexture）；
+    ///   3. 都没有 -> 留空，GPU 侧按槽回落到那张 PBR 贴图。
+    ///
+    /// 第 2 条只认**像路径**的字符串（含 '/' 或 '.'）。Unity 的内置名 "white" /
+    /// "black" / "bump" 在这里没有对应物（引擎没有那几张 1x1 内置贴图），硬猜一个
+    /// 等价文件只会把画面搞错，不如留空走回落。
+    void BuildMaterialTextureSlots(const ShaderRes& shader,
+                                   const Material& material,
+                                   eastl::string* out_slot_files,
+                                   uint32_t slot_count,
+                                   std::vector<ZEngine::ShaderLab::ShaderTextureSlotBinding>& out_bindings)
+    {
+        out_bindings.clear();
+        for (uint32_t i = 0; i < slot_count; ++i)
+        {
+            out_slot_files[i].clear();
+        }
+
+        std::vector<RenderShaderPropertyDesc> properties;
+        properties.reserve(shader.m_Properties.size());
+        for (const ShaderPropertyDesc& source : shader.m_Properties)
+        {
+            if (source.m_TextureSlot < 0 ||
+                source.m_TextureSlot >= static_cast<int32_t>(slot_count))
+            {
+                continue;
+            }
+            RenderShaderPropertyDesc property;
+            property.m_Name = source.m_Name;
+            property.m_Type = source.m_Type;
+            property.m_DefaultTexture = source.m_DefaultTexture;
+            property.m_TextureSlot = source.m_TextureSlot;
+            properties.push_back(std::move(property));
+        }
+        BuildShaderTextureSlots(properties, out_bindings);
+
+        for (const ZEngine::ShaderLab::ShaderTextureSlotBinding& binding : out_bindings)
+        {
+            const uint32_t slot = static_cast<uint32_t>(binding.slot);
+
+            eastl::string resolved;
+            for (const MaterialTextureProperty& saved : material.m_TextureProperties)
+            {
+                if (saved.m_Name == binding.name.c_str())
+                {
+                    resolved = Material::ResolveTextureAssetPath(saved.m_Texture);
+                    break;
+                }
+            }
+
+            if (resolved.empty())
+            {
+                for (const ShaderPropertyDesc& source : shader.m_Properties)
+                {
+                    if (source.m_Name != binding.name.c_str())
+                    {
+                        continue;
+                    }
+                    const eastl::string& declared = source.m_DefaultTexture;
+                    if (!declared.empty() &&
+                        (declared.find('/') != eastl::string::npos || declared.find('.') != eastl::string::npos))
+                    {
+                        resolved = declared;
+                    }
+                    break;
+                }
+            }
+
+            if (resolved.empty())
+            {
+                continue;
+            }
+            out_slot_files[slot] = resolveAssetPath(resolved);
+        }
     }
 
     void populateMaterialDesc(const eastl::string& material_asset, GameObjectMaterialDesc& material_desc)
@@ -295,6 +389,15 @@ namespace
                                           *material_res,
                                           material_desc.m_ShaderProperties,
                                           material_desc.m_PropertyBlob);
+
+            // 2D 属性 -> 贴图槽。槽位来自导入期（shader 里 2D 属性的声明顺序），
+            // 贴图来自材质资产。没有 2D 属性的 shader 五个槽全空，GPU 侧逐槽回落
+            // PBR 贴图 —— 内置 StandardLit 完全走不到这段。
+            BuildMaterialTextureSlots(*shader_res,
+                                      *material_res,
+                                      material_desc.m_TextureSlotFiles,
+                                      ZEngine::ShaderLab::k_MaterialTextureSlotCount,
+                                      material_desc.m_TextureProperties);
         }
     }
 }  // namespace
@@ -905,10 +1008,70 @@ void BaseRenderer::ClearCustomParams(int slot)
         changed = true;
     }
 
+    if (slot_override->HasTextureOverride())
+    {
+        slot_override->ClearTextureSlots();
+        changed = true;
+    }
+
     if (changed)
     {
         SubmitRenderState();
     }
+}
+
+// ---- 贴图属性 ----------------------------------------------------------
+
+bool BaseRenderer::SetTexture(int slot, const eastl::string& name, const eastl::string& texture_asset)
+{
+    // 名字 -> 槽位。两张表，与 SetFloat 同一套思路：
+    //   1. shader 自己声明的 2D 属性（导入期按声明顺序分配的槽位）；
+    //   2. 内置 StandardLit 的贴图别名（_MainTex / _BumpMap / ...）。
+    // 两张表都不认识就返回 false —— 往一个猜出来的槽里塞贴图，画面错了还没处查。
+    const GameObjectMaterialDesc* desc = cachedMaterialDescAt(m_LastMaterialDescs, slot);
+    const ZEngine::ShaderLab::ShaderTextureSlotBinding* binding =
+        desc != nullptr ? ZEngine::ShaderLab::FindTextureSlotBinding(desc->m_TextureProperties, name.c_str()) : nullptr;
+
+    const int32_t texture_slot = binding != nullptr ? binding->slot
+                                                   : ZEngine::ShaderLab::FindBuiltinTextureSlot(name.c_str());
+    if (texture_slot < 0)
+    {
+        return false;
+    }
+
+    MaterialInstanceOverride* slot_override = MutableOverrideAt(slot);
+    if (slot_override == nullptr)
+    {
+        return false;
+    }
+
+    slot_override->SetTextureSlot(static_cast<uint32_t>(texture_slot), texture_asset);
+    SubmitRenderState();
+    return true;
+}
+
+eastl::string BaseRenderer::GetTexture(int slot, const eastl::string& name) const
+{
+    const GameObjectMaterialDesc* desc = cachedMaterialDescAt(m_LastMaterialDescs, slot);
+    const ZEngine::ShaderLab::ShaderTextureSlotBinding* binding =
+        desc != nullptr ? ZEngine::ShaderLab::FindTextureSlotBinding(desc->m_TextureProperties, name.c_str()) : nullptr;
+
+    const int32_t texture_slot = binding != nullptr ? binding->slot
+                                                   : ZEngine::ShaderLab::FindBuiltinTextureSlot(name.c_str());
+    if (texture_slot < 0)
+    {
+        return {};
+    }
+
+    // override 存的是脚本传进来的原值（项目相对），资产侧存的是解析后的绝对路径。
+    // getter 各自原样返回 —— 想拿绝对路径就用 AssetManager 解析一次，这里不做
+    // 隐式转换（转换错了比不转换更难查）。
+    const MaterialInstanceOverride* slot_override = OverrideAt(slot);
+    if (slot_override != nullptr && slot_override->HasTextureSlot(static_cast<uint32_t>(texture_slot)))
+    {
+        return slot_override->texture_slot_files[texture_slot];
+    }
+    return desc != nullptr ? desc->m_TextureSlotFiles[texture_slot] : eastl::string();
 }
 
 // ---- shader keyword -----------------------------------------------------

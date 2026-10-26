@@ -146,9 +146,34 @@ public:
     ZFUNCTION()
     Vector4 GetColor(int slot, const eastl::string& name) const;
 
-    /// 撤掉这个槽位上全部自定义槽位的值（8 个标量不受影响）。
+    /// 撤掉这个槽位上全部自定义槽位的值（8 个标量不受影响，具名属性和贴图覆盖
+    /// 一并撤掉）。
     ZFUNCTION()
     void ClearCustomParams(int slot);
+
+    // ---- 贴图属性（per-renderer）----------------------------------------
+    //
+    // SetTexture("_MainTex", "Textures/rust.asset") —— 名字是 shader 在
+    // Properties{} 里声明的 2D 属性名（或内置 shader 的别名，见
+    // ShaderLab/ShaderTextureSlot.h 的 FindBuiltinTextureSlot）。
+    //
+    // 槽位是**复用**材质描述符集 binding 1..5 的：没有为自定义 shader 另开槽，
+    // 描述符池也就不用改（VulkanRHI 里 COMBINED_IMAGE_SAMPLER 是按 5 张算的）。
+    // 代价是一个 shader 最多 5 张 2D 贴图，且改 .shader 里属性的**声明顺序**会
+    // 换槽位（导入期重算，GLSL 侧的 binding 跟着变，不会静默读错）。
+    //
+    // 换贴图拿到的是另一份**共享**材质变体（MaterialSourceDesc::getHashValue 已
+    // 把五槽路径计入），不是 per-part 实例 —— 与 keyword 同一个道理，合批不受
+    // 影响。但每次换贴图都要重新上传一次贴图，别在每帧调用。
+
+    /// `texture_asset` 用项目相对路径（与 m_SharedMaterialAssets 同一套约定）。
+    /// 名字不认识返回 false；传空串表示"这个槽不要自定义贴图"（回落 PBR）。
+    ZFUNCTION()
+    bool SetTexture(int slot, const eastl::string& name, const eastl::string& texture_asset);
+    /// 当前生效的贴图路径。override 返回脚本设的原值，否则返回资产解析后的路径。
+    /// 名字不认识返回空串。
+    ZFUNCTION()
+    eastl::string GetTexture(int slot, const eastl::string& name) const;
 
     // ---- shader keyword（per-renderer）-----------------------------------
     //

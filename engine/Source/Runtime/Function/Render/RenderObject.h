@@ -4,6 +4,7 @@
 #include "Runtime/Function/Framework/Object/ObjectIdAllocator.h"
 #include "Runtime/Function/Render/MaterialCustomParamSlots.h"
 #include "Runtime/Function/ShaderLab/ShaderPropertyBlob.h"
+#include "Runtime/Function/ShaderLab/ShaderTextureSlot.h"
 
 #include <EASTL/vector.h>
 #include <vector>
@@ -75,6 +76,19 @@ public:
     eastl::string m_OcclusionTextureFile;
     eastl::string m_EmissiveTextureFile;
     bool m_WithTexture {false};
+
+    /// ShaderLab 2D 属性 -> 贴图路径，按槽位 0..4 摆放。
+    ///
+    /// 由 BaseRenderer::populateMaterialDesc 从材质资产保存的贴图（或 shader 的
+    /// 默认贴图）解析出来 —— 和上面那五张 PBR 贴图是**两套来源**：那五张是
+    /// Material 的固定字段，这五个槽跟着 shader 声明的 2D 属性走。
+    ///
+    /// 全空时 GPU 侧逐槽回落 PBR 贴图，内置 StandardLit 完全不受影响。
+    eastl::string m_TextureSlotFiles[ZEngine::ShaderLab::k_MaterialTextureSlotCount];
+
+    /// 2D 属性名 -> 槽位。SetTexture("_BumpMap", tex) 靠它把名字翻成槽位，
+    /// 翻不出来就返回 false（而不是往一个猜出来的槽里塞）。
+    std::vector<ZEngine::ShaderLab::ShaderTextureSlotBinding> m_TextureProperties;
 
     eastl::vector<eastl::string> m_EnabledShaderKeywords;
 

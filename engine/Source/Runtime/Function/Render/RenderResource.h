@@ -349,6 +349,40 @@ inline void FillMaterialUniformBytes(const GpuPBRMaterial& material, const Rende
     }
 }
 
+/// 一个贴图槽的上传源：像素 + 尺寸 + 格式。
+struct MaterialSlotTextureSource
+{
+    void* pixels {nullptr};
+    uint32_t width {1};
+    uint32_t height {1};
+    RHIFormat format {RHIFormat::RHI_FORMAT_R8G8B8A8_UNORM};
+};
+
+/// ShaderLab 2D 属性逐槽盖在 PBR 五张贴图之上。
+///
+/// 槽位是**复用** binding 1..5 的（材质描述符集只有 6 个 binding，没有为自定义
+/// shader 另开槽，见 ShaderTextureSlot.h），所以覆盖必须发生在"上传源"这一层：
+/// 描述符集的 layout、绑定顺序、池大小全都不用动。
+///
+/// 空的槽不动 —— 那个槽继续用对应的 PBR 贴图。于是"没有 2D 属性的材质"五个槽
+/// 全空，行为和加这个功能之前一模一样。
+inline void ApplyShaderLabTextureSlots(const RenderMaterialData& material_data,
+                                       MaterialSlotTextureSource (&slots)[ZEngine::ShaderLab::k_MaterialTextureSlotCount])
+{
+    for (uint32_t slot = 0; slot < ZEngine::ShaderLab::k_MaterialTextureSlotCount; ++slot)
+    {
+        const std::shared_ptr<TextureData>& texture = material_data.m_TextureSlotTextures[slot];
+        if (texture == nullptr || texture->m_Pixels == nullptr)
+        {
+            continue;
+        }
+        slots[slot].pixels = texture->m_Pixels;
+        slots[slot].width = static_cast<uint32_t>(texture->m_Width);
+        slots[slot].height = static_cast<uint32_t>(texture->m_Height);
+        slots[slot].format = texture->m_Format;
+    }
+}
+
 
 inline void RenderResource::UploadGameObjectMaterialInstance(RHI* rhi, RenderEntity render_entity)
 {

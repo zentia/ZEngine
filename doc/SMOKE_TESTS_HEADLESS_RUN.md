@@ -197,3 +197,27 @@ LumenRenderPassWiring（web 库里 `UpdateLumen` 不带 `Z_HAS_LUMEN`）、Deriv
 >     engine/Source/Runtime/Function/ShaderLab/Test/ShaderLabPropertyBlobTest.cpp
 > /tmp/ShaderLabPropertyBlobTest
 > ```
+>
+> **2026-10-26 第九次（ShaderLab 贴图槽）**：再加一个 `ShaderLabTextureSlotTest`（44 项，
+> `ZENGINE_BUILD_SHADERLAB_TEXTURE_SLOT_TEST`，同样**不**链接 ZRuntime）。它钉住的是"2D 属性名字 ->
+> 材质描述符集的哪个贴图 binding"，也就是 `SetTexture("_BumpMap", t)` 的 CPU 那一半。
+>
+> 被钉住的规则是**按 `Properties{}` 里 2D 属性的声明顺序分配 0..4**：非 2D 属性不占槽、也不推动计数器
+> （用例 B），Cube / 3D 同样不占槽（D），第 6 张及以后拿 `k_NoTextureSlot` 并计入 overflow（C），
+> 越界读取安全（F）。代价也被钉住了 —— 改声明顺序会换槽位（E），以及上限就是 5（C、H）。
+>
+> 为什么是"复用现有 binding 1..5"而不是另开槽：材质描述符集一共 6 个 binding（0 = UBO，1..5 = 那五张
+> PBR 贴图），`VulkanRHI::CreateDescriptorPool()` 里 `COMBINED_IMAGE_SAMPLER = 3 + 5 * m_MaxMaterialCount`
+> 是硬上限，bindless 又要求调用方先 `supportsBindlessTextures()` 守卫而不能拿来兜底。于是零描述符改动、
+> 零池改动，代价就是上面的 5 张上限。
+>
+> `ShaderTextureSlot.h` 和 `ShaderPropertyBlob.h` 一样是 header-only（`Function/ShaderLab/*.cpp` 在
+> Web / Apple 配置下会被整目录剔除），一条命令就能跑：
+>
+> ```bash
+> SDK=/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk
+> c++ -std=c++23 -isysroot $SDK -I engine/Source -Wall \
+>     -o /tmp/ShaderLabTextureSlotTest \
+>     engine/Source/Runtime/Function/ShaderLab/Test/ShaderLabTextureSlotTest.cpp
+> /tmp/ShaderLabTextureSlotTest
+> ```

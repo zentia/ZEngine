@@ -259,6 +259,10 @@ MaterialSourceDesc RenderScene::BuildMaterialSourceDesc(const GameObjectPartDesc
         desc.m_OcclusionFile = game_object_part.m_MaterialDesc.m_OcclusionTextureFile;
         desc.m_EmissiveFile = game_object_part.m_MaterialDesc.m_EmissiveTextureFile;
         desc.m_EnabledShaderKeywords = game_object_part.m_MaterialDesc.m_EnabledShaderKeywords;
+        for (uint32_t slot = 0; slot < ZEngine::ShaderLab::k_MaterialTextureSlotCount; ++slot)
+        {
+            desc.m_TextureSlotFiles[slot] = game_object_part.m_MaterialDesc.m_TextureSlotFiles[slot];
+        }
         return desc;
     }
 
