@@ -761,6 +761,12 @@ namespace ContentBrowserAssetActions
         GameObject* dropped_go = ResolveLiveGameObject(source_id);
         if (dropped_go == nullptr)
         {
+            LOG_WARNING(ZEditor, "Create prefab: GameObject {} is not in the active level", source_id);
+            return;
+        }
+        if (target_folder.empty())
+        {
+            LOG_WARNING(ZEditor, "Create prefab: no target folder for '{}'", dropped_go->GetName().c_str());
             return;
         }
 
@@ -768,7 +774,13 @@ namespace ContentBrowserAssetActions
             BuildUniquePrefabAssetPath(target_folder, dropped_go->GetName());
         if (PrefabUtility::SaveAsPrefabAsset(dropped_go, prefab_path))
         {
+            LOG_INFO(ZEditor, "Create prefab: '{}' -> {}", dropped_go->GetName().c_str(), prefab_path.generic_string());
             RefreshContentBrowserSelection(ctx, prefab_path);
+        }
+        else
+        {
+            LOG_ERROR(ZEditor, "Create prefab: saving '{}' to {} failed", dropped_go->GetName().c_str(),
+                      prefab_path.generic_string());
         }
     }
 

@@ -83,6 +83,15 @@ ZSlate::UIColor ThumbColorForNode(const EditorFileNode* node)
 // missing: prefabs are created as YAML .prefab (ContentBrowserHelpers::
 // BuildUniquePrefabAssetPath), so no newly made prefab could be dragged anywhere --
 // EditorScenePlacement already handled the extension, the drag never started.
+// A Hierarchy GameObject drag (drop on a folder = create a prefab from it).
+// GObjectID 0 is a valid id -- the first object of a level; the invalid one is
+// k_invalid_gobject_id. `Id != 0` used to reject dragging that object.
+bool IsDraggedGameObject(const std::shared_ptr<FDragDropOperation>& op)
+{
+    return op != nullptr && op->PayloadType == EditorDragDrop::kZSlateAssetPayloadGObjectId &&
+           static_cast<GObjectID>(op->Id) != k_invalid_gobject_id;
+}
+
 bool IsSceneDroppableAsset(const EditorFileNode* node)
 {
     if (node == nullptr)
@@ -580,8 +589,7 @@ void ZSlateContentBrowserWindow::AddItemRow(EditorFileNode* node,
         };
 
         row->CanAcceptDrop = [](const std::shared_ptr<FDragDropOperation>& op) {
-            return op != nullptr && op->PayloadType == EditorDragDrop::kZSlateAssetPayloadGObjectId &&
-                   op->Id != 0;
+            return IsDraggedGameObject(op);
         };
         row->OnDropHandler = [this, node_ptr](const std::shared_ptr<FDragDropOperation>& op) {
             if (op == nullptr)
@@ -762,8 +770,7 @@ std::shared_ptr<SWidget> ZSlateContentBrowserWindow::BuildAssetTile(EditorFileNo
         };
 
         tile->CanAcceptDrop = [](const std::shared_ptr<FDragDropOperation>& op) {
-            return op != nullptr && op->PayloadType == EditorDragDrop::kZSlateAssetPayloadGObjectId &&
-                   op->Id != 0;
+            return IsDraggedGameObject(op);
         };
         tile->OnDropHandler = [this, node_ptr](const std::shared_ptr<FDragDropOperation>& op) {
             if (op == nullptr)
@@ -924,8 +931,7 @@ void ZSlateContentBrowserWindow::Rebuild(float scale, float content_width)
 
     auto drop = std::make_shared<SDropTarget>();
     drop->CanAcceptDrop = [](const std::shared_ptr<FDragDropOperation>& op) {
-        return op != nullptr && op->PayloadType == EditorDragDrop::kZSlateAssetPayloadGObjectId &&
-               op->Id != 0;
+        return IsDraggedGameObject(op);
     };
     drop->OnDropHandler = [this](const std::shared_ptr<FDragDropOperation>& op) {
         if (op == nullptr)
