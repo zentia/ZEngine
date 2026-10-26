@@ -195,3 +195,40 @@ if(ZENGINE_BUILD_NANITE_GPU_CULLING_SMOKE_TEST)
 
     message(STATUS "Configured Nanite GPU-culling smoke test: NaniteGPUCullingSmokeTest")
 endif()
+
+# =====================================================================
+# Nanite HiZ (层次 Z 缓冲) 纯 CPU 核心冒烟测试。
+# ---------------------------------------------------------------------
+# 验证 NaniteHiZ.h 的纯函数（BuildHiZPyramid / MipLevelForRect /
+# SampleMaxDepth / TestOccluded）：金字塔构建（max 归约）+ 区域采样 + 遮挡判据。
+# 与 EnhancedInput / GasCooldown 同一手法：被测逻辑是 header-only 纯函数，不依赖
+# RHI/窗口/Nanite，故本 target 只链 include root，不链 ZRuntime。
+#
+#   cmake -B build -DZENGINE_BUILD_NANITE_HIZ_SMOKE_TEST=ON
+#   cmake --build build --target NaniteHiZSmokeTest
+# =====================================================================
+option(ZENGINE_BUILD_NANITE_HIZ_SMOKE_TEST
+       "Build the Nanite HiZ (hierarchical Z) pure-CPU smoke-test executable"
+       OFF)
+
+if(ZENGINE_BUILD_NANITE_HIZ_SMOKE_TEST)
+    add_executable(NaniteHiZSmokeTest NaniteHiZSmokeTest.cpp)
+
+    set_target_properties(NaniteHiZSmokeTest PROPERTIES
+        CXX_STANDARD 20
+        FOLDER "Engine/Tests"
+    )
+
+    # Header-only include chain: only the engine/Source root is needed.
+    target_include_directories(NaniteHiZSmokeTest PRIVATE
+        ${ENGINE_ROOT_DIR}/Source
+    )
+
+    if(MSVC)
+        target_compile_options(NaniteHiZSmokeTest PRIVATE /W4)
+    endif()
+
+    add_test(NAME NaniteHiZSmokeTest COMMAND NaniteHiZSmokeTest)
+
+    message(STATUS "Configured Nanite HiZ smoke test: NaniteHiZSmokeTest")
+endif()

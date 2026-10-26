@@ -63,8 +63,10 @@ NaniteVisibilityResult NaniteCullingSystem::CullInstancesCPU(const std::vector<N
             continue;
         }
 
-        // 遮挡剔除
-        if (config.enable_culling && OcclusionCull(instance.local_bounds, instance.transform))
+        // 遮挡剔除（HiZ 未就绪时 OcclusionCull 内部会保守地不剔除）
+        if (config.enable_culling &&
+            OcclusionCull(instance.local_bounds, instance.transform,
+                          camera->GetProjectionMatrix() * camera->GetViewMatrix()))
         {
             continue;
         }
@@ -117,10 +119,23 @@ bool NaniteCullingSystem::FrustumCull(const AxisAlignedBox& bounds,
     return AabbFrustumTest(bounds, transform, planes) < 0;
 }
 
-bool NaniteCullingSystem::OcclusionCull(const AxisAlignedBox& bounds, const Matrix4x4& transform)
+bool NaniteCullingSystem::OcclusionCull(const AxisAlignedBox& bounds,
+                                        const Matrix4x4& transform,
+                                        const Matrix4x4& view_projection)
 {
-    // TODO: 实现遮挡剔除
-    return false;
+    // HiZ 未就绪（还没喂过深度图）时保守地不剔除：不知道场景深度就把实例裁掉，
+    // 是比不裁更糟的错误（会挖洞）。与 FrustumCull 对无效 bounds 的处理一致。
+    if (!m_HiZ.GetPyramid().Valid())
+    {
+        return false;
+    }
+
+    return m_HiZ.IsOccluded(bounds, transform, view_projection);
+}
+
+void NaniteCullingSystem::UpdateHiZDepth(const float* depth_data, uint32_t width, uint32_t height)
+{
+    m_HiZ.UpdateDepthBuffer(depth_data, width, height);
 }
 
 bool NaniteCullingSystem::DistanceCull(const Vector3& position, float distance, float max_distance)
@@ -316,44 +331,90 @@ bool NaniteHierarchicalZBuffer::Initialize(RHI* rhi, uint32_t width, uint32_t he
     m_Rhi = rhi;
     m_Width = width;
     m_Height = height;
-
-    // 计算Mip级别数
-    m_MipLevels = static_cast<uint32_t>(std::log2(std::max(width, height))) + 1;
-    m_MipBuffers.resize(m_MipLevels, nullptr);
-
+    // 金字塔在 UpdateDepthBuffer 时按尺寸构建；这里只记尺寸。
     return true;
 }
 
 void NaniteHierarchicalZBuffer::clear()
 {
-    m_MipBuffers.clear();
+    m_Pyramid.Reset();
     m_Width = 0;
     m_Height = 0;
-    m_MipLevels = 0;
 }
 
-void NaniteHierarchicalZBuffer::UpdateDepthBuffer(const void* depth_data, uint32_t width, uint32_t height)
+void NaniteHierarchicalZBuffer::UpdateDepthBuffer(const float* depth_data, uint32_t width, uint32_t height)
 {
-    // TODO: 更新深度缓冲并构建层次结构
-    BuildHierarchy();
+    // CPU 路径：直接构建 max 归约金字塔。深度约定 reversed-Z（1=最近、0=最远）。
+    m_Width = width;
+    m_Height = height;
+    m_Pyramid = nanite_hiz::BuildHiZPyramid(width, height, depth_data);
 }
 
 void NaniteHierarchicalZBuffer::BuildHierarchy()
 {
-    // TODO: 构建层次Z缓冲
-    for (uint32_t i = 1; i < m_MipLevels; ++i)
+    // 从已有 mip0 重建（UpdateDepthBuffer 已经构建过；这里是幂等的公开入口）。
+    if (m_Width == 0 || m_Height == 0)
+        return;
+    // 用当前 m_Pyramid 的 mip0 重跑（BuildHiZPyramid 需要原始深度图，这里直接复用
+    // 已存的 mip0 作为深度源，避免调用方必须保留一份深度图）。
+    const float* mip0 = m_Pyramid.Valid() ? m_Pyramid.data.data() : nullptr;
+    m_Pyramid = nanite_hiz::BuildHiZPyramid(m_Width, m_Height, mip0);
+}
+
+bool NaniteHierarchicalZBuffer::IsOccluded(const AxisAlignedBox& bounds,
+                                           const Matrix4x4& transform,
+                                           const Matrix4x4& view_projection)
+{
+    if (!m_Pyramid.Valid())
     {
-        BuildMipLevel(i);
+        return false;  // 没有深度数据，保守地不遮挡。
     }
-}
 
-void NaniteHierarchicalZBuffer::BuildMipLevel(uint32_t mip_level)
-{
-    // TODO: 构建单个Mip级别
-}
+    // 把 AABB 的 8 个角点变到世界空间，再投影到 NDC（transformCoord 已除以 w）。
+    const Vector3 c = bounds.getCenter();
+    const Vector3 he = bounds.getHalfExtent();
+    Vector3 world[8];
+    world[0] = transform.transformCoord(c + Vector3(-he.x, -he.y, -he.z));
+    world[1] = transform.transformCoord(c + Vector3( he.x, -he.y, -he.z));
+    world[2] = transform.transformCoord(c + Vector3(-he.x,  he.y, -he.z));
+    world[3] = transform.transformCoord(c + Vector3( he.x,  he.y, -he.z));
+    world[4] = transform.transformCoord(c + Vector3(-he.x, -he.y,  he.z));
+    world[5] = transform.transformCoord(c + Vector3( he.x, -he.y,  he.z));
+    world[6] = transform.transformCoord(c + Vector3(-he.x,  he.y,  he.z));
+    world[7] = transform.transformCoord(c + Vector3( he.x,  he.y,  he.z));
 
-bool NaniteHierarchicalZBuffer::IsOccluded(const AxisAlignedBox& bounds, const Matrix4x4& transform, float min_z)
-{
-    // TODO: 实现遮挡测试
-    return false;
+    // 任一角点落在相机背后（NDC 分量异常）⇒ 物体横跨视锥，保守地判可见（不遮挡）。
+    // 用 view_projection 直接投影拿 clip w 判断：transformCoord 把 w<=0 折成 ZERO，
+    // 这里重新算 clip 空间 z/w 范围太绕，改用 NDC 是否有限来兜底。
+    float min_px = m_Width,  min_py = m_Height;
+    float max_px = 0,        max_py = 0;
+    float nearest_depth = 0.0f;  // reversed-Z：最近 = 最大 z
+    for (int i = 0; i < 8; ++i)
+    {
+        const Vector3& p = world[i];
+        // transformCoord 返回 NDC（x,y ∈ [-1,1] 正常；z 是 reversed-Z 深度）。
+        // 角点在相机背后时 NDC 会溢出 [-1,1]——保守起见放宽矩形到全屏。
+        const float ndc_x = p.x, ndc_y = p.y, ndc_z = p.z;
+        if (ndc_x < -1.0f || ndc_x > 1.0f || ndc_y < -1.0f || ndc_y > 1.0f)
+        {
+            // 横跨视锥：整屏范围，几乎必然判可见。
+            min_px = 0; min_py = 0; max_px = static_cast<float>(m_Width); max_py = static_cast<float>(m_Height);
+            nearest_depth = std::max(nearest_depth, ndc_z);
+            break;
+        }
+        const float px = (ndc_x * 0.5f + 0.5f) * static_cast<float>(m_Width);
+        const float py = (1.0f - (ndc_y * 0.5f + 0.5f)) * static_cast<float>(m_Height);  // 翻转 y（行 0 = 顶）
+        min_px = std::min(min_px, px);
+        min_py = std::min(min_py, py);
+        max_px = std::max(max_px, px);
+        max_py = std::max(max_py, py);
+        nearest_depth = std::max(nearest_depth, ndc_z);  // 物体最近深度 = 最大 reversed-Z
+    }
+
+    const uint32_t x0 = static_cast<uint32_t>(std::min(std::max(min_px, 0.0f), static_cast<float>(m_Width)));
+    const uint32_t y0 = static_cast<uint32_t>(std::min(std::max(min_py, 0.0f), static_cast<float>(m_Height)));
+    const uint32_t x1 = static_cast<uint32_t>(std::min(std::max(max_px, 0.0f), static_cast<float>(m_Width)));
+    const uint32_t y1 = static_cast<uint32_t>(std::min(std::max(max_py, 0.0f), static_cast<float>(m_Height)));
+
+    return nanite_hiz::TestOccluded(m_Pyramid, x0, y0, x1, y1, nearest_depth);
 }

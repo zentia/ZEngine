@@ -773,6 +773,15 @@ list(REMOVE_ITEM SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Nanite/Test/NaniteGPUCullingSmokeTest.cpp")
 list(REMOVE_ITEM REGULAR_SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Nanite/Test/NaniteGPUCullingSmokeTest.cpp")
+# Nanite HiZ smoke-test main. Same carve-out rationale: it owns main() and must
+# not be whole-archived into ZRuntime. Built only when
+# ZENGINE_BUILD_NANITE_HIZ_SMOKE_TEST=ON (see Function/Render/Nanite/Test/
+# CMakeLists.txt). Header-only (nanite_hiz arithmetic), links nothing but the
+# include root.
+list(REMOVE_ITEM SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Nanite/Test/NaniteHiZSmokeTest.cpp")
+list(REMOVE_ITEM REGULAR_SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Nanite/Test/NaniteHiZSmokeTest.cpp")
 # AppleSceneBlit smoke-test main carve-out (same rationale). Built only when
 # ZENGINE_BUILD_APPLE_SCENE_BLIT_SMOKE_TEST=ON (see
 # Function/Render/Test/CMakeLists.txt). It is the only guard on the MSL that
