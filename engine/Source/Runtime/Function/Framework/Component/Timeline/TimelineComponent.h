@@ -52,6 +52,10 @@ public:
     // 获取Timeline资源
     TimelineAsset* GetTimelineAsset() const;
 
+    /// Receives the Timeline's event clips. Kept on the component so it survives the
+    /// director being rebuilt by PostLoadResource (reload / undo).
+    void SetEventHandler(TimelineEventHandler handler);
+
 protected:
     ZPROPERTY(Name="timeline_res")
     TimelineComponentRes m_TimelineRes;
@@ -61,6 +65,7 @@ private:
     bool LoadTimelineAsset();
 
     std::shared_ptr<TimelineDirector> m_Director;
+    TimelineEventHandler m_EventHandler;
     TimelineAsset* m_TimelineAsset {nullptr};
     bool m_AssetLoaded {false};
 };

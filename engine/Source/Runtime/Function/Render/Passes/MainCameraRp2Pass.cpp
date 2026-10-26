@@ -180,23 +180,39 @@ void MainCameraRp2Pass::SetupRenderGraphPath()
     // Opt-in. The hand-written path is the one that has been shipping, and the graph path
     // still needs per-frame visual verification, so it stays off unless asked for.
     const char* env = std::getenv("ZENGINE_RG_RP2");
-    m_UseRenderGraph = env != nullptr && env[0] != '\0' && env[0] != '0';
-
-    if (!m_UseRenderGraph)
+    m_UseRenderGraph = false;
+    if (env == nullptr || env[0] == '\0' || env[0] == '0')
     {
         return;
     }
 
-    // None of this allocates GPU memory today: every resource RP2 touches is imported, so
-    // the pool is a safety net for a future pass that creates a transient target.
-    m_RgDevice = std::make_unique<RGRhiDeviceAdapter>(m_Rhi);
-    m_RgPool = std::make_unique<RenderGraphResourcePool>(m_RgDevice.get());
-    m_RgExecutor = std::make_unique<RenderGraphExecutor>(m_Rhi, m_RgDevice.get(), m_RgPool.get());
-    m_Rp2Graph = std::make_unique<RenderGraph>("RP2");
-
+    SetRenderGraphPathEnabled(true);
     LOG_INFO(ZRender,
              "MainCameraRp2Pass: RP2 is driven by the render graph (ZENGINE_RG_RP2=1), fxaa={}",
              m_EnableFxaa);
+}
+
+bool MainCameraRp2Pass::SetRenderGraphPathEnabled(bool enabled)
+{
+    if (!enabled)
+    {
+        // Keep the graph objects: the A/B capture flips this off and back on in one frame.
+        m_UseRenderGraph = false;
+        return true;
+    }
+
+    // None of this allocates GPU memory today: every resource RP2 touches is imported, so
+    // the pool is a safety net for a future pass that creates a transient target.
+    if (m_Rp2Graph == nullptr)
+    {
+        m_RgDevice = std::make_unique<RGRhiDeviceAdapter>(m_Rhi);
+        m_RgPool = std::make_unique<RenderGraphResourcePool>(m_RgDevice.get());
+        m_RgExecutor = std::make_unique<RenderGraphExecutor>(m_Rhi, m_RgDevice.get(), m_RgPool.get());
+        m_Rp2Graph = std::make_unique<RenderGraph>("RP2");
+        m_RgFallbackLogged = false;
+    }
+    m_UseRenderGraph = true;
+    return true;
 }
 
 void MainCameraRp2Pass::Shutdown()
@@ -664,11 +680,13 @@ void MainCameraRp2Pass::DrawRP2(uint32_t swapchain_image_index,
         return;
     }
 
+    m_LastDrawUsedGraph = false;
     // Opt-in: ZENGINE_RG_RP2=1. DrawRP2WithGraph() returns false whenever the graph cannot
     // take over -- most importantly when Compile() is invalid -- and the hand-written chain
     // below then draws the frame exactly as it always has.
     if (m_UseRenderGraph && DrawRP2WithGraph(swapchain_image_index, post_ui_callbacks))
     {
+        m_LastDrawUsedGraph = true;
         return;
     }
 

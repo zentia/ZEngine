@@ -28,6 +28,20 @@ static std::unique_ptr<GenericApplication> CreatePlatformApplication()
     // (UIKit UIView / Android Surface / OHOS XComponent).
     // The platform RHI attaches to an externally-provided layer/surface at runtime.
     return nullptr;
+#elif defined(__EMSCRIPTEN__)
+    // Web (Emscripten): the drawable is the canvas, owned by the browser / mini-
+    // game host. WebGL2RHI creates its WebGL2 context on #canvas itself
+    // (WebGL2RHI::CreateGLContext) and reads the canvas size directly; there is
+    // no engine-owned window here. Checked BEFORE Linux: emcc inherits
+    // Z_PLATFORM_LINUX=1 from CMake's UNIX branch.
+    return nullptr;
+#elif Z_PLATFORM_LINUX
+    // Linux desktop: no native window layer yet (X11 / Wayland is Step 6 of
+    // doc/platform_windowing_plan.md, and VulkanRHI's Linux surface creation is
+    // still a stub). Run without an engine-owned window -- enough for headless
+    // tools and smoke tests that link ZRuntime. Previously this fell through to
+    // the #error below, so no Linux build compiled WindowSystem.cpp at all.
+    return nullptr;
 #else
     #error "CreatePlatformApplication: unsupported platform"
 #endif
@@ -74,15 +88,15 @@ bool WindowSystem::Initialize()
 
     m_Application = CreatePlatformApplication();
 
-#if Z_PLATFORM_MACOS || Z_PLATFORM_IOS || Z_PLATFORM_ANDROID || Z_PLATFORM_OHOS
-    // Apple / Android / OHOS platforms: window is managed externally by the host.
-    // The platform RHI attaches to the host's layer/surface; WindowSystem provides
-    // only the input/event shell — window creation is deferred to the host.
+    // No engine-owned window on this platform (iOS / Android / OHOS / Web / Linux
+    // desktop, see CreatePlatformApplication): the host owns the surface, or there
+    // is none. WindowSystem stays an input/event shell and every accessor below
+    // already tolerates a null application. This used to be guarded for Apple /
+    // Android / OHOS only, so Web (Z_PLATFORM_LINUX=1 under emcc) dereferenced null.
     if (!m_Application)
     {
         return true;
     }
-#endif
 
     if (!m_Application->Initialize(app->name.c_str(), width, height))
     {

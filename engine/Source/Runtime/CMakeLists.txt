@@ -127,7 +127,24 @@ if(EMSCRIPTEN OR CMAKE_SYSTEM_NAME STREQUAL "Emscripten")
     list(FILTER SOURCE_FILES         EXCLUDE REGEX "(^|.*/)Function/Render/Platform/Windows/.*\\.cpp$")
     list(FILTER REGULAR_HEADER_FILES EXCLUDE REGEX "(^|.*/)Function/Render/Platform/Windows/.*")
     list(FILTER REGULAR_SOURCE_FILES EXCLUDE REGEX "(^|.*/)Function/Render/Platform/Windows/.*\\.cpp$")
-    message(STATUS "Runtime(Web): Vulkan/DX12/Metal disabled; using WebGL2 RHI; excluded Passes/VirtualTexture/DebugDrawBuffer/Lumen/ShaderLab/physics sources")
+    # ----------------------------------------------------------------
+    # 上面把整个 Passes/ 目录都排除了，但**桌面渲染管线**（DesktopRenderPipelineModule /
+    # RenderPipelineBase / RenderScene，都在 Render/ 而非 Passes/，未被排除）仍然引用其中
+    # 几个 pass 的符号，于是链接期报 undefined symbol。
+    #
+    # 这里把**已解耦、平台无关**的两个 pass TU 放回来（与 Apple 分支同旨：ParticlePass
+    # 早已去掉 Vulkan 私有依赖，只用 RHI_ 前缀类型；MainCameraPassShaderCommon 是纯
+    # shader 名判定，无任何后端依赖）。二者在 Web 上用 emcc 实测编译通过，真正编进
+    # 桌面管线而非靠空桩掩盖缺口。
+    list(APPEND SOURCE_FILES
+        "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Passes/ParticlePass.cpp"
+        "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Passes/MainCameraPassShaderCommon.cpp"
+        "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Passes/MainCameraRp1Pass.cpp")
+    list(APPEND REGULAR_SOURCE_FILES
+        "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Passes/ParticlePass.cpp"
+        "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Passes/MainCameraPassShaderCommon.cpp"
+        "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Passes/MainCameraRp1Pass.cpp")
+    message(STATUS "Runtime(Web): Vulkan/DX12/Metal disabled; using WebGL2 RHI; excluded Passes/VirtualTexture/DebugDrawBuffer/Lumen/ShaderLab/physics sources; re-included decoupled ParticlePass + MainCameraPassShaderCommon")
 else()
     set(ZENGINE_RHI_WEBGL2 OFF CACHE INTERNAL "WebGL2 RHI backend disabled (non-Emscripten build)")
     list(FILTER SOURCE_FILES         EXCLUDE REGEX "(^|.*/)Function/Render/Interface/WebGL2/.*\\.cpp$")
@@ -153,6 +170,32 @@ if(ANDROID OR Z_PLATFORM_OHOS OR OHOS OR CMAKE_SYSTEM_NAME STREQUAL "OHOS")
     list(FILTER SOURCE_FILES         EXCLUDE REGEX "(^|.*/)Function/Render/Platform/Windows/.*\\.cpp$")
     list(FILTER REGULAR_HEADER_FILES EXCLUDE REGEX "(^|.*/)Function/Render/Platform/Windows/.*")
     list(FILTER REGULAR_SOURCE_FILES EXCLUDE REGEX "(^|.*/)Function/Render/Platform/Windows/.*\\.cpp$")
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    # audit #1：Linux 桌面走 Vulkan。DX12RHI.cpp / DX12ShaderCompiler.cpp 无条件
+    # include <d3d12.h> / <d3dcompiler.h>（无 _WIN32 守卫），Metal 同理，都必须
+    # 从 Linux 构建里剔除，否则编译期就找不到头文件。DX12-only pass
+    # （DX12MainCameraPass 无守卫 include DX12RHI.h）也要一并排除。
+    # VulkanRHI.cpp 及其 Vulkan 专属 TU 保留（Z_HAS_VULKAN=1，Vulkan SDK 提供头/库）。
+    list(FILTER SOURCE_FILES EXCLUDE REGEX "(^|.*/)Function/Render/Interface/DX12/.*\\.cpp$")
+    list(FILTER SOURCE_FILES EXCLUDE REGEX "(^|.*/)Function/Render/Interface/Metal/.*\\.(cpp|mm|m)$")
+    list(FILTER REGULAR_SOURCE_FILES EXCLUDE REGEX "(^|.*/)Function/Render/Interface/DX12/.*\\.cpp$")
+    list(FILTER REGULAR_SOURCE_FILES EXCLUDE REGEX "(^|.*/)Function/Render/Interface/Metal/.*\\.(cpp|mm|m)$")
+    # DX12-only passes include <d3d12.h>（DX12MainCameraPass 无守卫）；MainCameraRp2Pass
+    # 虽把 DX12RHI.h 收进 _WIN32 守卫、本身平台无关，但与 Android/Vulkan 一致地排除，
+    # 保持 Vulkan 移动/桌面同一条剔除策略。
+    list(FILTER SOURCE_FILES EXCLUDE REGEX "(^|.*/)Function/Render/Passes/DX12.*\\.cpp$")
+    list(FILTER SOURCE_FILES EXCLUDE REGEX "(^|.*/)Function/Render/Passes/MainCameraRp2Pass\\.cpp$")
+    list(FILTER REGULAR_SOURCE_FILES EXCLUDE REGEX "(^|.*/)Function/Render/Passes/DX12.*\\.cpp$")
+    list(FILTER REGULAR_SOURCE_FILES EXCLUDE REGEX "(^|.*/)Function/Render/Passes/MainCameraRp2Pass\\.cpp$")
+    # DX12-only ShaderLab compiler includes <d3d12.h>; the Vulkan compiler is kept.
+    list(FILTER SOURCE_FILES EXCLUDE REGEX "(^|.*/)Function/ShaderLab/ShaderLabDx12.*\\.(cpp|h)$")
+    list(FILTER REGULAR_SOURCE_FILES EXCLUDE REGEX "(^|.*/)Function/ShaderLab/ShaderLabDx12.*\\.(cpp|h)$")
+    # Strip Platform/Windows/ files (not applicable to Linux)
+    list(FILTER HEADER_FILES         EXCLUDE REGEX "(^|.*/)Function/Render/Platform/Windows/.*")
+    list(FILTER SOURCE_FILES         EXCLUDE REGEX "(^|.*/)Function/Render/Platform/Windows/.*\\.cpp$")
+    list(FILTER REGULAR_HEADER_FILES EXCLUDE REGEX "(^|.*/)Function/Render/Platform/Windows/.*")
+    list(FILTER REGULAR_SOURCE_FILES EXCLUDE REGEX "(^|.*/)Function/Render/Platform/Windows/.*\\.cpp$")
+    message(STATUS "Runtime(Linux): Vulkan RHI; excluded DX12/Metal interfaces + DX12 passes")
 elseif(APPLE)
     list(FILTER SOURCE_FILES EXCLUDE REGEX "(^|.*/)Function/Render/[Ii]nterface/[Dd][Xx]12/.*\\.cpp$")
     list(FILTER SOURCE_FILES EXCLUDE REGEX "(^|.*/)Function/Render/[Ii]nterface/[Vv]ulkan/.*\\.cpp$")
@@ -372,6 +415,24 @@ list(REMOVE_ITEM HEADER_FILES "${CMAKE_CURRENT_SOURCE_DIR}/pch.h")
 # exe and trigger LNK2005 "main already defined".
 # ---------------------------------------------------------------------------
 list(REMOVE_ITEM SOURCE_FILES "${CMAKE_CURRENT_SOURCE_DIR}/Function/ShaderLab/ShaderLabTest.cpp")
+# Headless producer for scripts/rg_ab_selftest.sh (owns a main(); built with emcc only).
+list(REMOVE_ITEM SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Passes/Test/RenderGraphAbCaptureFormatTest.cpp")
+list(REMOVE_ITEM REGULAR_SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Passes/Test/RenderGraphAbCaptureFormatTest.cpp")
+# Headless Timeline evaluation test (owns a main(); scripts/verify_timeline_wasm.sh).
+list(REMOVE_ITEM SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Timeline/Test/TimelineEvaluationTest.cpp")
+list(REMOVE_ITEM REGULAR_SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Timeline/Test/TimelineEvaluationTest.cpp")
+# Headless VT streaming test (owns a main(); scripts/verify_vt_wasm.sh). Left in by
+# step 2.6, it put a second main() into libZRuntime.a, so every executable that links
+# ZRuntime --whole-archive (web / Linux / Apple smoke tests) failed with
+# "duplicate symbol: main".
+list(REMOVE_ITEM SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Texture/Test/VirtualTextureStreamingSmokeTest.cpp")
+list(REMOVE_ITEM REGULAR_SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Texture/Test/VirtualTextureStreamingSmokeTest.cpp")
 # PR5c: DX12 bindless smoke-test main. Same exclusion rationale as
 # shader_lab_test above. Built only when ZENGINE_BUILD_BINDLESS_SMOKE_TEST=ON
 # (see Function/Render/Interface/DX12/Test/CMakeLists.txt).
@@ -468,6 +529,11 @@ list(REMOVE_ITEM SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/PlayerSettings/Test/PlayerSettingsSmokeTest.cpp")
 list(REMOVE_ITEM REGULAR_SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/PlayerSettings/Test/PlayerSettingsSmokeTest.cpp")
+# CVar save/load smoke-test main (cvar.save / cvar.load). Same carve-out.
+list(REMOVE_ITEM SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Console/Test/ConsoleVariablesFileSmokeTest.cpp")
+list(REMOVE_ITEM REGULAR_SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Console/Test/ConsoleVariablesFileSmokeTest.cpp")
 # PR-SK1: skeletal skinning smoke-test main. Same carve-out rationale as every
 # entry above: it owns main() and must not be whole-archived into ZRuntime.
 # Built only when ZENGINE_BUILD_ANIMATION_SMOKE_TEST=ON (see
@@ -547,6 +613,14 @@ list(REMOVE_ITEM SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Interface/Test/RHIIndirectDrawSmokeTest.cpp")
 list(REMOVE_ITEM REGULAR_SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Interface/Test/RHIIndirectDrawSmokeTest.cpp")
+# RHI factory registry smoke-test main carve-out (audit #1 + #4). Owns main(),
+# so it must not be swept into ZRuntime's whole-archive (LNK2005). Built only
+# when ZENGINE_BUILD_RHI_REGISTRY_SMOKE_TEST=ON (see
+# Function/Render/Interface/Test/CMakeLists.txt).
+list(REMOVE_ITEM SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Interface/Test/RHIFactoryRegistrySmokeTest.cpp")
+list(REMOVE_ITEM REGULAR_SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Interface/Test/RHIFactoryRegistrySmokeTest.cpp")
 # Lumen scene-geometry smoke-test main carve-out (same rationale). Built only
 # when ZENGINE_BUILD_LUMEN_SCENE_GEOMETRY_SMOKE_TEST=ON (see
 # Function/Render/Lumen/Test/CMakeLists.txt).
@@ -691,6 +765,50 @@ list(REMOVE_ITEM SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Core/Memory/Test/MemoryPairingSmokeTest.cpp")
 list(REMOVE_ITEM REGULAR_SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Core/Memory/Test/MemoryPairingSmokeTest.cpp")
+# UAF 检测冒烟测试的 main carve-out（同理由）。Only built when
+# ZENGINE_BUILD_UAF_DETECTION_SMOKE_TEST=ON (see Core/Memory/Test/CMakeLists.txt).
+list(REMOVE_ITEM SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Core/Memory/Test/UafDetectionSmokeTest.cpp")
+list(REMOVE_ITEM REGULAR_SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Core/Memory/Test/UafDetectionSmokeTest.cpp")
+# 对象生命周期冒烟测试的 main carve-out（同理由）。Only built when
+# ZENGINE_BUILD_OBJECT_LIFETIME_SMOKE_TEST=ON (see Core/Memory/Test/CMakeLists.txt).
+list(REMOVE_ITEM SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Core/Memory/Test/ObjectLifetimeSmokeTest.cpp")
+list(REMOVE_ITEM REGULAR_SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Core/Memory/Test/ObjectLifetimeSmokeTest.cpp")
+# PPtr 生命周期冒烟测试的 main carve-out（同理由）。Only built when
+# ZENGINE_BUILD_PPTR_LIFETIME_SMOKE_TEST=ON (see Core/Memory/Test/CMakeLists.txt).
+list(REMOVE_ITEM SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Core/Memory/Test/PPtrLifetimeSmokeTest.cpp")
+list(REMOVE_ITEM REGULAR_SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Core/Memory/Test/PPtrLifetimeSmokeTest.cpp")
+# 崩溃安全日志环形缓冲冒烟测试的 main carve-out（同理由）。Only built when
+# ZENGINE_BUILD_CRASH_LOG_TAIL_SMOKE_TEST=ON (see Core/Log/Test/CMakeLists.txt).
+list(REMOVE_ITEM SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Core/Log/Test/CrashLogTailSmokeTest.cpp")
+list(REMOVE_ITEM REGULAR_SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Core/Log/Test/CrashLogTailSmokeTest.cpp")
+# 引用计数基础设施冒烟测试的 main carve-out（audit #7）。Only built when
+# ZENGINE_BUILD_REF_COUNTED_SMOKE_TEST=ON (see Core/Memory/Test/CMakeLists.txt)。
+list(REMOVE_ITEM SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Core/Memory/Test/RefCountedSmokeTest.cpp")
+list(REMOVE_ITEM REGULAR_SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Core/Memory/Test/RefCountedSmokeTest.cpp")
+# 弱引用句柄冒烟测试的 main carve-out（audit #7）。Only built when
+# ZENGINE_BUILD_WEAK_OBJECT_PTR_SMOKE_TEST=ON (see Core/Memory/Test/CMakeLists.txt)。
+list(REMOVE_ITEM SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Core/Memory/Test/WeakObjectPtrSmokeTest.cpp")
+list(REMOVE_ITEM REGULAR_SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Core/Memory/Test/WeakObjectPtrSmokeTest.cpp")
+# POSIX 崩溃捕获冒烟测试的 main carve-out（audit #2）。自带 main()，且仅非
+# Windows 可编译（fork/signal/backtrace），Windows 上整体被 #if 编译为空壳。
+# Only built when ZENGINE_BUILD_POSIX_CRASH_CAPTURE_SMOKE_TEST=ON (see
+# Core/Base/Test/CMakeLists.txt)。无条件 carve-out：GLOB_RECURSE 会扫到它。
+list(REMOVE_ITEM SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Core/Base/Test/PosixCrashCaptureSmokeTest.cpp")
+list(REMOVE_ITEM REGULAR_SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Core/Base/Test/PosixCrashCaptureSmokeTest.cpp")
 # Addressables async-loading smoke-test main carve-out. Same rationale: it owns
 # main() and must not be whole-archived into ZRuntime, or every consumer exe
 # gets LNK2005 "main already defined". Built only when
@@ -857,6 +975,29 @@ endif()
 # Configure shared library export/import
 # On non-Windows, ZRUNTIME_SHARED_EXPORTS marks EXPORT_RUNTIME symbols with default visibility.
 target_compile_definitions(${SHARED_TARGET_NAME} PRIVATE ZRUNTIME_SHARED_EXPORTS)
+
+# ---- 生命周期检测开关（阶段一·夯地基 第一落点，#3 + #5）-------------------
+# ZENGINE_LIFETIME_CHECK 控制 ImmediatePtr 的 use-after-free 运行期校验：
+#   * 1 → Debug / DebugV8 / RelWithDebInfo：解引用前查 ObjectManager 表，
+#         对象已注销仍被访问即 ASSERT + LOG_ERROR 报告 UAF。
+#   * 0 → Release / MinSizeRel：ImmediatePtr 访问路径与改造前完全一致，零开销。
+# 多配置生成器（VS / Xcode）用 $<CONFIG:> 生成器表达式按配置求值；单配置生成器
+# （Ninja / Make）$<CONFIG:> 为空，回退到 configure 期求值的 CMAKE_BUILD_TYPE。
+# 注意：v8 构建下 stock Debug 被硬失败，实际调试配置是 DebugV8 与 RelWithDebInfo，
+# 两者都必须开启检测（RelWithDebInfo 虽定义 NDEBUG，但这里独立 gate，不依赖 NDEBUG）。
+if(CMAKE_CONFIGURATION_TYPES)
+    set(_zengine_lifetime_def "ZENGINE_LIFETIME_CHECK=$<OR:$<CONFIG:Debug>,$<CONFIG:DebugV8>,$<CONFIG:RelWithDebInfo>>")
+else()
+    if(CMAKE_BUILD_TYPE MATCHES "Debug|DebugV8|RelWithDebInfo")
+        set(_zengine_lifetime_def "ZENGINE_LIFETIME_CHECK=1")
+    else()
+        set(_zengine_lifetime_def "ZENGINE_LIFETIME_CHECK=0")
+    endif()
+endif()
+target_compile_definitions(${TARGET_NAME} PRIVATE ${_zengine_lifetime_def})
+target_compile_definitions(${SHARED_TARGET_NAME} PRIVATE ${_zengine_lifetime_def})
+unset(_zengine_lifetime_def)
+
 if(WIN32)
     # Ensure shared section for Singleton cross-module sharing (Windows only)
     if(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC" OR (CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC"))
@@ -1589,6 +1730,18 @@ add_subdirectory(Core/Serialize/Test)
 # 对象被 mimalloc 释放"这类只在 Apple 上致命、其余平台全程隐形的错配。
 add_subdirectory(Core/Memory/Test)
 
+# 崩溃安全日志环形缓冲冒烟测试（§3.9，#11）。Own main()；只在
+# ZENGINE_BUILD_CRASH_LOG_TAIL_SMOKE_TEST=ON 时构建。验证 CrashLogTail 环形缓冲
+# 记录最近 N 条、溢出回绕、并发写不撕裂、Dump 落盘可读。零依赖（独立于 BqLog 与
+# LogSystem 单例），故无需系统 bring-up，全平台可链可跑。
+add_subdirectory(Core/Log/Test)
+
+# POSIX 崩溃捕获冒烟测试（audit #2）。fork 子进程触发 SIGSEGV，父进程校验
+# crash_stack.txt/crash_snap.json 生成且含回溯。自带 main()、仅非 Windows 可编译
+# （fork/signal/backtrace），故只在 ZENGINE_BUILD_POSIX_CRASH_CAPTURE_SMOKE_TEST=ON
+# 时构建（见 Core/Base/Test/CMakeLists.txt）。
+add_subdirectory(Core/Base/Test)
+
 # Derived Data Cache smoke test (texture cook P3). Own main(); carved out of
 # the ZRuntime glob above and built only when ZENGINE_BUILD_DDC_SMOKE_TEST=ON.
 add_subdirectory(Resource/Cache/Test)
@@ -1623,6 +1776,7 @@ add_subdirectory(AssetBundle/Test)
 # and built only when ZENGINE_BUILD_PLAYER_SETTINGS_SMOKE_TEST=ON. Pure file
 # work, so it runs headless on every host.
 add_subdirectory(Function/PlayerSettings/Test)
+add_subdirectory(Function/Console/Test)
 
 # Skeletal skinning smoke test (PR-SK1). Own main(); carved out of the ZRuntime
 # glob above and built only when ZENGINE_BUILD_ANIMATION_SMOKE_TEST=ON. Pure

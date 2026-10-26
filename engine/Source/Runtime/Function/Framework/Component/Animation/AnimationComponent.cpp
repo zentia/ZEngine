@@ -75,6 +75,17 @@ void AnimationComponent::PostLoadResource(GameObject* parent_object)
 
 void AnimationComponent::Tick(float delta_time)
 {
+    // A Timeline animation clip owns the pose while it is active: sample its clip at
+    // the phase the Timeline set, and advance nothing (neither the state machine nor
+    // the authored blend state), so both resume exactly where they were afterwards.
+    if (m_HasTimelineOverride)
+    {
+        const BlendStateWithClipData& clip_data = AnimationSystem::GetBlendStateWithClipData(m_TimelineBlendState);
+        m_Skeleton.ApplyAnimation(clip_data);
+        m_AnimationRes.animation_result = m_Skeleton.OutputAnimationResult();
+        return;
+    }
+
     // PR-SK3: a controller supersedes the hand-authored blend state entirely.
     // The state machine emits a BlendState of its own (one clip, or two during
     // a crossfade) so both paths share the one sampler.
@@ -185,6 +196,56 @@ void AnimationComponent::SetClipLength(float seconds)
 {
     EnsureSlot(m_AnimationRes.blend_state.blend_clip_file_length, 0, 1.0f);
     m_AnimationRes.blend_state.blend_clip_file_length[0] = seconds;
+}
+
+bool AnimationComponent::SetTimelineOverride(const eastl::string& clip_path, float phase)
+{
+    if (clip_path.empty())
+    {
+        return false;
+    }
+
+    // The override samples through a bone map the component already has: the authored
+    // slot 0, else whatever the state machine is currently sampling through. Without
+    // one, GetBlendStateWithClipData() would reject the state (and log) every frame.
+    eastl::string bone_map;
+    const BlendState& authored = m_AnimationRes.blend_state;
+    if (!authored.blend_anim_skel_map_path.empty() && !authored.blend_anim_skel_map_path[0].empty())
+    {
+        bone_map = authored.blend_anim_skel_map_path[0];
+    }
+    else if (m_Controller != nullptr)
+    {
+        const BlendState& animator_state = m_Animator.GetBlendState();
+        if (!animator_state.blend_anim_skel_map_path.empty() && !animator_state.blend_anim_skel_map_path[0].empty())
+        {
+            bone_map = animator_state.blend_anim_skel_map_path[0];
+        }
+    }
+    if (bone_map.empty())
+    {
+        return false;
+    }
+
+    // Rebuilt in place each call: the vectors keep their capacity, so a Timeline that
+    // updates the phase every frame does not allocate every frame.
+    BlendState& state = m_TimelineBlendState;
+    state.clip_count = 1;
+    state.blend_clip_file_path.resize(1);
+    state.blend_clip_file_path[0] = clip_path;
+    state.blend_clip_file_length.assign(1, 1.0f);
+    state.blend_anim_skel_map_path.resize(1);
+    state.blend_anim_skel_map_path[0] = bone_map;
+    state.blend_weight.assign(1, 1.0f);
+    state.blend_mask_file_path.clear();
+    state.blend_ratio.assign(1, std::clamp(std::isfinite(phase) ? phase : 0.0f, 0.0f, std::nextafter(1.0f, 0.0f)));
+    m_HasTimelineOverride = true;
+    return true;
+}
+
+void AnimationComponent::ClearTimelineOverride()
+{
+    m_HasTimelineOverride = false;
 }
 
 const AnimationResult& AnimationComponent::GetResult() const

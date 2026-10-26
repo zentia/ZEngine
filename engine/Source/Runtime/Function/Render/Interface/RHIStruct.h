@@ -86,6 +86,15 @@ class RHISemaphore
 };
 class RHIShader
 {
+public:
+    // #12: must be virtual so a backend's DestroyShaderModule() can safely
+    // `delete` the concrete shader object through this base pointer. Backends
+    // allocate a concrete derived type (DX12Shader / VulkanShader / ...) via
+    // CreateShaderModule and hand it out as RHIShader*; without a virtual
+    // destructor that delete is undefined behaviour (only "worked" by luck on
+    // the backends that already do it). Making it virtual here fixes the
+    // DX12 leak and makes every backend's teardown well-defined.
+    virtual ~RHIShader() = default;
 };
 
 ////////////////////struct//////////////////////////

@@ -1,6 +1,6 @@
 #include "Editor/Prefab/PrefabUtilityEditor.h"
 
-#include "Editor/Prefab/EditorPrefabCloner.h"
+#include "Runtime/Resource/Prefab/PrefabSubtreeCloner.h"
 #include "Editor/Prefab/PrefabInstance.h"
 #include "Editor/Prefab/PropertyPathResolver.h"
 #include "Editor/Prefab/PropertyValueLocator.h"
@@ -16,6 +16,7 @@
 #include <cstring>
 #include <unordered_map>
 #include "Runtime/BaseClasses/Cast.h"
+#include "Runtime/Function/Framework/Component/Component.h"
 
 namespace
 {
@@ -46,6 +47,20 @@ namespace
     /// Snapshot an object as `(type_tree, bytes)` in one pass — the StreamedBinary
     /// bytes are what apply/revert splice into, the TypeTree describes how to
     /// navigate them.
+    /// Overwrite `obj`'s serialized fields in place, then tell it so. Without the
+    /// notification a component that keeps live state outside its serialized fields
+    /// never sees the change -- Transform reads its TRS from the hierarchy buffer, so
+    /// Apply / Revert / Merge on a Transform were invisible. Same contract the Undo
+    /// system and the Inspector use (Component::OnSerializedFieldsUpdated).
+    bool ReadBackInto(Object& obj, std::vector<uint8_t>& bytes)
+    {
+        if (!TransferUtility::ReadObjectFromVector(obj, bytes))
+            return false;
+        if (auto* component = Cast<Component>(&obj))
+            component->OnSerializedFieldsUpdated();
+        return true;
+    }
+
     bool SnapshotObject(Object& obj, prefab_editor::SerialisedObject& out_tree, std::vector<uint8_t>& out_bytes)
     {
         if (!prefab_editor::SerialiseObject(&obj, out_tree))
@@ -151,7 +166,7 @@ namespace
             LOG_WARNING(ZPrefab, "SpliceFieldValueInto: OverwriteScalarBytes failed for path '{}'", path.c_str());
             return false;
         }
-        if (!TransferUtility::ReadObjectFromVector(recipient, recipient_bytes))
+        if (!ReadBackInto(recipient, recipient_bytes))
         {
             LOG_WARNING(ZPrefab, "SpliceFieldValueInto: ReadObjectFromVector failed for path '{}'", path.c_str());
             return false;
@@ -203,9 +218,10 @@ namespace
 
 PrefabInstance* PrefabUtilityEditor::InstantiateAsPrefab(const std::filesystem::path& prefab_path)
 {
-    auto&& asset_manager = GET_SYSTEM(AssetManager);
-    std::filesystem::path mutable_path = prefab_path;
-    PrefabAsset* asset = asset_manager->ReadObject<PrefabAsset>(mutable_path);
+    // Whole-graph load (see PrefabUtility::LoadPrefabAsset): a single-object
+    // ReadObject<PrefabAsset> never produced the root GameObject, so this failed
+    // for every prefab on disk.
+    PrefabAsset* asset = PrefabUtility::LoadPrefabAsset(prefab_path);
     if (asset == nullptr)
     {
         LOG_ERROR(ZPrefab, "InstantiateAsPrefab: failed to read PrefabAsset from {}", prefab_path.generic_string());
@@ -229,7 +245,7 @@ PrefabInstance* PrefabUtilityEditor::InstantiateAsPrefab(PrefabAsset* asset)
         return nullptr;
     }
 
-    prefab_editor::CloneResult clone = prefab_editor::CloneSubtree(source_root);
+    prefab_clone::CloneResult clone = prefab_clone::CloneSubtree(source_root);
     if (!clone.valid())
     {
         LOG_ERROR(ZPrefab, "InstantiateAsPrefab: structural clone failed");
@@ -896,7 +912,7 @@ int PrefabUtilityEditor::MergeFromSource(PrefabInstance* instance)
             }
         }
 
-        if (TransferUtility::ReadObjectFromVector(*instance_obj, bytes))
+        if (ReadBackInto(*instance_obj, bytes))
             ++merged;
     }
 

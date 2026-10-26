@@ -39,6 +39,15 @@ public:
     /// needs per-frame visual verification.
     bool IsRenderGraphPathEnabled() const { return m_UseRenderGraph; }
 
+    /// Turns the graph path on / off at runtime (building the graph objects on first use).
+    /// Used by the in-frame A/B capture (DX12RenderGraphAbCapture), which forces each path
+    /// once and restores the previous setting.
+    bool SetRenderGraphPathEnabled(bool enabled);
+
+    /// Whether the most recent DrawRP2() was actually drawn by the graph (false when the
+    /// graph path is off OR when it rejected the frame and the hand-written chain ran).
+    bool LastDrawUsedRenderGraph() const { return m_LastDrawUsedGraph; }
+
 private:
     enum LayoutType : uint8_t
     {
@@ -108,4 +117,5 @@ private:
     /// Compile errors are logged once and then the pass silently keeps using the
     /// hand-written path; without this the log would repeat every frame.
     bool m_RgFallbackLogged {false};
+    bool m_LastDrawUsedGraph {false};
 };

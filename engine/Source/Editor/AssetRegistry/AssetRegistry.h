@@ -120,6 +120,12 @@ public:
 
     // 获取依赖关系（需要从 .zasset 文件加载元数据）
     std::vector<std::string> GetDependencies(const std::string& asset_path) const;
+
+    // Dependencies of an arbitrary file resolved against this registry, without
+    // indexing it -- the packer asks this of a scene's cooked copy (which lives
+    // outside the scan root) so it walks what the player loads, not what the
+    // editor scene refers to. `self_key` is excluded from the result.
+    std::vector<std::string> GetDependenciesOfFile(const std::filesystem::path& file, const std::string& self_key) const;
     std::vector<std::string> GetReferencers(const std::string& asset_path) const;
 
     // 资产变化处理
@@ -158,6 +164,11 @@ public:
     std::unique_lock<std::shared_mutex> AcquireWriteLock();
 
 private:
+    // Externals of `abs_path` (binary SerializedFile or YAML graph) mapped to
+    // registry keys; caller holds a lock.
+    std::vector<std::string> CollectDependenciesLocked(const std::filesystem::path& abs_path,
+                                                       const std::string& self_key) const;
+
     // 内部扫描方法
     void scanAssetsInternal(const std::filesystem::path& asset_folder, bool incremental);
     AssetIndexEntry ScanSingleAsset(const std::filesystem::path& asset_path);

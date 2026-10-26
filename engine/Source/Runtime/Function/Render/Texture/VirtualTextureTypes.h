@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Runtime/Core/Base/Hash.h"
+#include "Runtime/Core/Math/AxisAligned.h"
 #include "Runtime/Function/Render/Interface/RHIStruct.h"
 #include "Runtime/Function/Render/RenderType.h"
 
@@ -97,9 +98,18 @@ struct VirtualTexturePage
     float distance;                       // Distance from camera
     bool is_visible;                      // Is page currently visible
 
+    // World-space footprint captured at RequestPages time. The skeleton stored
+    // NONE of these, which is why UpdatePagePriorities() had nothing to
+    // recompute from (it was a TODO). Update() now reprojects this bounds to the
+    // screen each frame using the live camera, so pages can be re-prioritized
+    // and distance-gated without re-deriving world positions.
+    Vector3 object_position;        // World position of the owning object
+    AxisAlignedBox object_bounds;   // World-space bounds of the owning object
+
     VirtualTexturePage()
         : state(VirtualTexturePageState::Unloaded), priority(VirtualTexturePagePriority::Normal),
-          physical_slot(UINT32_MAX), last_access_time(0), screen_size(0.0f), distance(0.0f), is_visible(false)
+          physical_slot(UINT32_MAX), last_access_time(0), screen_size(0.0f), distance(0.0f), is_visible(false),
+          object_position(0.0f, 0.0f, 0.0f), object_bounds()
     {
     }
 };
@@ -215,6 +225,17 @@ public:
                     uint32_t page_size,
                     RHIFormat format);
 
+    // Headless / logical initialization: set up the slot grid WITHOUT creating a
+    // Vulkan image. Slot allocation / LRU / bookkeeping are pure CPU and work
+    // identically; only the GPU texture itself is absent. Used by the WASM
+    // verification harness (and any platform where VT has no real RHI yet) so the
+    // streaming policy (load / evict / priority) can be exercised and asserted
+    // against without a device. See VirtualTextureTypes.cpp.
+    bool InitializeLogical(uint32_t pool_width_pages, uint32_t pool_height_pages, uint32_t page_size);
+
+    // True when the pool was created via InitializeLogical (no GPU texture).
+    bool isLogicalOnly() const { return m_LogicalOnly; }
+
     // Shutdown the pool
     void Shutdown();
 
@@ -264,6 +285,7 @@ private:
     uint32_t m_PoolHeightPages;  // Pool height in pages
     uint32_t m_PageSize;         // Page size in pixels
     RHIFormat m_Format;          // Texture format
+    bool m_LogicalOnly;          // Set when initialized via InitializeLogical (no GPU texture)
 
     std::vector<PhysicalTextureSlot> m_Slots;  // Physical slots
     mutable std::mutex m_SlotMutex;            // Mutex for slot access

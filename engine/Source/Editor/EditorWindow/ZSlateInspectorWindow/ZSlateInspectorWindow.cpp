@@ -5,6 +5,11 @@
 #include "Editor/EditorUI/EditorSelection.h"
 #include "Editor/EditorUI/PropertyDrawer/EditorPropertyDrawer.h"  // MakeDisplayLabel / MakeTypeHeaderLabel
 #include "Editor/Undo/EditorUndo.h"                              // Ctrl+Z for every field commit
+#include "Editor/Undo/UndoSystem.h"
+#include "Editor/Prefab/PrefabInstance.h"                         // prefab instance section
+#include "Editor/Prefab/PrefabOverrideModel.h"                    // implicit overrides / Apply / Revert
+#include "Editor/Prefab/PrefabUtilityEditor.h"
+#include "Runtime/Function/Framework/World/WorldManager.h"
 #include "Editor/EditorWindow/InspectorWindow/InspectorAssetCommon.h"       // ResolveInspectorAssetType / IsGenericInspectorZAssetType
 #include "Editor/EditorWindow/InspectorWindow/InspectorDataTableInspector.h"// ResolveDataTableType
 #include "Editor/EditorWindow/InspectorWindow/InspectorShaderInspector.h"   // material-row enumerators / BuildShaderInspectorWidget
@@ -482,6 +487,57 @@ namespace
             scene->DrawSelectedEntityAxis();
     }
 
+    // ---- prefab instance overrides (doc/PrefabSystem_Design.md §9.4 item 3) ----------
+    // Unity model: editing a field of an object inside a prefab instance records an
+    // override; editing it back to the source value removes it. Every field commit
+    // below calls RecordPrefabOverridesForUndo() before and SyncPrefabOverride() after
+    // the write, so the override list is part of the same undo step as the value.
+    const ZSlate::UIColor kOverrideColor(0.45f, 0.70f, 1.0f, 1.0f);
+
+    Level* ActiveLevel()
+    {
+        WorldManager* world = GET_SYSTEM(WorldManager);
+        return world != nullptr ? world->getCurrentActiveLevel() : nullptr;
+    }
+
+    PrefabInstance* SelectedPrefabInstance()
+    {
+        auto go = EditorSelection::GetActiveGameObject().lock();
+        return go ? PrefabOverrideModel::FindInstance(ActiveLevel(), go.get()) : nullptr;
+    }
+
+    void RecordPrefabOverridesForUndo()
+    {
+        PrefabInstance* instance = SelectedPrefabInstance();
+        EditorUndoSystem* undo = EditorUndo::GetSystem();
+        if (instance == nullptr || undo == nullptr || !EditorUndo::IsRecording())
+            return;
+        UndoSystem& core = undo->GetCore();
+        if (!core.HasPendingRecord(PrefabOverrideModel::OverrideListUndoKey(instance)))
+            core.AddRecord(PrefabOverrideModel::MakeOverrideListUndoRecord(instance), "Edit Prefab Override");
+    }
+
+    void SyncPrefabOverride(Object* target, const std::string& path)
+    {
+        if (target == nullptr || path.empty())
+            return;
+        if (PrefabInstance* instance = SelectedPrefabInstance())
+            PrefabOverrideModel::SyncFieldOverride(instance, target, eastl::string(path.c_str()));
+    }
+
+    /// Undo snapshot of every object an override list touches (Revert writes them).
+    void RecordOverrideTargetsForUndo(PrefabInstance* instance, const Object* only_target)
+    {
+        for (const PrefabOverrideModel::OverrideRow& row : PrefabOverrideModel::ListOverrides(instance))
+        {
+            Object* obj = static_cast<Object*>(row.target);
+            if (only_target != nullptr && obj != only_target)
+                continue;
+            if (Component* c = Cast<Component>(obj))
+                EditorUndo::RecordComponent(c);
+        }
+    }
+
     bool HasMetaFlag(TransferMetaFlags flags, TransferMetaFlags flag)
     {
         return (static_cast<uint32_t>(flags) & static_cast<uint32_t>(flag)) != 0;
@@ -671,22 +727,25 @@ namespace
                                                     uint32_t offset,
                                                     float scale,
                                                     const ZPropertyMeta* meta = nullptr,
-                                                    const FieldEditGate& gate = FieldEditGate {})
+                                                    const FieldEditGate& gate = FieldEditGate {},
+                                                    const std::string& field_path = {})
     {
         auto f = std::make_shared<SEditableTextBox>();
         f->FontSize = 14.0f * scale;
         f->MinWidth = 60.0f * scale;
         f->Padding = ZSlate::FMargin(6.0f * scale, 3.0f * scale);
-        f->OnTextCommitted = [kind, comp_index, offset, meta, gate](const std::string& s) {
+        f->OnTextCommitted = [kind, comp_index, offset, meta, gate, field_path](const std::string& s) {
             Component* c = ResolveSelectedComponent(comp_index);
             if (c == nullptr || !IsGateOpen(gate, c))
                 return;
             EditorUndo::ScopedTransaction undo_scope(MakeComponentUndoTitle(c));
             EditorUndo::RecordComponent(c);
+            RecordPrefabOverridesForUndo();
             void* a = reinterpret_cast<char*>(c) + offset;
             WriteScalar(kind, a, s);
             ApplyClamp(kind, a, meta);
             c->OnSerializedFieldsUpdated();
+            SyncPrefabOverride(c, field_path);
         };
         return f;
     }
@@ -697,6 +756,7 @@ namespace
     {
         const Type* type {nullptr};
         TypeTreeIterator root;
+        std::string path_prefix;  ///< property path of the parent node ("" at depth 0)
     };
 
     // Forward decl for recursion.
@@ -727,6 +787,8 @@ namespace
         const ZPropertyMeta* meta = FindFieldMeta(ctx.type, node.Name().c_str());
         const std::string label = MakeFieldLabel(meta, node.Name().c_str());
         const FieldEditGate gate = MakeEditGate(meta, ctx.root);
+        const std::string field_path =
+            ctx.path_prefix.empty() ? std::string(node.Name().c_str()) : ctx.path_prefix + "." + node.Name().c_str();
 
         // Every row of an annotated field gets its tooltip registered; rows keep
         // a pointer to their label so a closed EditCondition can dim it.
@@ -736,6 +798,7 @@ namespace
             b.meta = meta;
             b.gate = gate;
             b.row_label = row_label;
+            b.prefab_path = field_path;
             bindings.push_back(b);
         };
 
@@ -783,17 +846,19 @@ namespace
                     SEditableTextBox* p0 = boxes[0].get();
                     SEditableTextBox* p1 = boxes[1].get();
                     SEditableTextBox* p2 = boxes[2].get();
-                    auto commit = [comp_index, offset, p0, p1, p2, gate](const std::string&) {
+                    auto commit = [comp_index, offset, p0, p1, p2, gate, field_path](const std::string&) {
                         Component* c = ResolveSelectedComponent(comp_index);
                         if (c == nullptr || !IsGateOpen(gate, c))
                             return;
                         EditorUndo::ScopedTransaction undo_scope(MakeComponentUndoTitle(c));
                         EditorUndo::RecordComponent(c);
+                        RecordPrefabOverridesForUndo();
                         Vector3& v = *reinterpret_cast<Vector3*>(reinterpret_cast<char*>(c) + offset);
                         v.x = ParseFloat(p0->Text);
                         v.y = ParseFloat(p1->Text);
                         v.z = ParseFloat(p2->Text);
                         c->OnSerializedFieldsUpdated();
+                        SyncPrefabOverride(c, field_path);
                     };
                     for (int a = 0; a < 3; ++a)
                         boxes[static_cast<size_t>(a)]->OnTextCommitted = commit;
@@ -825,14 +890,16 @@ namespace
                     }
                     auto check = std::make_shared<SCheckBox>();
                     check->BoxSize = 16.0f * scale;
-                    check->OnCheckStateChanged = [comp_index, offset, gate](bool v) {
+                    check->OnCheckStateChanged = [comp_index, offset, gate, field_path](bool v) {
                         Component* c = ResolveSelectedComponent(comp_index);
                         if (c == nullptr || !IsGateOpen(gate, c))
                             return;
                         EditorUndo::ScopedTransaction undo_scope(MakeComponentUndoTitle(c));
                         EditorUndo::RecordComponent(c);
+                        RecordPrefabOverridesForUndo();
                         *reinterpret_cast<bool*>(reinterpret_cast<char*>(c) + offset) = v;
                         c->OnSerializedFieldsUpdated();
+                        SyncPrefabOverride(c, field_path);
                     };
                     auto row = AddFieldRow(column, label, check, depth, scale, &row_label);
                     FieldBinding b;
@@ -858,7 +925,7 @@ namespace
                     finish_row(row, b);
                     return;
                 }
-                auto box = MakeScalarBox(kind, comp_index, offset, scale, meta, gate);
+                auto box = MakeScalarBox(kind, comp_index, offset, scale, meta, gate, field_path);
                 auto row = AddFieldRow(column, label, box, depth, scale, &row_label);
                 FieldBinding b;
                 b.kind = kind;
@@ -894,7 +961,11 @@ namespace
                 .AutoSize()
                 .SetPadding(ZSlate::FMargin(depth * 12.0f * scale, 4.0f * scale, 0.0f, 2.0f * scale));
             if (depth < 8)
-                BuildFieldChildren(column, node, bindings, comp_index, scale, depth + 1, ctx);
+            {
+                FieldBuildContext child_ctx = ctx;
+                child_ctx.path_prefix = field_path;
+                BuildFieldChildren(column, node, bindings, comp_index, scale, depth + 1, child_ctx);
+            }
             return;
         }
 
@@ -3111,6 +3182,7 @@ void ZSlateInspectorWindow::BuildForObject(float scale)
                 return;
             EditorUndo::ScopedTransaction undo_scope(which == 0 ? "Set Position" : which == 1 ? "Set Scale" : "Set Rotation");
             EditorUndo::RecordTransform(xf);
+            RecordPrefabOverridesForUndo();
             if (which == 0)
             {
                 Vector3 p = xf->GetLocalPosition();
@@ -3133,6 +3205,9 @@ void ZSlateInspectorWindow::BuildForObject(float scale)
                 xf->SetLocalRotation(rot);
                 EditorEuler::SetEulerHint(xf, degrees, rot);
             }
+            // m_LocalPositionD is the authoritative copy (m_LocalPosition is the float
+            // legacy one the writer derives from it).
+            SyncPrefabOverride(xf, which == 0 ? "m_LocalPositionD" : which == 1 ? "m_LocalScale" : "m_LocalRotation");
             if (auto scene = GET_SYSTEM(EditorSceneManager))
                 scene->DrawSelectedEntityAxis();
         };
@@ -3186,6 +3261,103 @@ void ZSlateInspectorWindow::BuildForObject(float scale)
         .AutoSize()
         .SetPadding(ZSlate::FMargin(0.0f, 0.0f, 0.0f, 10.0f * scale));
     column->AddSlot(name_row).AutoSize().SetPadding(ZSlate::FMargin(0.0f, 0.0f, 0.0f, 12.0f * scale));
+
+    // Prefab instance: source, Apply All / Revert All, one row per override.
+    m_BuiltPrefabSection = false;
+    m_BuiltPrefabOverrideCount = 0;
+    if (PrefabInstance* instance = SelectedPrefabInstance())
+    {
+        m_BuiltPrefabSection = true;
+        const std::vector<PrefabOverrideModel::OverrideRow> rows = PrefabOverrideModel::ListOverrides(instance);
+        m_BuiltPrefabOverrideCount = rows.size();
+
+        std::string source_label = "<unsaved prefab>";
+        if (Object* source = static_cast<Object*>(instance->GetSourcePrefab()))
+        {
+            std::filesystem::path source_path;
+            int64_t file_id = 0;
+            if (AssetManager* am = GET_SYSTEM(AssetManager);
+                am != nullptr && am->TryGetIdentityForInstance(source->GetInstanceID(), source_path, file_id))
+                source_label = source_path.filename().generic_string();
+        }
+
+        auto make_button = [scale](const char* text, std::function<void()> on_click) {
+            auto button = std::make_shared<SButton>();
+            button->Padding = ZSlate::FMargin(8.0f * scale, 3.0f * scale);
+            button->SetContent(MakeText(text, 13.0f * scale, kValueColor));
+            button->OnClicked = std::move(on_click);
+            return button;
+        };
+
+        auto header = std::make_shared<SHorizontalBox>();
+        header->AddSlot(MakeText(("Prefab  " + source_label).c_str(), 15.0f * scale, kOverrideColor))
+            .Fill(1.0f)
+            .SetVAlign(EVerticalAlignment::Center);
+        header->AddSlot(MakeText((std::to_string(rows.size()) + (rows.size() == 1 ? " override" : " overrides")).c_str(),
+                                 13.0f * scale, kDimColor))
+            .AutoSize()
+            .SetVAlign(EVerticalAlignment::Center)
+            .SetPadding(ZSlate::FMargin(0.0f, 0.0f, 8.0f * scale, 0.0f));
+        if (!rows.empty())
+        {
+            header->AddSlot(make_button("Revert All", [this]() {
+                       PrefabInstance* inst = SelectedPrefabInstance();
+                       if (inst == nullptr)
+                           return;
+                       EditorUndo::ScopedTransaction undo_scope("Revert Prefab Overrides");
+                       RecordOverrideTargetsForUndo(inst, nullptr);
+                       RecordPrefabOverridesForUndo();
+                       PrefabUtilityEditor::Revert(inst);
+                       m_ForceRebuild = true;
+                   }))
+                .AutoSize()
+                .SetPadding(ZSlate::FMargin(0.0f, 0.0f, 6.0f * scale, 0.0f));
+            // Apply writes the source prefab file and refreshes the level's other
+            // instances; like Unity, that part is not undoable.
+            header->AddSlot(make_button("Apply All", [this]() {
+                       if (PrefabInstance* inst = SelectedPrefabInstance())
+                           PrefabOverrideModel::ApplyAll(ActiveLevel(), inst);
+                       m_ForceRebuild = true;
+                   }))
+                .AutoSize();
+        }
+        column->AddSlot(header).AutoSize().SetPadding(ZSlate::FMargin(0.0f, 0.0f, 0.0f, 4.0f * scale));
+
+        for (const PrefabOverrideModel::OverrideRow& row : rows)
+        {
+            const PPtr<Object> target = row.target;
+            const eastl::string path = row.property_path;
+            auto line = std::make_shared<SHorizontalBox>();
+            line->AddSlot(MakeText((std::string(row.label.c_str()) + "  " + path.c_str()).c_str(), 13.0f * scale, kLabelColor))
+                .Fill(1.0f)
+                .SetVAlign(EVerticalAlignment::Center)
+                .SetPadding(ZSlate::FMargin(12.0f * scale, 0.0f, 0.0f, 0.0f));
+            line->AddSlot(make_button("Revert", [this, target, path]() {
+                     PrefabInstance* inst = SelectedPrefabInstance();
+                     Object* obj = static_cast<Object*>(target);
+                     if (inst == nullptr || obj == nullptr)
+                         return;
+                     EditorUndo::ScopedTransaction undo_scope("Revert Prefab Override");
+                     RecordOverrideTargetsForUndo(inst, obj);
+                     RecordPrefabOverridesForUndo();
+                     PrefabOverrideModel::RevertField(inst, obj, path);
+                     m_ForceRebuild = true;
+                 }))
+                .AutoSize()
+                .SetPadding(ZSlate::FMargin(0.0f, 0.0f, 6.0f * scale, 0.0f));
+            line->AddSlot(make_button("Apply", [this, target, path]() {
+                     PrefabInstance* inst = SelectedPrefabInstance();
+                     Object* obj = static_cast<Object*>(target);
+                     if (inst != nullptr && obj != nullptr)
+                         PrefabOverrideModel::ApplyField(ActiveLevel(), inst, obj, path);
+                     m_ForceRebuild = true;
+                 }))
+                .AutoSize();
+            column->AddSlot(line).AutoSize().SetPadding(ZSlate::FMargin(0.0f, 0.0f, 0.0f, 2.0f * scale));
+        }
+        column->AddSlot(MakeText("", 6.0f * scale, kDimColor)).AutoSize();
+    }
+
     column->AddSlot(MakeText("Transform", 16.0f * scale, kComponentHeaderColor))
         .AutoSize()
         .SetPadding(ZSlate::FMargin(0.0f, 0.0f, 0.0f, 6.0f * scale));
@@ -3280,6 +3452,11 @@ void ZSlateInspectorWindow::SyncBindings()
         }
     }
 
+    PrefabInstance* prefab_instance = SelectedPrefabInstance();
+    const size_t override_count = prefab_instance != nullptr ? prefab_instance->GetModifications().size() : 0;
+    if ((prefab_instance != nullptr) != m_BuiltPrefabSection || override_count != m_BuiltPrefabOverrideCount)
+        m_ForceRebuild = true;  // the override list changed (edit / undo / apply elsewhere)
+
     for (FieldBinding& b : m_Bindings)
     {
         if (b.custom_sync)
@@ -3294,9 +3471,18 @@ void ZSlateInspectorWindow::SyncBindings()
         void* a = reinterpret_cast<char*>(c) + b.byte_offset;
 
         // meta=(EditCondition="[!]flag"): dim the row label and let the commit
-        // lambdas refuse writes while the condition is closed.
-        if (b.gate.active && b.row_label)
-            b.row_label->Color = IsGateOpen(b.gate, c) ? kLabelColor : kDimColor;
+        // lambdas refuse writes while the condition is closed. An overridden field of
+        // a prefab instance is drawn in the override colour (Unity's blue label).
+        if (b.row_label)
+        {
+            if (b.gate.active && !IsGateOpen(b.gate, c))
+                b.row_label->Color = kDimColor;
+            else if (prefab_instance != nullptr && !b.prefab_path.empty() &&
+                     PrefabOverrideModel::IsOverridden(prefab_instance, c, eastl::string(b.prefab_path.c_str())))
+                b.row_label->Color = kOverrideColor;
+            else
+                b.row_label->Color = kLabelColor;
+        }
 
         if (b.read_only && b.label)
         {

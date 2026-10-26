@@ -28,6 +28,11 @@ namespace LumenSettings
     uint32_t GetSampleCount();
     float GetIndirectIntensity();
 
+    // 距离场体素化的并行 worker 线程数。0 = 自动（硬件并发数），1 = 强制串行
+    // （A/B 对照与 headless 确定性用它）。体素化是 O(体素数 × 三角数) 的纯 CPU
+    // 暴力计算，且每个体素写互不相交的区间，天然是可并行的。
+    uint32_t GetDistanceFieldWorkers();
+
     // 把当前 CVar 值写进 config。只覆盖"可以热改"的字段 —— 结构性字段
     // （surface_cache_resolution / distance_field_resolution）仍然由
     // LumenRenderPass::Initialize 决定，因为改它们必须重建资源。

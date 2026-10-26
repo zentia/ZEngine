@@ -110,9 +110,20 @@ gaps (Metal / WebGL2) live in `doc/BINDLESS_TEXTURE_PATH.md`.
 
 Optional regression pass after renderer changes. Capture one frame on Win64 + DX12 + demo project:
 
-- [ ] RP1 subpass 0: 3 MRT + depth bound.
-- [ ] After `CmdNextSubpass`: gbuffer images in `PIXEL_SHADER_RESOURCE`, `backup_odd` as RTV.
-- [ ] After RP1 end: `backup_odd` in `finalLayout` shader-read; tonemap pass samples via bindless.
+> **Updated 2026-10-25.** The first two items used to describe RP1 as one render pass
+> with subpasses. On DX12, RP1 is now `MainCameraRp1Pass`: three independent render
+> passes (GBuffer / DeferredLighting / ForwardLighting), each with its own
+> `CmdBeginRenderPass` and subpass 0 only, so no `CmdNextSubpass` occurs in the DX12 frame.
+> The subpass emulation above is still live: Vulkan's multi-subpass `MainCameraPass`
+> and any `RHIRenderPassCreateInfo` with more than one subpass still go through it.
+> See `doc/RENDER_GRAPH.md` (RP1 three-way split, `ZENGINE_RG_RP1`).
+
+- [ ] GBuffer pass: 3 MRT (GBufferA/B/C) + depth bound.
+- [ ] Deferred lighting pass begins with GBufferA/B/C in `PIXEL_SHADER_RESOURCE` (GBuffer pass
+      `finalLayout` = shader-read) and `backup_odd` as the only RTV.
+- [ ] After the forward lighting pass ends: `backup_odd` in `finalLayout` shader-read; tonemap pass
+      samples it via bindless. (With `ZENGINE_RG_RP1=1` the render graph drives the same three passes;
+      `scripts/rg_ab_compare.py` diffs the two paths, see `doc/RENDER_GRAPH.md`.)
 - [ ] Startup log: `DX12 CreateCubeMap: uploaded mip0 + GPU-generated N mips` and
       `DX12CubemapMipGenerator: ready` when IBL HDR cubemap loads. These lines are
       first written during `RenderSystem::Initialize` (before the Console window

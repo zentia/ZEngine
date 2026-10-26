@@ -14,7 +14,10 @@ namespace
 {
     std::string normalisePath(const std::filesystem::path& p)
     {
-        std::string s = p.generic_string();
+        // lexically_normal: "a/./b" and "a/x/../b" are the same key as "a/b".
+        // Identity on an already-normal absolute path, so keys persisted by
+        // earlier versions still match.
+        std::string s = p.lexically_normal().generic_string();
 #ifdef _WIN32
         std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
 #endif

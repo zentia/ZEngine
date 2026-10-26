@@ -238,6 +238,10 @@ the per-platform subdir is made on demand. Paths come from
 - Full Vulkan compressed-upload verification is blocked by the pre-existing
   `MainCameraPass` crash; the Vulkan path takes the uncompressed fallback in the
   meantime.
+  **已修复（2026-10-25 复核）**：该崩溃已被 commit `7e5d2521`
+  （2026-10-22，"fix(vulkan): 空描述符资源与动态视口不再访问违例"）修掉——MegaLights 默认关闭时
+  binding 8..12 提交空资源导致 `UpdateDescriptorSets` 解引用空指针，已加判空早退 + RHI 侧跳过空
+  write。**Vulkan 压缩纹理上传的验证通路已恢复**（本文档写于 2026-06-02，早于修复，故原阻塞已失效）。
 
 ---
 

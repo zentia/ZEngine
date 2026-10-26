@@ -424,6 +424,15 @@ void NaniteRenderer::PrepareRenderData(const std::shared_ptr<RenderCamera>& came
                 continue;
             }
 
+            // 流送闸门：距离裁剪（UpdateStreaming）标为未驻留的叶子本帧不提交渲染。
+            // 注册时 cluster_loaded_flags 全为 true、且 UpdateStreaming 尚无帧循环
+            // 调用者，所以这条在既有路径里恒放行 —— 不影响任何现存行为，只在流送
+            // 真正跑起来后才生效。
+            if (!m_ClusterManager.IsClusterLoaded(instance.mesh_id, cluster_index))
+            {
+                continue;
+            }
+
             if (m_CullingSystem.FrustumCull(cluster.bounds, instance.transform, view_projection))
             {
                 continue;

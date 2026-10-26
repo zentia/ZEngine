@@ -232,6 +232,28 @@ int main()
     Check(!field.hierarchy_levels.empty(), "field: hierarchical levels were built");
 
     // -------------------------------------------------------------------------
+    // 3b. Parallel voxelization must be deterministic.
+    //
+    // GenerateDistanceFieldVoxels now splits the Z slices across worker threads: each
+    // worker writes a disjoint block of out_distance_data and reads only immutable
+    // geometry. A data race there would show up as a different floating-point result
+    // depending on thread interleaving, so rebuild the *same* scene (forced via
+    // markForUpdate) and require the distances to be bit-identical.
+    // -------------------------------------------------------------------------
+    distance_field.markForUpdate();
+    Check(distance_field.GenerateFromScene(render_scene, &render_resource, world_bounds),
+          "parallel: forced rebuild of the unchanged scene succeeds");
+    {
+        const std::vector<float>& again = distance_field.getDistanceField().distance_data;
+        Check(again.size() == field.distance_data.size(), "parallel: rebuilt field has the same voxel count");
+        const bool identical =
+            again.size() == field.distance_data.size() &&
+            std::equal(again.begin(), again.end(), field.distance_data.begin(),
+                       [](float a, float b) { return a == b; });  // NaN == NaN fails; any mismatch is a race
+        Check(identical, "parallel: voxel distances are bit-identical across runs (no data race)");
+    }
+
+    // -------------------------------------------------------------------------
     // 4. geometry_hash drives the "scene did not change" short circuit.
     // -------------------------------------------------------------------------
     const uint64_t hash_before = cache.geometry_hash;

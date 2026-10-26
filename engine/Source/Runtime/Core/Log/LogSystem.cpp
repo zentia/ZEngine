@@ -205,3 +205,11 @@ void ZEngineForceFlushLogs()
     // and is safe either way.
     bq::log::force_flush_all_logs();
 }
+
+uint32_t ZEngineDumpCrashLogTail(const std::string& dir)
+{
+    // 崩溃路径上的兜底（#11）：force_flush_all_logs() 是尽力而为，异步日志尾可能
+    // 仍丢失。这里把进程级环形缓冲（独立于 BqLog 缓冲与 LogSystem 单例）落盘为
+    // <dir>/crash_log_tail.txt。不碰单例、崩溃路径零堆分配、容忍并发写。
+    return zengine::logtail::Dump(dir);
+}

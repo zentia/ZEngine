@@ -10,11 +10,17 @@
 #include <string>
 #include <vector>
 
-// Forward declarations for platform-specific types
-// These will be conditionally included in implementation files
-#if defined(Z_HAS_VULKAN)
-    #include <vma/vk_mem_alloc.h>
-#endif
+// NOTE(#9): this header used to force-include <vma/vk_mem_alloc.h> whenever
+// Z_HAS_VULKAN was defined. That leaked the Vulkan memory-allocator header
+// into every one of the 50+ translation units that include RHI.h -- on Windows
+// both Z_HAS_DX12 and Z_HAS_VULKAN are defined by default, so DX12 / Metal /
+// Editor / Lumen code all dragged in VMA for no reason. The base RHI interface
+// no longer references any VMA type: the two VMA-shaped parameters below are
+// expressed as plain void* (see CreateGlobalImage / CreateCubeMap), and the
+// VMA-specific CreateBuffer*VMA overrides live on the Vulkan backend, which
+// includes <vma/vk_mem_alloc.h> itself (VulkanRHI.h). Consumers that need the
+// VmaAllocation type already provide their own guarded fallback (see e.g.
+// RenderGpuResources.h). Do NOT re-add this include here.
 
 class WindowSystem;
 

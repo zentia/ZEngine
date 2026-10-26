@@ -736,10 +736,19 @@ SpineImportResult ApplyPathMix(const SpineGpuAsset& asset, SpineGpuSkeletonState
 // deform
 // ---------------------------------------------------------------------
 
-// 第 fr 帧的"整份"数组（参考实现**读文件时**拼出来的，SkeletonBinary.cpp:986-1016）：
-// 稀疏区间外补 0，rigid 再逐个加上 setup 顶点（rigid 存绝对坐标、weighted 存偏移）。
-bool ExpandDeformFrame(const SpineGpuAsset& asset, const SpineGpuRuntimeData& data, uint32_t tl_index, uint32_t fr,
-                       uint32_t deform_len, const float* rigid_setup, std::vector<float>& full)
+// 第 fr 帧在容器里的样子：`[start:u32][count:u32][count 个 float]`，只存**增量**
+// （规格 §5.2，省 59.5% 载荷）⇒ `count` 之外的值恒为 0。
+// ⚠️ `src` 是字节缓冲里的地址，**不保证 4 对齐**，逐元素读必须走 memcpy（x86 上就是一条
+// 非对齐 load，编译器会内联掉）。
+struct DeformFrameRun
+{
+    uint32_t start = 0;
+    uint32_t count = 0;
+    const uint8_t* src = nullptr;
+};
+
+bool GetDeformFrameRun(const SpineGpuAsset& asset, const SpineGpuRuntimeData& data, uint32_t tl_index, uint32_t fr,
+                       uint32_t deform_len, DeformFrameRun& out)
 {
     const size_t fi = static_cast<size_t>(data.deform_frame_first[tl_index]) + fr;
     if (fi >= data.deform_frame_pos.size())
@@ -755,16 +764,43 @@ bool ExpandDeformFrame(const SpineGpuAsset& asset, const SpineGpuRuntimeData& da
     {
         return false;
     }
-    full.assign(deform_len, 0.0f);
-    if (count != 0)
+    out.start = start;
+    out.count = count;
+    out.src = asset.timeline_payload.data() + pos + 8u;
+    return true;
+}
+
+// 第 fr 帧的"整份"数组（参考实现**读文件时**拼出来的，SkeletonBinary.cpp:986-1016）：
+// 稀疏区间外补 0，rigid 再逐个加上 setup 顶点（rigid 存绝对坐标、weighted 存偏移）。
+//
+// ⚠️ 2026-10-23：试过"α==1 时不物化 prev/next、直接从稀疏帧 + setup 一趟写进 vertices"
+//    （规格 §17.4 的 P1）—— 访存从 8.01 次/float 降到 3.18 次，但**反而慢 1.7~3.5%**：
+//    逐元素要判 `i` 在不在稀疏区间里 ⇒ 循环带分支、又只能标量跑，而展开出来的三趟
+//    （fill / memcpy / 加 setup）都是连续直线循环、能向量化。**这里省的是访存，亏的是 SIMD。**
+//    真正有效的是给这几条热循环加 `__restrict`（见下面与 `ApplyDeform`，规格 §17.5）。
+bool ExpandDeformFrame(const SpineGpuAsset& asset, const SpineGpuRuntimeData& data, uint32_t tl_index, uint32_t fr,
+                       uint32_t deform_len, const float* rigid_setup, std::vector<float>& full)
+{
+    DeformFrameRun run;
+    if (!GetDeformFrameRun(asset, data, tl_index, fr, deform_len, run))
     {
-        std::memcpy(full.data() + start, asset.timeline_payload.data() + pos + 8u, static_cast<size_t>(count) * 4u);
+        return false;
+    }
+    full.assign(deform_len, 0.0f);
+    if (run.count != 0)
+    {
+        std::memcpy(full.data() + run.start, run.src, static_cast<size_t>(run.count) * 4u);
     }
     if (rigid_setup != nullptr)
     {
+        // `__restrict`：`full` 是 thread_local scratch、`rigid_setup` 指进 `asset.vertex_buffer`
+        // （或 path 顶点表），两者**不可能**重叠；不写这句 MSVC 不敢向量化这段
+        // （实测 3.0~4.7%，规格 §17.5）。
+        float* __restrict dst = full.data();
+        const float* __restrict rs = rigid_setup;
         for (uint32_t q = 0; q < deform_len; ++q)
         {
-            full[q] += rigid_setup[q];
+            dst[q] += rs[q];
         }
     }
     return true;
@@ -1069,10 +1105,16 @@ SpineImportResult ApplyDeform(const SpineGpuAsset& asset, const SpineGpuRuntimeD
         }
         else
         {
+            // `__restrict`：`vertices` 是槽位的 deform 向量、prev/next 是 thread_local scratch，
+            // 三者互不相交；不写这句 MSVC 不做向量化（实测这条循环 + 上面 `ExpandDeformFrame`
+            // 里的 setup 累加一共值 3.0~4.7%，规格 §17.5）。
+            float* __restrict v = vertices.data();
+            const float* __restrict pv = prev_v.data();
+            const float* __restrict nv = next_v.data();
             for (size_t i = 0; i < n; ++i)
             {
-                const float p = prev_v[i];
-                vertices[i] = p + (next_v[i] - p) * percent;
+                const float p = pv[i];
+                v[i] = p + (nv[i] - p) * percent;
             }
         }
         return Ok();

@@ -66,6 +66,13 @@ namespace ZYaml
     using GraphReaderExternHook =
         std::function<int32_t(const FileIdentifier& ref, int64_t pathID)>;
 
+    // Instance-ID hook: the InstanceID to Produce the object at `fileID` under.
+    // AssetManager passes its path-derived ID (GetInstanceIDFromPathAndFileID), so
+    // the objects of a graph read from a file are the same identities a PPtr into
+    // that file names -- exactly what the binary reader does. Returning 0 (or no
+    // hook) falls back to a fresh heap ID: right for text that has no file.
+    using GraphInstanceIdHook = std::function<int32_t(int64_t fileID)>;
+
     // Serialize the given objects (each tagged with a unique fileID) to a YAML
     // string. InstanceIDs are assigned/registered for any object lacking one so
     // local references resolve. Returns false only on a hard internal error.
@@ -79,7 +86,33 @@ namespace ZYaml
     // object, in document order. Caller owns the produced objects.
     bool ReadObjectGraph(const char* text,
                          std::vector<ObjectGraphEntry>& out,
-                         GraphReaderExternHook readerHook = {});
+                         GraphReaderExternHook readerHook = {},
+                         GraphInstanceIdHook instanceIdHook = {});
+
+    // Text-level filter over a graph written by WriteObjectGraph: removes every
+    // object entry `drop(typeName)` returns true for, and keeps the rest of the
+    // document as is (no object is produced, so no instance ID is touched -- safe
+    // while the same file is loaded in the editor). Afterwards:
+    //   * externals no remaining object refers to are pruned, and the remaining
+    //     objects' m_FileID indices are renumbered to match;
+    //   * a remaining reference to a removed local object becomes null
+    //     (m_FileID 0 / m_PathID 0) and is counted in `danglingReferences`.
+    struct StripGraphStats
+    {
+        int removedObjects = 0;
+        int removedExternals = 0;
+        int danglingReferences = 0;
+    };
+    bool StripObjectsFromGraph(const char* text,
+                               const std::function<bool(const char* typeName)>& drop,
+                               eastl::string& out,
+                               StripGraphStats* stats = nullptr);
+
+    // Text-level read of the externals table (guid / type / path per entry, in
+    // table order). No object is produced -- AssetRegistry indexes a YAML
+    // asset's dependencies from it the way it reads a binary file's
+    // SerializedFile::GetExternalRefs(). False if `text` is not a graph document.
+    bool ReadExternalRefs(const char* text, std::vector<FileIdentifier>& out);
 
     // Lightweight type sniff for AssetRegistry / GetAssetTypeName. Returns the
     // `type:` tag of the object with `preferredFileID`, or the first object.

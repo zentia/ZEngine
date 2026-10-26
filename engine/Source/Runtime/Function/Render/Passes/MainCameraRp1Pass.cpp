@@ -1,4 +1,5 @@
 #include "Runtime/Function/Render/Passes/MainCameraRp1Pass.h"
+#include "Runtime/Function/Render/Passes/MainCameraRp1GraphDecl.h"
 
 #include "Runtime/Core/Base/Macro.h"
 #include "Runtime/Function/Render/AppleSsaoPass.h"
@@ -15,6 +16,7 @@
 #include "Runtime/Utility/Utility.h"
 
 #include <array>
+#include <cstdlib>
 #include <cstring>
 #include <map>
 #include <stdexcept>
@@ -263,6 +265,7 @@ bool MainCameraRp1Pass::Initialize()
 
     SetupDescriptorSets();
     EnsureFallbackIblTextures();
+    SetupRenderGraphPath();
 
     m_Initialized = true;
     return true;
@@ -274,6 +277,14 @@ void MainCameraRp1Pass::Shutdown()
     {
         return;
     }
+
+    // Reverse creation order: the executor and the pool only borrow the device.
+    m_Rp1Graph.reset();
+    m_RgExecutor.reset();
+    m_RgPool.reset();
+    m_RgDevice.reset();
+    m_UseRenderGraph = false;
+    m_RgFallbackLogged = false;
 
     m_MeshGbufferMaterialPipelines.clear();
     m_MeshTransparentMaterialPipelines.clear();
@@ -2509,6 +2520,190 @@ void MainCameraRp1Pass::DrawForwardLightingPass(const std::array<bool, 2>& skybo
     m_Rhi->PopEvent(m_Rhi->GetCurrentCommandBuffer());
 
     m_Rhi->CmdEndRenderPassPFN(m_Rhi->GetCurrentCommandBuffer());
+}
+
+// =====================================================================================
+// Render graph path (ZENGINE_RG_RP1)
+// =====================================================================================
+
+void MainCameraRp1Pass::SetupRenderGraphPath()
+{
+    // Opt-in, mirroring ZENGINE_RG_RP2: the hand-written chain is the one that has been
+    // shipping, and the graph path needs a per-frame visual diff before it can be default.
+    const char* env = std::getenv("ZENGINE_RG_RP1");
+    const bool requested = env != nullptr && env[0] != '\0' && env[0] != '0';
+    m_UseRenderGraph = false;
+    if (!requested)
+    {
+        return;
+    }
+
+    if (!SetRenderGraphPathEnabled(true))
+    {
+        LOG_WARNING(ZRender,
+                    "MainCameraRp1Pass: ZENGINE_RG_RP1 is set but the render graph path is DX12-only; "
+                    "keeping the hand-written RP1 chain");
+        return;
+    }
+    LOG_INFO(ZRender, "MainCameraRp1Pass: RP1 is driven by the render graph (ZENGINE_RG_RP1=1)");
+}
+
+bool MainCameraRp1Pass::SetRenderGraphPathEnabled(bool enabled)
+{
+    if (!enabled)
+    {
+        // Keep the graph objects: the A/B capture flips this off and back on in one frame.
+        m_UseRenderGraph = false;
+        return true;
+    }
+
+    // DX12 only. MainCameraRp1Pass also runs on Metal, but Metal's CmdPipelineBarrier is a
+    // no-op (it tracks hazards per encoder), so the graph would add nothing there. And the
+    // RP1 import states rely on DX12RHI::CmdPipelineBarrier transitioning from its OWN
+    // tracked state (see MainCameraRp1GraphDecl.h) -- not something to assume elsewhere.
+    if (m_Rhi == nullptr || m_Rhi->getGraphicsAPI() != GraphicsAPI::DirectX12)
+    {
+        m_UseRenderGraph = false;
+        return false;
+    }
+
+    if (m_Rp1Graph == nullptr)
+    {
+        m_RgDevice = std::make_unique<RGRhiDeviceAdapter>(m_Rhi);
+        m_RgPool = std::make_unique<RenderGraphResourcePool>(m_RgDevice.get());
+        m_RgExecutor = std::make_unique<RenderGraphExecutor>(m_Rhi, m_RgDevice.get(), m_RgPool.get());
+        m_Rp1Graph = std::make_unique<RenderGraph>("RP1");
+        m_RgFallbackLogged = false;
+    }
+    m_UseRenderGraph = true;
+    return true;
+}
+
+bool MainCameraRp1Pass::DrawRP1WithGraph(const std::array<bool, 2>& skybox_visible)
+{
+    if (!m_UseRenderGraph || m_RgExecutor == nullptr || m_Rp1Graph == nullptr || m_FbResources == nullptr)
+    {
+        return false;
+    }
+
+    RHICommandBuffer* cmd = m_Rhi->GetCurrentCommandBuffer();
+    if (cmd == nullptr)
+    {
+        return false;
+    }
+
+    // ---- validate before recording ---------------------------------------------------
+    // Everything that can reject the graph path is checked here. Once Execute() starts
+    // recording there is no way back: the caller's fallback would append the whole
+    // hand-written chain after whatever the graph already put in the buffer.
+    const auto reject_once = [this](const char* why) {
+        if (!m_RgFallbackLogged)
+        {
+            m_RgFallbackLogged = true;
+            LOG_WARNING(ZRender, "MainCameraRp1Pass: {}, falling back to the hand-written RP1 chain", why);
+        }
+        return false;
+    };
+
+    if (m_FbResources->getGBufferRenderPass() == nullptr || m_FbResources->getGBufferFramebuffer() == nullptr ||
+        m_FbResources->getDeferredLightingRenderPass() == nullptr ||
+        m_FbResources->getDeferredLightingFramebuffer() == nullptr ||
+        m_FbResources->getForwardLightingRenderPass() == nullptr ||
+        m_FbResources->getForwardLightingFramebuffer() == nullptr)
+    {
+        return reject_once("an RP1 render pass / framebuffer is missing");
+    }
+
+    const auto external = [this](uint32_t attachment, RGFormat format) {
+        RGExternalTexture texture {};
+        texture.image = m_FbResources->getAttachmentImage(attachment);
+        texture.view = m_FbResources->getAttachmentView(attachment);
+        texture.format = format;
+        return texture;
+    };
+
+    Rp1GraphTextures textures {};
+    textures.gbuffer_a = external(_main_camera_pass_gbuffer_a, RGFormat::R8G8B8A8_UNORM);
+    textures.gbuffer_b = external(_main_camera_pass_gbuffer_b, RGFormat::R8G8B8A8_UNORM);
+    textures.gbuffer_c = external(_main_camera_pass_gbuffer_c, RGFormat::R8G8B8A8_SRGB);
+    textures.backup_odd = external(_main_camera_pass_backup_buffer_odd, RGFormat::R16G16B16A16_SFLOAT);
+    if (textures.gbuffer_a.image == nullptr || textures.gbuffer_b.image == nullptr ||
+        textures.gbuffer_c.image == nullptr || textures.backup_odd.image == nullptr)
+    {
+        return reject_once("a GBuffer / BackupOdd attachment exposes no RHIImage");
+    }
+
+    // Scene depth is tracked only when the backend publishes an image for it. DX12's
+    // GetDepthImageInfo() currently does not (depth_image == nullptr), so the graph leaves
+    // depth entirely to the render passes -- exactly what the hand-written chain does,
+    // whose explicit depth barrier hits the same null image and is dropped by the RHI.
+    const RHIDepthImageDesc depth_info = m_Rhi->GetDepthImageInfo();
+    if (depth_info.depth_image != nullptr)
+    {
+        textures.depth.image = depth_info.depth_image;
+        textures.depth.view = depth_info.depth_image_view;
+        switch (depth_info.depth_image_format)
+        {
+            case RHI_FORMAT_D24_UNORM_S8_UINT:
+                textures.depth.format = RGFormat::D24_UNORM_S8_UINT;
+                break;
+            case RHI_FORMAT_D32_SFLOAT:
+                textures.depth.format = RGFormat::D32_SFLOAT;
+                break;
+            default:
+                // A depth format the graph has no enum for (e.g. D32S8) would get a COLOR
+                // aspect barrier; refuse rather than emit an invalid one.
+                return reject_once("the scene depth format is not representable in the render graph");
+        }
+    }
+
+    textures = MakeRp1GraphImportStates(textures);
+
+    // ---- declare ---------------------------------------------------------------------
+    // The callbacks are the very same Draw*Pass() functions the hand-written chain calls,
+    // in the same order; each one begins and ends its own render pass. The graph only
+    // inserts its barriers between them.
+    m_Rp1Graph->Reset();
+    Rp1GraphCallbacks callbacks;
+    callbacks.gbuffer = [this, &skybox_visible](RenderGraphExecuteContext&) { DrawGBufferPass(skybox_visible); };
+    callbacks.deferred_lighting = [this, &skybox_visible](RenderGraphExecuteContext&) {
+        DrawDeferredLightingPass(skybox_visible);
+    };
+    callbacks.forward_lighting = [this, &skybox_visible](RenderGraphExecuteContext&) {
+        DrawForwardLightingPass(skybox_visible);
+    };
+    DeclareRp1Graph(*m_Rp1Graph, textures, std::move(callbacks));
+
+    // The render passes record their own GPU events ("BasePass", "Deferred Lighting", ...);
+    // the executor's per-pass markers would only nest a duplicate level around them.
+    m_RgExecutor->SetDebugEventsEnabled(false);
+
+    const RGCompiledGraph& compiled = m_Rp1Graph->Compile();
+    if (!compiled.valid)
+    {
+        if (!m_RgFallbackLogged)
+        {
+            m_RgFallbackLogged = true;
+            LOG_ERROR(ZRender,
+                      "MainCameraRp1Pass: the RP1 render graph is invalid, falling back to the hand-written path");
+            for (const std::string& error : compiled.errors)
+            {
+                LOG_ERROR(ZRender, "  render graph: {}", error);
+            }
+        }
+        return false;
+    }
+
+    // Execute() can only fail before it records anything (no device, no pool, invalid
+    // graph -- the last of which was just ruled out above), so falling back here is safe.
+    if (!m_RgExecutor->Execute(*m_Rp1Graph, cmd))
+    {
+        LOG_ERROR(ZRender,
+                  "MainCameraRp1Pass: render graph execution failed ({}), falling back to the hand-written path",
+                  m_RgExecutor->GetLastError());
+        return false;
+    }
+    return true;
 }
 
 void MainCameraRp1Pass::SetupParticlePass()

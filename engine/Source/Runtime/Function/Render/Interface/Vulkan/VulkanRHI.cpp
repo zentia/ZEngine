@@ -1,5 +1,6 @@
 #include "Runtime/Function/Render/Interface/Vulkan/VulkanRHI.h"
 
+#include "Runtime/Function/Render/Interface/RHIFactory.h"
 #include "Runtime/Core/Base/Macro.h"
 #include "Runtime/Function/Render/Interface/Vulkan/ShaderCompiler.h"
 #include "Runtime/Function/Render/Interface/Vulkan/VulkanUtil.h"
@@ -5215,4 +5216,17 @@ uint8_t VulkanRHI::GetCurrentFrameIndex() const
 void VulkanRHI::SetCurrentFrameIndex(uint8_t index)
 {
     m_CurrentFrameIndex = index;
+}
+// ---- audit #4：Vulkan 后端自注册进 RHIFactory 注册表 ----
+// ZRuntime whole-archive 链接，此静态实例在 main 之前完成注册。
+namespace
+{
+    struct VulkanRHIBackendRegistrar
+    {
+        VulkanRHIBackendRegistrar()
+        {
+            RHIFactory::RegisterBackend(GraphicsAPI::Vulkan,
+                [](WindowSystem* window_system) -> RHI* { return new VulkanRHI(); });
+        }
+    } s_vulkan_rhi_registrar;
 }

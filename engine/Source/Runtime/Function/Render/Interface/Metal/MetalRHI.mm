@@ -1,5 +1,6 @@
 #include "CommonPCH/pch.h"
 #include "Runtime/Function/Render/Interface/Metal/MetalRHI.h"
+#include "Runtime/Function/Render/Interface/RHIFactory.h"
 #include "Runtime/Function/Render/Interface/Metal/MetalBindlessTextureManager.h"
 #include "Runtime/Function/Render/Interface/Metal/MetalRHIResource.h"
 
@@ -3371,4 +3372,18 @@ void MetalRHI::CmdSetBindlessIndexPFN(RHICommandBuffer*    /*commandBuffer*/,
     // Ensure residency of all allocated textures before any draw.
     m_BindlessTextureManager->ensureResidency(encoder);
 #endif
+}
+
+// ---- audit #4：Metal 后端自注册进 RHIFactory 注册表 ----
+// 本翻译单元只在 Apple 编译（.mm），故注册器无需额外平台守卫。
+namespace
+{
+    struct MetalRHIBackendRegistrar
+    {
+        MetalRHIBackendRegistrar()
+        {
+            RHIFactory::RegisterBackend(GraphicsAPI::Metal,
+                [](WindowSystem* window_system) -> RHI* { return new MetalRHI(); });
+        }
+    } s_metal_rhi_registrar;
 }

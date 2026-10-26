@@ -479,6 +479,32 @@ void MegaLightsSystem::InvalidateHistory()
     }
 }
 
+MegaLightsSystem::HistoryBookmark MegaLightsSystem::SaveHistoryBookmark() const
+{
+    HistoryBookmark bookmark;
+    for (uint32_t i = 0; i < kViewportHistoryCount; ++i)
+    {
+        bookmark.ping_pong[i] = m_History[i].ping_pong;
+        bookmark.history_valid[i] = m_History[i].history_valid;
+        bookmark.layouts[i][0] = m_History[i].layouts[0];
+        bookmark.layouts[i][1] = m_History[i].layouts[1];
+        bookmark.prev_proj_view[i] = m_History[i].prev_proj_view;
+    }
+    return bookmark;
+}
+
+void MegaLightsSystem::RestoreHistoryBookmark(const HistoryBookmark& bookmark)
+{
+    for (uint32_t i = 0; i < kViewportHistoryCount; ++i)
+    {
+        m_History[i].ping_pong = bookmark.ping_pong[i];
+        m_History[i].history_valid = bookmark.history_valid[i];
+        m_History[i].layouts[0] = bookmark.layouts[i][0];
+        m_History[i].layouts[1] = bookmark.layouts[i][1];
+        m_History[i].prev_proj_view = bookmark.prev_proj_view[i];
+    }
+}
+
 void MegaLightsSystem::SyncLightsFromScene(const RenderScene& scene)
 {
     m_CpuLights.clear();

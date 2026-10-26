@@ -2,8 +2,12 @@
 
 #include "RuntimeConsoleCommands.h"
 
+#include "Runtime/Project/ProjectInfo.h"
+
 #include <algorithm>
 #include <cctype>
+#include <cstdlib>
+#include <fstream>
 
 std::string ConsoleManager::NormalizeKey(const std::string& name)
 {
@@ -105,6 +109,32 @@ bool ConsoleManager::Initialize()
                             return false;
                         }
                         return true;
+                    });
+
+    RegisterCommand("cvar.save",
+                    "Write every console variable to a file as name=value: cvar.save <file>",
+                    [this](const std::vector<std::string>& args) -> bool {
+                        if (args.empty())
+                        {
+                            LOG_ERROR(ZConsole, "Usage: cvar.save <file>");
+                            return false;
+                        }
+                        const int written = SaveVariablesToFile(args[0]);
+                        if (written < 0)
+                            return false;
+                        LOG_INFO(ZConsole, "cvar.save: wrote {} variable(s) to '{}'", written, args[0]);
+                        return true;
+                    });
+
+    RegisterCommand("cvar.load",
+                    "Apply name=value lines from a file (UE ConsoleVariables.ini style): cvar.load <file>",
+                    [this](const std::vector<std::string>& args) -> bool {
+                        if (args.empty())
+                        {
+                            LOG_ERROR(ZConsole, "Usage: cvar.load <file>");
+                            return false;
+                        }
+                        return LoadVariablesFromFile(args[0]) >= 0;
                     });
 
     RegisterRuntimeConsoleCommands(*this);
@@ -403,4 +433,218 @@ std::vector<std::string> ConsoleManager::ParseCommandLine(const std::string& com
     }
 
     return args;
+}
+
+// ============================================
+// CVar 配置文件
+// ============================================
+
+namespace
+{
+    std::string TrimCopy(const std::string& text)
+    {
+        size_t begin = 0;
+        size_t end = text.size();
+        while (begin < end && std::isspace(static_cast<unsigned char>(text[begin])))
+            ++begin;
+        while (end > begin && std::isspace(static_cast<unsigned char>(text[end - 1])))
+            --end;
+        return text.substr(begin, end - begin);
+    }
+}  // namespace
+
+std::unordered_map<std::string, std::string> ConsoleManager::SnapshotVariableValues() const
+{
+    std::unordered_map<std::string, std::string> values;
+    values.reserve(m_Variables.size());
+    for (const auto& [key, var] : m_Variables)
+    {
+        if (var)
+            values[key] = var->getStringValue();
+    }
+    return values;
+}
+
+int ConsoleManager::SaveVariablesToFile(const std::string& path,
+                                        const std::unordered_map<std::string, std::string>* only_changed_from) const
+{
+    std::vector<std::pair<std::string, std::string>> lines;
+    lines.reserve(m_Variables.size());
+    for (const auto& [key, var] : m_Variables)
+    {
+        if (!var)
+            continue;
+        std::string value = var->getStringValue();
+        if (only_changed_from != nullptr)
+        {
+            const auto it = only_changed_from->find(key);
+            if (it != only_changed_from->end() && it->second == value)
+                continue;
+        }
+        // Load trims blanks around the value and strips ONE pair of surrounding
+        // double quotes. Quote any value that would otherwise change on the way back:
+        // edge whitespace, or a value that itself starts and ends with a quote.
+        const bool needs_quotes =
+            !value.empty() &&
+            (std::isspace(static_cast<unsigned char>(value.front())) ||
+             std::isspace(static_cast<unsigned char>(value.back())) ||
+             (value.size() >= 2 && value.front() == '"' && value.back() == '"'));
+        if (needs_quotes)
+            value = '"' + value + '"';
+        lines.emplace_back(var->GetName(), std::move(value));
+    }
+    std::sort(lines.begin(), lines.end(), [](const auto& a, const auto& b) {
+        return NormalizeKey(a.first) < NormalizeKey(b.first);
+    });
+
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    if (!out)
+    {
+        LOG_ERROR(ZConsole, "cvar.save: cannot open '{}' for writing", path);
+        return -1;
+    }
+    out << "; ZEngine console variables (name=value). Load with: cvar.load <file>\n";
+    for (const auto& [name, value] : lines)
+        out << name << '=' << value << '\n';
+    out.flush();
+    if (!out)
+    {
+        LOG_ERROR(ZConsole, "cvar.save: write to '{}' failed", path);
+        return -1;
+    }
+    return static_cast<int>(lines.size());
+}
+
+std::filesystem::path ConsoleManager::ResolveStartupVariablesFile(const std::filesystem::path& project_root,
+                                                                 const char* override_spec)
+{
+    const std::string spec = TrimCopy(override_spec != nullptr ? std::string(override_spec) : std::string());
+    if (spec.empty())
+    {
+        return project_root / "Config" / k_startup_variables_file_name;
+    }
+    const std::string key = NormalizeKey(spec);
+    if (key == "none" || key == "off" || key == "0")
+    {
+        return {};
+    }
+    return std::filesystem::path(spec);
+}
+
+std::vector<std::filesystem::path> ConsoleManager::ResolveStartupVariablesFiles(const std::filesystem::path& project_root,
+                                                                                const char* override_spec)
+{
+    const std::filesystem::path primary = ResolveStartupVariablesFile(project_root, override_spec);
+    if (primary.empty())
+    {
+        return {};
+    }
+    const std::string spec = TrimCopy(override_spec != nullptr ? std::string(override_spec) : std::string());
+    if (!spec.empty())
+    {
+        return {primary};
+    }
+    return {primary, project_root / "Saved" / "Config" / k_startup_variables_file_name};
+}
+
+int ConsoleManager::LoadStartupVariablesFile(const std::filesystem::path& file)
+{
+    if (file.empty())
+    {
+        LOG_INFO(ZConsole, "startup cvar file disabled");
+        return 0;
+    }
+    std::error_code ec;
+    if (!std::filesystem::is_regular_file(file, ec))
+    {
+        // The common case (no project override yet), so not even a warning.
+        LOG_INFO(ZConsole, "no startup cvar file at '{}'", file.generic_string());
+        return 0;
+    }
+    return LoadVariablesFromFile(file.string());
+}
+
+int ConsoleManager::LoadStartupVariables(const char* override_spec)
+{
+    if (override_spec == nullptr)
+    {
+        override_spec = std::getenv(k_startup_variables_env);
+    }
+    std::filesystem::path project_root;
+    if (const auto project_info = GET_SYSTEM(ProjectInfo))
+    {
+        project_root = project_info->GetProjectRoot();
+    }
+    if (project_root.empty())
+    {
+        std::error_code ec;
+        project_root = std::filesystem::current_path(ec);
+    }
+    const std::vector<std::filesystem::path> files = ResolveStartupVariablesFiles(project_root, override_spec);
+    if (files.empty())
+    {
+        LOG_INFO(ZConsole, "startup cvar file disabled");
+        return 0;
+    }
+    int applied = 0;
+    for (const std::filesystem::path& file : files)
+    {
+        const int n = LoadStartupVariablesFile(file);
+        if (n > 0)
+        {
+            applied += n;
+        }
+    }
+    return applied;
+}
+
+int ConsoleManager::LoadVariablesFromFile(const std::string& path, std::vector<std::string>* out_failed)
+{
+    std::ifstream in(path, std::ios::binary);
+    if (!in)
+    {
+        LOG_ERROR(ZConsole, "cvar.load: cannot open '{}'", path);
+        return -1;
+    }
+
+    int applied = 0;
+    std::string raw;
+    int line_number = 0;
+    while (std::getline(in, raw))
+    {
+        ++line_number;
+        const std::string line = TrimCopy(raw);  // also drops a CR of CRLF files
+        if (line.empty() || line[0] == '#' || line[0] == ';' || line[0] == '[')
+            continue;
+
+        const size_t eq = line.find('=');
+        if (eq == std::string::npos || eq == 0)
+        {
+            LOG_WARNING(ZConsole, "cvar.load: {}:{}: expected name=value, got '{}'", path, line_number, line);
+            if (out_failed != nullptr)
+                out_failed->push_back(line);
+            continue;
+        }
+        const std::string name = TrimCopy(line.substr(0, eq));
+        std::string value = TrimCopy(line.substr(eq + 1));
+        if (value.size() >= 2 && value.front() == '"' && value.back() == '"')
+            value = value.substr(1, value.size() - 2);
+
+        auto var = FindVariable(name);
+        if (!var || !var->setStringValue(value))
+        {
+            LOG_WARNING(ZConsole,
+                        "cvar.load: {}:{}: {} '{}'",
+                        path,
+                        line_number,
+                        var ? "invalid value for" : "unknown variable",
+                        var ? line : name);
+            if (out_failed != nullptr)
+                out_failed->push_back(line);
+            continue;
+        }
+        ++applied;
+    }
+    LOG_INFO(ZConsole, "cvar.load: applied {} value(s) from '{}'", applied, path);
+    return applied;
 }

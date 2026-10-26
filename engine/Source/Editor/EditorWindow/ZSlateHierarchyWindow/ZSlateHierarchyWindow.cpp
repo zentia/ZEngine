@@ -3,6 +3,7 @@
 #include "Editor/EditorDragDrop/EditorDragDrop.h"
 #include "Editor/EditorHierarchy/EditorHierarchyReparent.h"
 #include "Editor/EditorLayout/EditorLayoutWindowIds.h"
+#include "Editor/EditorScenePlacement/EditorScenePlacement.h"
 #include "Editor/EditorSceneManager/EditorSceneManager.h"
 #include "Editor/EditorUI/EditorSelection.h"
 #include "Editor/Undo/EditorUndo.h"
@@ -27,6 +28,26 @@
 #include "ZSlate/Widgets/Text/STextBlock.h"
 
 #include <algorithm>
+#include <filesystem>
+
+namespace
+{
+    // A Content Browser asset drag (FAssetDragDropOp). The Hierarchy only took
+    // GameObject drags (reparent), so a prefab dragged here had nowhere to land --
+    // only the Scene viewport placed assets. Placement itself (prefab instance /
+    // mesh / spine, undo, selection) is EditorScenePlacement's, shared with the
+    // viewport drop; unsupported asset types are rejected there with a warning.
+    const FAssetDragDropOp* PlaceableAssetDrop(const std::shared_ptr<ZSlate::FDragDropOperation>& op)
+    {
+        const FAssetDragDropOp* asset_op = EditorDragDrop::AsAssetDrop(op);
+        return (asset_op != nullptr && !asset_op->AssetPath.empty()) ? asset_op : nullptr;
+    }
+
+    bool IsPlaceableAssetDrop(const std::shared_ptr<ZSlate::FDragDropOperation>& op)
+    {
+        return PlaceableAssetDrop(op) != nullptr;
+    }
+}  // namespace
 using namespace ZSlate;
 
 // Runtime UI types (Runtime/Core/Math/Vector2.h) vs ZSlate's own Vector2: same
@@ -195,8 +216,12 @@ void ZSlateHierarchyWindow::AddNodeRows(Level* level,
         return op;
     };
 
-    // Drop target: accept another object (not self, not a cycle) and reparent it.
+    // Drop target: accept another object (not self, not a cycle) and reparent it,
+    // or a Content Browser asset (prefab / mesh / spine) and place it as a child of
+    // this row (same placement path the Scene viewport drop uses).
     row->CanAcceptDrop = [object_id](const std::shared_ptr<FDragDropOperation>& op) {
+        if (IsPlaceableAssetDrop(op))
+            return GET_SYSTEM(WorldManager)->getCurrentActiveLevel() != nullptr;
         if (op == nullptr || op->PayloadType != EditorDragDrop::kZSlateAssetPayloadGObjectId)
             return false;
         const auto dragged = static_cast<GObjectID>(op->Id);
@@ -208,6 +233,11 @@ void ZSlateHierarchyWindow::AddNodeRows(Level* level,
         return !EditorHierarchyReparent::WouldCreateCycle(lvl, dragged, object_id);
     };
     row->OnDropHandler = [this, object_id](const std::shared_ptr<FDragDropOperation>& op) {
+        if (const FAssetDragDropOp* asset_op = PlaceableAssetDrop(op))
+        {
+            EditorScenePlacement::RequestDrop(std::filesystem::path(asset_op->AssetPath), object_id);
+            return;
+        }
         Level* lvl = GET_SYSTEM(WorldManager)->getCurrentActiveLevel();
         if (lvl != nullptr && op != nullptr &&
             EditorHierarchyReparent::Reparent(lvl, static_cast<GObjectID>(op->Id), object_id))
@@ -295,6 +325,8 @@ void ZSlateHierarchyWindow::Rebuild(Level* level, const TreeData& tree, GObjectI
     // by the deeper row target first (reparent-under).
     auto blank_drop = std::make_shared<SDropTarget>();
     blank_drop->CanAcceptDrop = [](const std::shared_ptr<FDragDropOperation>& op) {
+        if (IsPlaceableAssetDrop(op))
+            return GET_SYSTEM(WorldManager)->getCurrentActiveLevel() != nullptr;
         if (op == nullptr || op->PayloadType != EditorDragDrop::kZSlateAssetPayloadGObjectId)
             return false;
         Level* lvl = GET_SYSTEM(WorldManager)->getCurrentActiveLevel();
@@ -307,6 +339,12 @@ void ZSlateHierarchyWindow::Rebuild(Level* level, const TreeData& tree, GObjectI
         return EditorHierarchyReparent::GetParentId(dragged) != k_invalid_gobject_id;
     };
     blank_drop->OnDropHandler = [this](const std::shared_ptr<FDragDropOperation>& op) {
+        // An asset dropped on blank space is placed at the scene root.
+        if (const FAssetDragDropOp* asset_op = PlaceableAssetDrop(op))
+        {
+            EditorScenePlacement::RequestDrop(std::filesystem::path(asset_op->AssetPath), k_invalid_gobject_id);
+            return;
+        }
         Level* lvl = GET_SYSTEM(WorldManager)->getCurrentActiveLevel();
         if (lvl != nullptr && op != nullptr &&
             EditorHierarchyReparent::Reparent(lvl, static_cast<GObjectID>(op->Id), k_invalid_gobject_id))

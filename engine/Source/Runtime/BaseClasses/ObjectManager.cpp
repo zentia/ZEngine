@@ -48,6 +48,14 @@ Object* ObjectManager::Produce(const Type* type, int32_t instanceID)
 
 void ObjectManager::Destroy(Object* object)
 {
+    if (object == nullptr)
+        return;
+
+    // Two-phase teardown (BeginDestroy -> FinishDestroy, writing ObjectFlags),
+    // then delete. See Object::BeginDestroySequence for why this is the single
+    // shared implementation used by both destruction entry points.
+    object->BeginDestroySequence();
+
     // Mirrors Produce(): that one uses `new`, so this one uses `delete`.
     // Do NOT "fix" this into MemoryManager::DestroyObject -- see the header.
     delete object;
@@ -69,6 +77,17 @@ Object* ObjectManager::AllocateAndAssignInstanceID(Object* obj)
 
     RegisterInstanceIDInternal(obj->m_InstanceID, obj);
     return obj;
+}
+
+void ObjectManager::UnregisterInstanceID(int32_t instanceID, const Object* expected)
+{
+    if (instanceID == 0)
+        return;
+
+    std::lock_guard<std::mutex> lock(m_TableMutex);
+    const auto it = m_IDToPointer.find(instanceID);
+    if (it != m_IDToPointer.end() && it->second == expected)
+        m_IDToPointer.erase(it);
 }
 
 void ObjectManager::UnregisterInstanceID(int32_t instanceID)

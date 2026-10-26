@@ -79,7 +79,23 @@ namespace
 
     std::string DeterministicGuidFromPath(const std::filesystem::path& path)
     {
-        std::string s = path.lexically_normal().generic_string();
+        // The seed is documented as the ABSOLUTE path. A caller holding a relative
+        // spelling of the same file (a path name stored as first seen, a relative
+        // write target, an AssetRegistry scanning a relative folder) used to hash
+        // to a different GUID than one holding the absolute spelling. Anchor it at
+        // the current directory -- lexically, so the GUID does not depend on
+        // whether the file exists yet.
+        std::filesystem::path anchored = path;
+        if (anchored.is_relative())
+        {
+            std::error_code ec;
+            const std::filesystem::path absolute = std::filesystem::absolute(anchored, ec);
+            if (!ec && !absolute.empty())
+            {
+                anchored = absolute;
+            }
+        }
+        std::string s = anchored.lexically_normal().generic_string();
 #if defined(_WIN32)
         std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
 #endif
@@ -197,8 +213,16 @@ namespace
     std::string StoreExternalAssetPath(const std::filesystem::path& absolute_path)
     {
         std::error_code ec;
-        const std::filesystem::path normalized =
+        std::filesystem::path normalized =
             std::filesystem::absolute(absolute_path, ec).lexically_normal();
+        if (ec || normalized.empty())
+        {
+            // absolute() needs the current directory; when that is unavailable it
+            // returns an empty path, and an empty pathName silently turned the
+            // external reference into null on the next load. Keep the path we were
+            // given -- ResolveExternalAssetPath resolves relative paths as well.
+            normalized = absolute_path.lexically_normal();
+        }
 
         if (const auto project = GET_SYSTEM(ProjectInfo))
         {
@@ -536,6 +560,25 @@ AssetManager::GetAssetsByType(const std::string& asset_type, const std::filesyst
     return result;
 }
 
+std::string AssetManager::CanonicalPathKey(const std::filesystem::path& path)
+{
+    std::filesystem::path key = path;
+    if (key.is_relative())
+    {
+        std::error_code ec;
+        const std::filesystem::path absolute = std::filesystem::absolute(key, ec);
+        if (!ec && !absolute.empty())
+        {
+            key = absolute;
+        }
+    }
+    std::string text = key.lexically_normal().generic_string();
+#if defined(_WIN32)
+    std::transform(text.begin(), text.end(), text.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+#endif
+    return text;
+}
+
 Object* AssetManager::ReadObject(int32_t instanceID)
 {
     // PR-SE3a-migrate -- demand-load an object referenced by PPtr.
@@ -570,6 +613,36 @@ Object* AssetManager::ReadObject(int32_t instanceID)
         {
             return nullptr;
         }
+    }
+
+    // A PPtr into a multi-object file (prefab / scene / timeline graph) names ONE
+    // object of the graph. Every single-object reader below produces the file's
+    // header object (fileID 1), so for any other fileID they used to hand back the
+    // header -- an object of the wrong type, which PPtr<T> then static_casts.
+    // Hydrate the whole graph instead (both readers produce under the same
+    // path-derived IDs this PPtr carries). Only when the graph is not loaded yet:
+    // re-reading a loaded graph would produce a second copy under the same IDs.
+    if (ident.localIdentifierInFile != 1)
+    {
+        ObjectManager* object_manager = GET_SYSTEM(ObjectManager);
+        if (object_manager->IDToPointer(GetInstanceIDFromPathAndFileID(asset_path, 1)) == nullptr)
+        {
+            std::vector<std::pair<int64_t, Object*>> graph;
+            const bool read = IsYamlAuthoringAssetPath(asset_path) ? ReadObjectsFromYaml(asset_path, graph)
+                                                                   : ReadObjectsFromBinary(asset_path, graph);
+            if (read)
+            {
+                if (Object* object = object_manager->IDToPointer(instanceID))
+                {
+                    return object;
+                }
+            }
+        }
+        LOG_WARNING(ZAsset,
+                    "ReadObject: object {} of {} is not loaded and cannot be loaded on its own",
+                    ident.localIdentifierInFile,
+                    asset_path.generic_string());
+        return nullptr;
     }
 
     if (IsYamlAuthoringAssetPath(asset_path))
@@ -1161,8 +1234,17 @@ bool AssetManager::ReadObjectsFromYaml(const std::filesystem::path& path, std::v
     AssetManager* self = this;
     auto readerHook = MakeYamlReaderHook(self);
 
+    // Same identities as the binary reader: object N of this file is produced under
+    // GetInstanceIDFromPathAndFileID(path, N). With fresh heap IDs instead, nothing
+    // outside this read could name these objects -- a scene referring to a .prefab
+    // wrote the reference as null (no file identity for a heap ID), and a PPtr
+    // minted from the file never matched the loaded object.
+    auto instanceIdHook = [self, &path](int64_t fileID) -> int32_t {
+        return self->GetInstanceIDFromPathAndFileID(path, fileID);
+    };
+
     std::vector<ZYaml::ObjectGraphEntry> entries;
-    if (!ZYaml::ReadObjectGraph(text.c_str(), entries, std::move(readerHook)))
+    if (!ZYaml::ReadObjectGraph(text.c_str(), entries, std::move(readerHook), std::move(instanceIdHook)))
         return false;
 
     out.reserve(entries.size());

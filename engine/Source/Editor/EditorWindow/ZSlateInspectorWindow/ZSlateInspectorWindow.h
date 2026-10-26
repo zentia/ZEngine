@@ -74,6 +74,10 @@ struct FieldBinding
     const ZPropertyMeta* meta {nullptr};
     FieldEditGate gate;
     std::shared_ptr<ZSlate::STextBlock> row_label;
+
+    // Property path of the field ("m_LocalScale", "m_Settings.m_Radius"); a row of a
+    // prefab instance whose path is overridden gets the override label colour.
+    std::string prefab_path;
 };
 
 // Unity-style per-component enable checkbox on the section header row.
@@ -176,4 +180,9 @@ private:
     // retained widget tree refreshes its combo labels / conditional rows.
     ZSlate::ZSlatePopupMenu m_Popup;
     bool m_ForceRebuild {false};
+
+    // Prefab instance section (PrefabOverrideModel): the override count it was built
+    // with -- an edit that adds / removes an override rebuilds the list.
+    size_t m_BuiltPrefabOverrideCount {0};
+    bool m_BuiltPrefabSection {false};
 };

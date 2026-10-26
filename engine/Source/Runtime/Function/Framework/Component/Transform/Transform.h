@@ -138,6 +138,17 @@ public:
     ZFUNCTION()
     Transform* GetChild(int index) const;
     size_t GetChildCount() const { return m_Children.size(); }
+
+    /// Forget m_Father / m_Children on THIS transform only, without touching the
+    /// transforms they point at. For an object whose serialized state was just copied
+    /// from another Transform (EditorPrefabCloner): its links still name the ORIGINAL's
+    /// parent and children, and SetParent() would append to them instead of replacing
+    /// them. Must be called before the clone is linked into a hierarchy.
+    void ClearCopiedHierarchyLinks()
+    {
+        m_Father = PPtr<Transform>();
+        m_Children.clear();
+    }
     const std::vector<PPtr<Transform>>& GetChildren() const { return m_Children; }
 
     ZFUNCTION()

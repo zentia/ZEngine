@@ -11,7 +11,7 @@ class Object;
 class Transform;
 
 // =====================================================================================
-// EditorPrefabCloner — structural deep-clone of a prefab subtree, paired with a
+// PrefabSubtreeCloner — structural deep-clone of a prefab subtree, paired with a
 // source-id ↔ clone-id map.
 // -------------------------------------------------------------------------------------
 // Phase 2b-4b deliverable. Replaces the "re-read from disk" clone strategy used by
@@ -43,12 +43,14 @@ class Transform;
 //          - Component.m_ParentObject raw pointer ← reset via postLoadResource
 //            during PrefabPostLoadDriver's pass.
 //
-// This module is intentionally inside the Editor module because it depends on
-// PrefabInstance bookkeeping conventions; Runtime code should keep using the
-// existing from-disk re-read path which is sufficient for non-edited Instantiate.
+// Lives in Runtime (moved from Editor/Prefab/EditorPrefabCloner, 2026-10-26): it only
+// touches Runtime types, and Runtime PrefabUtility::Instantiate needs it too -- a
+// prefab file's graph is loaded once and cached under path-derived instance IDs, so
+// "re-read from disk" no longer yields independent objects; every instantiation
+// clones the cached template instead.
 // =====================================================================================
 
-namespace prefab_editor
+namespace prefab_clone
 {
 
     /// Output of CloneSubtree. `id_map[i]` and `ptr_map[i]` describe paired source/clone
@@ -80,4 +82,4 @@ namespace prefab_editor
     /// gets re-bound to the clone-side GameObjects.
     CloneResult CloneSubtree(GameObject* source_root);
 
-}  // namespace prefab_editor
+}  // namespace prefab_clone

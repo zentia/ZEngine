@@ -87,7 +87,8 @@ void MaterialTextureProperty::Transfer(TransferFunction& transfer)
 {
     transfer.Transfer(m_Name, "name");
 
-    if (transfer.IsReading())
+    // Legacy probes: name-addressed readers only (SerializeUtility.h).
+    if constexpr (kTransferProbesLegacyFields<TransferFunction>)
     {
         eastl::string legacy_texture_file;
         transfer.Transfer(legacy_texture_file, "texture_file");
@@ -127,7 +128,9 @@ void Material::Transfer(TransferFunction& transfer)
     transfer.Transfer(m_IsBlend, "is_blend");
     transfer.Transfer(m_IsDoubleSided, "is_double_sided");
 
-    if (transfer.IsReading())
+    // Legacy probes: name-addressed readers only (SerializeUtility.h). A positional
+    // read (clone / snapshot) takes the writer's sequence below.
+    if constexpr (kTransferProbesLegacyFields<TransferFunction>)
     {
         eastl::string legacy_base;
         eastl::string legacy_mr;

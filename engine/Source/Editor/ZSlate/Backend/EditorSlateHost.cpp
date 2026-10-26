@@ -127,17 +127,17 @@ void EditorSlateHost::Initialize()
         }
         if (button == 0 && action == KeyCodes::RELEASE)
             ++m_PendingLeftReleases;
-        m_CtrlDown  = (mods & 1) != 0;
-        m_ShiftDown = (mods & 2) != 0;
-        m_AltDown   = (mods & 4) != 0;
+        m_CtrlDown  = (mods & KeyCodes::MOD_CONTROL_VAL) != 0;
+        m_ShiftDown = (mods & KeyCodes::MOD_SHIFT_VAL) != 0;
+        m_AltDown   = (mods & KeyCodes::MOD_ALT_VAL) != 0;
     });
 
     window->RegisterOnScrollFunc([this](double, double yoff) { m_PendingWheel += static_cast<float>(yoff); });
 
     window->RegisterOnKeyFunc([this](int key, int, int action, int mods) {
-        m_CtrlDown  = (mods & 1) != 0;
-        m_ShiftDown = (mods & 2) != 0;
-        m_AltDown   = (mods & 4) != 0;
+        m_CtrlDown  = (mods & KeyCodes::MOD_CONTROL_VAL) != 0;
+        m_ShiftDown = (mods & KeyCodes::MOD_SHIFT_VAL) != 0;
+        m_AltDown   = (mods & KeyCodes::MOD_ALT_VAL) != 0;
         if (action == KeyCodes::PRESS || action == KeyCodes::REPEAT)
         {
             const EKey k = MapKeyToSlate(key);

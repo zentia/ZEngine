@@ -1,6 +1,8 @@
 #include "WindowsApplication.h"
 #include <shellapi.h>
+#include <algorithm>  // std::rotate
 #include <utility>  // std::pair
+#include <vector>
 
 WindowsApplication::WindowsApplication() = default;
 
@@ -229,10 +231,42 @@ GenericApplication::MonitorInfo WindowsApplication::GetPrimaryMonitorWorkArea() 
 
 GenericApplication::MonitorInfo WindowsApplication::GetMonitorWorkArea(int monitor_index) const
 {
-    // TODO: implement proper multi-monitor enumeration
-    // For now, all monitor_index values return primary monitor work area
-    (void)monitor_index;  // Suppress unused parameter warning
-    return GetPrimaryMonitorWorkArea();
+    // Index order matches the macOS backend (NSScreen.screens): 0 is the primary
+    // display, the rest follow in EnumDisplayMonitors order. EnumDisplayMonitors
+    // itself does not promise the primary comes first, so it is moved to the front.
+    // An out-of-range index answers with the primary work area, as before.
+    struct Collected
+    {
+        std::vector<MonitorInfo> work_areas;
+        int primary = -1;
+    } collected;
+    EnumDisplayMonitors(nullptr, nullptr,
+        [](HMONITOR monitor, HDC, LPRECT, LPARAM data) -> BOOL {
+            auto* out = reinterpret_cast<Collected*>(data);
+            MONITORINFO mi;
+            mi.cbSize = sizeof(MONITORINFO);
+            if (GetMonitorInfoW(monitor, &mi))
+            {
+                if ((mi.dwFlags & MONITORINFOF_PRIMARY) != 0)
+                {
+                    out->primary = static_cast<int>(out->work_areas.size());
+                }
+                out->work_areas.push_back({mi.rcWork.left, mi.rcWork.top, mi.rcWork.right - mi.rcWork.left,
+                                           mi.rcWork.bottom - mi.rcWork.top});
+            }
+            return TRUE;
+        }, reinterpret_cast<LPARAM>(&collected));
+
+    if (collected.primary > 0)
+    {
+        std::rotate(collected.work_areas.begin(), collected.work_areas.begin() + collected.primary,
+                    collected.work_areas.begin() + collected.primary + 1);
+    }
+    if (monitor_index < 0 || monitor_index >= static_cast<int>(collected.work_areas.size()))
+    {
+        return GetPrimaryMonitorWorkArea();
+    }
+    return collected.work_areas[static_cast<size_t>(monitor_index)];
 }
 
 GenericApplication::MonitorInfo WindowsApplication::GetMonitorWorkAreaForWindow(GenericWindow* window) const

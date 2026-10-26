@@ -1,13 +1,52 @@
 #include "WindowsWindow.h"
 #include "WindowsApplication.h"
 #include "Runtime/Platform/Windows/WindowsAppIcon.h"
+#include "Runtime/Function/Input/KeyCodes.h"
 #include <shellapi.h>  // DragAcceptFiles, DragQueryFile
 #include <windowsx.h>   // GET_X_LPARAM, GET_Y_LPARAM, GET_WHEEL_DELTA_WPARAM
+
+#include <string>
+#include <vector>
 
 static const wchar_t* WINDOW_CLASS_NAME = L"ZEngineWindow";
 
 // 将 Win32 VK_* 映射到 GLFW 兼容的键值（与 GLFW key code 定义一致）
 // 打印字符（字母/数字）直接传 ASCII；功能键用 256+ 偏移
+// Current modifier state as KeyCodes::MOD_* bits (GLFW layout: SHIFT=1, CONTROL=2,
+// ALT=4, SUPER=8, CAPS_LOCK=16, NUM_LOCK=32), the same encoding MacOSWindow's
+// MapModifiers produces. GetKeyState reflects the state as of the message being
+// processed, which is what a key / mouse event wants. This used to be a constant 0,
+// so every consumer that keys off mods (EditorInputManager's Ctrl+Z / Ctrl+Y,
+// ZSlate's Ctrl/Shift/Alt state) never saw a modifier on Windows.
+static int CurrentModifierBits()
+{
+    int mods = 0;
+    if ((GetKeyState(VK_SHIFT) & 0x8000) != 0)
+        mods |= KeyCodes::MOD_SHIFT_VAL;
+    if ((GetKeyState(VK_CONTROL) & 0x8000) != 0)
+        mods |= KeyCodes::MOD_CONTROL_VAL;
+    if ((GetKeyState(VK_MENU) & 0x8000) != 0)
+        mods |= KeyCodes::MOD_ALT_VAL;
+    if (((GetKeyState(VK_LWIN) | GetKeyState(VK_RWIN)) & 0x8000) != 0)
+        mods |= KeyCodes::MOD_SUPER_VAL;
+    if ((GetKeyState(VK_CAPITAL) & 0x0001) != 0)
+        mods |= KeyCodes::MOD_CAPS_LOCK_VAL;
+    if ((GetKeyState(VK_NUMLOCK) & 0x0001) != 0)
+        mods |= KeyCodes::MOD_NUM_LOCK_VAL;
+    return mods;
+}
+
+// UTF-16 -> UTF-8 (drop paths). Empty on failure.
+static std::string WideToUtf8(const wchar_t* wide)
+{
+    const int bytes = WideCharToMultiByte(CP_UTF8, 0, wide, -1, nullptr, 0, nullptr, nullptr);
+    if (bytes <= 1)
+        return {};
+    std::string out(static_cast<size_t>(bytes - 1), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, wide, -1, out.data(), bytes, nullptr, nullptr);
+    return out;
+}
+
 static int MapVkToKeyCode(WPARAM vk, LPARAM lParam)
 {
     // 字母 A-Z：VK_A..VK_Z == ASCII 'A'..'Z' == GLFW_KEY_A..GLFW_KEY_Z
@@ -283,8 +322,10 @@ bool WindowsWindow::ProcessMessage(UINT   msg,
     {
         int keycode = MapVkToKeyCode(wParam, lParam);
         int scancode = (lParam >> 16) & 0xFF;
-        int mods = 0;  // TODO: 从 GetKeyState 计算
-        for (auto& cb : OnKey) cb(keycode, scancode, 1, mods);
+        const int mods = CurrentModifierBits();
+        // Bit 30 of lParam = key was already down: auto-repeat (GLFW_REPEAT = 2).
+        const int action = ((lParam >> 30) & 1) != 0 ? 2 : 1;
+        for (auto& cb : OnKey) cb(keycode, scancode, action, mods);
         // Char 消息由 WM_CHAR 处理
         break;
     }
@@ -293,7 +334,7 @@ bool WindowsWindow::ProcessMessage(UINT   msg,
     {
         int keycode = MapVkToKeyCode(wParam, lParam);
         int scancode = (lParam >> 16) & 0xFF;
-        int mods = 0;
+        const int mods = CurrentModifierBits();
         for (auto& cb : OnKey) cb(keycode, scancode, 0, mods);
         break;
     }
@@ -301,33 +342,32 @@ bool WindowsWindow::ProcessMessage(UINT   msg,
     {
         unsigned int codepoint = static_cast<unsigned int>(wParam);
         for (auto& cb : OnChar) cb(codepoint);
-        // CharMods: 需额外处理，暂转发到 OnChar
-        for (auto& cb : OnCharMods) cb(codepoint, 0);
+        for (auto& cb : OnCharMods) cb(codepoint, static_cast<unsigned int>(CurrentModifierBits()));
         break;
     }
     case WM_LBUTTONDOWN:
         m_MouseButtons[0] = true;
-        for (auto& cb : OnMouseButton) cb(0, 1, 0);  // button=0, action=press
+        for (auto& cb : OnMouseButton) cb(0, 1, CurrentModifierBits());  // button=0, action=press
         break;
     case WM_LBUTTONUP:
         m_MouseButtons[0] = false;
-        for (auto& cb : OnMouseButton) cb(0, 0, 0);  // button=0, action=release
+        for (auto& cb : OnMouseButton) cb(0, 0, CurrentModifierBits());  // button=0, action=release
         break;
     case WM_RBUTTONDOWN:
         m_MouseButtons[1] = true;
-        for (auto& cb : OnMouseButton) cb(1, 1, 0);
+        for (auto& cb : OnMouseButton) cb(1, 1, CurrentModifierBits());
         break;
     case WM_RBUTTONUP:
         m_MouseButtons[1] = false;
-        for (auto& cb : OnMouseButton) cb(1, 0, 0);
+        for (auto& cb : OnMouseButton) cb(1, 0, CurrentModifierBits());
         break;
     case WM_MBUTTONDOWN:
         m_MouseButtons[2] = true;
-        for (auto& cb : OnMouseButton) cb(2, 1, 0);
+        for (auto& cb : OnMouseButton) cb(2, 1, CurrentModifierBits());
         break;
     case WM_MBUTTONUP:
         m_MouseButtons[2] = false;
-        for (auto& cb : OnMouseButton) cb(2, 0, 0);
+        for (auto& cb : OnMouseButton) cb(2, 0, CurrentModifierBits());
         break;
     case WM_MOUSEMOVE:
     {
@@ -388,16 +428,31 @@ bool WindowsWindow::ProcessMessage(UINT   msg,
     case WM_DROPFILES:
     {
         HDROP hDrop = reinterpret_cast<HDROP>(wParam);
-        UINT  fileCount = DragQueryFileW(hDrop, 0xFFFFFFFF, nullptr, 0);
-        // 暂只处理第一个文件，完整实现需遍历
-        if (fileCount > 0)
+        const UINT fileCount = DragQueryFileW(hDrop, 0xFFFFFFFF, nullptr, 0);
+        // Every dropped path, UTF-8, then OnDrop (the GLFW drop-callback contract:
+        // the strings live for the duration of the call). This used to read the
+        // first path into a local buffer and drop it on the floor, so OS drag-drop
+        // import (ZSlateContentBrowserWindow) never received anything on Windows.
+        std::vector<std::string> paths;
+        paths.reserve(fileCount);
+        for (UINT i = 0; i < fileCount; ++i)
         {
-            wchar_t filePath[MAX_PATH];
-            DragQueryFileW(hDrop, 0, filePath, MAX_PATH);
-            // 转 UTF-8（简化：暂留宽字符）
-            // TODO: 完整多文件 + UTF-8 转换
+            const UINT length = DragQueryFileW(hDrop, i, nullptr, 0);  // excludes terminator
+            std::wstring wide(static_cast<size_t>(length) + 1, L'\0');
+            DragQueryFileW(hDrop, i, wide.data(), length + 1);
+            std::string utf8 = WideToUtf8(wide.c_str());
+            if (!utf8.empty())
+                paths.push_back(std::move(utf8));
         }
         DragFinish(hDrop);
+        if (!paths.empty())
+        {
+            std::vector<const char*> raw;
+            raw.reserve(paths.size());
+            for (const std::string& path : paths)
+                raw.push_back(path.c_str());
+            for (auto& cb : OnDrop) cb(static_cast<int>(raw.size()), raw.data());
+        }
         break;
     }
     default:

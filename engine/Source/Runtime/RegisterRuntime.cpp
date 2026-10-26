@@ -23,6 +23,11 @@
 #if defined(Z_PLATFORM_ANDROID) || defined(__ANDROID__) || defined(Z_PLATFORM_OHOS) || defined(__OHOS__)
     #include "Runtime/Function/Render/Interface/Vulkan/VulkanRHI.h"
 #endif
+#if (defined(Z_PLATFORM_LINUX) || defined(__linux__)) && !defined(__EMSCRIPTEN__)
+    // Desktop Linux uses Vulkan. Emscripten reports Z_PLATFORM_LINUX but has no
+    // Vulkan SDK and uses the WebGL2 backend, so it must not pull vulkan.h.
+    #include "Runtime/Function/Render/Interface/Vulkan/VulkanRHI.h"
+#endif
 #if defined(Z_PLATFORM_WINDOWS) || defined(_WIN32)
     #include "Runtime/Function/Render/Interface/DX12/DX12RHI.h"
     #if defined(Z_HAS_VULKAN)
@@ -138,6 +143,11 @@ namespace
 #elif defined(__EMSCRIPTEN__)
         (void)preferred_rhi;  // single-RHI platform
         REGISTER_SYSTEM_AS(ZEngine::WebGL2::WebGL2RHI, RHI);
+#elif defined(Z_PLATFORM_LINUX) || defined(__linux__)
+        // audit #1：Linux 桌面走 Vulkan（Z_HAS_VULKAN 已在 engine/CMakeLists.txt
+        // 对 Linux 默认开启）。过去这里落在 #else 空分支，GET_SYSTEM(RHI)==nullptr。
+        (void)preferred_rhi;  // single-RHI platform on Linux
+        REGISTER_SYSTEM_AS(VulkanRHI, RHI);
 #else
         (void)preferred_rhi;
 #endif
@@ -245,6 +255,10 @@ void RegisterRuntimeLight(PreferredRHI preferred_rhi)
 #elif defined(__EMSCRIPTEN__)
     (void)preferred_rhi;
     REGISTER_SYSTEM_AS(ZEngine::WebGL2::WebGL2RHI, RHI);
+#elif defined(Z_PLATFORM_LINUX) || defined(__linux__)
+    // audit #1：Light 变体在 Linux 上同样注册 VulkanRHI。
+    (void)preferred_rhi;
+    REGISTER_SYSTEM_AS(VulkanRHI, RHI);
 #endif
 
     REGISTER_SYSTEM_AS(MinimalRenderSystem, RenderSystem);

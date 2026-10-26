@@ -4,6 +4,7 @@
 #include "Runtime/Core/Base/Macro.h"
 #include "Runtime/Core/Memory/MemoryManager.h"
 #include "Runtime/Core/Serialize/SerializedFile.h"
+#include "Runtime/Core/YamlSerialize/YamlObjectGraph.h"
 #include "Runtime/Platform/Encoding/EncodingUtils.h"
 #include "Runtime/Platform/Path/Path.h"
 #include "Runtime/Resource/Asset/AssetManager.h"
@@ -341,7 +342,21 @@ void AssetRegistry::Initialize(const std::filesystem::path& asset_folder, const 
     ScanAssetsAsync(asset_folder);
 }
 
-void AssetRegistry::ScanAssets(const std::filesystem::path& asset_folder) {}
+void AssetRegistry::ScanAssets(const std::filesystem::path& asset_folder)
+{
+    // Was an empty stub. The blocking scan is IncrementalUpdate (same collect /
+    // rescan-changed / drop-missing passes, on the calling thread); it does not
+    // touch the scan status, so mark it here for callers that poll it.
+    if (m_ScanThread.joinable())
+    {
+        WaitForScanComplete();
+        m_ScanThread.join();
+    }
+    IncrementalUpdate(asset_folder);
+    auto lock = AcquireWriteLock();
+    m_ScanStatus = ScanStatus::Completed;
+    m_ScanProgress = 1.0f;
+}
 
 void AssetRegistry::ScanAssetsAsync(const std::filesystem::path& asset_folder)
 {
@@ -396,6 +411,12 @@ void AssetRegistry::ScanAssetsAsync(const std::filesystem::path& asset_folder)
                 m_TotalCount = asset_files.size();
                 m_ScannedCount = 0;
             }
+
+            // Dependency edges are resolved against m_AssetMap / m_GuidToPath, so
+            // they are indexed after the whole pass: indexing a scene while the
+            // prefab it names (later in directory order) is not in the map yet
+            // dropped the edge for good.
+            std::vector<std::pair<std::string, std::filesystem::path>> deferred_dependencies;
 
             // 2. 扫描每个文件 -- but skip the header read entirely when an
             //    in-memory entry already matches the on-disk file's
@@ -465,7 +486,7 @@ void AssetRegistry::ScanAssetsAsync(const std::filesystem::path& asset_folder)
                         upsertEntryLocked(relative_path, entry, m_AssetMap, m_GuidToPath, m_TypeToPaths);
                         if (!entry.guid.empty())
                         {
-                            IndexDependenciesLocked(relative_path, asset_path);
+                            deferred_dependencies.emplace_back(relative_path, asset_path);
                             pending_change.change_type = had_indexed_entry ? AssetRegistryChangeType::Updated
                                                                           : AssetRegistryChangeType::Added;
                             pending_change.asset_path = relative_path;
@@ -489,6 +510,15 @@ void AssetRegistry::ScanAssetsAsync(const std::filesystem::path& asset_folder)
                 if (m_ProgressCallback)
                 {
                     m_ProgressCallback(progress, scanned, m_TotalCount);
+                }
+            }
+
+            if (!deferred_dependencies.empty())
+            {
+                auto lock = AcquireWriteLock();
+                for (const auto& [relative_path, asset_path] : deferred_dependencies)
+                {
+                    IndexDependenciesLocked(relative_path, asset_path);
                 }
             }
 
@@ -575,6 +605,9 @@ void AssetRegistry::IncrementalUpdate(const std::filesystem::path& asset_folder)
     m_TotalCount = asset_files.size();
     m_ScannedCount = 0;
 
+    // Edges are indexed after the pass (see ScanAssetsAsync).
+    std::vector<std::pair<std::string, std::filesystem::path>> deferred_dependencies;
+
     // 2. 检查每个文件
     for (const auto& asset_path : asset_files)
     {
@@ -602,7 +635,7 @@ void AssetRegistry::IncrementalUpdate(const std::filesystem::path& asset_folder)
         upsertEntryLocked(relative_path, entry, m_AssetMap, m_GuidToPath, m_TypeToPaths);
         if (!entry.guid.empty())
         {
-            IndexDependenciesLocked(relative_path, asset_path);
+            deferred_dependencies.emplace_back(relative_path, asset_path);
             AssetRegistryChangeEvent ev;
             ev.change_type =
                 had_indexed_entry ? AssetRegistryChangeType::Updated : AssetRegistryChangeType::Added;
@@ -618,6 +651,11 @@ void AssetRegistry::IncrementalUpdate(const std::filesystem::path& asset_folder)
         {
             m_ProgressCallback(m_ScanProgress, m_ScannedCount, m_TotalCount);
         }
+    }
+
+    for (const auto& [relative_path, asset_path] : deferred_dependencies)
+    {
+        IndexDependenciesLocked(relative_path, asset_path);
     }
 
     // 3. 检查已删除的文件
@@ -1113,40 +1151,7 @@ void AssetRegistry::IndexDependenciesLocked(const std::string& relative_path, co
         return;
     }
 
-    std::vector<std::string> deps;
-    SerializedFile* serialized_file = MemoryManager::CreateObject<SerializedFile>();
-    if (serialized_file->InitializeRead(abs_path, AssetManager::kCacheSize) == kSerializedFileLoadError_None)
-    {
-        for (const FileIdentifier& external : serialized_file->GetExternalRefs())
-        {
-            std::string dep_key;
-            if (!external.guid.empty())
-            {
-                auto guid_it = m_GuidToPath.find(external.guid);
-                if (guid_it != m_GuidToPath.end())
-                {
-                    dep_key = guid_it->second;
-                }
-            }
-            if (dep_key.empty() && !external.pathName.empty())
-            {
-                dep_key = normaliseToRegistryKey(external.pathName, m_ScanRoot);
-                if (m_AssetMap.find(dep_key) == m_AssetMap.end())
-                {
-                    dep_key.clear();
-                }
-            }
-            if (!dep_key.empty() && dep_key != relative_path)
-            {
-                if (std::find(deps.begin(), deps.end(), dep_key) == deps.end())
-                {
-                    deps.push_back(dep_key);
-                }
-            }
-        }
-    }
-    MemoryManager::DestroyObject(serialized_file);
-
+    std::vector<std::string> deps = CollectDependenciesLocked(abs_path, relative_path);
     m_DependencyMap[relative_path] = deps;
     for (const std::string& dep : deps)
     {
@@ -1156,6 +1161,78 @@ void AssetRegistry::IndexDependenciesLocked(const std::string& relative_path, co
             refs.push_back(relative_path);
         }
     }
+}
+
+std::vector<std::string> AssetRegistry::CollectDependenciesLocked(const std::filesystem::path& abs_path,
+                                                                 const std::string& self_key) const
+{
+    std::vector<FileIdentifier> externals;
+
+    // YAML authoring assets (.scene / .prefab / .mat) have no SerializedFile
+    // header: reading them as one fails, and until 2026-10-26 that left every
+    // YAML scene with NO dependencies -- the packer shipped a scene without its
+    // prefabs / materials / meshes. Their externals table is the same list.
+    bool read = false;
+    if (AssetManager::IsYamlAuthoringAssetPath(abs_path))
+    {
+        std::ifstream in(abs_path, std::ios::binary);
+        if (in)
+        {
+            const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+            read = ZYaml::ReadExternalRefs(text.c_str(), externals);
+        }
+    }
+    if (!read)
+    {
+        SerializedFile* serialized_file = MemoryManager::CreateObject<SerializedFile>();
+        if (serialized_file->InitializeRead(abs_path, AssetManager::kCacheSize) == kSerializedFileLoadError_None)
+        {
+            externals = serialized_file->GetExternalRefs();
+        }
+        MemoryManager::DestroyObject(serialized_file);
+    }
+
+    std::vector<std::string> deps;
+    for (const FileIdentifier& external : externals)
+    {
+        std::string dep_key;
+        if (!external.guid.empty())
+        {
+            auto guid_it = m_GuidToPath.find(external.guid);
+            if (guid_it != m_GuidToPath.end())
+            {
+                dep_key = guid_it->second;
+            }
+        }
+        if (dep_key.empty() && !external.pathName.empty())
+        {
+            dep_key = normaliseToRegistryKey(external.pathName, m_ScanRoot);
+            if (m_AssetMap.find(dep_key) == m_AssetMap.end())
+            {
+                dep_key.clear();
+            }
+        }
+        if (!dep_key.empty() && dep_key != self_key)
+        {
+            if (std::find(deps.begin(), deps.end(), dep_key) == deps.end())
+            {
+                deps.push_back(dep_key);
+            }
+        }
+    }
+    return deps;
+}
+
+std::vector<std::string> AssetRegistry::GetDependenciesOfFile(const std::filesystem::path& file,
+                                                             const std::string& self_key) const
+{
+    std::error_code ec;
+    if (file.empty() || !std::filesystem::exists(file, ec))
+    {
+        return {};
+    }
+    auto lock = AcquireReadLock();
+    return CollectDependenciesLocked(file, self_key);
 }
 
 void AssetRegistry::EnsureDependenciesIndexed(const std::string& relative_path) const

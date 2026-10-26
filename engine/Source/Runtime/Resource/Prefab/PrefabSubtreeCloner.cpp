@@ -1,4 +1,4 @@
-#include "Editor/Prefab/EditorPrefabCloner.h"
+#include "Runtime/Resource/Prefab/PrefabSubtreeCloner.h"
 
 #include "Runtime/BaseClasses/GameObject.h"
 #include "Runtime/BaseClasses/Object.h"
@@ -12,7 +12,7 @@
 #include <vector>
 #include "Runtime/BaseClasses/Cast.h"
 
-namespace prefab_editor
+namespace prefab_clone
 {
 
     namespace
@@ -54,23 +54,22 @@ namespace prefab_editor
         SourceWalkResult WalkSourceTree(GameObject* source_root)
         {
             SourceWalkResult result;
-            std::unordered_set<GameObject*> visited_gos;
-            std::vector<GameObject*> worklist;
-            worklist.push_back(source_root);
 
-            while (!worklist.empty())
+            // Breadth-first over Transform.m_Children. A child Transform names its
+            // GameObject through Component::m_ParentObject: bound by PostLoadResource
+            // for live objects and by PrefabUtility::LoadPrefabAsset for a prefab graph
+            // read from disk. (The old walker never followed it: it only knew the owners
+            // of GameObjects it had already visited, so it could not step from a parent
+            // to its first child and every prefab cloned as its root alone.)
+            std::unordered_set<GameObject*> visited;
+            std::vector<GameObject*> queue {source_root};
+            for (size_t cursor = 0; cursor < queue.size(); ++cursor)
             {
-                GameObject* go = worklist.back();
-                worklist.pop_back();
-                if (go == nullptr || !visited_gos.insert(go).second)
-                {
+                GameObject* go = queue[cursor];
+                if (go == nullptr || !visited.insert(go).second)
                     continue;
-                }
 
                 result.game_objects.push_back(go);
-
-                // Record every Component this GO owns (paired with the owning GO so we
-                // can rebuild m_Components on the clone side later).
                 for (ImmediatePtr<Component>& comp_ptr : go->getComponents())
                 {
                     Component* comp = comp_ptr;
@@ -81,111 +80,26 @@ namespace prefab_editor
                     }
                 }
 
-                // Descend into the Transform child chain — this is the canonical scene-
-                // graph topology for prefab subtrees.
-                Transform* tc = go->tryGetComponent(Transform);
-                if (tc != nullptr)
-                {
-                    for (size_t i = 0, count = tc->GetChildCount(); i < count; ++i)
-                    {
-                        Transform* child_tc = tc->GetChild(i);
-                        if (child_tc == nullptr)
-                        {
-                            continue;
-                        }
-                        // The child's owning GameObject is reachable through
-                        // Component::m_ParentObject (already populated for source-side
-                        // objects via their original load path). If for some reason it
-                        // isn't, we'd need to scan all known GOs — but in practice the
-                        // source PrefabAsset has gone through postLoadResource long
-                        // before InstantiateAsPrefab is called.
-                        GameObject* child_go = nullptr;
-                        // Component has m_ParentObject as a protected raw pointer; we
-                        // can't access it directly from here, but the convention is
-                        // that any Transform in a well-formed scene tree has
-                        // an owning GO. We rely on the caller having driven
-                        // postLoadResource for the source asset; since we can't
-                        // observe m_ParentObject protected member, we fall back to
-                        // searching by ImmediatePtr equality across discovered GOs.
-                        // To avoid an O(N²) blow-up, we instead keep a side map.
-                        (void)child_go;
-                        // Defer the resolution: stash the child Transform on the
-                        // worklist as a "pending" entry. We'll resolve owning-GO via
-                        // a second-pass map below.
-                        // -- simpler: after the first DFS over GOs, enumerate every
-                        //    GO's own Transform and register {tc → go} into a
-                        //    table; then for each child_tc look up the owning GO.
-                        (void)child_tc;
-                    }
-                }
-            }
-
-            // Second pass: for every Transform we recorded among `components`,
-            // map it back to its owning GameObject. Then walk the child chains again to
-            // realise the BFS expansion. (This is the simplest way to avoid touching the
-            // protected Component::m_ParentObject member.)
-            std::unordered_map<Transform*, GameObject*> tc_to_owner;
-            for (size_t i = 0; i < result.components.size(); ++i)
-            {
-                if (auto* tc = Cast<Transform>(result.components[i]))
-                {
-                    tc_to_owner[tc] = result.component_owners[i];
-                }
-            }
-
-            // Now do the actual transitive-children expansion using tc_to_owner.
-            std::vector<GameObject*> expanded_gos = result.game_objects;  // copy initial seed
-            std::unordered_set<GameObject*> expanded_visited(expanded_gos.begin(), expanded_gos.end());
-
-            // Simple iterative expansion over GOs not yet visited via the map.
-            for (size_t cursor = 0; cursor < expanded_gos.size(); ++cursor)
-            {
-                GameObject* go = expanded_gos[cursor];
-                if (go == nullptr)
-                {
-                    continue;
-                }
                 Transform* tc = go->tryGetComponent(Transform);
                 if (tc == nullptr)
-                {
                     continue;
-                }
                 for (size_t i = 0, count = tc->GetChildCount(); i < count; ++i)
                 {
                     Transform* child_tc = tc->GetChild(i);
                     if (child_tc == nullptr)
+                        continue;
+                    GameObject* child_go = child_tc->GetParentObject();
+                    if (child_go == nullptr)
                     {
+                        LOG_WARNING(ZPrefab,
+                                    "PrefabSubtreeCloner: a child Transform of '{}' has no resolvable GameObject; "
+                                    "its subtree is not cloned",
+                                    go->GetName().c_str());
                         continue;
                     }
-                    auto it = tc_to_owner.find(child_tc);
-                    if (it == tc_to_owner.end())
-                    {
-                        continue;
-                    }
-                    GameObject* child_go = it->second;
-                    if (child_go == nullptr || !expanded_visited.insert(child_go).second)
-                    {
-                        continue;
-                    }
-                    expanded_gos.push_back(child_go);
-                    // Also append the child's components so they enter the clone set.
-                    for (ImmediatePtr<Component>& comp_ptr : child_go->getComponents())
-                    {
-                        Component* comp = comp_ptr;
-                        if (comp != nullptr)
-                        {
-                            result.components.push_back(comp);
-                            result.component_owners.push_back(child_go);
-                            if (auto* ctc = Cast<Transform>(comp))
-                            {
-                                tc_to_owner[ctc] = child_go;
-                            }
-                        }
-                    }
+                    queue.push_back(child_go);
                 }
             }
-
-            result.game_objects = std::move(expanded_gos);
             return result;
         }
 
@@ -249,7 +163,7 @@ namespace prefab_editor
         CloneResult result;
         if (source_root == nullptr)
         {
-            LOG_ERROR(ZPrefab, "EditorPrefabCloner::CloneSubtree: null source_root");
+            LOG_ERROR(ZPrefab, "PrefabSubtreeCloner::CloneSubtree: null source_root");
             return result;
         }
 
@@ -269,7 +183,7 @@ namespace prefab_editor
             Object* clone = TransferUtility::CloneObjectViaSerialization(*source);
             if (clone == nullptr)
             {
-                LOG_ERROR(ZPrefab, "EditorPrefabCloner: CloneObjectViaSerialization failed for type '{}'", source->GetTypeName());
+                LOG_ERROR(ZPrefab, "PrefabSubtreeCloner: CloneObjectViaSerialization failed for type '{}'", source->GetTypeName());
                 return nullptr;
             }
             result.sources.push_back(source);
@@ -311,6 +225,17 @@ namespace prefab_editor
             RebuildCloneComponents(src_go, clone_go, result.ptr_map);
         }
 
+        //    3b-0) The serialized copy carries the SOURCE's m_Father / m_Children
+        //          links. SetParent appends to the parent's list, so without this a
+        //          cloned parent ends up listing the source child AND the clone child.
+        for (Object* clone_obj : result.clones)
+        {
+            if (auto* clone_tc = Cast<Transform>(clone_obj))
+            {
+                clone_tc->ClearCopiedHierarchyLinks();
+            }
+        }
+
         //    3b) Transform.m_Parent + m_Children — relink via SetParent calls,
         //        which is the official entry point that maintains the parent's
         //        children list invariant.
@@ -331,13 +256,13 @@ namespace prefab_editor
         auto root_it = result.ptr_map.find(source_root);
         if (root_it == result.ptr_map.end())
         {
-            LOG_ERROR(ZPrefab, "EditorPrefabCloner: clone_root resolution failed (missing in ptr_map)");
+            LOG_ERROR(ZPrefab, "PrefabSubtreeCloner: clone_root resolution failed (missing in ptr_map)");
             return CloneResult {};
         }
         result.clone_root = static_cast<GameObject*>(root_it->second);
 
-        LOG_INFO(ZPrefab, "EditorPrefabCloner: cloned subtree — {} GameObjects, {} Components", static_cast<int>(walk.game_objects.size()), static_cast<int>(walk.components.size()));
+        LOG_INFO(ZPrefab, "PrefabSubtreeCloner: cloned subtree — {} GameObjects, {} Components", static_cast<int>(walk.game_objects.size()), static_cast<int>(walk.components.size()));
         return result;
     }
 
-}  // namespace prefab_editor
+}  // namespace prefab_clone

@@ -184,6 +184,13 @@ private:
     // 而且**不报任何错**。把四条路径统一到这一个函数上，将来再加 Tick 路径也不会漏。
     void UpdateNaniteForFrame(float delta_time);
 
+    // 与 UpdateNaniteForFrame 同理：把 VT 流送推进统一到一个平台无关的入口，避免
+    // 漏接某条 Tick 路径。函数本身无条件声明；**定义**里用 Z_HAS_VULKAN 包住对
+    // VirtualTextureManager 的引用（VT 只在 Vulkan 路径编译），非 Vulkan 构建下是
+    // no-op。默认由 r.VirtualTexture.Enable 门控（默认关），所以即便 VT 编译进来，
+    // 不显式打开也零开销、零回归。
+    void UpdateVirtualTextureForFrame(float delta_time);
+
     static constexpr uint32_t kMaxFrameDrawLists = 3;
 
     uint32_t AllocateFrameDrawListSlot();

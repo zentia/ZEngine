@@ -9,6 +9,12 @@
 #endif
 #include "Runtime/Function/Render/Nanite/NaniteSettings.h"
 #include "Runtime/Function/Render/SsaoSettings.h"
+#if defined(Z_HAS_VULKAN)
+    // VirtualTextureSettings.cpp matches the VirtualTexture.*\.cpp$ exclusion
+    // regex, so it only compiles where VT does (Z_HAS_VULKAN defined: Android/
+    // OHOS/Linux/Windows-with-vulkan). Apple + Emscripten strip it.
+    #include "Runtime/Function/Render/Texture/VirtualTextureSettings.h"
+#endif
 #include "Runtime/Function/Render/Pipeline/RenderPipelineSettings.h"
 #include "Runtime/Function/Framework/Component/Spine/SpineRenderer.h"
 #include "Runtime/Function/Render/Spine/SpineGpuRenderer.h"
@@ -551,6 +557,10 @@ void RegisterRuntimeConsoleCommands(ConsoleManager& console)
     NaniteSettings::RegisterConsoleVariables(console);
     // SSAO (Apple/Metal deferred path today): every knob is live (read each frame).
     SsaoSettings::RegisterConsoleVariables(console);
+#if defined(Z_HAS_VULKAN)
+    // Virtual Texture (dormant island being wired up in step 2.6): off by default.
+    VirtualTextureSettings::RegisterConsoleVariables(console);
+#endif
 }
 
 void TickDeferredConsoleCommands()

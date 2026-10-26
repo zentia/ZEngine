@@ -18,6 +18,13 @@
 // 心跳里的 Nanite 探针要读 NaniteRenderPass / NaniteRenderer（RenderPipelineBase.h
 // 里的 GetNanitePass 只前向声明了这个类）。
 #include "Runtime/Function/Render/Nanite/NaniteRenderer.h"
+#if defined(Z_HAS_VULKAN)
+    // VT 只在 Vulkan 路径编译（Apple/Emscripten 的 CMake 排除了 VirtualTexture.*.cpp
+    // 且未定义 Z_HAS_VULKAN）。这里用同名宏包住，非 Vulkan 构建下 UpdateVirtualTextureForFrame
+    // 是 no-op，不引用任何 VT 符号。
+    #include "Runtime/Function/Render/Texture/VirtualTextureManager.h"
+    #include "Runtime/Function/Render/Texture/VirtualTextureSettings.h"
+#endif
 #include "Runtime/Function/Render/Passes/MainCameraRp1Pass.h"
 #include "Runtime/Function/Render/Spine/SpineGpuRenderer.h"
 
@@ -249,6 +256,8 @@ void RenderSystem::Tick(float delta_time)
                 // nanite=(has=1 inst=0 ...) 就是实锤）。位置跟非 Apple 一致：可见性
                 // 更新之后、PreparePassData 之前。
                 UpdateNaniteForFrame(delta_time);
+                // VT 流送同址推进（默认 r.VirtualTexture.Enable 关，no-op）。
+                UpdateVirtualTextureForFrame(delta_time);
 
                 m_RenderPipeline->PreparePassData(m_RenderResource);
                 m_ActiveFrameDrawListSlot = 0;
@@ -304,6 +313,7 @@ void RenderSystem::Tick(float delta_time)
 
                 m_Rhi->CmdBeginRenderPassPFN(command_buffer, &begin_info, RHI_SUBPASS_CONTENTS_INLINE);
 
+#if defined(__APPLE__)
                 // 场景 → swapchain：一次全屏采样。Metal 没有持久 swapchain image，
                 // 也没有 RP2，这是唯一能把 RP1 的离屏结果搬到屏幕上的路。
                 // 必须画在 UI **之前**，否则 UI 会被场景盖掉。
@@ -325,6 +335,7 @@ void RenderSystem::Tick(float delta_time)
                                        m_RenderPipeline ? m_RenderPipeline->GetSceneColorView() : nullptr,
                                        !already_tonemapped);
                 }
+#endif  // __APPLE__
 
                 // GPU-Spine（控制台 `spine.load` 才有东西画）：场景之后、编辑器 UI 之前 ⇒ 面板盖在它上面，
                 // 与 Vulkan（RP2 UI subpass 里画在 UI 之前）同一层次。swapchain pass 是 Apple 上唯一开着的 pass。
@@ -1341,6 +1352,8 @@ void RenderSystem::TickRenderThread(float delta_time)
             // 阶段 58：单线程路径以前从来不推进 Nanite（只有"并行 + DX12"那一支
             // 有），Nanite 在这条路上是死代码且不报错。
             UpdateNaniteForFrame(delta_time);
+            // VT 流送同址推进（默认 r.VirtualTexture.Enable 关，no-op）。
+            UpdateVirtualTextureForFrame(delta_time);
             m_RenderPipeline->PreparePassData(m_RenderResource);
             m_RenderPipeline->BuildDrawLists(m_RenderResource, GetFrameDrawList(m_ActiveFrameDrawListSlot));
         }
@@ -1385,6 +1398,8 @@ void RenderSystem::TickRenderThread(float delta_time)
     // 阶段 58：Apple/Metal 走的就是这条非 DX12 单线程分支，而它以前从来不推进
     // Nanite —— 集群构建 / 裁剪 / 批次组装在 Apple 上一次都没跑过，且不报任何错。
     UpdateNaniteForFrame(delta_time);
+    // VT 流送同址推进（默认 r.VirtualTexture.Enable 关，no-op）。
+    UpdateVirtualTextureForFrame(delta_time);
 
     m_RenderPipeline->PreparePassData(m_RenderResource);
 
@@ -1914,6 +1929,51 @@ void RenderSystem::UpdateNaniteForFrame(float delta_time)
     // 又要早于 PreparePassData，因为后者上传本帧的 GPU 资源。没有 Nanite pass 时
     // RenderPipelineBase::UpdateNanite 自己就是 no-op。
     m_RenderPipeline->UpdateNanite(m_RenderScene, GetRenderCamera(ViewportType::game), delta_time);
+}
+
+// ===========================================================================
+// Virtual Texture 流送的每帧推进。
+//
+// 与 UpdateNaniteForFrame 一样的道理：把这句话统一到一个平台无关的入口，避免漏接
+// 某条 Tick 路径。VT 的 .cpp 只在 Vulkan 路径编译（Apple/Emscripten 的 CMake 排除了
+// VirtualTexture.*.cpp 且未定义 Z_HAS_VULKAN），所以这里用同名宏包住对
+// VirtualTextureManager 的引用，非 Vulkan 构建下是 no-op。
+//
+// 默认由 r.VirtualTexture.Enable 门控（默认关）：VT 此前是完全休眠的孤岛（没有任何
+// 渲染路径调用 Update/RequestPages），所以即便编译进来，不显式打开也零开销、零回归。
+// ===========================================================================
+void RenderSystem::UpdateVirtualTextureForFrame(float delta_time)
+{
+#if defined(Z_HAS_VULKAN)
+    if (!VirtualTextureSettings::IsEnabled())
+    {
+        return;
+    }
+    if (m_RenderScene == nullptr)
+    {
+        return;
+    }
+
+    auto camera = GetRenderCamera(ViewportType::game);
+    if (!camera)
+    {
+        return;
+    }
+
+    auto swapchain_info = m_Rhi->GetSwapchainInfo();
+    Vector3 camera_pos = camera->position();
+    Vector3 camera_forward = camera->forward();
+    float fov_deg = camera->getFOV().y;
+    // 相机的 getFOV() 返回**度**（DX12 pass 里用 Degree() 转弧度）；VT 的
+    // CalculatePageScreenSize 用的是针孔模型的 tan(fov/2)，必须转成弧度。
+    float fov_rad = fov_deg * 3.14159265358979323846f / 180.0f;
+    float aspect = camera->getAspect();
+
+    VirtualTextureManager::Get().Update(camera_pos, camera_forward, fov_rad, aspect,
+                                        swapchain_info.extent.width, swapchain_info.extent.height, delta_time);
+#else
+    (void)delta_time;
+#endif
 }
 
 // ===========================================================================

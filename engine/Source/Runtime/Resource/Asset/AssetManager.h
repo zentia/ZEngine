@@ -287,6 +287,21 @@ protected:
     virtual int InsertPathNameInternal(const std::filesystem::path& path, bool create) = 0;
     virtual const std::string& PathIDToPathNameInternal(int pathID) const = 0;
 
+    /// The key a path is registered under in the path -> serialized-file-index
+    /// table. One file must map to ONE index no matter how it is spelled: the
+    /// index is half of every path-derived instance ID, so two spellings of the
+    /// same file ("a.zasset" vs "<cwd>/a.zasset") minted two instance IDs for the
+    /// same object -- a cross-file PPtr written as one spelling and read back as
+    /// the other then named a second copy (the YAML scene writer stores external
+    /// paths absolute, so a prefab loaded by a relative path lost its identity).
+    /// Purely lexical (no file-system query, so it is the same before and after
+    /// the file is written): a relative path is anchored at the current
+    /// directory, then normalised, generic separators, lower-cased on Windows
+    /// (NTFS is case-insensitive: "Foo.zasset" and "foo.zasset" are one file). Only the LOOKUP key --
+    /// implementations keep storing the first spelling they saw as the path name
+    /// (bundle-resident assets in a player are looked up by that spelling).
+    static std::string CanonicalPathKey(const std::filesystem::path& path);
+
 private:
     StreamNameSpace& GetStreamNameSpaceInternal(int nameSpaceID);
 

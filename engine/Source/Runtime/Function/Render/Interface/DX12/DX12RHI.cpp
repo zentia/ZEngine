@@ -1,5 +1,6 @@
 #include "Runtime/Function/Render/Interface/DX12/DX12RHI.h"
 
+#include "Runtime/Function/Render/Interface/RHIFactory.h"
 #include "Runtime/Core/Base/Macro.h"
 #include "Runtime/Core/Log/LogSystem.h"
 #include "Runtime/Core/Thread/ThreadManager.h"
@@ -17,6 +18,7 @@
 #include <d3dcompiler.h>
 #include <functional>
 #include <map>
+#include <pix.h>  // #12: PIXBeginEvent/PIXEndEvent scoped GPU markers (header-only, resolved via the D3D12 runtime)
 #include <utility>
 #include <vector>
 #pragma comment(lib, "d3d12.lib")
@@ -6280,14 +6282,39 @@ void DX12RHI::EndGpuTimingScope()
     m_GpuProfiler.EndScope();
 }
 
-void DX12RHI::PushEvent(RHICommandBuffer* commond_buffer, const char* name, const float* color)
+void DX12RHI::PushEvent(RHICommandBuffer* /*commond_buffer*/, const char* name, const float* color)
 {
-    // TODO: Implement DX12 pushEvent
+    // #12: emit a real PIX / GPU-profiler scoped marker. Every pass
+    // (MainCameraPass, DirectionalLightPass, CombineUI, ColorGrading, Spine,
+    // the editor overlay, ...) calls Push/PopEvent on the hot path; the
+    // previous empty stub meant DX12 produced no markers at all, so GPU
+    // debugging/timing was blind. PIXBeginEvent is a header-only wrapper that
+    // issues BeginEvent(PIX_EVENT_ANSI_VERSION, name, size) -- a metadata value
+    // the D3D12 runtime recognises as a string label (resolved at run time, no
+    // extra DLL to link). The colour is packed via PIX_COLOR, matching the
+    // (name, color) signature Vulkan's debug label carries. Operate on the
+    // per-frame command list like every other recording PFN; the passed
+    // RHICommandBuffer* is a logical handle DX12 does not dereference.
+    ID3D12GraphicsCommandList* cmd = getCurrentCommandList();
+    if (cmd != nullptr && name != nullptr)
+    {
+        UINT metadata = (color != nullptr)
+            ? PIX_COLOR(static_cast<BYTE>(color[0] * 255.0f),
+                        static_cast<BYTE>(color[1] * 255.0f),
+                        static_cast<BYTE>(color[2] * 255.0f))
+            : PIX_COLOR_DEFAULT;
+        PIXBeginEvent(cmd, metadata, "%s", name);
+    }
 }
 
-void DX12RHI::PopEvent(RHICommandBuffer* commond_buffer)
+void DX12RHI::PopEvent(RHICommandBuffer* /*commond_buffer*/)
 {
-    // TODO: Implement DX12 popEvent
+    // #12: close the marker opened by PushEvent.
+    ID3D12GraphicsCommandList* cmd = getCurrentCommandList();
+    if (cmd != nullptr)
+    {
+        PIXEndEvent(cmd);
+    }
 }
 
 void DX12RHI::clear()
@@ -6415,7 +6442,15 @@ void DX12RHI::DestroyMipmappedSampler()
 
 void DX12RHI::DestroyShaderModule(RHIShader* shader)
 {
-    // TODO: Implement DX12 destroyShaderModule
+    // #12: CreateShaderModule news a DX12Shader (holds a ComPtr<ID3DBlob>); the
+    // previous empty stub never freed it, leaking one shader object per call
+    // (~50 call sites: every pass, the DX12 bindless blit/tonemap pipelines,
+    // the editor overlay, Nanite, Spine, debug draw). The graphics/compute PSO
+    // copies the bytecode it needs via CreateGraphicsPipelineState, so the
+    // blob is disposable once the pipeline exists -- mirroring Vulkan's
+    // vkDestroyShaderModule + delete. RHIShader now has a virtual destructor
+    // so deleting through the base pointer is well-defined.
+    delete shader;
 }
 
 void DX12RHI::DestroySemaphore(RHISemaphore* semaphore)
@@ -6676,4 +6711,18 @@ RHI::ViewportRenderTexture* DX12RHI::GetViewportRenderTexture(const std::string&
         return &(it->second);
     }
     return nullptr;
+}
+
+// ---- audit #4：DX12 后端自注册进 RHIFactory 注册表 ----
+// 本翻译单元只在 Windows 编译（含 <d3d12.h>），故注册器无需额外平台守卫。
+namespace
+{
+    struct DX12RHIBackendRegistrar
+    {
+        DX12RHIBackendRegistrar()
+        {
+            RHIFactory::RegisterBackend(GraphicsAPI::DirectX12,
+                [](WindowSystem* window_system) -> RHI* { return new DX12RHI(); });
+        }
+    } s_dx12_rhi_registrar;
 }

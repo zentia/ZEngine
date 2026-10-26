@@ -395,9 +395,9 @@ void FloatingPanelManager::ProcessPendingFloat()
             {
                 in.middle_down = down;
             }
-            in.ctrl = (mods & 1) != 0;    // MOD_CONTROL = bit 0
-            in.shift = (mods & 2) != 0;   // MOD_SHIFT = bit 1
-            in.alt = (mods & 4) != 0;     // MOD_ALT = bit 2
+            in.ctrl = (mods & KeyCodes::MOD_CONTROL_VAL) != 0;
+            in.shift = (mods & KeyCodes::MOD_SHIFT_VAL) != 0;
+            in.alt = (mods & KeyCodes::MOD_ALT_VAL) != 0;
         });
 
         child->OnScroll.push_back([panel_raw](double, double yoff) {
@@ -406,9 +406,9 @@ void FloatingPanelManager::ProcessPendingFloat()
 
         child->OnKey.push_back([panel_raw](int key, int, int action, int mods) {
             FloatingInputAccum& in = panel_raw->input;
-            in.ctrl = (mods & 1) != 0;
-            in.shift = (mods & 2) != 0;
-            in.alt = (mods & 4) != 0;
+            in.ctrl = (mods & KeyCodes::MOD_CONTROL_VAL) != 0;
+            in.shift = (mods & KeyCodes::MOD_SHIFT_VAL) != 0;
+            in.alt = (mods & KeyCodes::MOD_ALT_VAL) != 0;
             if (action == KeyCodes::PRESS || action == KeyCodes::REPEAT)
             {
                 const ZSlate::EKey k = MapKeyToSlateFloating(key);

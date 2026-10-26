@@ -83,6 +83,13 @@ namespace ZEngine
 
             virtual bool IsPointLightShadowEnabled() override;
 
+            // Alt-Tab / window-focus recovery. WebGL2's drawable is the canvas
+            // (default framebuffer 0); the browser recomposites it on
+            // requestAnimationFrame, so there is no surface chain to invalidate
+            // like DXGI/VK. Re-read the canvas size so a resize that happened
+            // while unfocused is picked up on resume.
+            virtual void NotifyWindowFocusGained() override;
+
             // ---------------- Allocation ----------------
             virtual bool AllocateCommandBuffers(const RHICommandBufferAllocateInfo* pAllocateInfo,
                                                 RHICommandBuffer*& pCommandBuffers) override;
@@ -188,6 +195,7 @@ namespace ZEngine
             virtual bool CreatePipelineLayout(const RHIPipelineLayoutCreateInfo* pCreateInfo,
                                               RHIPipelineLayout*& pPipelineLayout) override;
             virtual bool CreateRenderPass(const RHIRenderPassCreateInfo* pCreateInfo, RHIRenderPass*& pRenderPass) override;
+            virtual void DestroyRenderPass(RHIRenderPass* renderPass) override;
             virtual bool CreateSampler(const RHISamplerCreateInfo* pCreateInfo, RHISampler*& pSampler) override;
             virtual bool CreateSemaphore(const RHISemaphoreCreateInfo* pCreateInfo, RHISemaphore*& pSemaphore) override;
 
@@ -401,7 +409,16 @@ namespace ZEngine
 
             // -- command list replay --
             void ExecuteCommandList(WebGL2CommandBuffer* cb);
+            // Replay a single recorded command. Split out so the switch is
+            // readable and each GL call site is explicit.
+            void ReplayCommand(WebGL2CommandBuffer* cb,
+                               const WebGL2CommandBuffer::Command& cmd);
+            // Apply the pipeline's fixed-function state (depth/cull/blend) and
+            // vertex attribute pointers. Called on BindPipeline and before Draw.
             void FlushPipelineState(WebGL2Pipeline* pipeline);
+            // Bind a recorded descriptor set: walk its layout bindings and bind
+            // each UBO (glBindBufferRange) / sampled image (glActiveTexture +
+            // glBindTexture + sampler params) to the layout's GL binding point.
             void BindDescriptorSets(WebGL2PipelineLayout* layout,
                                     uint32_t first_set,
                                     uint32_t count,
@@ -413,6 +430,16 @@ namespace ZEngine
             static GLenum ToGLType(RHIFormat fmt);
             static GLenum ToGLTopology(RHIPipelineBindPoint, /*topology*/ int topo);
             static GLenum ToGLIndexType(RHIIndexType t);
+            // -- fixed-function state translation (pipeline flush / sampler) --
+            static GLenum ToGLCompareOp(RHICompareOp op);
+            static GLenum ToGLCullMode(RHICullModeFlags cull);
+            static GLenum ToGLFrontFace(RHIFrontFace ff);
+            static GLenum ToGLPolygonMode(RHIPolygonMode pm);
+            static GLenum ToGLBlendFactor(RHIBlendFactor f);
+            static GLenum ToGLBlendOp(RHIBlendOp op);
+            static GLenum ToGLFilter(RHIFilter f);
+            static GLenum ToGLAddressMode(RHISamplerAddressMode a);
+            static GLenum ToGLMipmapMode(RHISamplerMipmapMode m);
 
             // -- platform handles --
             void* m_GlContextHandle {nullptr};  // EMSCRIPTEN_WEBGL_CONTEXT_HANDLE
@@ -451,6 +478,21 @@ namespace ZEngine
             WebGL2RenderPass* m_ActiveRenderPass {nullptr};
             WebGL2Framebuffer* m_ActiveFramebuffer {nullptr};
             GLuint m_GlobalVao {0};
+
+            // -- per-command-buffer replay state (reset on BeginCommandBuffer) --
+            // GL binds vertex/index buffers and the program to the current
+            // binding points; we mirror that CPU-side so a Draw can re-apply
+            // the attributes the pipeline layout expects.
+            GLuint m_BoundArrayBuffers[WebGL2CommandBuffer::k_max_vertex_bindings] {};
+            GLintptr m_BoundArrayOffsets[WebGL2CommandBuffer::k_max_vertex_bindings] {};
+            GLuint m_BoundIndexBuffer {0};
+            GLintptr m_BoundIndexOffset {0};
+            GLenum m_BoundIndexType {GL_UNSIGNED_SHORT};
+            // Descriptor sets recorded since the last program bind, indexed by
+            // set number. BindDescriptorSets replays them onto the program's
+            // layout binding points.
+            const RHIDescriptorSet* m_BoundDescriptorSets[WebGL2CommandBuffer::k_max_descriptor_sets] {};
+            uint32_t m_BoundDescriptorSetCount {0};
 
             // -- queue family indices placeholder (single graphics queue) --
             QueueFamilyIndices m_QueueIndices;

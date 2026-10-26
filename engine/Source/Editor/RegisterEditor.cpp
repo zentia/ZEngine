@@ -7,6 +7,7 @@
 #include "Editor/EditorSceneManager/EditorSceneManager.h"
 #include "Editor/EditorUI/EditorUI.h"
 #include "Editor/PackageManager/PackageManager.h"
+#include "Editor/Prefab/PrefabSceneBinding.h"
 #include "Editor/RenderDoc/RenderDocLoader.h"
 #include "Editor/Scripting/TypeScriptCompiler.h"
 #include "Editor/Undo/EditorUndo.h"
@@ -38,4 +39,6 @@ namespace
 void RegisterEditor()
 {
     RegisterEditorSystem();
+    // Scene save / load carry the editor-only PrefabInstance bookkeeping.
+    PrefabSceneBinding::Install();
 }

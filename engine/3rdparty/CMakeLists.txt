@@ -36,8 +36,10 @@ endif()
 # CMAKE_MSVC_RUNTIME_LIBRARY for libraries that rely on the standard CMake
 # variable, but several vendored libs gate their CRT on per-library cache
 # options that we have to set here BEFORE add_subdirectory():
-#   - GLFW: USE_MSVC_RUNTIME_LIBRARY_DLL (ON=/MD by default)
 #   - cURL: CURL_STATIC_CRT (OFF by default)
+# (GLFW's USE_MSVC_RUNTIME_LIBRARY_DLL used to be flipped here too; GLFW is no
+# longer vendored -- the engine uses a native Win32 / Cocoa window layer, see
+# doc/platform_windowing_plan.md -- so that knob had no consumer and was removed.)
 # Jolt is handled inline below (it ignores CMAKE_MSVC_RUNTIME_LIBRARY and
 # pins itself via set_target_properties + /MD compile_options).
 # We FORCE-write the cache in both branches so flipping PAPI_TYPE between
@@ -47,10 +49,8 @@ endif()
 # See AGENTS.md 2.7 "Open issue (Win64 /MT vs /MD mismatch)".
 if(WIN32 AND PAPI_TYPE STREQUAL "v8")
     message(STATUS "PAPI_TYPE=v8 on Windows: flipping vendored 3rdparty CRT knobs to /MT")
-    set(USE_MSVC_RUNTIME_LIBRARY_DLL OFF CACHE BOOL "" FORCE)  # GLFW
     set(CURL_STATIC_CRT ON CACHE BOOL "" FORCE)                # cURL
 elseif(WIN32)
-    set(USE_MSVC_RUNTIME_LIBRARY_DLL ON  CACHE BOOL "" FORCE)  # GLFW (default)
     set(CURL_STATIC_CRT OFF CACHE BOOL "" FORCE)               # cURL (default)
 endif()
 
@@ -503,7 +503,11 @@ if(NOT TARGET lmdb)
 
         # Create static library
         add_library(lmdb STATIC ${LMDB_SOURCES})
-        if(Z_PLATFORM_OHOS OR OHOS OR CMAKE_SYSTEM_NAME STREQUAL "OHOS")
+        # No robust process-shared mutexes on OHOS, and none in Emscripten's libc
+        # either (pthread_mutexattr_setrobust is undefined at link time, so any web
+        # executable that pulls in LMDBDerivedDataCache failed to link).
+        if(Z_PLATFORM_OHOS OR OHOS OR CMAKE_SYSTEM_NAME STREQUAL "OHOS"
+           OR EMSCRIPTEN OR CMAKE_SYSTEM_NAME STREQUAL "Emscripten")
             target_compile_definitions(lmdb PRIVATE MDB_USE_ROBUST=0)
         endif()
 
@@ -649,7 +653,7 @@ endif()
 # CMAKE_MSVC_RUNTIME_LIBRARY, so it picks up whatever CRT mode the top-level
 # build is using (/MD for the default quickjs path, /MT for PAPI_TYPE=v8;
 # see "Plan C" block in the top-level CMakeLists). No special handling like
-# Jolt / GLFW needed.
+# Jolt needed.
 #
 # Folder placement: nested under the third_party_folder. The importer's own
 # C++ TUs live in engine/Source/Editor/asset_pipeline/data_table_importer/
@@ -722,8 +726,11 @@ if(NOT EMSCRIPTEN)
     endforeach()
 endif()
 
-# Fallback: if minizip-ng target still doesn't exist, create it manually
-if(NOT TARGET minizip-ng)
+# Fallback: if minizip-ng target still doesn't exist, create it manually.
+# Skipped on Emscripten: minizip-ng is only linked by the Editor (XlsxImporter),
+# which is not built for Web, so the fallback would only produce a Win32-oriented
+# archive (windows.h / zlib-ng.h) that nothing consumes.
+if(NOT TARGET minizip-ng AND NOT EMSCRIPTEN)
     message(STATUS "minizip-ng target not found, creating manually")
     set(MINIZIP_NG_SRC
         ${CMAKE_CURRENT_SOURCE_DIR}/minizip-ng/mz_crypt.c

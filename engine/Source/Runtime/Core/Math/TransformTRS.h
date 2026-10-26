@@ -40,7 +40,11 @@ public:
 template<typename TransferFunction>
 void TransformTRS::Transfer(TransferFunction& transfer)
 {
-    if constexpr (TransferFunction::IsReading())
+    // Legacy names are probed only by name-addressed readers (SerializeUtility.h);
+    // a positional read (prefab instantiate clones every MeshRenderer sub-mesh
+    // through it) gets the writer's sequence -- the extra probes here used to
+    // misalign the stream and crash on the next string.
+    if constexpr (kTransferProbesLegacyFields<TransferFunction>)
     {
         Vector3 legacy_position {Vector3::ZERO};
         transfer.Transfer(legacy_position, "m_position");
@@ -79,7 +83,7 @@ void TransformTRS::Transfer(TransferFunction& transfer)
         transfer.Transfer(legacy_position, "m_position");
     }
     transfer.Transfer(m_Scale, "m_scale");
-    if constexpr (TransferFunction::IsReading())
+    if constexpr (kTransferProbesLegacyFields<TransferFunction>)
     {
         Vector3 authored_scale {Vector3::UNIT_SCALE};
         transfer.Transfer(authored_scale, "scale");

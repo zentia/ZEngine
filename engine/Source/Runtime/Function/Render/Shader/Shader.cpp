@@ -1,8 +1,1 @@
-#pragma once
-
-namespace Runtime
-{
-    class RHIThread
-    {
-    };
-}  // namespace Runtime
+#include "Runtime/Function/Render/Shader/Shader.h"

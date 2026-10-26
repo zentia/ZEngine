@@ -27,8 +27,24 @@ public:
     VirtualTextureManager();
     ~VirtualTextureManager();
 
+    // Process-wide lazy singleton. The frame loop (RenderSystem::
+    // UpdateVirtualTextureForFrame) drives the streaming update through this
+    // instance, gated by r.VirtualTexture.Enable. Created on first use so a
+    // project that never opts in pays zero cost (and, on platforms where VT
+    // doesn't compile, is never touched at all).
+    static VirtualTextureManager& Get();
+
     // Initialize the virtual texture manager
     void Initialize(RHI* rhi, RenderResourceBase* render_resource);
+
+    // Headless / logical init: build the physical pool as a logical (no-GPU)
+    // pool and start the loading thread. Slot bookkeeping + streaming policy
+    // (load/evict/priority) work identically to the real path; only the GPU
+    // texture is absent. Used by the WASM harness (and platforms where VT has
+    // no real RHI yet) to exercise the policy headlessly.
+    void InitializeLogical(uint32_t pool_width_pages = 16,
+                           uint32_t pool_height_pages = 16,
+                           uint32_t page_size = 128);
 
     // Shutdown the virtual texture manager
     void Shutdown();

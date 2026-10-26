@@ -3,6 +3,8 @@
 #include "Editor/EditorAsset/EditorAssetManager.h"
 #include "Editor/EditorHierarchy/EditorHierarchyReparent.h"
 #include "Editor/EditorSceneManager/EditorSceneManager.h"
+#include "Editor/Prefab/PrefabInstance.h"
+#include "Editor/Prefab/PrefabSceneBinding.h"
 #include "Editor/Undo/EditorUndo.h"
 #include "Runtime/Asset/AssetFile.h"
 #include "Runtime/BaseClasses/GameObject.h"
@@ -249,19 +251,26 @@ namespace
             return false;
         }
 
-        GameObject* prefab_root = PrefabUtility::InstantiateFromPath(prefab_path);
-        if (prefab_root == nullptr)
-        {
-            return false;
-        }
-
-        // One undo step for spawn + parent + select.
+        // A linked prefab instance (PrefabInstance bookkeeping + the whole cloned
+        // subtree in the level), not a plain copy: overrides can be recorded and
+        // applied / reverted, and the link survives scene save / load. The old path
+        // (PrefabUtility::InstantiateFromPath + CreateObject of the root) put only the
+        // root GameObject into the level -- child GameObjects hung off its Transform
+        // without being level objects -- and kept no link to the prefab.
+        //
+        // One undo step for spawn + parent + select. The lifetime record works on the
+        // root's subtree, so registering the root covers the children; undoing takes
+        // the root out of the level, which also stops PrefabSceneBinding from saving
+        // the instance (it only saves instances whose root is in the level).
         EditorUndo::ScopedTransaction transaction("Instantiate " + prefab_path.stem().string());
-        const GObjectID new_id = current_active_level->CreateObject(*prefab_root);
-        if (new_id == k_invalid_gobject_id)
+        PrefabInstance* instance = PrefabSceneBinding::InstantiateIntoLevel(*current_active_level, prefab_path);
+        GameObject* placed_root = instance != nullptr ? static_cast<GameObject*>(instance->GetRootGameObject()) : nullptr;
+        if (placed_root == nullptr)
         {
+            LOG_ERROR(ZEditor, "Scene placement: could not instantiate prefab '{}'", prefab_path.string());
             return false;
         }
+        const GObjectID new_id = placed_root->GetID();
         EditorUndo::RegisterCreatedGameObject(new_id);
 
         (void)parentSpawnedRoot(current_active_level, new_id, parent_gobject_id);

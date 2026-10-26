@@ -9,6 +9,7 @@
 // =====================================================================================
 
 #include "Runtime/Function/Render/Graph/RenderGraph.h"
+#include "Runtime/Function/Render/Passes/MainCameraRp1GraphDecl.h"
 
 #include <cstdio>
 #include <string>
@@ -269,6 +270,119 @@ namespace
                 builder.ReadTexture(handles.backup_odd, RGResourceState::ShaderResource);
                 builder.ReadTexture(handles.backup_even, RGResourceState::ShaderResource);
                 builder.WriteTexture(handles.backbuffer, RGResourceState::RenderTarget);
+            },
+            nullptr);
+
+        return handles;
+    }
+
+    // -------------------------------------------------------------------------------------
+    // RP1 (MainCameraRp1Pass) wiring -- the three-way-split deferred chain that step 2.3
+    // already landed in code (DrawGBufferPass / DrawDeferredLightingPass / DrawForwardLightingPass,
+    // each its own CmdBeginRenderPassPFN with subpass=0) but which has NO RenderGraph wiring
+    // yet (only RP2 has DrawRP2WithGraph). This mirrors BuildRp2Wiring above: it declares the
+    // REAL resource topology the split passes exchange, so the compiler derives the same order
+    // and barriers the hand-written chain relies on -- proving the topology RENDER_GRAPH.md:117
+    // claimed was "whole-segment only" IS expressible at the compiler level.
+    //
+    // Resource topology (from MainCameraFramebufferResources::Setup{GBuffer,DeferredLighting,
+    // ForwardLighting}Pass + deferred_lighting.frag.hlsl / mesh_forward.frag.hlsl):
+    //
+    //   GBufferPass        writes GBufferA/B/C (transient RT), writes scene depth (imported).
+    //   DeferredLighting   reads GBufferA/B/C + depth, writes BackupOdd (imported HDR output).
+    //   ForwardLighting    writes BackupOdd (imported, blended), reads depth (imported).
+    //
+    // Where the graph's model and the real passes differ (re-verified 2026-10-25, see
+    // PHASE2_PLAN.md 落地记录·2.4 勘误). This test asserts the compiler-level contract only:
+    //   1. Descriptor type is NOT a gap on the backends that run this pass. MainCameraRp1Pass
+    //      is built only for DX12 (inside DX12MainCameraPass) and Apple/Metal; Vulkan uses the
+    //      older multi-subpass MainCameraPass. DX12 maps RHI_DESCRIPTOR_TYPE_INPUT_ATTACHMENT to
+    //      a plain SRV (DX12RHI.cpp ToDX12DescriptorRangeType) and the HLSL shader reads
+    //      Texture2D.Load(); Metal gets [[texture(n)]] via SPIRV-Cross. So "ShaderResource" is
+    //      exactly what happens. (Running THIS pass on Vulkan would be illegal -- input
+    //      attachments across independent render passes -- but no code path does that.)
+    //   2. ForwardLighting's blend is fixed-function (loadOp=LOAD + blend state on a colour
+    //      attachment), i.e. RenderTarget state. Declaring Forward as WriteTexture(RenderTarget)
+    //      is therefore faithful, not a simplification; group 20 only rejects SAMPLING the
+    //      same texture you render into (a real feedback-loop hazard).
+    //   The real wiring gap is elsewhere: the render passes' own initialLayout/finalLayout
+    //   already transition these attachments, so a graph-driven RP1 must import in the state
+    //   the previous render pass LEFT the texture in (as DrawRP2WithGraph does).
+    // -------------------------------------------------------------------------------------
+    struct Rp1WiredHandles
+    {
+        RGTextureHandle gbuffer_a;
+        RGTextureHandle gbuffer_b;
+        RGTextureHandle gbuffer_c;
+        RGTextureHandle depth;
+        RGTextureHandle backup_odd;
+    };
+
+    /// A fullscreen depth texture -- the scene depth the GBuffer pass writes and the two
+    /// lighting passes read. Imported as an external the GBuffer pass writes into.
+    RGTextureDesc FullscreenDepth(const char* name)
+    {
+        RGTextureDesc desc;
+        desc.name = name;
+        desc.width = 1920;
+        desc.height = 1080;
+        desc.format = RGFormat::D32_SFLOAT;
+        desc.usage = RGTextureUsage::DepthStencil | RGTextureUsage::ShaderRead;
+        return desc;
+    }
+
+    Rp1WiredHandles BuildRp1Wiring(RenderGraph& graph)
+    {
+        Rp1WiredHandles handles;
+
+        // Scene depth: an external the GBuffer pass writes (finalLayout DEPTH_STENCIL_READ_ONLY_OPTIMAL
+        // on the real render pass) and both lighting passes read. Imported in the state it arrives in
+        // (Undefined -- the GBuffer pass is its first writer), matching how the real RHI depth target
+        // is cleared at the top of the frame before RP1 runs.
+        handles.depth = ImportExternal(graph, "scene_depth", RGResourceState::Undefined);
+
+        // BackupOdd: the HDR output the Deferred pass writes and the Forward pass writes again
+        // (blended). Imported in the state it arrives in from the previous frame (ShaderResource --
+        // RP1's own previous Forward/Deferred render pass ended it in SHADER_READ_ONLY_OPTIMAL).
+        handles.backup_odd = ImportExternal(graph, "backup_odd", RGResourceState::ShaderResource);
+
+        // GBufferPass: clears + writes GBufferA/B/C (transient) and the scene depth.
+        graph.AddPass(
+            "GBufferPass",
+            RGPassType::Render,
+            [&](RenderGraphBuilder& builder) {
+                handles.gbuffer_a = builder.CreateTexture("GBufferA", FullscreenLDR("GBufferA"));
+                handles.gbuffer_b = builder.CreateTexture("GBufferB", FullscreenLDR("GBufferB"));
+                handles.gbuffer_c = builder.CreateTexture("GBufferC", FullscreenLDR("GBufferC"));
+                builder.WriteTexture(handles.gbuffer_a, RGResourceState::RenderTarget);
+                builder.WriteTexture(handles.gbuffer_b, RGResourceState::RenderTarget);
+                builder.WriteTexture(handles.gbuffer_c, RGResourceState::RenderTarget);
+                builder.WriteTexture(handles.depth, RGResourceState::DepthStencilWrite);
+            },
+            nullptr);
+
+        // DeferredLightingPass: samples GBufferA/B/C + depth, writes BackupOdd.
+        graph.AddPass(
+            "DeferredLightingPass",
+            RGPassType::Render,
+            [&](RenderGraphBuilder& builder) {
+                builder.ReadTexture(handles.gbuffer_a, RGResourceState::ShaderResource);
+                builder.ReadTexture(handles.gbuffer_b, RGResourceState::ShaderResource);
+                builder.ReadTexture(handles.gbuffer_c, RGResourceState::ShaderResource);
+                builder.ReadTexture(handles.depth, RGResourceState::DepthStencilRead);
+                builder.WriteTexture(handles.backup_odd, RGResourceState::RenderTarget);
+            },
+            nullptr);
+
+        // ForwardLightingPass: blends transparent objects into BackupOdd + depth-tests against depth.
+        // The blend is fixed-function on a colour attachment (loadOp=LOAD + blend state), which IS
+        // the RenderTarget state -- so a plain WriteTexture(RenderTarget) is the faithful declaration.
+        graph.AddPass(
+            "ForwardLightingPass",
+            RGPassType::Render,
+            [&](RenderGraphBuilder& builder) {
+                builder.ReadTexture(handles.depth, RGResourceState::DepthStencilRead);
+                builder.WriteTexture(handles.backup_odd, RGResourceState::RenderTarget);
             },
             nullptr);
 
@@ -1121,6 +1235,199 @@ int main()
 
             CHECK(FindBarrier(compiled, 3, h.backbuffer.index) == nullptr);
             CHECK(compiled.barriers.size() == 4);
+        }
+    }
+
+    // ---------------------------------------------------------------------------------
+    // RP1 three-way-split chain (step 2.4). The graph derives the same execution order
+    // and the same inter-pass barriers the hand-written split passes rely on. This is
+    // the compiler-level proof that the topology RENDER_GRAPH.md:117 flagged as
+    // "whole-segment only" IS expressible. Note the import states here are the convenient
+    // Undefined/ShaderResource ones; a real wiring imports in whatever state the previous
+    // render pass's finalLayout left each texture in (see PHASE2_PLAN.md 落地记录·2.4).
+    // ---------------------------------------------------------------------------------
+    BeginGroup("RP1 three-way split: GBuffer -> DeferredLighting -> ForwardLighting");
+    {
+        RenderGraph graph("RP1-Wired");
+        const Rp1WiredHandles h = BuildRp1Wiring(graph);
+
+        const RGCompiledGraph& compiled = graph.Compile();
+        DumpErrors(compiled);
+        CHECK(compiled.valid);
+        CHECK(compiled.errors.empty());
+        CHECK(compiled.pass_order.size() == 3);
+        const std::vector<std::string> names = OrderNames(graph, compiled);
+        CHECK(names.size() == 3 && names[0] == "GBufferPass" && names[1] == "DeferredLightingPass" &&
+              names[2] == "ForwardLightingPass");
+        CHECK(compiled.culled_passes.empty());
+        CHECK(compiled.barrier_offsets.size() == compiled.pass_order.size() + 1);
+
+        // GBufferPass (slot 0): the three GBuffer textures and the depth start Undefined
+        // and are written for the first time -- one barrier each.
+        const RGBarrier* gbuffer_a_out = FindBarrier(compiled, 0, h.gbuffer_a.index);
+        CHECK(gbuffer_a_out != nullptr);
+        CHECK(gbuffer_a_out->before == RGResourceState::Undefined);
+        CHECK(gbuffer_a_out->after == RGResourceState::RenderTarget);
+
+        const RGBarrier* depth_out = FindBarrier(compiled, 0, h.depth.index);
+        CHECK(depth_out != nullptr);
+        CHECK(depth_out->before == RGResourceState::Undefined);
+        CHECK(depth_out->after == RGResourceState::DepthStencilWrite);
+
+        // DeferredLightingPass (slot 1): flips each GBuffer to a shader-readable state,
+        // lifts depth from the write-layout to the read-layout, and writes BackupOdd.
+        const RGBarrier* gbuffer_a_srv = FindBarrier(compiled, 1, h.gbuffer_a.index);
+        CHECK(gbuffer_a_srv != nullptr);
+        CHECK(gbuffer_a_srv->before == RGResourceState::RenderTarget);
+        CHECK(gbuffer_a_srv->after == RGResourceState::ShaderResource);
+
+        const RGBarrier* depth_to_read = FindBarrier(compiled, 1, h.depth.index);
+        CHECK(depth_to_read != nullptr);
+        CHECK(depth_to_read->before == RGResourceState::DepthStencilWrite);
+        CHECK(depth_to_read->after == RGResourceState::DepthStencilRead);
+
+        const RGBarrier* backup_to_rt = FindBarrier(compiled, 1, h.backup_odd.index);
+        CHECK(backup_to_rt != nullptr);
+        CHECK(backup_to_rt->before == RGResourceState::ShaderResource);
+        CHECK(backup_to_rt->after == RGResourceState::RenderTarget);
+
+        // ForwardLightingPass (slot 2): depth is already DepthStencilRead and BackupOdd is
+        // already RenderTarget -- same-state writes must produce NO barrier (exactly the
+        // "already in target state" case DeriveBarriers skips).
+        CHECK(FindBarrier(compiled, 2, h.depth.index) == nullptr);
+        CHECK(FindBarrier(compiled, 2, h.backup_odd.index) == nullptr);
+
+        // Total barrier count: 4 (GBuffer) + 5 (Deferred) + 0 (Forward) = 9.
+        CHECK(compiled.barriers.size() == 9);
+
+        // The GBuffer textures are transient: produced by GBufferPass, last read by
+        // DeferredLightingPass -- so they can be memory-aliased and freed after slot 1.
+        CHECK(compiled.lifetimes[h.gbuffer_a.index].first_pass == 0);
+        CHECK(compiled.lifetimes[h.gbuffer_a.index].last_pass == 1);
+        CHECK(compiled.lifetimes[h.gbuffer_b.index].first_pass == 0);
+        CHECK(compiled.lifetimes[h.gbuffer_b.index].last_pass == 1);
+        CHECK(compiled.lifetimes[h.gbuffer_c.index].first_pass == 0);
+        CHECK(compiled.lifetimes[h.gbuffer_c.index].last_pass == 1);
+        // BackupOdd is external (imported): it lives across the whole chain and is never
+        // aliased -- the Deferred pass is its producer, Forward its last writer.
+        CHECK(compiled.lifetimes[h.backup_odd.index].first_pass == 1);
+        CHECK(compiled.lifetimes[h.backup_odd.index].last_pass == 2);
+        CHECK(!compiled.lifetimes[h.backup_odd.index].aliased);
+    }
+
+    // ---------------------------------------------------------------------------------
+    // What the graph DOES reject: sampling a texture (ShaderResource) in the same pass that
+    // renders into it (RenderTarget) -- a genuine feedback-loop hazard, and a validation
+    // error rather than UB (RenderGraphBuilder::Declare). This is NOT a limit for RP1:
+    // Forward's alpha blend is fixed-function on the attachment and needs no shader read
+    // (see BuildRp1Wiring). The group guards against someone "modelling" the blend as a
+    // sampled read + write, which would describe a different (illegal) pass.
+    // ---------------------------------------------------------------------------------
+    BeginGroup("RP1 guard: sampling BackupOdd while rendering into it is a hard error");
+    {
+        RenderGraph graph("RP1-Blend-Hazard");
+        Rp1WiredHandles h;
+        h.depth = ImportExternal(graph, "scene_depth", RGResourceState::Undefined);
+        h.backup_odd = ImportExternal(graph, "backup_odd", RGResourceState::ShaderResource);
+        h.gbuffer_a = ImportExternal(graph, "GBufferA", RGResourceState::ShaderResource);
+        h.gbuffer_b = ImportExternal(graph, "GBufferB", RGResourceState::ShaderResource);
+        h.gbuffer_c = ImportExternal(graph, "GBufferC", RGResourceState::ShaderResource);
+
+        graph.AddPass(
+            "ForwardLightingWithBlend",
+            RGPassType::Render,
+            [&](RenderGraphBuilder& builder) {
+                builder.ReadTexture(h.gbuffer_a, RGResourceState::ShaderResource);
+                builder.ReadTexture(h.gbuffer_b, RGResourceState::ShaderResource);
+                builder.ReadTexture(h.gbuffer_c, RGResourceState::ShaderResource);
+                builder.ReadTexture(h.depth, RGResourceState::DepthStencilRead);
+                // Illegal on purpose: sample BackupOdd AND render into it in the same pass.
+                builder.ReadTexture(h.backup_odd, RGResourceState::ShaderResource);
+                builder.WriteTexture(h.backup_odd, RGResourceState::RenderTarget);
+            },
+            nullptr);
+
+        const RGCompiledGraph& compiled = graph.Compile();
+        DumpErrors(compiled);
+        CHECK(!compiled.valid);
+        CHECK(!compiled.errors.empty());
+    }
+
+    // ---------------------------------------------------------------------------------
+    // The PRODUCTION RP1 declaration (Passes/MainCameraRp1GraphDecl.h, the exact code
+    // MainCameraRp1Pass::DrawRP1WithGraph runs) with its REAL import states -- groups 19/20
+    // above use convenient Undefined imports. Two topologies: with scene depth tracked
+    // (a backend that publishes the depth RHIImage) and without (DX12 today:
+    // GetDepthImageInfo().depth_image == nullptr).
+    // ---------------------------------------------------------------------------------
+    BeginGroup("production RP1 declaration (DeclareRp1Graph) with real import states");
+    {
+        for (const bool track_depth : {true, false})
+        {
+            RenderGraph graph(track_depth ? "RP1-Prod-Depth" : "RP1-Prod-NoDepth");
+            Rp1GraphTextures textures {};
+            const auto fake = [](RGFormat format) {
+                RGExternalTexture t;
+                t.image = FakeImage();
+                t.view = FakeView();
+                t.format = format;
+                return t;
+            };
+            textures.gbuffer_a = fake(RGFormat::R8G8B8A8_UNORM);
+            textures.gbuffer_b = fake(RGFormat::R8G8B8A8_UNORM);
+            textures.gbuffer_c = fake(RGFormat::R8G8B8A8_SRGB);
+            textures.backup_odd = fake(RGFormat::R16G16B16A16_SFLOAT);
+            if (track_depth)
+            {
+                textures.depth = fake(RGFormat::D32_SFLOAT);
+            }
+            const Rp1GraphHandles h =
+                DeclareRp1Graph(graph, MakeRp1GraphImportStates(textures), Rp1GraphCallbacks {});
+
+            const RGCompiledGraph& compiled = graph.Compile();
+            DumpErrors(compiled);
+            CHECK(compiled.valid);
+            CHECK(compiled.culled_passes.empty());
+            const std::vector<std::string> names = OrderNames(graph, compiled);
+            CHECK(names.size() == 3 && names[0] == "GBufferPass" && names[1] == "DeferredLightingPass" &&
+                  names[2] == "ForwardLightingPass");
+            CHECK(h.depth.IsValid() == track_depth);
+            // Every RP1 texture is imported: nothing transient, nothing for the pool.
+            CHECK(compiled.peak_live_bytes == 0);
+
+            // GBufferPass: GBuffer ShaderResource (last frame's finalLayout) -> RenderTarget.
+            for (const RGTextureHandle g : {h.gbuffer_a, h.gbuffer_b, h.gbuffer_c})
+            {
+                const RGBarrier* to_rt = FindBarrier(compiled, 0, g.index);
+                CHECK(to_rt != nullptr && to_rt->before == RGResourceState::ShaderResource &&
+                      to_rt->after == RGResourceState::RenderTarget);
+                const RGBarrier* to_srv = FindBarrier(compiled, 1, g.index);
+                CHECK(to_srv != nullptr && to_srv->before == RGResourceState::RenderTarget &&
+                      to_srv->after == RGResourceState::ShaderResource);
+                CHECK(FindBarrier(compiled, 2, g.index) == nullptr);
+            }
+            // BackupOdd: ShaderResource (RP2 sampled it last frame) -> RenderTarget once,
+            // before Deferred; Forward keeps rendering into it with no barrier.
+            CHECK(FindBarrier(compiled, 0, h.backup_odd.index) == nullptr);
+            const RGBarrier* backup_rt = FindBarrier(compiled, 1, h.backup_odd.index);
+            CHECK(backup_rt != nullptr && backup_rt->before == RGResourceState::ShaderResource &&
+                  backup_rt->after == RGResourceState::RenderTarget);
+            CHECK(FindBarrier(compiled, 2, h.backup_odd.index) == nullptr);
+
+            if (track_depth)
+            {
+                // Imported as DepthStencilWrite (Forward's finalLayout): GBuffer needs none.
+                CHECK(FindBarrier(compiled, 0, h.depth.index) == nullptr);
+                const RGBarrier* depth_read = FindBarrier(compiled, 1, h.depth.index);
+                CHECK(depth_read != nullptr && depth_read->before == RGResourceState::DepthStencilWrite &&
+                      depth_read->after == RGResourceState::DepthStencilRead);
+                CHECK(FindBarrier(compiled, 2, h.depth.index) == nullptr);
+                CHECK(compiled.barriers.size() == 8);  // 3 + 5 + 0
+            }
+            else
+            {
+                CHECK(compiled.barriers.size() == 7);  // 3 + 4 + 0
+            }
         }
     }
 

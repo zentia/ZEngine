@@ -114,6 +114,8 @@ private:
     bool m_HasPendingMaterialFromShader {false};
     bool m_PendingImportDialog {false};
     bool m_AssetTreeDirty {false};
+    std::filesystem::path m_PendingSelectPath;
+    bool m_HasPendingSelect {false};
     uint32_t m_AssetRegistryListenerHandle {0};
     uint32_t m_GpuInvalidationCallbackId {0};
     ContentBrowserContext m_Context;

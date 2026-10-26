@@ -14,6 +14,7 @@
 // =====================================================================================
 
 #include "Runtime/Function/Render/Graph/RenderGraphResources.h"
+#include "Runtime/Function/Render/Passes/MainCameraRp1GraphDecl.h"
 
 #include <cstdio>
 #include <string>
@@ -81,6 +82,8 @@ namespace
             RHIImage* image {nullptr};
             RHIImageLayout old_layout {RHI_IMAGE_LAYOUT_UNDEFINED};
             RHIImageLayout new_layout {RHI_IMAGE_LAYOUT_UNDEFINED};
+            RHIImageAspectFlags aspect {0};
+            int call_index {0};  // which CmdPipelineBarrier call (0-based) recorded it
         };
         std::vector<BarrierRecord> barriers;
 
@@ -157,6 +160,8 @@ namespace
                 record.image = p_image_memory_barriers[i].image;
                 record.old_layout = p_image_memory_barriers[i].oldLayout;
                 record.new_layout = p_image_memory_barriers[i].newLayout;
+                record.aspect = p_image_memory_barriers[i].subresourceRange.aspectMask;
+                record.call_index = barrier_calls - 1;
                 barriers.push_back(record);
             }
         }
@@ -658,6 +663,269 @@ int main()
     }
 
     // ---------------------------------------------------------------------------------
+    // RP1 (step 2.4) through the EXECUTOR: the compiler test (RenderGraphSmokeTest
+    // group 19) proves the order / abstract barriers; this proves what actually reaches
+    // the RHI. It is also the regression test for the depth-aspect bug: before
+    // RGExternalTexture::format existed an imported depth target had format Unknown, so
+    // the executor emitted a COLOR-aspect barrier for it (Vulkan validation error), and
+    // a D32_SFLOAT transient got DEPTH|STENCIL (also invalid -- D32 has no stencil).
+    // ---------------------------------------------------------------------------------
+    BeginGroup("RP1 three-way split executes with correct RHI barriers (depth aspect)");
+    {
+        FakeDevice device;
+        RenderGraphResourcePool pool(&device);
+        RenderGraph graph("RP1-Execute");
+
+        RHIImage* const depth_image = &s_Images[kSentinelCount - 1];
+        RHIImage* const backup_image = &s_Images[kSentinelCount - 2];
+        RGExternalTexture depth_ext;
+        depth_ext.image = depth_image;
+        depth_ext.view = &s_Views[kSentinelCount - 1];
+        depth_ext.state = RGResourceState::Undefined;
+        depth_ext.format = RGFormat::D32_SFLOAT;  // Vulkan FindDepthFormat's first choice
+        const RGTextureHandle depth = graph.ImportTexture("scene_depth", depth_ext);
+
+        RGExternalTexture backup_ext;
+        backup_ext.image = backup_image;
+        backup_ext.view = &s_Views[kSentinelCount - 2];
+        backup_ext.state = RGResourceState::ShaderResource;
+        backup_ext.format = RGFormat::R16G16B16A16_SFLOAT;
+        const RGTextureHandle backup_odd = graph.ImportTexture("backup_odd", backup_ext);
+
+        RGTextureHandle gbuffer_a;
+        RHIImage* gbuffer_a_image = nullptr;
+        std::vector<std::string> ran;
+
+        graph.AddPass(
+            "GBufferPass",
+            RGPassType::Render,
+            [&](RenderGraphBuilder& builder) {
+                gbuffer_a = builder.CreateTexture("GBufferA", FullscreenLDR("GBufferA"));
+                builder.WriteTexture(gbuffer_a, RGResourceState::RenderTarget);
+                builder.WriteTexture(depth, RGResourceState::DepthStencilWrite);
+            },
+            [&](RenderGraphExecuteContext& context) {
+                ran.push_back("GBufferPass");
+                gbuffer_a_image = context.GetImage(gbuffer_a);
+            });
+
+        graph.AddPass(
+            "DeferredLightingPass",
+            RGPassType::Render,
+            [&](RenderGraphBuilder& builder) {
+                builder.ReadTexture(gbuffer_a, RGResourceState::ShaderResource);
+                builder.ReadTexture(depth, RGResourceState::DepthStencilRead);
+                builder.WriteTexture(backup_odd, RGResourceState::RenderTarget);
+            },
+            [&](RenderGraphExecuteContext& context) {
+                ran.push_back("DeferredLightingPass");
+                // Imports resolve to the caller's own objects, never pool allocations.
+                CHECK(context.GetImage(depth) == depth_image);
+                CHECK(context.GetImage(backup_odd) == backup_image);
+            });
+
+        graph.AddPass(
+            "ForwardLightingPass",
+            RGPassType::Render,
+            [&](RenderGraphBuilder& builder) {
+                builder.ReadTexture(depth, RGResourceState::DepthStencilRead);
+                builder.WriteTexture(backup_odd, RGResourceState::RenderTarget);
+            },
+            [&](RenderGraphExecuteContext&) { ran.push_back("ForwardLightingPass"); });
+
+        RenderGraphExecutor executor(nullptr, &device, &pool);
+        CHECK(executor.Execute(graph, &s_CommandBuffer));
+        CHECK(ran.size() == 3 && ran[0] == "GBufferPass" && ran[1] == "DeferredLightingPass" &&
+              ran[2] == "ForwardLightingPass");
+
+        // 2 + 3 + 0 abstract barriers -> 2 batched RHI calls (Forward needs none).
+        CHECK(executor.GetLastBarrierCount() == 5);
+        CHECK(device.barrier_calls == 2);
+        // Only GBufferA is pool-allocated; depth and backup_odd are imports.
+        CHECK(device.images_created == 1);
+
+        const FakeDevice::BarrierRecord* depth_first = nullptr;
+        const FakeDevice::BarrierRecord* depth_second = nullptr;
+        const FakeDevice::BarrierRecord* backup_rt = nullptr;
+        const FakeDevice::BarrierRecord* gbuffer_srv = nullptr;
+        for (const FakeDevice::BarrierRecord& record : device.barriers)
+        {
+            if (record.image == depth_image)
+            {
+                (depth_first == nullptr ? depth_first : depth_second) = &record;
+            }
+            else if (record.image == backup_image)
+            {
+                backup_rt = &record;
+            }
+            else if (record.image == gbuffer_a_image && record.call_index == 1)
+            {
+                gbuffer_srv = &record;
+            }
+        }
+
+        // Depth: DEPTH aspect only (no COLOR -- the old bug; no STENCIL -- D32 has none).
+        CHECK(depth_first != nullptr);
+        CHECK(depth_first != nullptr && depth_first->aspect == RHI_IMAGE_ASPECT_DEPTH_BIT);
+        CHECK(depth_first != nullptr && depth_first->old_layout == RHI_IMAGE_LAYOUT_UNDEFINED);
+        CHECK(depth_first != nullptr &&
+              depth_first->new_layout == RHI_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+        CHECK(depth_first != nullptr && depth_first->call_index == 0);
+        CHECK(depth_second != nullptr);
+        CHECK(depth_second != nullptr && depth_second->aspect == RHI_IMAGE_ASPECT_DEPTH_BIT);
+        CHECK(depth_second != nullptr &&
+              depth_second->old_layout == RHI_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+        CHECK(depth_second != nullptr &&
+              depth_second->new_layout == RHI_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
+        CHECK(depth_second != nullptr && depth_second->call_index == 1);
+
+        // GBuffer: COLOR aspect, RT -> SHADER_READ_ONLY right before Deferred.
+        CHECK(gbuffer_srv != nullptr);
+        CHECK(gbuffer_srv != nullptr && gbuffer_srv->aspect == RHI_IMAGE_ASPECT_COLOR_BIT);
+        CHECK(gbuffer_srv != nullptr && gbuffer_srv->old_layout == RHI_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+        CHECK(gbuffer_srv != nullptr && gbuffer_srv->new_layout == RHI_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+
+        // BackupOdd: imported ShaderResource -> RenderTarget, once, before Deferred.
+        CHECK(backup_rt != nullptr);
+        CHECK(backup_rt != nullptr && backup_rt->aspect == RHI_IMAGE_ASPECT_COLOR_BIT);
+        CHECK(backup_rt != nullptr && backup_rt->old_layout == RHI_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        CHECK(backup_rt != nullptr && backup_rt->new_layout == RHI_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+        CHECK(backup_rt != nullptr && backup_rt->call_index == 1);
+    }
+
+    // ---------------------------------------------------------------------------------
+    BeginGroup("depth aspect follows the format: D24S8 transient gets DEPTH|STENCIL");
+    {
+        FakeDevice device;
+        RenderGraphResourcePool pool(&device);
+        RenderGraph graph("DepthStencilAspect");
+        const RGTextureHandle backbuffer = ImportBackbuffer(graph);
+
+        RGTextureDesc ds_desc = FullscreenLDR("DS");
+        ds_desc.format = RGFormat::D24_UNORM_S8_UINT;
+        ds_desc.usage = RGTextureUsage::DepthStencil | RGTextureUsage::ShaderRead;
+        RGTextureHandle ds;
+        RHIImage* ds_image = nullptr;
+
+        graph.AddPass(
+            "Prepass",
+            RGPassType::Render,
+            [&](RenderGraphBuilder& builder) {
+                ds = builder.CreateTexture("DS", ds_desc);
+                builder.WriteTexture(ds, RGResourceState::DepthStencilWrite);
+            },
+            [&](RenderGraphExecuteContext& context) { ds_image = context.GetImage(ds); });
+        graph.AddPass(
+            "Consume",
+            RGPassType::Render,
+            [&](RenderGraphBuilder& builder) {
+                builder.ReadTexture(ds, RGResourceState::DepthStencilRead);
+                builder.WriteTexture(backbuffer, RGResourceState::RenderTarget);
+            },
+            [](RenderGraphExecuteContext&) {});
+
+        RenderGraphExecutor executor(nullptr, &device, &pool);
+        CHECK(executor.Execute(graph, &s_CommandBuffer));
+        int ds_barriers = 0;
+        bool all_depth_stencil = true;
+        for (const FakeDevice::BarrierRecord& record : device.barriers)
+        {
+            if (record.image == ds_image)
+            {
+                ++ds_barriers;
+                all_depth_stencil = all_depth_stencil &&
+                                    record.aspect == (RHI_IMAGE_ASPECT_DEPTH_BIT | RHI_IMAGE_ASPECT_STENCIL_BIT);
+            }
+        }
+        CHECK(ds_barriers == 2);
+        CHECK(all_depth_stencil);
+    }
+
+    // ---------------------------------------------------------------------------------
+    // ---------------------------------------------------------------------------------
+    // The PRODUCTION RP1 declaration through the executor, the way DrawRP1WithGraph runs
+    // it: real import states, debug events off, callbacks in order, no pool allocation,
+    // and the exact RHI barriers per pass (two batched calls; Forward needs none).
+    // ---------------------------------------------------------------------------------
+    BeginGroup("production RP1 declaration executes as DrawRP1WithGraph runs it");
+    {
+        FakeDevice device;
+        RenderGraphResourcePool pool(&device);
+        RenderGraph graph("RP1-Prod");
+
+        RHIImage* const ga = &s_Images[kSentinelCount - 10];
+        RHIImage* const gb = &s_Images[kSentinelCount - 11];
+        RHIImage* const gc = &s_Images[kSentinelCount - 12];
+        RHIImage* const bo = &s_Images[kSentinelCount - 13];
+        RHIImage* const dp = &s_Images[kSentinelCount - 14];
+        const auto ext = [](RHIImage* image, RGFormat format) {
+            RGExternalTexture t;
+            t.image = image;
+            t.view = &s_Views[0];
+            t.format = format;
+            return t;
+        };
+        Rp1GraphTextures textures {};
+        textures.gbuffer_a = ext(ga, RGFormat::R8G8B8A8_UNORM);
+        textures.gbuffer_b = ext(gb, RGFormat::R8G8B8A8_UNORM);
+        textures.gbuffer_c = ext(gc, RGFormat::R8G8B8A8_SRGB);
+        textures.backup_odd = ext(bo, RGFormat::R16G16B16A16_SFLOAT);
+        textures.depth = ext(dp, RGFormat::D32_SFLOAT);
+
+        std::vector<std::string> ran;
+        Rp1GraphCallbacks callbacks;
+        callbacks.gbuffer = [&](RenderGraphExecuteContext&) { ran.push_back("GBufferPass"); };
+        callbacks.deferred_lighting = [&](RenderGraphExecuteContext&) { ran.push_back("DeferredLightingPass"); };
+        callbacks.forward_lighting = [&](RenderGraphExecuteContext&) { ran.push_back("ForwardLightingPass"); };
+        DeclareRp1Graph(graph, MakeRp1GraphImportStates(textures), std::move(callbacks));
+
+        RenderGraphExecutor executor(nullptr, &device, &pool);
+        executor.SetDebugEventsEnabled(false);
+        CHECK(executor.Execute(graph, &s_CommandBuffer));
+        CHECK(ran.size() == 3 && ran[0] == "GBufferPass" && ran[1] == "DeferredLightingPass" &&
+              ran[2] == "ForwardLightingPass");
+        CHECK(device.images_created == 0);
+        CHECK(device.events_pushed == 0);
+        CHECK(device.barrier_calls == 2);
+        CHECK(executor.GetLastBarrierCount() == 8);
+
+        int call0 = 0;
+        int call1 = 0;
+        bool layouts_ok = true;
+        for (const FakeDevice::BarrierRecord& r : device.barriers)
+        {
+            (r.call_index == 0 ? call0 : call1)++;
+            if (r.image == ga || r.image == gb || r.image == gc)
+            {
+                layouts_ok = layouts_ok && r.aspect == RHI_IMAGE_ASPECT_COLOR_BIT &&
+                             (r.call_index == 0
+                                  ? (r.old_layout == RHI_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL &&
+                                     r.new_layout == RHI_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL)
+                                  : (r.old_layout == RHI_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL &&
+                                     r.new_layout == RHI_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL));
+            }
+            else if (r.image == bo)
+            {
+                layouts_ok = layouts_ok && r.call_index == 1 && r.aspect == RHI_IMAGE_ASPECT_COLOR_BIT &&
+                             r.old_layout == RHI_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL &&
+                             r.new_layout == RHI_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            }
+            else if (r.image == dp)
+            {
+                layouts_ok = layouts_ok && r.call_index == 1 && r.aspect == RHI_IMAGE_ASPECT_DEPTH_BIT &&
+                             r.old_layout == RHI_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL &&
+                             r.new_layout == RHI_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+            }
+            else
+            {
+                layouts_ok = false;  // a barrier on something RP1 never declared
+            }
+        }
+        CHECK(call0 == 3);
+        CHECK(call1 == 5);
+        CHECK(layouts_ok);
+    }
+
     std::printf("\n%d checks, %d failures\n", g_Checks, g_Failures);
     return g_Failures == 0 ? 0 : 1;
 }

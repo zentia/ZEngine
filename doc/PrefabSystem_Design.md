@@ -464,10 +464,75 @@ public:
 
 ### 9.4 接下来可做（非阻塞）
 
-1. **`.zasset` 示例 Prefab + 端到端单测**：构造一个含 GO + Transform + 几个简单 Component 的 PrefabAsset，写入磁盘 → reload → Instantiate → 改字段 → ApplyAll → reload PrefabAsset 验证修改持久化。
-2. **PrefabInstance 自身序列化往返**：当前 PrefabInstance 已经 `IMPLEMENT_OBJECT_SERIALIZE`，但场景文件保存/加载链路还需要把 PrefabInstance 作为顶层 Object 落到 SerializedFile 里。
-3. **编辑器 UI 集成**：把 `RecordPropertyOverride` / `Apply` / `Revert` 接到 Inspector 的右键菜单。
-4. **Cook 阶段 flatten**：Player 构建时把 PrefabInstance flatten 成普通 GameObject 树（参见 §7.5）。
+1. ~~**`.zasset` 示例 Prefab + 端到端单测**~~ —— **已落地（2026-10-25）**，见下方 §9.4.1。
+2. **PrefabInstance 自身序列化往返** —— **对象图层已验证（2026-10-25）**：PrefabInstance 与它的克隆子树作为一张对象图写进 `.zasset`（二进制）和 `.scene`（YAML）再读回，覆盖列表、corresponding-source 映射、实例根引用、跨文件的源 PrefabAsset 引用都保留（§9.4.1 的 P6）。**场景链路已接通（2026-10-26）**：`Level` 新增序列化钩子 `LevelSerializationHooks`（Runtime 侧只开扩展点，不认识 PrefabInstance），编辑器的 `PrefabSceneBinding`（`Editor/Prefab/PrefabSceneBinding.{h,cpp}`，`RegisterEditor()` 里 `Install()`）挂上三个钩子：`Level::save` 把根仍在关卡里的已登记实例写进同一个场景文件；`Level::LoadObjectGraph` 读回后把实例的 GameObject 引用从"文件里读出的 GameObject"改指到 Level 据此新建的活对象（组件是共享的，GameObject 不是）；`Level::Unload` 清登记。`PlaceInLevel(level, instance)` 是"把 Prefab 放进场景"那一步。见 §9.4.1 的 P7。
+3. **编辑器 UI 集成** —— **Inspector 已接（2026-10-26）**。逻辑层 `Editor/Prefab/PrefabOverrideModel.{h,cpp}`（无 UI，端到端测试 P17 直接驱动）：
+   - **隐式覆盖**（Unity 模型）：Inspector 每次提交字段后调 `SyncFieldOverride(instance, target, path)`，复合字段（如 `m_LocalScale`）拆成叶子，只给和源不同的叶子记覆盖，改回源值即删除覆盖；
+   - `IsOverridden` 给行标签上色，`ListOverrides` 列出覆盖；`RevertField` / `ApplyField` / `ApplyAll`；
+   - Apply 之后 `SaveSourcePrefab` 按**原 fileID** 重写源 `.prefab` / `.zasset`（场景对 Prefab 内对象的引用是 (文件, fileID)，重编号会悄悄指错），再对关卡里同源的其它实例 `MergeFromSource`（它们自己的覆盖保留）；
+   - 覆盖列表进撤销：`MakeOverrideListUndoRecord`，和字段的 `RecordComponent` 同一个撤销步骤，列表没变时自动丢弃。
+   
+   ZSlate Inspector（`ZSlateInspectorWindow.cpp`）：选中 Prefab 实例里的物体时顶部出现 "Prefab <源文件>  N overrides" + Apply All / Revert All，下面每条覆盖一行带 Revert / Apply；被覆盖字段的标签是蓝色；Transform 的位置 / 旋转 / 缩放和通用字段的提交都走同步。**界面只做了 clang-cl 类型检查，没上机看过**。ZSlate 没有右键菜单设施，所以没做成右键菜单。Apply 改的是源文件，和 Unity 一样不进撤销。
+   
+   内容浏览器拖 Prefab 进场景**已接（2026-10-26）**：`EditorScenePlacement` 改走 `PrefabSceneBinding::InstantiateIntoLevel`（= `InstantiateAsPrefab` + `PlaceInLevel`），一个撤销步骤；以前那条路径（`InstantiateFromPath` + 只 `CreateObject` 根）只把根放进关卡，子 GameObject 挂在根的 Transform 下却不是关卡对象，也不留 Prefab 关联。
+4. ~~**Cook 阶段 flatten**~~ —— **已落地（2026-10-26）**。场景里的 GameObject 树本来就是实例化 + 覆盖后的实体（`PrefabSceneBinding` 保存的就是它），所以 flatten = 去掉簿记对象，不需要重新展开。`Editor/Build/SceneCook.{h,cpp}`：`CookSceneFile` 去掉所有 `kTypeIsEditorOnly` 类型的对象，并裁掉只被它们引用的外部引用（源 `.prefab`），其余对象里的外部引用索引随之重编号；指向被删对象的引用置空并计数。纯文本层（`ZYaml::StripObjectsFromGraph`），不 Produce 对象，编辑器里开着同一个场景时打包也不受影响。`AssetBundleBuilder` 对 `.scene` 在源文件比烘焙副本新时重烘焙到 `Intermediate/Cooked/<平台>/` 并打包烘焙副本。只处理 YAML 场景；二进制关卡原样拷贝并告警。
+   - 顺带修：`REGISTER_CLASS_TRAITS(kTypeIsEditorOnly)` 以前是**死元数据**——`IMPLEMENT_REGISTER_CLASS` 只把 `kTypeIsAbstract` 传进运行时 `Type`。现在 `Type::isEditorOnly` / `IsEditorOnly()`（末位成员带默认值，既有的位置初始化列表不受影响）。
+   - ~~打包器的依赖遍历仍按源场景走~~ —— **已改（2026-10-26）**：依赖遍历抽成 `Editor/Build/BuildDependencyWalk`，`.scene` 先烘焙、再从烘焙副本读依赖（`AssetRegistry::GetDependenciesOfFile`），只被 PrefabInstance 引用的 `.prefab` 不再进包。做这一步时发现 **YAML 场景在 AssetRegistry 里根本没有依赖**：依赖索引只认二进制 SerializedFile 头，YAML 文件读失败就当成零依赖——也就是打包一个 `.scene` 时它引用的 Prefab / 材质 / 网格**都不会**跟着进包。现在 YAML 资产从 externals 表取依赖（`ZYaml::ReadExternalRefs`）。另外两处：扫描时边扫边建依赖，场景排在它引用的资产前面时（目录序）那条边被永久丢掉，改为整轮扫完再建；`AssetRegistry::ScanAssets` 原来是空函数，现在是同步扫描。见 P16。
+
+#### 9.4.1 端到端测试落地记录（2026-10-25）
+
+`engine/Source/Editor/Prefab/Test/PrefabEndToEndSmokeTest.cpp`（276 项断言；P1-P6 首版 58 项，P7-P17 于 2026-10-26 补），走真实代码和真实磁盘：
+
+| 场景 | 内容 |
+|---|---|
+| P1 | 搭 root + child（各带 Transform）→ `PrefabUtility::SaveAsPrefabAsset` 写 `.zasset` |
+| P2 | `PrefabUtilityEditor::InstantiateAsPrefab(path)` 从磁盘读回 → 结构克隆：名字、层级、本地位置、corresponding-source 映射 |
+| P3 | 改实例字段 → `RecordCurrentValueAsOverride`（同一属性重录是覆盖不是追加）→ `ApplyAll` 写进源、清空覆盖列表、不碰未覆盖字段 |
+| P4 | 把应用后的源另存一份 `.zasset`，以全新对象读回：应用的值落盘了 |
+| P5 | `Revert` 把未应用的覆盖拉回源值，不改源 |
+| P6 | PrefabInstance + 克隆子树按场景对象图写二进制 / YAML 再读回（见上面第 2 条） |
+| P7 | 真实场景链路：`PlaceInLevel` → 改值录覆盖 → `Level::save`（YAML + 二进制）→ 读回 `Level::LoadObjectGraph`：实例重新绑定、根/子/映射全指向新关卡的活对象、覆盖值和覆盖列表在、**读回后 Revert 仍能拉到源值**；根被删（撤销缓冲区仍持有）时不写实例、恢复后又写；`Unload` 清登记 |
+| P8 | 对多对象文件里非头对象的惰性 PPtr 解引用：返回的是那个对象本身（以前返回文件头 PrefabAsset，类型都不对） |
+| P9 | 同一文件的相对路径 / 绝对路径 / `./` 写法得到同一个实例 ID |
+| P10 | P7 换成 YAML 源 Prefab（`.prefab`）：场景存读（YAML + 二进制）后实例仍连得上源、Revert 有效 |
+| P11 | YAML Prefab 的非头对象惰性解引用：整图加载、按 ID 取到；之后 `LoadPrefabAsset` 复用这张图而不是再读一份，且能直接实例化 |
+| P12 | 同一 ID 下先后 Produce 两个对象，销毁被取代的第一个不能注销第二个的表项 |
+| P14 | 运行时 `PrefabUtility::InstantiateFromPath` 每次返回独立的一棵树（YAML / 二进制 Prefab 都测）：两次调用不共享对象、不交出缓存的模板图、改一个不影响另一个；`m_DefinitionUrl` 展开（`invoke_post_load=false`）两次不拿到同一组组件 |
+| P15 | 内容浏览器拖放路径 `InstantiateIntoLevel`：同一 Prefab 拖两次 = 两个独立的关联实例，4 个 GameObject 都是关卡对象，两个都会保存；拖不存在的 Prefab 失败且不动关卡 |
+| P16 | 打包依赖：YAML 场景到二进制 / YAML Prefab 的边进了 AssetRegistry；Player 遍历经烘焙副本，只被 PrefabInstance 引用的 Prefab 不进、被普通对象引用的进；新鲜的烘焙副本不重烘；没有烘焙目录时退回源依赖；`ScanAssets` 同步扫描（4 处变异全红） |
+| P17 | Inspector 覆盖模型：只记和源不同的叶子、改回即删、重复同步不重复记；覆盖列表撤销 / 重做 / 无变化不成步；单字段 Revert 不碰别的覆盖；单字段 Apply：源值、源文件（fileID 不变）、另一个实例合并到新值且保留它自己的覆盖；ApplyAll（6 处变异全红） |
+| P13 | Player 烘焙：`PrefabInstance` 带编辑器专属标志、运行时类型不带；带覆盖的场景烘焙后没有 PrefabInstance、没有指向源 `.prefab` 的外部引用，烘焙副本能加载、两个 GameObject 和覆盖值都在、不绑定实例；手写对象图验证外部引用裁剪 + 重编号、悬空引用置空（4 处变异全红） |
+
+**运行方式**：`bash scripts/verify_prefab_e2e.sh`。无原生工具链时它用 `scripts/web_smoke_run.py`：借 build-web 里已配置的 smoke-test 目标的编译/链接命令，把测试和 `Editor/Prefab/*.cpp` 链到 web 版 `libZRuntime.a`（`--whole-archive`），补上 WebGL2 / emmalloc / NODERAWFS 链接参数后用 node 跑。原生构建可用 `-DZENGINE_BUILD_PREFAB_E2E_SMOKE_TEST=ON`。
+
+**这个测试第一次跑起来就暴露的真 bug（都已修，变异验证过测试能抓住）**：
+
+1. **磁盘上的 Prefab 根本无法实例化**：`InstantiateAsPrefab(path)` 和 `PrefabUtility::InstantiateFromPath`（二进制 `.zasset` 分支）都用 `AssetManager::ReadObject<PrefabAsset>`，它只读 fileID 1 这一个对象；头里的 `m_RootGameObject` 指向同文件的 fileID 2，单对象读永远不会产出它 ⇒ 根恒为 null。新增 `PrefabUtility::LoadPrefabAsset(path, out_gameobjects)` 读整张对象图（YAML / 二进制统一），两个入口都改走它。
+2. **克隆只克隆根**：`EditorPrefabCloner` 的遍历只认识"已访问过的 GameObject"的 Transform 归属，永远迈不出根到第一个子节点那一步。改为沿 `Component::m_ParentObject` 广度优先；`LoadPrefabAsset` 为读出的模板图只绑定归属指针（新增 `Component::BindOwnerIfUnbound`，不跑 PostLoadResource，避免把源资产注册成场景活对象）。
+3. **克隆的父节点子列表重复**：序列化拷贝把源的 `m_Father` / `m_Children` 一起带过来，`SetParent` 又往里追加 ⇒ 克隆父节点同时列出源子节点和克隆子节点。新增 `Transform::ClearCopiedHierarchyLinks()`，重连前清掉。
+4. **`Transform::Transfer` 读写不对称**：读时先 `m_LocalPosition` 后 `m_LocalPositionD`（写反过来），且读时多探测 `transform` / `m_parent` / `m_children` 三个旧字段。按名字查找的读取器（SafeBinaryRead / YAML / JSON）不受影响，但**按位置读的 StreamedBinaryRead**（Prefab 克隆、覆盖快照都用它）读错位 ⇒ 克隆的位置是垃圾。另外 GenerateTypeTreeTransfer 既非读也非写，会走"读"分支把旧字段写进 TypeTree。改为读写同序，旧字段只给按名字查找的读取器探测。
+5. **Apply / Revert / Merge 对 Transform 无效**：它们用 `ReadObjectFromVector` 原地覆写序列化字段，但不通知对象；Transform 的 TRS 实际读自层级缓冲区，覆写后看不到变化。三处统一改走 `ReadBackInto`：覆写后调 `Component::OnSerializedFieldsUpdated()`（Undo 和 Inspector 用的同一约定）。
+6. **外部引用的路径可能存空**：`StoreExternalAssetPath` 用 `std::filesystem::absolute`，取不到当前目录时返回空路径，跨文件引用下次加载就静默变 null（node/wasm 下必现，原生上 cwd 被删时也会）。改为回落到原路径。
+7. **web 构建读不了磁盘上的 `.zasset`**：`LocalFileSystemWeb::Size` 对未打开的条目返回 0，`FileCacherRead` 恰恰是先用未打开的条目取大小 ⇒ SerializedFile 头校验失败。改为未打开时 `stat()`（与 Linux / Windows 实现一致）。这也让既有的 `YamlRoundTripSmokeTest` Y9 二进制场景在 web 上转绿。
+
+**P7-P9 暴露并修掉的问题（2026-10-26，变异验证：5 处各撤一处，测试都转红）**：
+
+8. **同一文件两种写法 = 两个身份**：路径→序列化文件索引表按字符串原样查（`RuntimeAssetManager` 原样、`EditorAssetManager` 只做 lexically_normal），而索引是路径派生实例 ID 的一半。用相对路径加载的 Prefab，被 YAML 场景写成绝对路径的外部引用，读回时铸出另一个 ID ⇒ 指向一份不存在的副本，读回的场景里 Revert / Apply 找不到源。新增 `AssetManager::CanonicalPathKey`（纯词法：相对路径锚到当前目录 + 规范化），两个实现都按它查，不同写法登记为别名；存储的路径名不变（播放器里 bundle 按原写法查）。二进制场景没暴露是因为它存的是 `lexically_normal` 后的原写法，恰好一致。
+9. **惰性 PPtr 解引用多对象文件的非头对象，返回的是文件头**：`AssetManager::ReadObject(instanceID)` 的各分支都只读 fileID 1。改为 fileID≠1 时：二进制文件且整图未加载 ⇒ `ReadObjectsFromBinary` 加载整图后按 ID 取；否则返回 null 并告警（YAML 图用堆 ID，永远对不上路径派生 ID；整图已加载时再读会在同 ID 下重复 Produce）。
+10. **活 GameObject 没有实例 ID**：`Level::CreateObject` 用 `make_shared` 建的 GameObject 从不分配实例 ID，任何 PPtr 都无法指向它，场景写出时也映射不到 fileID。现在建好即 `AllocateAndAssignInstanceID`（ObjectManager 表不持有所有权，`~Object` 注销 ID，shared_ptr 仍是唯一所有者）。
+11. `Level::clear` 无条件解引用 `GET_SYSTEM(PhysicsManager)`，工具 / 无物理环境下卸载即崩；加空检查。`Level::load` 拆出 `LoadObjectGraph(entries, create_physics_scene)`，测试和工具可以不建物理场景（web 构建无线程，Jolt 的 job system 起不来）。
+
+**P10-P12 暴露并修掉的问题（2026-10-26，5 处变异全红）**：
+
+12. **YAML 资产读出的对象没有文件身份**：`ReadObjectsFromYaml` 用全新的堆 ID Produce 对象，于是 ①场景引用 `.prefab` 里的对象时写成 null（堆 ID 查不到所属文件），读回的场景 Revert / Apply 全部失效；②从文件铸出的 PPtr 永远对不上已加载的对象。`ZYaml::ReadObjectGraph` 加可选的实例 ID 钩子，`AssetManager::ReadObjectsFromYaml` 传路径派生 ID——与二进制读取器一致。纯文本（无文件）的读取不传钩子，行为不变。
+13. 随之：惰性解引用 YAML 图的非头对象改为整图加载（原先对 YAML 直接返回 null）；`LoadPrefabAsset` 的"已加载就复用"从只认二进制扩到 YAML，且复用时若图是被惰性解引用加载的（没走过模板准备：重建组件列表 + 绑定归属）就补做。
+14. `Object::~Object` 无条件注销自己的 ID：同一文件被读两次时第二份对象接管表项，销毁第一份会把第二份的表项删掉 ⇒ 之后对它的 PPtr 解引用失败或触发重读。改为只在表项仍指向自己时注销（`ObjectManager::UnregisterInstanceID(id, expected)`）。
+
+**P14 暴露并修掉的问题（2026-10-26）**：
+
+15. **运行时实例化交出的是模板本身**：`PrefabUtility::Instantiate` 的约定是"每次返回独立的新树"，实现却是"在资产的图上跑一遍 post-load 然后返回它的根"，靠的是"每次都从磁盘重读"。二进制 `.zasset` 早就被缓存（路径派生 ID 不能重读），所以**两次实例化同一个二进制 Prefab 拿到的是同一组对象**；`d1a51a5e` 把 YAML 也改成缓存后，`.prefab` 也一样——**这一步是我上一提交引入的回归**（`GameObject::ExpandDefinition` 让所有引用同一 `m_DefinitionUrl` 的场景对象共享同一组组件实例）。修：结构克隆器从 `Editor/Prefab/EditorPrefabCloner` 挪到 `Runtime/Resource/Prefab/PrefabSubtreeCloner`（它只用 Runtime 类型；命名空间 `prefab_clone`），`Instantiate` 克隆缓存的模板后再跑 post-load，模板不动；`InstantiateFromPath` = `LoadPrefabAsset` + `Instantiate`。变异（恢复成交出模板）⇒ P14 六项红。
+
+**未验证**：编辑器里真的拖一个 Prefab 进场景、在 Inspector 上改值后 Apply、保存场景再打开（UI 链路本身是第 3 条，未接）。`Level::load(url)` 带物理场景的完整路径未在无头环境跑过（它与 `LoadObjectGraph` 的差别只在建物理场景）。
 
 
 ---
@@ -486,3 +551,9 @@ public:
 | Variant base 链 | PrefabAsset 自身字段 | `PrefabAsset.variantBase` |
 
 > 本文档以 Unity 2023.1 在 `e:/Engine/unity2023.1` 的源码为参考；具体到 ZEngine 上的语义有调整（去除历史 API、合并 Editor-only/Runtime 边界、`.zasset` 二进制取代 YAML）。
+
+**P16-P17 暴露并修掉的问题（2026-10-26）**：
+
+16. **YAML 场景没有依赖**（见 §9.4 第 4 条）：AssetRegistry 的依赖索引只读二进制头。
+17. **AssetRegistry 依赖边与扫描顺序有关**：扫描循环里每个文件一入表就解析它的外部引用，引用目录序更靠后的资产时查不到、边被丢弃。改为整轮登记完再建边（异步扫描与 `IncrementalUpdate` 两处）。
+18. **零位置经 Apply / Revert / Merge 回不去**：覆盖按叶子逐个拼进字节流再读回，`Transform::Transfer` 的读取分支在双精度位置为零、旧 float 副本非零时回退到旧副本——而拼完最后一个叶子时旧副本还是上一次的值，结果位置变回原值。这条回退只对按名字查找的读取器有意义（旧数据里根本没有 `m_LocalPositionD` 字段），按位置读的 StreamedBinaryRead 拿到的总是写入器成对写出的两份，现在只在前者上回退。

@@ -685,8 +685,10 @@ toolchain mismatch reappears.
    `CMAKE_MSVC_RUNTIME_LIBRARY="MultiThreaded"` (plain `/MT`, no Debug
    variant) when `PAPI_TYPE=v8` on Windows, AND
    `engine/3rdparty/CMakeLists.txt` flips
-   `USE_MSVC_RUNTIME_LIBRARY_DLL=OFF` (GLFW), `CURL_STATIC_CRT=ON`
-   (cURL), and uses /MT Jolt knobs in the same condition. Both branches
+   `CURL_STATIC_CRT=ON` (cURL) and uses /MT Jolt knobs in the same
+   condition. (It used to flip GLFW's `USE_MSVC_RUNTIME_LIBRARY_DLL`
+   too; GLFW is gone -- native Win32/Cocoa window layer -- and that
+   knob was removed 2026-10-25.) Both branches
    of the gate use FORCE-cache so flipping `PAPI_TYPE` between v8 and
    quickjs in an existing `build/` tree resets cleanly. Stock `Debug`
    config is rejected (`wee8.lib` ships only `MT_StaticRelease`, no
@@ -1077,10 +1079,11 @@ window and not yet on disk.
 the OS file manager (Windows Explorer / Finder / Linux file manager) onto
 the editor window auto-imports it via the same code path as the right-click
 "Import…" entry. Wiring is single-direction and minimal:
-`WindowSystem` already calls `glfwSetDropCallback(...)` and forwards into
-the existing `registerOnDropFunc` listener vector; `ZSlateContentBrowserWindow`'s ctor
-subscribes one listener that copies the GLFW path strings (which are only
-valid for the duration of the callback per GLFW docs) into a
+the platform window turns `WM_DROPFILES` into `GenericWindow::OnDrop`
+(`WindowsWindow.cpp`; originally `glfwSetDropCallback`), `WindowSystem`
+forwards that into the existing `registerOnDropFunc` listener vector;
+`ZSlateContentBrowserWindow`'s ctor subscribes one listener that copies the
+path strings (only valid for the duration of the callback) into a
 mutex-guarded queue, and `executePendingOsDropImports()` drains the queue
 at the tail of `onGUI()` -- right after `executePendingDelete` /
 `executePendingPrefabCreate`, so we inherit the same UAF-avoidance
@@ -1132,7 +1135,7 @@ The cross-platform `FileSystemWatcher` infrastructure
 `Shaders/` (`m_shaders_watcher`), and `Intermediate/Scripts/`
 (`m_js_watcher`); PR-AI3 added no new watcher modules. The trigger
 model is **focus-driven, Unity-style** (not UE-style realtime
-`FContentDirectoryMonitor`): on GLFW window-focus-gained, the editor
+`FContentDirectoryMonitor`): on main-window focus-gained (`WM_SETFOCUS` -> `OnWindowFocus`), the editor
 walks a `(.zasset → source_abs_path, source_mtime_ns)` registry, stats
 each source, and enqueues changed entries into a throttled drain
 (`kReimportsPerFrame = 10`) running inside `EditorAssetManager::TickWatcher`.
@@ -1281,7 +1284,7 @@ shadow maps. Full design: **`doc/rendering/MEGALIGHTS_DESIGN.md`**.
 
 Symptom: dock panels squashed, large black regions, Game/Scene hints truncated
 (`Press Left Alt...` cut off). Usually stale `<Project>/saved/config/imgui.ini`
-or GLFW window size != ImGui `DisplaySize` after resize / DPI change.
+or platform window size != ImGui `DisplaySize` after resize / DPI change.
 
 **User recovery**: `Window` menu -> `Layouts` -> **Reset All Layouts** (or pick
 `Default`). Restart editor if needed.
@@ -2345,8 +2348,15 @@ downstream reads it.
   与参考 spine-cpp 的 CPU 蒙皮路径逐段比（anim / pose / geo / upload / CPU 顶点）。`--split` 把 anim
   再拆成 Update / Apply 并报每帧时间轴条数（两边同一切法）⇒ 定位"慢在哪半边"先加它。最新版本数字与
   逐类型分解见规格 `doc/GPU_SPINE_INTERCHANGE_FORMAT.md` §17 / §17.2。
-  ⚠️ anim 至今比参考慢 ~1.4x：**不是一处加多了，是摊在每条时间轴上的 ~11 ns**，其中 deform 占 40%
-  （容器只存增量 ⇒ 展开落在运行时，参考是加载期摊稠密的）。想动它先看 §17.2 那张实测表。
+  ⚠️ anim 至今比参考慢 ~1.4x，**根源就一件事：deform**（两侧同时消融实测占差距 **100.2%**；
+  容器内只存增量 ⇒ 每 float 约 13 次访存，参考加载期已摊稠密、约 3 次）。其余类型净贡献 ≈ 0。
+  想动它先看 §17.4 那张"贡献"表和四个方案（**P1 融合快路径已做并实测否决：访存 8.01 → 3.18
+  次/float 却慢 1.7~3.5%，见 §17.5**；P4 载入期稠密化实测要 96 MB，不划算）。
+  §17.2 那张表是**单侧**消融，只能说明"deform 最贵"，说不出它占差距多少。
+  ⚠️ **deform 的逐元素循环必须带 `__restrict`**（`ExpandDeformFrame` 的 setup 累加、
+  `ApplyDeform` 主路径的插值循环）：这几块 `float*` 互不相交但编译器证明不了，
+  不写这句 MSVC 不向量化 ⇒ 实测差 3.0~4.7%（anim 0.70x → 0.82x）。
+  **这条适用于全工程**：两块指针参与的逐元素循环，先想 restrict。
   ⚠️ **低于 ~2% 的效果只有"同一份二进制 + 环境变量开关 + 交错跑"才量得出来**：绝对值漂 50%，
   两边一起漂；跨会话拿数字对比（甚至改前改后各跑 3 次）都是噪声。消融估的值偏大 ~2 倍
   （rigid setup memcpy 估 0.20 µs/帧、交错 A/B 实测 ~1%）⇒ 消融只用来找"有没有"，定收益要交错跑。

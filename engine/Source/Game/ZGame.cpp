@@ -17,6 +17,7 @@
 
 #include "Runtime/AssetBundle/AssetBundleManager.h"
 #include "Runtime/Core/Base/CrashHandler.h"
+#include "Runtime/Function/Console/ConsoleManager.h"
 #include "Runtime/Function/Framework/GameFramework/GameEngine.h"
 #include "Runtime/Platform/Encoding/EncodingUtils.h"
 #include "Runtime/Project/ProjectInfo.h"
@@ -30,7 +31,21 @@ namespace
         bool has_project_argument {false};
         std::string level_override;
         PreferredRHI preferred_rhi {PreferredRHI::Default};
+        // `--cvar-file <path|none>`: startup cvar file override (see
+        // ConsoleManager::ResolveStartupVariablesFile); wins over ZENGINE_CVAR_FILE.
+        std::string cvar_file;
+        bool has_cvar_file {false};
     };
+
+    /// Startup cvar file (<project>/Config/ConsoleVariables.ini by default), applied
+    /// once every system is up so all cvars are registered.
+    void ApplyStartupConsoleVariables(const LaunchOptions& options)
+    {
+        if (ConsoleManager* console = GET_SYSTEM(ConsoleManager))
+        {
+            console->LoadStartupVariables(options.has_cvar_file ? options.cvar_file.c_str() : nullptr);
+        }
+    }
 
 #ifdef _WIN32
     // EncodingUtils exposes GBK->UTF-8 but nothing for wide argv. CommandSystem
@@ -84,6 +99,13 @@ namespace
                 ++i;
                 continue;
             }
+            if (arg == L"--cvar-file" && i + 1 < argc)
+            {
+                options.cvar_file = WideToUtf8(argv[i + 1]);
+                options.has_cvar_file = true;
+                ++i;
+                continue;
+            }
             if (arg == L"--rhi" && i + 1 < argc)
             {
                 const std::wstring_view value(argv[i + 1]);
@@ -120,6 +142,13 @@ namespace
             if ((arg == "--level" || arg == "-l") && i + 1 < argc)
             {
                 options.level_override = argv[i + 1];
+                ++i;
+                continue;
+            }
+            if (arg == "--cvar-file" && i + 1 < argc)
+            {
+                options.cvar_file = argv[i + 1];
+                options.has_cvar_file = true;
                 ++i;
                 continue;
             }
@@ -257,6 +286,7 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int)
     // 游戏层：Runtime 全部系统 + GameEngine（后者会接管关卡里的角色）。
     RegisterGameRuntime(options.preferred_rhi);
     START_SYSTEM();
+    ApplyStartupConsoleVariables(options);
 
     // Packaged content has to be mounted before anything opens an asset.
     MountPackagedContent();
@@ -287,6 +317,14 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int)
 #else
 int main(int argc, char** argv)
 {
+    // 崩溃捕获（#2）：非 Windows 过去是 no-op，POSIX main() 根本没装任何处理器。
+    // 与 WinMain 分支保持一致：优先用构建注入的版本宏，其次退回 CMake 版本。
+#ifdef ZENGINE_PRODUCT_VERSION
+    InstallCrashHandler(ZENGINE_PRODUCT_VERSION);
+#else
+    InstallCrashHandler("0.1.0");
+#endif
+
     Encoding::InitializeUtf8Locale();
 
     const LaunchOptions options = ParseCommandLine(argc, argv);
@@ -316,6 +354,7 @@ int main(int argc, char** argv)
 
     RegisterGameRuntime(options.preferred_rhi);
     START_SYSTEM();
+    ApplyStartupConsoleVariables(options);
 
     // Packaged content has to be mounted before anything opens an asset.
     MountPackagedContent();

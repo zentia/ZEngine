@@ -1,5 +1,6 @@
 #include "LumenDistanceField.h"
 
+#include "LumenSettings.h"
 #include "Runtime/Core/Base/Macro.h"
 #include "Runtime/Function/Render/Interface/RHI.h"
 #include "Runtime/Function/Render/RenderHelper.h"
@@ -9,7 +10,9 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <thread>
 #include <unordered_map>
+#include <vector>
 
 LumenDistanceField::LumenDistanceField() {}
 
@@ -446,6 +449,43 @@ bool LumenDistanceField::BuildHierarchicalDistanceField()
     return true;
 }
 
+float LumenDistanceField::ComputeVoxelDistance(const LumenDistanceField& df,
+                                               const SceneGeometryCache& cache,
+                                               const std::vector<Matrix4x4>& world_to_local,
+                                               const AxisAlignedBox& bounds,
+                                               const Vector3& voxel_size,
+                                               uint32_t resolution_x,
+                                               uint32_t resolution_y,
+                                               uint32_t z,
+                                               uint32_t y,
+                                               uint32_t x)
+{
+    // 计算体素中心的世界空间位置
+    const Vector3 voxel_center =
+        bounds.getMinCorner() + Vector3((static_cast<float>(x) + 0.5f) * voxel_size.x,
+                                        (static_cast<float>(y) + 0.5f) * voxel_size.y,
+                                        (static_cast<float>(z) + 0.5f) * voxel_size.z);
+
+    // 计算到最近表面的距离
+    float min_distance = std::numeric_limits<float>::max();
+    const size_t instance_count = cache.GetInstanceCount();
+    for (size_t instance_index = 0; instance_index < instance_count; ++instance_index)
+    {
+        // 世界空间 AABB 下界剪枝：点到盒子的距离 <= 到盒内任意三角形的距离，已经比
+        // 当前最小值还远的实例整块跳过。没有这一步体素化就是 O(体素数 × 全部三角面数)。
+        const float lower_bound = DistancePointToAxisAlignedBox(voxel_center, cache.bounds[instance_index]);
+        if (lower_bound >= min_distance)
+        {
+            continue;
+        }
+
+        const float distance = df.DistanceToMesh(voxel_center, cache.ranges[instance_index],
+                                                 world_to_local[instance_index]);
+        min_distance = std::min(min_distance, distance);
+    }
+    return min_distance;
+}
+
 void LumenDistanceField::GenerateDistanceFieldVoxels(const AxisAlignedBox& bounds,
                                                      uint32_t resolution_x,
                                                      uint32_t resolution_y,
@@ -461,10 +501,10 @@ void LumenDistanceField::GenerateDistanceFieldVoxels(const AxisAlignedBox& bound
         return;
     }
 
-    Vector3 bounds_size = bounds.getMaxCorner() - bounds.getMinCorner();
-    Vector3 voxel_size = Vector3(bounds_size.x / static_cast<float>(resolution_x),
-                                 bounds_size.y / static_cast<float>(resolution_y),
-                                 bounds_size.z / static_cast<float>(resolution_z));
+    const Vector3 bounds_size = bounds.getMaxCorner() - bounds.getMinCorner();
+    const Vector3 voxel_size(bounds_size.x / static_cast<float>(resolution_x),
+                             bounds_size.y / static_cast<float>(resolution_y),
+                             bounds_size.z / static_cast<float>(resolution_z));
 
     const size_t instance_count = m_SceneGeometryCache.GetInstanceCount();
 
@@ -476,46 +516,77 @@ void LumenDistanceField::GenerateDistanceFieldVoxels(const AxisAlignedBox& bound
         world_to_local[i] = m_SceneGeometryCache.transforms[i].inverse();
     }
 
-    // 并行计算每个体素的距离值
-    // TODO: 可以使用多线程加速
-    for (uint32_t z = 0; z < resolution_z; ++z)
+    // 决定用几个 worker。0 = 自动取硬件并发数；1 = 强制串行（A/B 对照与 headless
+    // 确定性）。体素循环写的是互不相交的区间、只读不变的几何，跨 Z 切片并行安全。
+    uint32_t worker_count = LumenSettings::GetDistanceFieldWorkers();
+    if (worker_count == 0)
     {
-        for (uint32_t y = 0; y < resolution_y; ++y)
+        worker_count = std::max(1u, std::thread::hardware_concurrency());
+    }
+    // 一个 Z 切片的工作量太小（SkyDome 这种小网格也就一层），拆给多线程的调度开销
+    // 反而盖过收益。切片数至少要和 worker 数一样多才有意义。
+    const uint32_t parallel_slices = std::min({resolution_z, worker_count, static_cast<uint32_t>(16)});
+
+    if (parallel_slices <= 1)
+    {
+        for (uint32_t z = 0; z < resolution_z; ++z)
         {
-            for (uint32_t x = 0; x < resolution_x; ++x)
+            for (uint32_t y = 0; y < resolution_y; ++y)
             {
-                // 计算体素中心的世界空间位置
-                Vector3 voxel_center = bounds.getMinCorner() + Vector3((static_cast<float>(x) + 0.5f) * voxel_size.x,
-                                                                       (static_cast<float>(y) + 0.5f) * voxel_size.y,
-                                                                       (static_cast<float>(z) + 0.5f) * voxel_size.z);
-
-                // 计算到最近表面的距离
-                float min_distance = std::numeric_limits<float>::max();
-
-                // 遍历所有实例
-                for (size_t instance_index = 0; instance_index < instance_count; ++instance_index)
+                for (uint32_t x = 0; x < resolution_x; ++x)
                 {
-                    // 先拿世界空间 AABB 做一次下界剪枝：点到盒子的距离 <= 到盒内任意
-                    // 三角形的距离，所以已经比当前最小值还远的实例可以整块跳过。
-                    // 没有这一步的话体素化在大场景里是 O(体素数 × 全部三角面数)。
-                    const float lower_bound =
-                        DistancePointToAxisAlignedBox(voxel_center, m_SceneGeometryCache.bounds[instance_index]);
-                    if (lower_bound >= min_distance)
-                    {
-                        continue;
-                    }
-
-                    const float distance = DistanceToMesh(voxel_center,
-                                                          m_SceneGeometryCache.ranges[instance_index],
-                                                          world_to_local[instance_index]);
-                    min_distance = std::min(min_distance, distance);
+                    out_distance_data[z * resolution_x * resolution_y + y * resolution_x + x] = ComputeVoxelDistance(
+                        *this, m_SceneGeometryCache, world_to_local, bounds, voxel_size,
+                        resolution_x, resolution_y, z, y, x);
                 }
-
-                // 存储距离值
-                uint32_t index = z * resolution_x * resolution_y + y * resolution_x + x;
-                out_distance_data[index] = min_distance;
             }
         }
+        return;
+    }
+
+    // 按 Z 切片均分给各 worker：每个 worker 独占一段连续的 z 区间，写入
+    // out_distance_data 里互不相交的块，只读 m_SceneGeometryCache / world_to_local
+    // （体素化期间都不改动），因此不需要任何锁。
+    const auto work_range = [&](uint32_t z_begin, uint32_t z_end) {
+        for (uint32_t z = z_begin; z < z_end; ++z)
+        {
+            for (uint32_t y = 0; y < resolution_y; ++y)
+            {
+                for (uint32_t x = 0; x < resolution_x; ++x)
+                {
+                    out_distance_data[z * resolution_x * resolution_y + y * resolution_x + x] = ComputeVoxelDistance(
+                        *this, m_SceneGeometryCache, world_to_local, bounds, voxel_size,
+                        resolution_x, resolution_y, z, y, x);
+                }
+            }
+        }
+    };
+
+    std::vector<std::thread> workers;
+    workers.reserve(parallel_slices - 1);
+    const uint32_t slice_base = resolution_z / parallel_slices;
+    uint32_t z_begin = 0;
+    for (uint32_t w = 0; w < parallel_slices; ++w)
+    {
+        // 最后一个 worker 吃掉余数，避免整除丢切片。
+        const uint32_t z_end = (w + 1 == parallel_slices) ? resolution_z : z_begin + slice_base;
+        if (z_end <= z_begin)
+        {
+            continue;
+        }
+        if (w + 1 < parallel_slices)
+        {
+            workers.emplace_back(work_range, z_begin, z_end);
+        }
+        else
+        {
+            work_range(z_begin, z_end);  // 主线程认领最后一段，省一次线程唤醒
+        }
+        z_begin = z_end;
+    }
+    for (std::thread& worker : workers)
+    {
+        worker.join();
     }
 }
 

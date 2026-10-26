@@ -36,6 +36,7 @@
 #include "Runtime/Function/Render/Nanite/NaniteCluster.h"
 #include "Runtime/Function/Render/Nanite/NaniteTypes.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -469,6 +470,223 @@ int main()
 
         manager.clear();
         Check(manager.GetCluster(mesh_id, 0) == nullptr, "clear() empties the manager");
+    }
+
+    // ---------------------------------------------------------------------
+    // Streaming (UpdateStreaming): distance-based leaf residency.
+    //
+    // UpdateStreaming used to be a `TODO` that cleared the queue and did nothing.
+    // Now it marks leaves resident/unresident by camera-to-cluster distance and
+    // keeps internal nodes resident (they are never drawn but the hierarchy must
+    // stay queryable). The flags are a policy/visibility gate, NOT physical
+    // memory回收 -- all clusters share one depth-first byte stream, so a middle
+    // cluster cannot be freed without breaking neighbour offsets. That is an
+    // honest limit, not a convenience: a real page pool is a step-2.5 follow-up.
+    // ---------------------------------------------------------------------
+    {
+        NaniteClusterManager manager;
+        manager.Initialize(nullptr, NaniteConfig());
+        const uint64_t mesh_id = 99;
+        Check(manager.RegisterMeshResource(mesh_id, mesh), "streaming: mesh registers");
+
+        // Count leaves/internal nodes and collect leaf bounds-center distances from
+        // the origin, so we can pick a camera that actually splits the leaves.
+        uint32_t leaf_count = 0;
+        uint32_t internal_count = 0;
+        std::vector<float> leaf_dists;
+        for (uint32_t i = 0; i < mesh.clusters.size(); ++i)
+        {
+            if (mesh.clusters[i].is_leaf)
+            {
+                ++leaf_count;
+                leaf_dists.push_back(mesh.clusters[i].bounds.getCenter().length());
+            }
+            else
+            {
+                ++internal_count;
+            }
+        }
+        Check(leaf_count > 0 && internal_count > 0, "streaming: the grid has both leaves and internal nodes");
+        std::sort(leaf_dists.begin(), leaf_dists.end());
+
+        auto count_loaded = [&](uint64_t id, bool leaves_only) {
+            uint32_t loaded = 0;
+            for (uint32_t i = 0; i < mesh.clusters.size(); ++i)
+            {
+                if (leaves_only && !mesh.clusters[i].is_leaf)
+                {
+                    continue;
+                }
+                if (manager.IsClusterLoaded(id, i))
+                {
+                    ++loaded;
+                }
+            }
+            return loaded;
+        };
+
+        // (1) Registration residents everything (UpdateStreaming not called yet).
+        Check(count_loaded(mesh_id, true) == leaf_count,
+              "streaming: a freshly registered mesh has all leaves resident");
+        Check(count_loaded(mesh_id, false) == leaf_count + internal_count,
+              "streaming: internal nodes are resident too (structure stays queryable)");
+
+        // (2) Huge streaming distance => every leaf resident.
+        manager.UpdateStreaming(Vector3(0.0f, 0.0f, 0.0f), 1e9f);
+        Check(count_loaded(mesh_id, true) == leaf_count,
+              "streaming: every leaf is resident when the streaming distance is huge");
+
+        // (3) Camera beyond the streaming distance => no leaf resident, but internal
+        // nodes survive (they are never culled by streaming).
+        manager.UpdateStreaming(Vector3(1e6f, 0.0f, 0.0f), 0.0f);
+        Check(count_loaded(mesh_id, true) == 0,
+              "streaming: no leaf is resident when the camera is beyond the streaming distance");
+        Check(count_loaded(mesh_id, false) == internal_count,
+              "streaming: internal nodes survive streaming even when every leaf is culled");
+
+        // (4) A distance between the nearest and the median leaf => genuine partial
+        // residency (proves the distance gradient sorts leaves, not a blob flip).
+        const float split = leaf_dists[leaf_dists.size() / 2];
+        manager.UpdateStreaming(Vector3(0.0f, 0.0f, 0.0f), split);
+        const uint32_t partial = count_loaded(mesh_id, true);
+        Check(partial > 0 && partial < leaf_count,
+              "streaming: a mid-range distance yields partial leaf residency (some loaded, some culled)");
+
+        // (5) enable_streaming == false keeps everything resident at any distance.
+        NaniteConfig no_stream = NaniteConfig();
+        no_stream.enable_streaming = false;
+        NaniteClusterManager manager2;
+        manager2.Initialize(nullptr, no_stream);
+        Check(manager2.RegisterMeshResource(mesh_id, mesh), "streaming: re-register under enable_streaming=false");
+        manager2.UpdateStreaming(Vector3(1e6f, 0.0f, 0.0f), 0.0f);
+        {
+            uint32_t loaded = 0;
+            for (uint32_t i = 0; i < mesh.clusters.size(); ++i)
+            {
+                if (manager2.IsClusterLoaded(mesh_id, i))
+                {
+                    ++loaded;
+                }
+            }
+            Check(loaded == leaf_count + internal_count,
+                  "streaming: enable_streaming=false keeps every cluster resident at any distance");
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // Quantized geometry codec: bounded-lossy round-trip + real size reduction.
+    //
+    // The codec (GeometryCodec::Quantized, version zengine-nanite-geom/1) stores
+    // positions as AABB-linear int16 and indices as uint16. Arbitrary 32-bit
+    // floats cannot be losslessly packed, so this is deliberately lossy: the
+    // documented contract is |decoded - original| <= quant_scale/2 per component.
+    // We assert that bound, and that the byte segments are actually smaller.
+    // ---------------------------------------------------------------------
+    {
+        NaniteConfig qcfg = NaniteConfig();
+        qcfg.geometry_codec = GeometryCodec::Quantized;
+
+        NaniteMeshResource qmesh;
+        NaniteClusterBuilder qbuilder;
+        const bool qok = qbuilder.BuildClustersFromMesh(
+            grid.positions, std::vector<Vector3>(), std::vector<Vector2>(), grid.indices, qmesh, qcfg);
+
+        Check(qok, "Quantized: BuildClustersFromMesh succeeds");
+        Check(qmesh.geometry_codec == GeometryCodec::Quantized, "Quantized: codec tag is set on the resource");
+        Check(qmesh.total_vertex_count == grid_triangles * 3,
+              "Quantized: vertex count is unchanged by the codec");
+        Check(qmesh.total_triangle_count == grid_triangles,
+              "Quantized: triangle count is unchanged by the codec");
+
+        // Hierarchy/bounds/error are computed from full-precision positions BEFORE
+        // quantization, so they must match the Raw build exactly.
+        Check(qmesh.clusters.size() == mesh.clusters.size(),
+              "Quantized: same cluster count as Raw (hierarchy untouched)");
+        Check(qmesh.total_cluster_count == mesh.total_cluster_count,
+              "Quantized: total_cluster_count matches Raw");
+
+        // Every decoded position round-trips to the Raw build's own emitted vertex at
+        // the same index. RecursiveClusterSplit emits vertices in spatial (depth-first)
+        // order, NOT in grid.indices order -- so the correct full-precision oracle is
+        // ReadVertex(mesh, i) (the Raw build, identical deterministic emit order), not
+        // grid.positions[grid.indices[i]]. The asserted contract is |decoded - raw| <=
+        // quant_scale/2 per component.
+        const Vector3 scale = qmesh.quant_scale;
+        const float eps = 1e-4f;  // tight float tolerance on top of the quantization bound
+        bool within_bound = true;
+        float max_err = 0.0f;
+        uint32_t worst_i = 0;
+        Vector3 worst_decoded, worst_orig;
+        for (uint32_t i = 0; i < qmesh.total_vertex_count; ++i)
+        {
+            const Vector3 decoded = NaniteDecodeVertex(qmesh, i);
+            const Vector3 orig = ReadVertex(mesh, i);  // Raw build's emitted vertex i (full precision)
+            const float ex = std::fabs(decoded.x - orig.x);
+            const float ey = std::fabs(decoded.y - orig.y);
+            const float ez = std::fabs(decoded.z - orig.z);
+            const float bound = std::max({scale.x, scale.y, scale.z}) * 0.5f + eps;
+            if (ex > bound || ey > bound || ez > bound)
+            {
+                within_bound = false;
+            }
+            if (std::max({ex, ey, ez}) > max_err)
+            {
+                max_err = std::max({ex, ey, ez});
+                worst_i = i;
+                worst_decoded = decoded;
+                worst_orig = orig;
+            }
+        }
+        if (!within_bound)
+        {
+            std::printf("    [diag] worst vertex %u: decoded(%.4f,%.4f,%.4f) raw(%.4f,%.4f,%.4f) "
+                        "scale(%.6f,%.6f,%.6f) qmin(%.4f,%.4f,%.4f)\n",
+                        worst_i, worst_decoded.x, worst_decoded.y, worst_decoded.z,
+                        worst_orig.x, worst_orig.y, worst_orig.z,
+                        scale.x, scale.y, scale.z,
+                        qmesh.quant_min.x, qmesh.quant_min.y, qmesh.quant_min.z);
+        }
+        Check(within_bound, "Quantized: every decoded position round-trips to the Raw vertex within quant_scale/2");
+
+        // The 24-byte header (quant_min + quant_scale) is present and decodes the
+        // AABB corners back to the original extents (within the bound).
+        Check(qmesh.vertex_data.size() >= 2 * sizeof(Vector3), "Quantized: vertex_data carries the 24B decode header");
+        // A zero scale component means that axis is flat (e.g. a grid on the XZ plane
+        // has Y extent 0) -- the codec stores it as a constant and decodes it exactly.
+        // The invariant is: scales are non-negative, and at least one axis is nonzero
+        // (the mesh itself is non-degenerate).
+        Check(qmesh.quant_scale.x >= 0.0f && qmesh.quant_scale.y >= 0.0f && qmesh.quant_scale.z >= 0.0f,
+              "Quantized: quant_scale components are non-negative (flat axes are exactly 0)");
+        Check(qmesh.quant_scale.x + qmesh.quant_scale.y + qmesh.quant_scale.z > 0.0f,
+              "Quantized: at least one axis has nonzero extent (mesh is non-degenerate)");
+
+        // Indices decode back to the sequential 0..n-1 window the Raw path emits.
+        bool idx_ok = true;
+        for (uint32_t i = 0; i < qmesh.total_triangle_count * 3; ++i)
+        {
+            if (NaniteDecodeIndex(qmesh, i) != i)
+            {
+                idx_ok = false;
+                break;
+            }
+        }
+        Check(idx_ok, "Quantized: indices decode to the sequential 0..n-1 window");
+
+        // The point of compression: the byte segments are materially smaller.
+        // Raw: 12B/vertex + 4B/index. Quantized: 6B/vertex (+24B header) + 2B/index.
+        const size_t raw_verts_bytes = static_cast<size_t>(qmesh.total_vertex_count) * sizeof(Vector3);
+        const size_t raw_idx_bytes = static_cast<size_t>(qmesh.total_triangle_count) * 3 * sizeof(uint32_t);
+        const size_t q_verts_bytes = qmesh.vertex_data.size();   // includes 24B header
+        const size_t q_idx_bytes = qmesh.index_data.size();
+        Check(q_verts_bytes < raw_verts_bytes,
+              "Quantized: vertex_data is smaller than Raw (6B/vertex vs 12B, amortizes the 24B header)");
+        Check(q_idx_bytes < raw_idx_bytes,
+              "Quantized: index_data is smaller than Raw (2B/index vs 4B)");
+
+        std::printf("    [info] Quantized max position error: %.6f (bound ~%.6f)\n",
+                    max_err, std::max({scale.x, scale.y, scale.z}) * 0.5f);
+        std::printf("    [info] Quantized bytes: verts %zu->%zu, idx %zu->%zu\n",
+                    raw_verts_bytes, q_verts_bytes, raw_idx_bytes, q_idx_bytes);
     }
 
     std::printf("\n%d checks, %d failures\n", g_Checks, g_Failures);

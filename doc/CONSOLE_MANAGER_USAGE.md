@@ -359,12 +359,51 @@ public:
 | 命令历史 | ✅ | ✅ |
 | 自动补全 | ✅ | ✅ |
 | 帮助系统 | ✅ | ✅ |
-| 配置文件支持 | ✅ | ⚠️ (计划中) |
+| 配置文件支持 | ✅ | ✅（`cvar.save` / `cvar.load`，2026-10-25） |
 | 网络同步 | ✅ | ❌ |
+
+## CVar 配置文件（2026-10-25）
+
+UE `ConsoleVariables.ini` 风格的纯文本：每行 `name=value`。
+
+```
+cvar.save Saved/ConsoleVariables.ini     # 写出所有变量（按名字排序，首行是 ; 注释）
+cvar.load Saved/ConsoleVariables.ini     # 逐行应用
+```
+
+- 读取时忽略空行、`#` / `;` 注释行和 `[Section]` 行（可直接读 UE 带 `[Startup]` 的文件）；名字不区分大小写；
+  `=` 两侧与值两端的空白去掉；成对的双引号去掉。CRLF 文件可读。
+- 未知变量、非法值、缺 `=` 的行各记一条警告并跳过，**后面的行照常应用**；`LoadVariablesFromFile` 返回成功条数
+  （打不开文件返回 -1），可选输出失败行原文。
+- `SaveVariablesToFile(path, &snapshot)` 只写与快照（`SnapshotVariableValues()`）不同的变量，用来存“用户改过的值”。
+- 写出时会给两端带空白、或本身被引号包住的字符串值加引号，保证读回逐字一致；float 写成能精确读回的最短形式
+  （原 `std::to_string` 固定 6 位小数，`1e-7` 会存成 `0.000000`）。
+- 数值解析改为整串校验：`12abc`、超出 int 范围、空串都判为非法（原 `std::stoi` 会把 `12abc` 当成 12；web 构建关闭了
+  异常捕获，`stoi` 遇到非数字直接让进程 abort）。
+### 启动时自动加载（2026-10-26）
+
+编辑器（`Editor/Main/Main.cpp`）和 `ZGame` 在 `START_SYSTEM()` 之后、第一帧之前调用
+`ConsoleManager::LoadStartupVariables()`：
+
+| 来源（优先级从高到低） | 效果 |
+|---|---|
+| 命令行 `--cvar-file <path>` | 读这个文件；`none` / `off` / `0` 关闭 |
+| 环境变量 `ZENGINE_CVAR_FILE` | 同上 |
+| 默认 | `<项目根>/Config/ConsoleVariables.ini`（项目级，进版本库），再叠加 `<项目根>/Saved/Config/ConsoleVariables.ini`（用户级，`Saved/` 不进版本库，个人调试开关放这里）；后者覆盖前者。没有项目时项目根取当前目录 |
+
+- 文件不存在不算错误（只记一条 INFO），关闭时同样返回 0。
+- 之后再应用命令行的 `--cvar name=value`，所以**命令行覆盖文件**（UE 同序）。
+- 只在所有系统初始化完之后读，此时各模块的 CVar 都已注册；之后才注册的变量（例如某些面板首次打开时才注册）
+  不会被启动文件命中，会记 `unknown variable` 警告。
+
+- 测试：`Function/Console/Test/ConsoleVariablesFileSmokeTest.cpp`（62 项，C1-C8；C8 为启动文件 + 用户层），CMake 开关
+  `ZENGINE_BUILD_CONSOLE_VARIABLES_FILE_SMOKE_TEST`；无头运行 `python scripts/web_smoke_run.py <该文件>`。
 
 ## 未来改进
 
-- [ ] 配置文件支持（保存/加载CVar值）
+- [x] 配置文件支持（保存/加载CVar值）——见下方“CVar 配置文件”
+- [x] 启动时自动加载项目级 `Config/ConsoleVariables.ini`（2026-10-26，见上）
+- [x] 用户级覆盖文件 `Saved/Config/ConsoleVariables.ini`（2026-10-26；显式 `--cvar-file` 时只用那一个文件，不叠加）
 - [ ] 网络同步（多人游戏中同步CVar）
 - [ ] 命令权限系统（区分开发/发布命令）
 - [ ] 更强大的参数解析（支持命名参数等）

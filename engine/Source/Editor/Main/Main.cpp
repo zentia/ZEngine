@@ -221,19 +221,26 @@ namespace
     // voxelizer stalls a Debug editor for minutes on the first frames.
     std::vector<std::string> g_startup_cvars;
 
+    // `--cvar-file <path|none>`: overrides the startup cvar file
+    // (<project>/Config/ConsoleVariables.ini); `none` disables it. Wins over the
+    // ZENGINE_CVAR_FILE environment variable. Empty = not given.
+    std::string g_startup_cvar_file;
+    bool g_has_startup_cvar_file = false;
+
     void applyStartupConsoleVariables()
     {
-        if (g_startup_cvars.empty())
-        {
-            return;
-        }
         ConsoleManager* console = GET_SYSTEM(ConsoleManager);
         if (console == nullptr)
         {
-            LOG_ERROR(ZEditor, "--cvar: ConsoleManager is not running; {} startup cvar(s) ignored",
-                      g_startup_cvars.size());
+            if (!g_startup_cvars.empty())
+            {
+                LOG_ERROR(ZEditor, "--cvar: ConsoleManager is not running; {} startup cvar(s) ignored",
+                          g_startup_cvars.size());
+            }
             return;
         }
+        // File first, command line second: `--cvar` overrides the file (UE order).
+        console->LoadStartupVariables(g_has_startup_cvar_file ? g_startup_cvar_file.c_str() : nullptr);
         for (const std::string& assignment : g_startup_cvars)
         {
             // ExecuteString understands `name=value` (and plain console commands);
@@ -289,6 +296,13 @@ namespace
             if (arg == L"--cvar" && i + 1 < argc)
             {
                 g_startup_cvars.push_back(ZEditor::PathToUtf8(std::filesystem::path(argv[i + 1])));
+                ++i;
+                continue;
+            }
+            if (arg == L"--cvar-file" && i + 1 < argc)
+            {
+                g_startup_cvar_file = ZEditor::PathToUtf8(std::filesystem::path(argv[i + 1]));
+                g_has_startup_cvar_file = true;
                 ++i;
                 continue;
             }
@@ -457,6 +471,13 @@ namespace
             if (arg == "--cvar" && i + 1 < argc)
             {
                 g_startup_cvars.emplace_back(argv[i + 1]);
+                ++i;
+                continue;
+            }
+            if (arg == "--cvar-file" && i + 1 < argc)
+            {
+                g_startup_cvar_file = argv[i + 1];
+                g_has_startup_cvar_file = true;
                 ++i;
                 continue;
             }
@@ -764,6 +785,14 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 #else
 int main(int argc, char** argv)
 {
+    // 崩溃捕获（#2）：非 Windows 过去是 no-op，POSIX main() 根本没装任何处理器。
+    // 与 WinMain 分支保持一致：优先用构建注入的版本宏，其次退回 CMake 版本。
+#ifdef ZENGINE_PRODUCT_VERSION
+    InstallCrashHandler(ZENGINE_PRODUCT_VERSION);
+#else
+    InstallCrashHandler("0.1.0");
+#endif
+
     // Initialize UTF-8 locale to handle filesystem error messages properly
     Encoding::InitializeUtf8Locale();
 

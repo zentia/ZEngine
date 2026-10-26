@@ -10,16 +10,81 @@
 
 namespace
 {
-// 把几何写進资源的字节段。压缩仍是 TODO，所以现在存的就是未压缩的原始布局
-// （见 NaniteTypes.h 里 NaniteMeshResource 的注释）。
+// 把几何写進资源的字节段，按 config.geometry_codec 选择编码。
 //
-// **以前这两个字节段在函数开头被 clear 之后就再也没人写过** —— 于是
-// NaniteMeshResource 带着一堆集群元数据（offset/count 都算得挺对）却**零几何字节**，
-// 任何下游（GPU 上传、渲染批次、可见性统计）拿到的都是空。
+// 历史：这两个字节段曾在函数开头被 clear 之后再也不写 —— NaniteMeshResource 带着一堆
+// 集群元数据（offset/count 都算得挺对）却**零几何字节**。现已修好。
+//
+// 编码格式见 NaniteTypes.h 的 GeometryCodec（version: zengine-nanite-geom/1）：
+//   Raw       —— 未压缩的 Vector3(12B) + uint32(4B)，保持既有字节契约。
+//   Quantized —— 有界有损量化：AABB 线性映射到 int16 位置(6B) + uint16 索引(2B)。
+//
+// 注意：量化是**有损**的（任意 32-bit float 无法无损压进更少比特）。解码位置 ≈
+// quant_min + q * quant_scale，每分量误差 ≤ quant_scale/2。层次/边界/误差都在量化
+// 之前用全精度算好，不受影响。
 void AppendGeometryBytes(const std::vector<Vector3>& positions,
                          const std::vector<uint32_t>& indices,
-                         NaniteMeshResource& out_mesh_resource)
+                         NaniteMeshResource& out_mesh_resource,
+                         const NaniteConfig& config)
 {
+    out_mesh_resource.geometry_codec = config.geometry_codec;
+
+    if (config.geometry_codec == GeometryCodec::Quantized)
+    {
+        // 量化范围用全精度全局 AABB。留一点余量避免浮点舍入把端点顶出 int16 范围。
+        const Vector3& bb_min = out_mesh_resource.global_bounds.getMinCorner();
+        const Vector3& bb_max = out_mesh_resource.global_bounds.getMaxCorner();
+        const Vector3 range = bb_max - bb_min;
+        // 6 字节/顶点（3×int16）能表示 65536 级；用 32767 作分母给符号位留对称空间。
+        const float kQuantScaleDenom = 32767.0f;
+        out_mesh_resource.quant_min = bb_min;
+        out_mesh_resource.quant_scale = Vector3(
+            range.x / kQuantScaleDenom,
+            range.y / kQuantScaleDenom,
+            range.z / kQuantScaleDenom);
+
+        // 头 24 字节：quant_min(12B) + quant_scale(12B)，供解码方读取。
+        const size_t header_bytes = 2 * sizeof(Vector3);
+        out_mesh_resource.vertex_data.resize(header_bytes + positions.size() * 3 * sizeof(int16_t));
+        std::memcpy(out_mesh_resource.vertex_data.data(), &out_mesh_resource.quant_min, sizeof(Vector3));
+        std::memcpy(out_mesh_resource.vertex_data.data() + sizeof(Vector3),
+                    &out_mesh_resource.quant_scale, sizeof(Vector3));
+
+        int16_t* quant = reinterpret_cast<int16_t*>(out_mesh_resource.vertex_data.data() + header_bytes);
+        for (size_t i = 0; i < positions.size(); ++i)
+        {
+            for (int c = 0; c < 3; ++c)
+            {
+                // 退化轴（range==0，例如平铺在 XZ 平面上的网格 Y 分量恒为 0）：
+                // 不能除以 0。这类轴上所有顶点坐标都等于 bb_min，量化成 0，解码时
+                // 直接还原为 bb_min —— 精确、无误差。
+                if (out_mesh_resource.quant_scale[c] == 0.0f)
+                {
+                    quant[i * 3 + c] = 0;
+                    continue;
+                }
+                const float f = (&positions[i].x)[c];
+                // 四舍五入到最近的量化级（不是截断）—— 截断的误差可达 scale，四舍五入
+                // 把误差压到 scale/2，即下面的契约上界。
+                const float q = std::round((f - bb_min[c]) / out_mesh_resource.quant_scale[c]);
+                // clamp 到 int16 对称范围，防止 AABB 端点因舍入越界。
+                quant[i * 3 + c] = static_cast<int16_t>(std::clamp(q, -32768.0f, 32767.0f));
+            }
+        }
+
+        // 索引：集群顶点数远小于 65536，16-bit 足够（越界会在下方校验被拒）。
+        out_mesh_resource.index_data.resize(indices.size() * sizeof(uint16_t));
+        uint16_t* idx16 = reinterpret_cast<uint16_t*>(out_mesh_resource.index_data.data());
+        for (size_t i = 0; i < indices.size(); ++i)
+        {
+            idx16[i] = static_cast<uint16_t>(indices[i]);
+        }
+        return;
+    }
+
+    // Raw：未压缩的原始布局。
+    out_mesh_resource.quant_min = Vector3(0.0f, 0.0f, 0.0f);
+    out_mesh_resource.quant_scale = Vector3(0.0f, 0.0f, 0.0f);
     out_mesh_resource.vertex_data.resize(positions.size() * sizeof(Vector3));
     if (!positions.empty())
     {
@@ -33,6 +98,49 @@ void AppendGeometryBytes(const std::vector<Vector3>& positions,
     }
 }
 }  // namespace
+
+// ==================== 几何解码（屏蔽 codec 细节） ====================
+
+Vector3 NaniteDecodeVertex(const NaniteMeshResource& mesh, uint32_t index)
+{
+    if (mesh.geometry_codec == GeometryCodec::Quantized)
+    {
+        const size_t header_bytes = 2 * sizeof(Vector3);
+        const int16_t* quant =
+            reinterpret_cast<const int16_t*>(mesh.vertex_data.data() + header_bytes);
+        Vector3 v;
+        for (int c = 0; c < 3; ++c)
+        {
+            v[c] = mesh.quant_min[c] + static_cast<float>(quant[index * 3 + c]) * mesh.quant_scale[c];
+        }
+        return v;
+    }
+
+    Vector3 value(0.0f, 0.0f, 0.0f);
+    const size_t offset = static_cast<size_t>(index) * sizeof(Vector3);
+    if (offset + sizeof(Vector3) <= mesh.vertex_data.size())
+    {
+        std::memcpy(&value, mesh.vertex_data.data() + offset, sizeof(Vector3));
+    }
+    return value;
+}
+
+uint32_t NaniteDecodeIndex(const NaniteMeshResource& mesh, uint32_t index)
+{
+    if (mesh.geometry_codec == GeometryCodec::Quantized)
+    {
+        const uint16_t* idx16 = reinterpret_cast<const uint16_t*>(mesh.index_data.data());
+        return static_cast<uint32_t>(idx16[index]);
+    }
+
+    uint32_t value = 0;
+    const size_t offset = static_cast<size_t>(index) * sizeof(uint32_t);
+    if (offset + sizeof(uint32_t) <= mesh.index_data.size())
+    {
+        std::memcpy(&value, mesh.index_data.data() + offset, sizeof(uint32_t));
+    }
+    return value;
+}
 
 // ==================== NaniteClusterBuilder ====================
 
@@ -108,9 +216,8 @@ bool NaniteClusterBuilder::BuildClustersFromMesh(const std::vector<Vector3>& pos
     out_mesh_resource.total_triangle_count = static_cast<uint32_t>(cluster_indices.size() / 3);
     out_mesh_resource.total_cluster_count = static_cast<uint32_t>(out_mesh_resource.clusters.size());
 
-    // 压缩并存储几何数据
-    // TODO: 实现几何压缩（在此之前 AppendGeometryBytes 存的是未压缩的原始布局）
-    AppendGeometryBytes(cluster_positions, cluster_indices, out_mesh_resource);
+    // 压缩并存储几何数据（编码格式由 config.geometry_codec 决定，见 GeometryCodec）。
+    AppendGeometryBytes(cluster_positions, cluster_indices, out_mesh_resource, config);
 
     return true;
 }
@@ -466,8 +573,58 @@ void NaniteClusterManager::UnregisterMeshResource(uint64_t mesh_id)
 
 void NaniteClusterManager::UpdateStreaming(const Vector3& camera_position, float streaming_distance)
 {
-    // TODO: 实现流式加载逻辑
+    // 流送开关关掉时：一切驻留 —— 等价于"没有流式加载"，注册即整个驻留内存。
+    if (!m_Config.enable_streaming)
+    {
+        for (auto& entry : m_MeshResources)
+        {
+            std::fill(entry.second.cluster_loaded_flags.begin(),
+                      entry.second.cluster_loaded_flags.end(), true);
+        }
+        m_StreamingQueue.clear();
+        return;
+    }
+
     m_StreamingQueue.clear();
+
+    for (auto& entry : m_MeshResources)
+    {
+        const NaniteMeshResource& mesh = entry.second.mesh_resource;
+        std::vector<bool>& loaded = entry.second.cluster_loaded_flags;
+
+        for (uint32_t cluster_index = 0; cluster_index < mesh.clusters.size(); ++cluster_index)
+        {
+            const NaniteCluster& cluster = mesh.clusters[cluster_index];
+
+            // 内部节点不提交渲染（IsClusterVisible 对非叶子恒返回 false），它的几何
+            // 窗口只是整棵子树的聚合。流送只决定**叶子**的驻留；内部节点永远保持
+            // 驻留，维持"结构节点随时可读"的不变量 —— 卸载它们没有任何渲染收益，
+            // 只会让层次查询拿到空缺。
+            if (!cluster.is_leaf)
+            {
+                loaded[cluster_index] = true;
+                continue;
+            }
+
+            // 驻留判据 = 集群包围盒中心到相机的距离。这里**没有**反馈式码率预算
+            // （那需要屏幕误差积分 + 一个真实的页池），所以这是**距离裁剪**，不是
+            // UE 那套 streaming pool。叶子中心在 streaming_distance 之内 ⇒ 驻留；
+            // 之外 ⇒ 未驻留（本帧不提交渲染）。
+            //
+            // 重要：cluster_loaded_flags 目前是**策略/可见性闸门**，不是物理显存
+            // 回收。所有集群共享同一段 vertex_data/index_data 字节流（深度优先连续
+            // 窗口），卸载中间一个集群会破坏邻居的 offset。真正的按页驻留要等页池
+            // 落地（step 2.5 后续）；届时这里的语义从"标不标"升级为"拷不拷得进页"。
+            const float dist = camera_position.distance(cluster.bounds.getCenter());
+            const bool resident = dist <= streaming_distance;
+
+            if (loaded[cluster_index] != resident)
+            {
+                loaded[cluster_index] = resident;
+                m_StreamingQueue.emplace_back(entry.first, cluster_index);
+            }
+        }
+    }
 }
 
 const std::vector<uint32_t>& NaniteClusterManager::GetVisibleClusters(uint64_t mesh_id) const

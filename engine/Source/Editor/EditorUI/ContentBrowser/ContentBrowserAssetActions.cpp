@@ -633,7 +633,7 @@ namespace ContentBrowserAssetActions
                     }
                     pItems->Release();
 
-                    ctx.file_service.BuildEngineFileTree();
+                    ctx.asset_tree_dirty = true;  // the window rebuilds + rebinds (ContentBrowserContext.h)
                 }
             }
 
@@ -718,19 +718,11 @@ namespace ContentBrowserAssetActions
             return;
         }
 
-        ctx.file_service.BuildEngineFileTree();
-
-        EditorFileNode* fallback_node = nullptr;
-        if (EditorFileNode* editor_root_node = ctx.file_service.getEditorRootNode())
-        {
-            fallback_node = FindContentBrowserNodeByPath(editor_root_node, fallback_path);
-            if (fallback_node == nullptr)
-            {
-                fallback_node = editor_root_node;
-            }
-        }
-
-        ctx.selected_node = fallback_node;
+        // Rebuilt by the window (ContentBrowserContext.h); it selects the fallback
+        // by path, or the root when that is gone too.
+        ctx.asset_tree_dirty = true;
+        ctx.pending_select_path = fallback_path;
+        ctx.has_pending_select = true;
         GET_SYSTEM(EditorSceneManager)->OnAssetSelected(std::filesystem::path(), "");
     }
 
@@ -761,6 +753,12 @@ namespace ContentBrowserAssetActions
         GameObject* dropped_go = ResolveLiveGameObject(source_id);
         if (dropped_go == nullptr)
         {
+            LOG_WARNING(ZEditor, "Create prefab: GameObject {} is not in the active level", source_id);
+            return;
+        }
+        if (target_folder.empty())
+        {
+            LOG_WARNING(ZEditor, "Create prefab: no target folder for '{}'", dropped_go->GetName().c_str());
             return;
         }
 
@@ -768,24 +766,26 @@ namespace ContentBrowserAssetActions
             BuildUniquePrefabAssetPath(target_folder, dropped_go->GetName());
         if (PrefabUtility::SaveAsPrefabAsset(dropped_go, prefab_path))
         {
+            LOG_INFO(ZEditor, "Create prefab: '{}' -> {}", dropped_go->GetName().c_str(), prefab_path.generic_string());
             RefreshContentBrowserSelection(ctx, prefab_path);
+        }
+        else
+        {
+            LOG_ERROR(ZEditor, "Create prefab: saving '{}' to {} failed", dropped_go->GetName().c_str(),
+                      prefab_path.generic_string());
         }
     }
 
     void RefreshContentBrowserSelection(ContentBrowserContext& ctx, const std::filesystem::path& asset_path)
     {
-        ctx.file_service.BuildEngineFileTree();
-        if (EditorFileNode* new_asset_node = FindContentBrowserNodeByPath(ctx.file_service.getEditorRootNode(), asset_path))
-        {
-            ctx.selected_node = new_asset_node;
-            GET_SYSTEM(EditorSceneManager)
-                ->OnAssetSelected(new_asset_node->m_FilePath.c_str(), new_asset_node->displayTypeLabel());
-        }
-        else
-        {
-            ctx.selected_node = ctx.file_service.getEditorRootNode();
-            GET_SYSTEM(EditorSceneManager)->OnAssetSelected(std::filesystem::path {}, std::string {});
-        }
+        // Was: BuildEngineFileTree() right here. That freed every node while the
+        // window still held m_BrowsedFolderNode (and the widget tree's node
+        // pointers); the next frame read the freed browsed folder -> access
+        // violation right after "Create prefab". The window rebuilds, rebinds by
+        // path and then selects `asset_path` (ContentBrowserContext.h).
+        ctx.asset_tree_dirty = true;
+        ctx.pending_select_path = asset_path;
+        ctx.has_pending_select = true;
     }
 
     void RequestMaterialFromShader(ContentBrowserContext& ctx, EditorFileNode* node)
@@ -1015,7 +1015,6 @@ namespace ContentBrowserAssetActions
         if (editor_asset_mgr->reimportAsset(zasset_path.generic_string(), nullptr))
         {
             MeshDataPreview::InvalidatePreview(zasset_path);
-            ctx.file_service.BuildEngineFileTree();
             RefreshContentBrowserSelection(ctx, zasset_path);
             LOG_INFO(ZEditor, "Reimport ok: {}", zasset_path.generic_string());
         }

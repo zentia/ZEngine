@@ -198,6 +198,10 @@ EASTL 相比标准库的主要优势：
 
 ### 迁移检查清单
 
+> **现状（2026-10-25 计数）**：这份清单描述的是“全面迁移”，实际走的是上面的渐进式策略，并没有做全量替换：
+> `engine/Source/Runtime` 下 378 个文件用 `std::vector`、30 个用 `eastl::vector`（主要在序列化 / 资源数据类型，
+> 如 `eastl::string` 字段）。下面各项作为全量迁移的检查项保留，均未进行。
+
 - [ ] 替换 `#include <vector>` → `#include <EASTL/vector.h>`
 - [ ] 替换 `std::` → `eastl::`
 - [ ] 检查第三方库兼容性（某些库可能依赖 STL）

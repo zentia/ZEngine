@@ -214,7 +214,8 @@ namespace ZYaml
 
     bool ReadObjectGraph(const char* text,
                          std::vector<ObjectGraphEntry>& out,
-                         GraphReaderExternHook readerHook)
+                         GraphReaderExternHook readerHook,
+                         GraphInstanceIdHook instanceIdHook)
     {
         out.clear();
 
@@ -269,13 +270,17 @@ namespace ZYaml
                 continue;
             }
 
-            Object* obj = GET_SYSTEM(ObjectManager)->Produce(type, 0);
+            const int32_t instanceID = instanceIdHook ? instanceIdHook(fileID) : 0;
+            Object* obj = GET_SYSTEM(ObjectManager)->Produce(type, instanceID);
             if (obj == nullptr)
             {
                 LOG_WARNING(ZSerializer, "YamlObjectGraph: failed to Produce '{}' (fileID {})", typeName, fileID);
                 continue;
             }
-            GET_SYSTEM(ObjectManager)->AllocateAndAssignInstanceID(obj);
+            if (instanceID == 0)
+            {
+                GET_SYSTEM(ObjectManager)->AllocateAndAssignInstanceID(obj);
+            }
             resolver.RegisterLocalObject(obj->GetInstanceID(), fileID);
 
             out.push_back({fileID, obj});
@@ -294,6 +299,183 @@ namespace ZYaml
             }
         }
 
+        return true;
+    }
+
+    namespace
+    {
+        // Visits every {m_FileID, m_PathID} reference pair inside `v`.
+        template<class Fn>
+        void ForEachReference(GraphValue& v, Fn&& fn)
+        {
+            if (v.IsObject())
+            {
+                auto fileIt = v.FindMember("m_FileID");
+                auto pathIt = v.FindMember("m_PathID");
+                if (fileIt != v.MemberEnd() && pathIt != v.MemberEnd())
+                {
+                    fn(fileIt->value, pathIt->value);
+                    return;
+                }
+                for (auto it = v.MemberBegin(); it != v.MemberEnd(); ++it)
+                    ForEachReference(it->value, fn);
+            }
+            else if (v.IsArray())
+            {
+                for (auto& element : v.GetArray())
+                    ForEachReference(element, fn);
+            }
+        }
+    }  // namespace
+
+    bool StripObjectsFromGraph(const char* text,
+                               const std::function<bool(const char* typeName)>& drop,
+                               eastl::string& out,
+                               StripGraphStats* stats)
+    {
+        StripGraphStats local;
+        StripGraphStats& s = stats != nullptr ? *stats : local;
+        s = StripGraphStats {};
+        out.clear();
+        if (text == nullptr)
+            return false;
+
+        JSONAllocator allocator;
+        GraphDocument doc(&allocator, 1024, &allocator);
+        if (!ZYaml::ParseYaml(text, doc) || !doc.IsObject())
+            return false;
+        auto objIt = doc.FindMember("objects");
+        if (objIt == doc.MemberEnd() || !objIt->value.IsArray())
+            return false;
+        JSONAllocator& alloc = doc.GetAllocator();
+
+        // 1. Drop the objects.
+        std::unordered_map<int64_t, bool> removed_file_ids;
+        GraphValue kept(rapidjson::kArrayType);
+        for (auto& entry : objIt->value.GetArray())
+        {
+            const char* typeName = (entry.IsObject() && entry.HasMember("type") && entry["type"].IsString())
+                                       ? entry["type"].GetString()
+                                       : nullptr;
+            if (typeName != nullptr && drop && drop(typeName))
+            {
+                if (entry.HasMember("fileID"))
+                    removed_file_ids[ReadIntField(entry["fileID"])] = true;
+                ++s.removedObjects;
+                continue;
+            }
+            GraphValue copy;
+            copy.CopyFrom(entry, alloc);
+            kept.PushBack(copy, alloc);
+        }
+
+        // 2. Null references to removed local objects; collect the externals still used.
+        std::unordered_map<int64_t, int64_t> external_remap;  // old m_FileID -> new m_FileID
+        for (auto& entry : kept.GetArray())
+        {
+            if (!entry.IsObject() || !entry.HasMember("data"))
+                continue;
+            ForEachReference(entry["data"], [&](GraphValue& file_id, GraphValue& path_id) {
+                const int64_t f = ReadIntField(file_id);
+                if (f == 0)
+                {
+                    if (removed_file_ids.count(ReadIntField(path_id)) != 0)
+                    {
+                        path_id.SetInt64(0);
+                        ++s.danglingReferences;
+                    }
+                }
+                else
+                {
+                    external_remap.emplace(f, 0);
+                }
+            });
+        }
+
+        // 3. Prune and renumber the externals (m_FileID = index + 1, in table order).
+        GraphValue externals(rapidjson::kArrayType);
+        auto extIt = doc.FindMember("externals");
+        if (extIt != doc.MemberEnd() && extIt->value.IsArray())
+        {
+            int64_t old_index = 0;
+            for (auto& ext : extIt->value.GetArray())
+            {
+                ++old_index;
+                auto used = external_remap.find(old_index);
+                if (used == external_remap.end())
+                {
+                    ++s.removedExternals;
+                    continue;
+                }
+                GraphValue copy;
+                copy.CopyFrom(ext, alloc);
+                externals.PushBack(copy, alloc);
+                used->second = static_cast<int64_t>(externals.Size());
+            }
+        }
+        for (auto& entry : kept.GetArray())
+        {
+            if (!entry.IsObject() || !entry.HasMember("data"))
+                continue;
+            ForEachReference(entry["data"], [&](GraphValue& file_id, GraphValue&) {
+                const int64_t f = ReadIntField(file_id);
+                if (f != 0)
+                {
+                    auto it = external_remap.find(f);
+                    file_id.SetInt64(it != external_remap.end() ? it->second : 0);
+                }
+            });
+        }
+
+        GraphDocument result(&allocator, 1024, &allocator);
+        result.SetObject();
+        result.AddMember("externals", externals, result.GetAllocator());
+        result.AddMember("objects", kept, result.GetAllocator());
+        ZYaml::EmitYaml(result, out);
+        return true;
+    }
+
+    bool ReadExternalRefs(const char* text, std::vector<FileIdentifier>& out)
+    {
+        out.clear();
+        if (text == nullptr)
+        {
+            return false;
+        }
+
+        JSONAllocator allocator;
+        GraphDocument master(&allocator, 1024, &allocator);
+        if (!ZYaml::ParseYaml(text, master) || !master.IsObject() || !master.HasMember("objects"))
+        {
+            return false;
+        }
+
+        auto extIt = master.FindMember("externals");
+        if (extIt == master.MemberEnd() || !extIt->value.IsArray())
+        {
+            return true;  // a graph with only local references
+        }
+        for (const GraphValue& r : extIt->value.GetArray())
+        {
+            FileIdentifier ref;
+            if (r.IsObject())
+            {
+                if (r.HasMember("guid") && r["guid"].IsString())
+                {
+                    ref.guid = r["guid"].GetString();
+                }
+                if (r.HasMember("type") && r["type"].IsString())
+                {
+                    ref.type = r["type"].GetString();
+                }
+                if (r.HasMember("path") && r["path"].IsString())
+                {
+                    ref.pathName = r["path"].GetString();
+                }
+            }
+            // Kept even when empty: positions are m_FileID - 1.
+            out.push_back(ref);
+        }
         return true;
     }
 

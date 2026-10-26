@@ -86,6 +86,35 @@ enum class ObjectFlags
     OF_FinishDestroyed = 0x2,
 };
 
+// Bitwise combinability: ObjectFlags is a bitmask (OF_BeginDestroyed=0x1,
+// OF_FinishDestroyed=0x2), so the standard `enum class` operators don't apply --
+// C++ forbids `|=` on a strong-typed enum without an explicit overload. These
+// two operators let Object::BeginDestroySequence() accumulate phases with
+// `m_ObjectFlags |= OF_x` naturally, and let callers test with `(flags & OF_x)`.
+inline ObjectFlags operator|(ObjectFlags a, ObjectFlags b)
+{
+    return static_cast<ObjectFlags>(
+        static_cast<uint32_t>(a) | static_cast<uint32_t>(b));
+}
+inline ObjectFlags& operator|=(ObjectFlags& a, ObjectFlags b)
+{
+    a = a | b;
+    return a;
+}
+inline ObjectFlags operator&(ObjectFlags a, ObjectFlags b)
+{
+    return static_cast<ObjectFlags>(
+        static_cast<uint32_t>(a) & static_cast<uint32_t>(b));
+}
+inline bool operator==(ObjectFlags a, ObjectFlags b)
+{
+    return static_cast<uint32_t>(a) == static_cast<uint32_t>(b);
+}
+inline bool operator!=(ObjectFlags a, ObjectFlags b)
+{
+    return !(a == b);
+}
+
 #define IMPLEMENT_REGISTER_CLASS_1(TYPE_NAME_) IMPLEMENT_REGISTER_CLASS_3(, TYPE_NAME_, typeid(TYPE_NAME_).hash_code())
 
 #define IMPLEMENT_REGISTER_CLASS_3(NAMESPACE_, TYPE_NAME_, PERSISTENT_TYPE_ID)                                      \
@@ -110,7 +139,8 @@ enum class ObjectFlags
          },                                                                                                         \
          (static_cast<TypeFlags>(k##NAMESPACE_##TYPE_NAME_##TypeFlags) & kTypeIsAbstract) != 0,                     \
          nullptr,                                                                                                   \
-         0},                                                                                                        \
+         0,                                                                                                         \
+         (static_cast<TypeFlags>(k##NAMESPACE_##TYPE_NAME_##TypeFlags) & kTypeIsEditorOnly) != 0},                  \
         &TypeContainer<NAMESPACE_::TYPE_NAME_>::m_Type,                                                             \
         nullptr,                                                                                                    \
         nullptr,                                                                                                    \

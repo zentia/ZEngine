@@ -88,6 +88,27 @@ struct NaniteClusterGroup
     uint8_t max_lod_level;
 };
 
+// 几何编码格式（version: zengine-nanite-geom/1）。
+//
+// **先说清楚一件事**：任意 32-bit 浮点位置**无法无损压进更少的比特**。真正的 Nanite
+// 几何压缩是**有界有损**的定点量化 —— 用一点可控的精度换显著的体积。所以这里没有
+// "无损压缩"，只有"带误差上界的量化"。
+enum class GeometryCodec : uint8_t
+{
+    // 未压缩的原始布局（默认，保持既有字节契约）：
+    //   vertex_data : total_vertex_count 个 Vector3，每个 12 字节
+    //   index_data  : total_triangle_count * 3 个 uint32_t，每个 4 字节
+    Raw = 0,
+
+    // 有界有损量化：
+    //   vertex_data : [头 24B: quant_min(3×float) + quant_scale(3×float)]
+    //                 + total_vertex_count 个 (3×int16) 量化位置，每个 6 字节。
+    //                 解码：pos ≈ quant_min + q * quant_scale，每分量误差 ≤ quant_scale/2。
+    //   index_data  : total_triangle_count * 3 个 uint16_t，每个 2 字节
+    //                 （集群顶点数远小于 65536，16-bit 足够）。
+    Quantized = 1,
+};
+
 // Nanite网格资源
 struct NaniteMeshResource
 {
@@ -98,13 +119,22 @@ struct NaniteMeshResource
     std::vector<NaniteCluster> clusters;
     std::vector<NaniteClusterGroup> cluster_groups;
 
-    // 几何数据。目前**未压缩**（压缩仍是 TODO），布局固定为：
-    //   vertex_data : total_vertex_count 个 Vector3，每个 12 字节
-    //   index_data  : total_triangle_count * 3 个 uint32_t，每个 4 字节
+    // 几何数据。布局由 geometry_codec 决定（见 GeometryCodec）。
     // 每个集群用 vertex_offset/vertex_count 与 index_offset/triangle_count 在这两段里
     // 取一段连续的窗口 —— 深度优先的分割顺序保证了同一子树的窗口是连续的。
+    //
+    // 注意：**层次结构、边界、error_metric 都在量化之前用全精度位置算好**（见
+    // NaniteCluster.cpp 的 RecursiveClusterSplit），所以量化只影响存盘的字节，不影响
+    // 裁剪/LOD 用的边界与误差 —— 那些量永远是全精度的。
+    GeometryCodec geometry_codec {GeometryCodec::Raw};
     std::vector<uint8_t> vertex_data;
     std::vector<uint8_t> index_data;
+
+    // Quantized 编码的解码头（Raw 时忽略，恒为 0）：
+    //   解码位置 ≈ quant_min + q * quant_scale，其中 q 是存储的 int16 三元组。
+    //   每分量最大误差 ≤ quant_scale 的一半。
+    Vector3 quant_min {0.0f, 0.0f, 0.0f};
+    Vector3 quant_scale {0.0f, 0.0f, 0.0f};
 
     // 层次结构
     uint32_t root_cluster_index {NaniteConstants::kInvalidClusterIndex};
@@ -207,4 +237,8 @@ struct NaniteConfig
     uint32_t culling_thread_count = 4;
     bool use_gpu_culling = true;
     bool use_async_streaming = true;
+
+    // 几何编码格式（见 GeometryCodec）。默认 Raw 保持既有字节契约；设 Quantized 启用
+    // 有界有损量化（更小的 vertex/index 字节段，代价是每分量 ≤ quant_scale/2 的位置误差）。
+    GeometryCodec geometry_codec {GeometryCodec::Raw};
 };

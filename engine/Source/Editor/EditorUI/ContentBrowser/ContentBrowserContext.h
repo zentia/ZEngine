@@ -39,5 +39,14 @@ struct ContentBrowserContext
     bool& has_pending_material_from_shader;
 
     bool& pending_import_dialog;
+
+    // The file tree is rebuilt by the window, never in place by an action: a
+    // rebuild frees every EditorFileNode, and the window holds more node
+    // pointers than this context exposes (browsed folder, context-menu node,
+    // widget lambdas). Actions set asset_tree_dirty and, optionally, the path to
+    // select afterwards; the window rebuilds, rebinds every pointer by path, then
+    // applies the selection (ZSlateContentBrowserWindow::OnGUI).
     bool& asset_tree_dirty;
+    std::filesystem::path& pending_select_path;
+    bool& has_pending_select;
 };

@@ -1,6 +1,1 @@
-#pragma once
-#include "BaseClasses/Object.h"
-
-class Shader : public Object
-{
-};
+#include "Runtime/Function/Render/Texture/RenderTexture.h"

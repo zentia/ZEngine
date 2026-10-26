@@ -2,6 +2,8 @@
 
 #include "Editor/AssetPipeline/TextureImporter/TextureImporter.h"
 #include "Editor/Build/BuildCache.h"
+#include "Editor/Build/BuildDependencyWalk.h"
+#include "Editor/Build/SceneCook.h"
 #include "Editor/AssetRegistry/AssetRegistry.h"
 #include "Editor/EditorAsset/EditorAssetManager.h"
 #include "Runtime/AssetBundle/AssetBundleFormat.h"
@@ -48,16 +50,7 @@ namespace
     // player mounts Bundles/ directly.
     constexpr const char* kBundlesSubDir = "Bundles";
 
-    std::string NormaliseKey(const std::string& in_key)
-    {
-        std::string out;
-        out.reserve(in_key.size());
-        for (const char c : in_key)
-        {
-            out.push_back(c == '\\' ? '/' : c);
-        }
-        return out;
-    }
+    using BuildDependencyWalk::NormaliseKey;
 
     /// "level/1-1.scene" -> "level_1-1". The directory is kept because two
     /// levels in different folders are allowed to share a file name, and a
@@ -130,38 +123,6 @@ namespace
                   [](const std::pair<std::string, std::filesystem::path>& a,
                      const std::pair<std::string, std::filesystem::path>& b) { return a.first < b.first; });
         return found;
-    }
-
-    /// BFS one root over the registry's dependency edges. The root itself is
-    /// part of its own result -- a level is an asset that has to be packed too.
-    std::vector<std::string> WalkFrom(const AssetRegistry& registry, const std::string& root)
-    {
-        std::vector<std::string> reachable;
-        std::unordered_set<std::string> visited;
-        std::deque<std::string> pending;
-
-        visited.insert(root);
-        pending.push_back(root);
-
-        while (!pending.empty())
-        {
-            const std::string current = pending.front();
-            pending.pop_front();
-            reachable.push_back(current);
-
-            for (const std::string& raw_dependency : registry.GetDependencies(current))
-            {
-                const std::string dependency = NormaliseKey(raw_dependency);
-                if (dependency.empty() || visited.count(dependency) != 0)
-                {
-                    continue;
-                }
-                visited.insert(dependency);
-                pending.push_back(dependency);
-            }
-        }
-
-        return reachable;
     }
 }  // namespace
 
@@ -276,13 +237,23 @@ AssetBundleBuildResult AssetBundleBuilder::Build(const AssetBundleBuildOptions& 
     }
 
     // ---- 3. dependency walk + partition ------------------------------------
+    // The player's edges (BuildDependencyWalk::PlayerDependencies): a scene is
+    // cooked here, and walked through its cooked copy, so what only the editor
+    // bookkeeping (PrefabInstance) referred to is not packed.
+    const std::filesystem::path cooked_root = project_info->GetIntermediateCookedRoot();
+    const std::filesystem::path cooked_platform_root = cooked_root.empty() ? std::filesystem::path()
+                                                                           : cooked_root / platform_tag;
+    const BuildDependencyWalk::DependencyFn player_dependencies = [&](const std::string& key) {
+        return BuildDependencyWalk::PlayerDependencies(registry, key, content_root, cooked_platform_root);
+    };
+
     std::vector<std::vector<std::string>> per_root_reachable;
     per_root_reachable.reserve(roots.size());
     std::unordered_map<std::string, int> reach_count;
 
     for (const std::string& root : roots)
     {
-        std::vector<std::string> reachable = WalkFrom(registry, root);
+        std::vector<std::string> reachable = BuildDependencyWalk::WalkFrom(root, player_dependencies);
         for (const std::string& asset : reachable)
         {
             ++reach_count[asset];
@@ -316,10 +287,6 @@ AssetBundleBuildResult AssetBundleBuilder::Build(const AssetBundleBuildOptions& 
         std::string type;
     };
 
-    const std::filesystem::path cooked_root = project_info->GetIntermediateCookedRoot();
-    const std::filesystem::path cooked_platform_root = cooked_root.empty() ? std::filesystem::path()
-                                                                           : cooked_root / platform_tag;
-
     std::unordered_map<std::string, std::vector<PlannedEntry>> bundles;
 
     auto addAsset = [&](const std::string& bundle_name, const std::string& asset) {
@@ -330,6 +297,15 @@ AssetBundleBuildResult AssetBundleBuilder::Build(const AssetBundleBuildOptions& 
         {
             const std::filesystem::path cooked_path = cooked_platform_root / asset;
             std::error_code exists_ec;
+
+            // Scenes: the player copy has the editor-only bookkeeping (PrefabInstance)
+            // cooked out. The walk above already cooked it; this is a no-op unless the
+            // source changed in between.
+            if (source_path.extension() == ".scene")
+            {
+                BuildDependencyWalk::CookSceneIfStale(source_path, cooked_path);
+            }
+
             if (std::filesystem::exists(cooked_path, exists_ec))
             {
                 read_path = cooked_path;

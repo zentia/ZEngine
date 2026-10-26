@@ -74,9 +74,30 @@ ZSlate::UIColor ThumbColorForNode(const EditorFileNode* node)
         return kThumbFolderColor;
     if (node->m_FileExtension == "scene")
         return kThumbSceneColor;
-    if (node->m_FileExtension == "zasset" || node->m_FileExtension == "zspg")
+    if (node->m_FileExtension == "zasset" || node->m_FileExtension == "zspg" || node->m_FileExtension == "prefab")
         return kThumbAssetColor;
     return kThumbDefaultColor;
+}
+
+// Assets a content-browser drag can carry into the Scene / Hierarchy. `.prefab` was
+// missing: prefabs are created as YAML .prefab (ContentBrowserHelpers::
+// BuildUniquePrefabAssetPath), so no newly made prefab could be dragged anywhere --
+// EditorScenePlacement already handled the extension, the drag never started.
+// A Hierarchy GameObject drag (drop on a folder = create a prefab from it).
+// GObjectID 0 is a valid id -- the first object of a level; the invalid one is
+// k_invalid_gobject_id. `Id != 0` used to reject dragging that object.
+bool IsDraggedGameObject(const std::shared_ptr<FDragDropOperation>& op)
+{
+    return op != nullptr && op->PayloadType == EditorDragDrop::kZSlateAssetPayloadGObjectId &&
+           static_cast<GObjectID>(op->Id) != k_invalid_gobject_id;
+}
+
+bool IsSceneDroppableAsset(const EditorFileNode* node)
+{
+    if (node == nullptr)
+        return false;
+    const auto& ext = node->m_FileExtension;
+    return ext == "zasset" || ext == "zspg" || ext == "prefab";
 }
 
 std::shared_ptr<STextBlock> MakeText(const std::string& text, float font_size, const ZSlate::UIColor& color,
@@ -112,7 +133,9 @@ ZSlateContentBrowserWindow::ZSlateContentBrowserWindow(EditorUI* editor_ui)
                 m_PendingMaterialShaderPath,
                 m_HasPendingMaterialFromShader,
                 m_PendingImportDialog,
-                m_AssetTreeDirty)
+                m_AssetTreeDirty,
+                m_PendingSelectPath,
+                m_HasPendingSelect)
 {
     s_Instance = this;
     LoadViewPrefs();
@@ -568,8 +591,7 @@ void ZSlateContentBrowserWindow::AddItemRow(EditorFileNode* node,
         };
 
         row->CanAcceptDrop = [](const std::shared_ptr<FDragDropOperation>& op) {
-            return op != nullptr && op->PayloadType == EditorDragDrop::kZSlateAssetPayloadGObjectId &&
-                   op->Id != 0;
+            return IsDraggedGameObject(op);
         };
         row->OnDropHandler = [this, node_ptr](const std::shared_ptr<FDragDropOperation>& op) {
             if (op == nullptr)
@@ -579,8 +601,9 @@ void ZSlateContentBrowserWindow::AddItemRow(EditorFileNode* node,
             m_ForceRebuild = true;
         };
 
-        // .zspg（GPU-Spine 容器）同样能拖进 Scene：EditorScenePlacement 按扩展名分派成 SpineRenderer
-        if (!is_folder && (node->m_FileExtension == "zasset" || node->m_FileExtension == "zspg"))
+        // .zspg（GPU-Spine 容器）/ .prefab（YAML Prefab，新建 Prefab 的默认格式）同样能拖进 Scene：
+        // EditorScenePlacement 按扩展名分派（SpineRenderer / 关联的 Prefab 实例）
+        if (!is_folder && IsSceneDroppableAsset(node))
         {
             const std::string asset_path = std::string(node->m_FilePath.c_str());
             const std::string label = std::string(ContentBrowserHelpers::GetContentBrowserDisplayName(node).c_str());
@@ -749,8 +772,7 @@ std::shared_ptr<SWidget> ZSlateContentBrowserWindow::BuildAssetTile(EditorFileNo
         };
 
         tile->CanAcceptDrop = [](const std::shared_ptr<FDragDropOperation>& op) {
-            return op != nullptr && op->PayloadType == EditorDragDrop::kZSlateAssetPayloadGObjectId &&
-                   op->Id != 0;
+            return IsDraggedGameObject(op);
         };
         tile->OnDropHandler = [this, node_ptr](const std::shared_ptr<FDragDropOperation>& op) {
             if (op == nullptr)
@@ -760,8 +782,9 @@ std::shared_ptr<SWidget> ZSlateContentBrowserWindow::BuildAssetTile(EditorFileNo
             m_ForceRebuild = true;
         };
 
-        // .zspg（GPU-Spine 容器）同样能拖进 Scene：EditorScenePlacement 按扩展名分派成 SpineRenderer
-        if (!is_folder && (node->m_FileExtension == "zasset" || node->m_FileExtension == "zspg"))
+        // .zspg（GPU-Spine 容器）/ .prefab（YAML Prefab，新建 Prefab 的默认格式）同样能拖进 Scene：
+        // EditorScenePlacement 按扩展名分派（SpineRenderer / 关联的 Prefab 实例）
+        if (!is_folder && IsSceneDroppableAsset(node))
         {
             const std::string asset_path = std::string(node->m_FilePath.c_str());
             const std::string label = std::string(ContentBrowserHelpers::GetContentBrowserDisplayName(node).c_str());
@@ -910,8 +933,7 @@ void ZSlateContentBrowserWindow::Rebuild(float scale, float content_width)
 
     auto drop = std::make_shared<SDropTarget>();
     drop->CanAcceptDrop = [](const std::shared_ptr<FDragDropOperation>& op) {
-        return op != nullptr && op->PayloadType == EditorDragDrop::kZSlateAssetPayloadGObjectId &&
-               op->Id != 0;
+        return IsDraggedGameObject(op);
     };
     drop->OnDropHandler = [this](const std::shared_ptr<FDragDropOperation>& op) {
         if (op == nullptr)
@@ -1080,7 +1102,42 @@ void ZSlateContentBrowserWindow::OnGUI()
         m_EditorFileService.BuildEngineFileTree();
         m_AssetTreeDirty = false;
         RebindSelectionAfterTreeRebuild(selected_path, browsed_path);
+        // Every other node pointer died with the old tree.
+        m_HasPendingContext = false;
+        m_PendingContextNode = nullptr;
         m_ForceRebuild = true;
+
+        // An action asked for a selection (new prefab / material / file, reimport,
+        // delete fallback): select it by path in the NEW tree.
+        if (m_HasPendingSelect)
+        {
+            m_HasPendingSelect = false;
+            EditorFileNode* node = m_PendingSelectPath.empty()
+                                       ? nullptr
+                                       : ContentBrowserHelpers::FindContentBrowserNodeAcrossRoots(
+                                             m_EditorFileService, m_PendingSelectPath.generic_string());
+            m_PendingSelectPath.clear();
+            if (node != nullptr)
+            {
+                m_SelectedNode = node;
+                if (ContentBrowserHelpers::IsFolderNode(node))
+                {
+                    m_BrowsedFolderNode = node;
+                    GET_SYSTEM(EditorSceneManager)->OnAssetSelected(std::filesystem::path(), "");
+                }
+                else
+                {
+                    if (EditorFileNode* parent = ContentBrowserHelpers::FindParentFolderNode(m_EditorFileService, node))
+                        m_BrowsedFolderNode = parent;
+                    GET_SYSTEM(EditorSceneManager)->OnAssetSelected(node->m_FilePath.c_str(), node->displayTypeLabel());
+                }
+            }
+            else
+            {
+                GET_SYSTEM(EditorSceneManager)->OnAssetSelected(std::filesystem::path(), "");
+            }
+            EnsureBrowsedFolder();
+        }
     }
 
     if (m_EditorFileService.getEditorRootNode() == nullptr)

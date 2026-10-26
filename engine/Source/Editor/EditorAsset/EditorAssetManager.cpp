@@ -487,10 +487,19 @@ void EditorAssetManager::GetAssetGuidAndType(const std::filesystem::path& asset_
     if (!scan_root.empty())
     {
         std::error_code ec;
-        if (asset_path.is_absolute())
+        // A relative spelling is relative to the current directory (that is how
+        // every file API resolves it), not to the scan root; using it as the
+        // registry key directly missed the registry and fell through to the
+        // header / path-hash fallback.
+        std::filesystem::path absolute_path = asset_path;
+        if (absolute_path.is_relative())
         {
-            auto rel = std::filesystem::relative(asset_path, scan_root, ec);
-            if (!ec && !rel.empty())
+            absolute_path = std::filesystem::absolute(absolute_path, ec);
+        }
+        if (!ec && !absolute_path.empty())
+        {
+            auto rel = std::filesystem::relative(absolute_path, scan_root, ec);
+            if (!ec && !rel.empty() && rel.generic_string().rfind("..", 0) != 0)
             {
                 rel_key = rel.generic_string();
             }
@@ -1281,16 +1290,31 @@ int EditorAssetManager::InsertPathNameInternal(const std::filesystem::path& path
     if (path.empty())
         return -1;
 
-    const std::string path_name = path.lexically_normal().string();
-    auto found = m_ConstantGUIDAssetPathToIndex.find(path_name);
+    // Fast path: this exact spelling was seen before.
+    const std::string spelling = path.string();
+    auto found = m_ConstantGUIDAssetPathToIndex.find(spelling);
     if (found != m_ConstantGUIDAssetPathToIndex.end())
         return found->second;
+
+    // One file, one index -- a relative and an absolute spelling of the same file
+    // used to get two (see AssetManager::CanonicalPathKey). A new spelling of a
+    // known file is remembered as an alias.
+    const std::string canonical = CanonicalPathKey(path);
+    found = m_ConstantGUIDAssetPathToIndex.find(canonical);
+    if (found != m_ConstantGUIDAssetPathToIndex.end())
+    {
+        const int path_id = found->second;
+        m_ConstantGUIDAssetPathToIndex.emplace(spelling, path_id);
+        return path_id;
+    }
 
     if (create)
     {
         const int path_id = static_cast<int>(m_PathNames.size());
-        m_ConstantGUIDAssetPathToIndex.emplace(path_name, path_id);
-        m_PathNames.push_back(path_name);
+        m_ConstantGUIDAssetPathToIndex.emplace(canonical, path_id);
+        m_ConstantGUIDAssetPathToIndex.emplace(spelling, path_id);
+        // Stored name unchanged from before: the lexically normalised spelling.
+        m_PathNames.push_back(path.lexically_normal().string());
         AddStream();
         return path_id;
     }

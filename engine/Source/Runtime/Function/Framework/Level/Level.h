@@ -3,16 +3,47 @@
 #include "Runtime/BaseClasses/GameObject.h"
 #include "Runtime/Function/Framework/Object/ObjectIdAllocator.h"
 
+#include <cstdint>
 #include <memory>
 #include <unordered_map>
+#include <utility>
+#include <vector>
 
 class CameraComponent;
 class Character;
+class Level;
+class Object;
 class ObjectInstanceRes;
 class PhysicsScene;
 #include "Runtime/Function/Framework/Component/Transform/TransformSceneRoots.h"
 
 using LevelObjectsMap = std::unordered_map<GObjectID, std::shared_ptr<GameObject>>;
+
+/// Extension points on the level object graph. Runtime knows nothing about
+/// editor-only types (PrefabInstance lives in the Editor module), so the editor
+/// installs these to keep its bookkeeping objects in the same scene file as the
+/// GameObjects they refer to. Every hook is optional; a null hook is skipped.
+struct LevelSerializationHooks
+{
+    /// Level::save, after every live GameObject and Component has been collected:
+    /// append extra objects to write into the same file. They may refer to the
+    /// level's GameObjects / Components by PPtr (live GameObjects carry instance
+    /// IDs, see Level::CreateObject).
+    void (*collect_extra_objects)(const Level& level, std::vector<Object*>& out) = nullptr;
+
+    /// Level::LoadObjectGraph, after the live objects exist. `entries` is the
+    /// whole graph as read from the file. Level builds each live GameObject as a
+    /// copy of the one read from the file (components are shared, the GameObject
+    /// itself is not), so `file_to_live` maps the instance ID of every GameObject
+    /// read from the file to the live GameObject that replaced it -- a PPtr to the
+    /// former must be retargeted to the latter.
+    void (*on_loaded)(Level& level,
+                      const std::vector<std::pair<int64_t, Object*>>& entries,
+                      const std::unordered_map<int32_t, GameObject*>& file_to_live) = nullptr;
+
+    /// Level::Unload, before the object table is cleared.
+    void (*on_unloading)(Level& level) = nullptr;
+};
 
 /// The main class to manage all game objects
 class Level
@@ -21,7 +52,17 @@ public:
     virtual ~Level() {};
 
     bool load(const eastl::string& level_res_url);
+
+    /// The part of load() after the file has been read: build the live level from
+    /// an object graph already in memory (LevelRes header + GameObjects +
+    /// Components). load() calls it with create_physics_scene = true; tools and
+    /// headless tests that have no physics backend pass false.
+    bool LoadObjectGraph(const std::vector<std::pair<int64_t, Object*>>& entries, bool create_physics_scene = true);
+
     void Unload();
+
+    static void SetSerializationHooks(const LevelSerializationHooks& hooks);
+    static const LevelSerializationHooks& GetSerializationHooks();
 
     bool save();
 
