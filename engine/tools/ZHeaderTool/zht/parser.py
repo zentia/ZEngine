@@ -157,7 +157,12 @@ _SCRIPT_PROPERTY_TYPES = {
     "std::string": "string",
     "eastl::string": "string",
     "Vector3": "Vector3",
+    "Vector2": "Vector2",
     "Quaternion": "Quaternion",
+    # Matrix4x4 is deliberately absent: a 4x4 matrix makes a poor Inspector
+    # field, and ZPROPERTY means "serialized", not "editable from script".
+    # It is still usable in ZFUNCTION signatures -- ts_type_for() passes any
+    # plain identifier through.
 }
 
 

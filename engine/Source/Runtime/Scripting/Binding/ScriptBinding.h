@@ -25,13 +25,16 @@
 // =====================================================================
 
 #include "Runtime/BaseClasses/Object.h"
+#include "Runtime/Core/Math/Matrix4.h"
 #include "Runtime/Core/Math/Quaternion.h"
+#include "Runtime/Core/Math/Vector2.h"
 #include "Runtime/Core/Math/Vector3.h"
 #include "pesapi.h"
 
 #include <eastl/string.h>
 
 #include <cstddef>
+#include <cstdio>
 #include <string>
 #include <type_traits>
 #include <utility>
@@ -402,6 +405,63 @@ namespace ZScript
             out.x = static_cast<float>(apis->get_value_double(env, apis->get_property(env, v, "x")));
             out.y = static_cast<float>(apis->get_value_double(env, apis->get_property(env, v, "y")));
             out.z = static_cast<float>(apis->get_value_double(env, apis->get_property(env, v, "z")));
+            return out;
+        }
+    };
+
+    template <>
+    struct Converter<Vector2>
+    {
+        static pesapi_value ToJs(pesapi_ffi* apis, pesapi_env env, const Vector2& v)
+        {
+            pesapi_value o = apis->create_object(env);
+            apis->set_property(env, o, "x", apis->create_double(env, v.x));
+            apis->set_property(env, o, "y", apis->create_double(env, v.y));
+            return o;
+        }
+        static Vector2 FromJs(pesapi_ffi* apis, pesapi_env env, pesapi_value v)
+        {
+            Vector2 out;
+            out.x = static_cast<float>(apis->get_value_double(env, apis->get_property(env, v, "x")));
+            out.y = static_cast<float>(apis->get_value_double(env, apis->get_property(env, v, "y")));
+            return out;
+        }
+    };
+
+    // Matrix4x4 crosses as 16 named numbers, Unity's `m<row><col>` spelling.
+    // m_Mat is indexed [row][col] (see Matrix4.h), so m12 is row 1 column 2 --
+    // the same convention Unity uses, unlike a flat array where the meaning of
+    // index 6 would depend on whether the source was row- or column-major.
+    template <>
+    struct Converter<Matrix4x4>
+    {
+        static pesapi_value ToJs(pesapi_ffi* apis, pesapi_env env, const Matrix4x4& m)
+        {
+            pesapi_value o = apis->create_object(env);
+            for (int row = 0; row < 4; ++row)
+            {
+                for (int col = 0; col < 4; ++col)
+                {
+                    char name[8];
+                    std::snprintf(name, sizeof(name), "m%d%d", row, col);
+                    apis->set_property(env, o, name, apis->create_double(env, m.m_Mat[row][col]));
+                }
+            }
+            return o;
+        }
+        static Matrix4x4 FromJs(pesapi_ffi* apis, pesapi_env env, pesapi_value v)
+        {
+            Matrix4x4 out;
+            for (int row = 0; row < 4; ++row)
+            {
+                for (int col = 0; col < 4; ++col)
+                {
+                    char name[8];
+                    std::snprintf(name, sizeof(name), "m%d%d", row, col);
+                    out.m_Mat[row][col] =
+                        static_cast<float>(apis->get_value_double(env, apis->get_property(env, v, name)));
+                }
+            }
             return out;
         }
     };

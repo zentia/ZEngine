@@ -36,9 +36,12 @@
 - **执行层接线（框架层）**：`AIControllerComponent` 每帧把 `AIMoveIntent` 直接推给同对象的 `MotorComponent`，Motor 加了一条与玩家输入并行的 `TickAIMotor` 路径；脚本只负责配置（profile、范围、行为树），不参与驱动移动
 - **Navigation（二期）**：`NavMesh` 用网格采样可行走表面，A* 寻路 + string pulling 平滑；`NavigationSystem` 持有网格并桥接 `PhysicsScene`，`NavMeshVolumeComponent` 在编辑器里配置体积。追击/撤退/回岗三个动作优先走寻路，无网格时回退直线
 - **AISystem**：全局开关、每帧预算与统计；AI 层从不直接移动刚体，执行层负责消费意图
-- **Lua 集成**：完整 Lua 脚本支持，带性能分析
-- **Puerts 支持**：通过 Puerts 支持 JavaScript/TypeScript
-- **C# 脚本**：托管脚本，支持内存分析
+
+### 脚本
+- **TypeScript / JavaScript**：唯一支持的脚本路径，经 Puerts（桌面 V8，Web / 移动端 QuickJS），
+  配 `tsc --watch`、热重载、以及可在 Inspector 编辑的逐实例字段
+- **Lua / C#**：**不是**脚本后端。Lua 只留了一个加载器桩，C# 只留了内存分析钩子；
+  详见 `doc/TYPESCRIPT_SCRIPTING_DESIGN.md`
 
 ### 编辑器
 - **可视化编辑器**：基于 ZSlate 的编辑器界面（ImGui 后端已退役，少量控件孤岛仍在转换）
