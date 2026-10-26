@@ -50,8 +50,9 @@ engine/Source/Runtime/Function/Render/Platform/
     OS 拖拽导入在 Windows 上实际是死的。现在遍历全部文件、转 UTF-8 后派发。
   - `EditorSlateHost` / `FloatingPanelManager` 手写的 `mods & 1/2/4` 把 Ctrl 与 Shift 弄反了（`KeyCodes` 里 SHIFT=1、
     CONTROL=2）；改用 `KeyCodes::MOD_*_VAL` 常量。
-- [ ] 仍是 TODO：`WindowsApplication::GetMonitorWorkArea(index)` 不枚举多显示器，任何 index 都返回主显示器
-  （`GetMonitorWorkAreaForWindow` 是对的）。
+- [x] `WindowsApplication::GetMonitorWorkArea(index)` 枚举多显示器（2026-10-26）：`EnumDisplayMonitors` + `GetMonitorInfoW`，
+  主显示器挪到 index 0（与 macOS `NSScreen.screens` 同序），越界返回主显示器。**只做了 clang-cl 类型检查，
+  没有多屏机器实测**。
 
 ### Step 3: 改造 WindowSystem
 - [x] `WindowSystem.h` 不再 include GLFW，持有 `GenericApplication`

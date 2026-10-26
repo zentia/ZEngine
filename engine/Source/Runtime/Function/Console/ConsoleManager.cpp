@@ -531,6 +531,22 @@ std::filesystem::path ConsoleManager::ResolveStartupVariablesFile(const std::fil
     return std::filesystem::path(spec);
 }
 
+std::vector<std::filesystem::path> ConsoleManager::ResolveStartupVariablesFiles(const std::filesystem::path& project_root,
+                                                                                const char* override_spec)
+{
+    const std::filesystem::path primary = ResolveStartupVariablesFile(project_root, override_spec);
+    if (primary.empty())
+    {
+        return {};
+    }
+    const std::string spec = TrimCopy(override_spec != nullptr ? std::string(override_spec) : std::string());
+    if (!spec.empty())
+    {
+        return {primary};
+    }
+    return {primary, project_root / "Saved" / "Config" / k_startup_variables_file_name};
+}
+
 int ConsoleManager::LoadStartupVariablesFile(const std::filesystem::path& file)
 {
     if (file.empty())
@@ -564,7 +580,22 @@ int ConsoleManager::LoadStartupVariables(const char* override_spec)
         std::error_code ec;
         project_root = std::filesystem::current_path(ec);
     }
-    return LoadStartupVariablesFile(ResolveStartupVariablesFile(project_root, override_spec));
+    const std::vector<std::filesystem::path> files = ResolveStartupVariablesFiles(project_root, override_spec);
+    if (files.empty())
+    {
+        LOG_INFO(ZConsole, "startup cvar file disabled");
+        return 0;
+    }
+    int applied = 0;
+    for (const std::filesystem::path& file : files)
+    {
+        const int n = LoadStartupVariablesFile(file);
+        if (n > 0)
+        {
+            applied += n;
+        }
+    }
+    return applied;
 }
 
 int ConsoleManager::LoadVariablesFromFile(const std::string& path, std::vector<std::string>* out_failed)

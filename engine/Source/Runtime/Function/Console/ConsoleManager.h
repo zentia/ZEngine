@@ -567,12 +567,22 @@ public:
     static std::filesystem::path ResolveStartupVariablesFile(const std::filesystem::path& project_root,
                                                              const char* override_spec);
 
+    /// 启动时按顺序应用的文件（后者覆盖前者）：
+    ///   默认（spec 为空）：<project_root>/Config/ConsoleVariables.ini（项目级，进版本库）
+    ///                     → <project_root>/Saved/Config/ConsoleVariables.ini（用户级，Saved/ 不进版本库，
+    ///                       与 UE 的 Saved/Config 同义：个人的调试开关不污染团队配置）
+    ///   显式路径：只有这一个文件（明确指定时不叠加用户级）
+    ///   none / off / 0：空列表
+    static std::vector<std::filesystem::path> ResolveStartupVariablesFiles(const std::filesystem::path& project_root,
+                                                                         const char* override_spec);
+
     /// 应用启动文件。路径为空（已关闭）或文件不存在都不算错误，返回 0；
     /// 存在时等同 LoadVariablesFromFile（返回应用条数，打不开 -1）。
     int LoadStartupVariablesFile(const std::filesystem::path& file);
 
     /// 一步到位：`override_spec` 为 nullptr 时读环境变量 ZENGINE_CVAR_FILE；项目根取
-    /// ProjectInfo::GetProjectRoot()，没有项目时取当前目录。
+    /// ProjectInfo::GetProjectRoot()，没有项目时取当前目录。按 ResolveStartupVariablesFiles
+    /// 的顺序逐个应用，返回应用的总条数（打不开的文件记错误、不计入，也不中断后面的文件）。
     int LoadStartupVariables(const char* override_spec = nullptr);
 
 private:

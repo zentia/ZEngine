@@ -280,6 +280,32 @@ int main()
               "C8 an explicit spec wins over ZENGINE_CVAR_FILE");
         SetEnv(ConsoleManager::k_startup_variables_env, nullptr);
 
+        // User layer (Saved/Config, not under version control) over the project layer.
+        {
+            const std::filesystem::path user_file = project / "Saved" / "Config" / "ConsoleVariables.ini";
+            const std::vector<std::filesystem::path> layers = ConsoleManager::ResolveStartupVariablesFiles(project, nullptr);
+            Check(layers.size() == 2 && layers[0] == expected && layers[1] == user_file,
+                  "C8 default layers: project Config/ then user Saved/Config/");
+            Check(ConsoleManager::ResolveStartupVariablesFiles(project, "my.ini").size() == 1,
+                  "C8 an explicit file is used alone (no user layer)");
+            Check(ConsoleManager::ResolveStartupVariablesFiles(project, "none").empty(), "C8 none -> no layers");
+
+            auto other_var = boot.RegisterIntVariable("t.Other", "only in the project file", 1);
+            WriteFile(expected, "t.Count=10\nt.Other=20\n");
+            WriteFile(user_file, "t.Count=30\n");
+            count->SetValue(3);
+            other_var->SetValue(1);
+            std::error_code cwd_ec;
+            const std::filesystem::path old_cwd = std::filesystem::current_path(cwd_ec);
+            std::filesystem::current_path(project, cwd_ec);  // no ProjectInfo -> project root = cwd
+            const int applied = boot.LoadStartupVariables("");
+            std::filesystem::current_path(old_cwd, cwd_ec);
+            Check(applied == 3, "C8 both layers applied (2 + 1 values)");
+            Check(count->getValue() == 30, "C8 the user layer overrides the project layer");
+            Check(other_var->getValue() == 20, "C8 a value only in the project layer survives");
+            std::filesystem::remove(user_file, cwd_ec);
+        }
+
         // Startup order used by the editor / ZGame: file first, then --cvar.
         boot.LoadStartupVariables(other.generic_string().c_str());
         Check(boot.ExecuteString("t.Count=9") && count->getValue() == 9, "C8 a later --cvar overrides the file value");
