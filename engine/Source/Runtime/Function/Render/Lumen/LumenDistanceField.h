@@ -138,6 +138,20 @@ private:
                                      uint32_t resolution_z,
                                      std::vector<float>& out_distance_data);
 
+    // 单个距离场体素：求它到所有实例的最近距离。只读 cache / world_to_local（体素化
+    // 期间都不改动），返回该体素的距离值 —— 由调用方写进互不相交的下标，因此多个体素
+    // 可以并行算而不需要任何锁。抽出来既给串行路径用，也给并行 worker 复用。
+    static float ComputeVoxelDistance(const LumenDistanceField& df,
+                                      const SceneGeometryCache& cache,
+                                      const std::vector<Matrix4x4>& world_to_local,
+                                      const AxisAlignedBox& bounds,
+                                      const Vector3& voxel_size,
+                                      uint32_t resolution_x,
+                                      uint32_t resolution_y,
+                                      uint32_t z,
+                                      uint32_t y,
+                                      uint32_t x);
+
     // 构建层次级别
     void BuildHierarchyLevel(const LumenDistanceFieldData& parent_level,
                              uint32_t level_index,

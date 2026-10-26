@@ -21,6 +21,9 @@ namespace
     float g_temporal_blend_rate {kDefaults.gi_temporal_blend_rate};
     // 间接光的输出强度。1.0 = 直接用 probe 网格算出来的辐照度。
     float g_indirect_intensity {1.0f};
+    // 距离场体素化并行 worker 数。默认 0 = 自动（取硬件并发数）；1 = 强制串行，
+    // 用于 A/B 对照和 headless 测试的确定性。
+    int g_df_workers {0};
 }  // namespace
 
 bool IsEnabled() { return g_enable != 0; }
@@ -32,6 +35,7 @@ uint32_t GetReflectionUpdateBudget() { return static_cast<uint32_t>(std::max(g_r
 float GetTemporalBlendRate() { return g_temporal_blend_rate; }
 uint32_t GetSampleCount() { return static_cast<uint32_t>(std::max(g_sample_count, 1)); }
 float GetIndirectIntensity() { return g_indirect_intensity; }
+uint32_t GetDistanceFieldWorkers() { return static_cast<uint32_t>(std::max(g_df_workers, 0)); }
 
 void ApplyTo(LumenConfig& out_config)
 {
@@ -100,6 +104,13 @@ void RegisterConsoleVariables(ConsoleManager& console)
                                   "deferred lighting pass.",
                                   g_indirect_intensity,
                                   &g_indirect_intensity);
+    console.RegisterIntVariable("r.Lumen.DistanceFieldWorkers",
+                                "Worker threads for the CPU distance-field voxelizer. 0 = auto "
+                                "(hardware concurrency), 1 = force single-threaded (A/B + headless "
+                                "determinism). The voxel loop writes disjoint ranges and reads only "
+                                "immutable scene geometry, so it parallelizes safely across Z slices.",
+                                g_df_workers,
+                                &g_df_workers);
 }
 
 }  // namespace LumenSettings
