@@ -338,6 +338,9 @@ RenderEntity RenderScene::BuildRenderEntity(RHI* rhi,
     {
         render_entity.m_CustomParams[param_index] = game_object_part.m_MaterialDesc.m_CustomParams[param_index];
     }
+    // ShaderLab 具名属性：资产值 + per-renderer override 已经在 BaseRenderer 里
+    // 合成好，这里整块拷过去（132 字节，POD）。
+    render_entity.m_PropertyBlob = game_object_part.m_MaterialDesc.m_PropertyBlob;
 
     const MaterialSourceDesc material_source = BuildMaterialSourceDesc(game_object_part);
     const bool is_material_loaded = m_MaterialAssetIdAllocator.hasElement(material_source);

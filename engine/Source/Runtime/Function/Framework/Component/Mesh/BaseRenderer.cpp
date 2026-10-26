@@ -8,6 +8,7 @@
 #include "Runtime/Function/Render/RenderSystem.h"
 #include "Runtime/Resource/Asset/AssetManager.h"
 #include "Runtime/Resource/ResType/Data/Material.h"
+#include "Runtime/Resource/ResType/Data/Shader.h"
 
 #include <algorithm>
 
@@ -99,6 +100,11 @@ namespace
             }
         }
 
+        // ShaderLab 具名属性：per-renderer 的 override 按 float 掩码盖在资产值上。
+        // 没被覆盖的分量（掩码为 0）继续跟着材质资产走 —— 与上面 custom_params
+        // 按分量覆盖是同一个思路，只是粒度细到单个 float。
+        ZEngine::ShaderLab::ApplyOverride(override_data.property_blob, material_desc.m_PropertyBlob);
+
         // keyword 覆盖。没被提到的 keyword 继续跟随资产。
         //
         // 最后那个 sort 不是顺手加的：MaterialSourceDesc::getHashValue() 是按顺序
@@ -146,6 +152,77 @@ namespace
             return "";
         }
         return GET_SYSTEM(AssetManager)->GetFullPath(asset_path).generic_string().c_str();
+    }
+
+    /// 把 shader 声明的属性 + 材质资产保存的属性值合成"落点表 + 资产值字节"。
+    ///
+    /// 与 RenderType.h 里 BuildShaderPropertySlots 的分工：那边只认渲染侧的
+    /// RenderShaderPropertyDesc，这边负责把 ShaderRes / Material 两套资源数据翻过去，
+    /// 并让**材质资产保存的值盖掉 shader 的默认值** —— Unity 的语义就是"材质改过
+    /// 就是改过"，shader 里的默认值只是初始值。
+    ///
+    /// 落点（UBO 字节偏移）在导入 .shader 时就算好了（ShaderCbufferReflection），
+    /// 这里只是搬过来，不做任何解析 —— populateMaterialDesc 每帧都会跑。
+    void BuildMaterialShaderProperties(const ShaderRes& shader,
+                                       const Material& material,
+                                       std::vector<ZEngine::ShaderLab::ShaderPropertySlot>& out_slots,
+                                       ZEngine::ShaderLab::ShaderPropertyBlob& out_values)
+    {
+        std::vector<RenderShaderPropertyDesc> properties;
+        properties.reserve(shader.m_Properties.size());
+
+        for (const ShaderPropertyDesc& source : shader.m_Properties)
+        {
+            RenderShaderPropertyDesc property;
+            property.m_Name = source.m_Name;
+            property.m_DisplayName = source.m_DisplayName;
+            property.m_Type = source.m_Type;
+            property.m_DefaultFloat = source.m_DefaultFloat;
+            property.m_RangeMin = source.m_RangeMin;
+            property.m_RangeMax = source.m_RangeMax;
+            property.m_DefaultColor[0] = source.m_DefaultColor.x;
+            property.m_DefaultColor[1] = source.m_DefaultColor.y;
+            property.m_DefaultColor[2] = source.m_DefaultColor.z;
+            property.m_DefaultColor[3] = source.m_DefaultAlpha;
+            property.m_DefaultTexture = source.m_DefaultTexture;
+            property.m_DefaultToggle = source.m_DefaultToggle;
+            property.m_CbufferOffset = source.m_CbufferOffset;
+            property.m_CbufferSize = source.m_CbufferSize;
+            property.m_CbufferComponents = source.m_CbufferComponents;
+            property.m_CbufferName = source.m_CbufferName;
+
+            for (const MaterialFloatProperty& saved : material.m_FloatProperties)
+            {
+                if (saved.m_Name == source.m_Name)
+                {
+                    property.m_DefaultFloat = saved.m_Value;
+                    break;
+                }
+            }
+            for (const MaterialColorProperty& saved : material.m_ColorProperties)
+            {
+                if (saved.m_Name == source.m_Name)
+                {
+                    property.m_DefaultColor[0] = saved.m_Color.x;
+                    property.m_DefaultColor[1] = saved.m_Color.y;
+                    property.m_DefaultColor[2] = saved.m_Color.z;
+                    property.m_DefaultColor[3] = saved.m_Alpha;
+                    break;
+                }
+            }
+            for (const MaterialToggleProperty& saved : material.m_ToggleProperties)
+            {
+                if (saved.m_Name == source.m_Name)
+                {
+                    property.m_DefaultToggle = saved.m_Value;
+                    break;
+                }
+            }
+
+            properties.push_back(std::move(property));
+        }
+
+        BuildShaderPropertySlots(properties, out_slots, out_values);
     }
 
     void populateMaterialDesc(const eastl::string& material_asset, GameObjectMaterialDesc& material_desc)
@@ -205,6 +282,19 @@ namespace
         for (const eastl::string& keyword : material_res->m_EnabledShaderKeywords)
         {
             material_desc.m_EnabledShaderKeywords.push_back(keyword);
+        }
+
+        // ShaderLab 具名属性。只有自定义 shader 资产才带属性表；内置 StandardLit
+        // 的 m_Properties 为空，m_ShaderProperties 也跟着为空，SetFloat 于是继续
+        // 走 MaterialCustomParamNames 那张写死的表（和改动前一模一样）。
+        //
+        // 解析不在这里做：UBO 偏移是导入 .shader 时算好存进 ShaderRes 的，这里只搬。
+        if (ShaderRes* shader_res = material_res->m_ShaderPptr)
+        {
+            BuildMaterialShaderProperties(*shader_res,
+                                          *material_res,
+                                          material_desc.m_ShaderProperties,
+                                          material_desc.m_PropertyBlob);
         }
     }
 }  // namespace
@@ -639,8 +729,21 @@ bool BaseRenderer::HasMaterialOverride(int slot) const
 
 bool BaseRenderer::SetFloat(int slot, const eastl::string& name, float value)
 {
+    // 名字认不认识要先于"槽位在不在"判断 —— 打错名字静默失败最难查，返回 false
+    // 让脚本能立刻发现（Unity 的 SetFloat 返回 void，这里故意不一样）。
+    //
+    // 两张名字表：
+    //   1. ShaderLab 反射表（GameObjectMaterialDesc::m_ShaderProperties）—— 名字和
+    //      UBO 偏移都来自 .shader 自己声明的 Properties / CBUFFER，项目加新属性名
+    //      不用改引擎；
+    //   2. MaterialCustomParamNames 那张写死的表 —— 内置 shader 的老路子。
+    // 先查 1，命中就按偏移写；没命中再回落 2。
+    const GameObjectMaterialDesc* desc = cachedMaterialDescAt(m_LastMaterialDescs, slot);
+    const bool known_by_shader =
+        desc != nullptr && ZEngine::ShaderLab::FindSlot(desc->m_ShaderProperties, name.c_str()) != nullptr;
+
     const MaterialCustomParamLocation* location = MaterialCustomParams::FindFloat(name);
-    if (location == nullptr)
+    if (location == nullptr && !known_by_shader)
     {
         return false;
     }
@@ -651,13 +754,32 @@ bool BaseRenderer::SetFloat(int slot, const eastl::string& name, float value)
         return false;
     }
 
-    slot_override->SetCustomComponent(location->slot, location->component, value);
+    if (known_by_shader)
+    {
+        ZEngine::ShaderLab::SetNamedFloat(desc->m_ShaderProperties, slot_override->property_blob, name.c_str(), value);
+    }
+    else
+    {
+        slot_override->SetCustomComponent(location->slot, location->component, value);
+    }
     SubmitRenderState();
     return true;
 }
 
 float BaseRenderer::GetFloat(int slot, const eastl::string& name) const
 {
+    // m_LastMaterialDescs 是 BuildRenderParts 里 override 套完之后的那份，所以直接
+    // 读它就是"当前生效值"，不用再回头查 override。
+    const GameObjectMaterialDesc* desc = cachedMaterialDescAt(m_LastMaterialDescs, slot);
+    if (desc != nullptr)
+    {
+        float value = 0.0f;
+        if (ZEngine::ShaderLab::GetNamedFloat(desc->m_ShaderProperties, desc->m_PropertyBlob, name.c_str(), value))
+        {
+            return value;
+        }
+    }
+
     const MaterialCustomParamLocation* location = MaterialCustomParams::FindFloat(name);
     if (location == nullptr)
     {
@@ -670,14 +792,17 @@ float BaseRenderer::GetFloat(int slot, const eastl::string& name) const
         return slot_override->custom_params[location->slot][location->component];
     }
 
-    const GameObjectMaterialDesc* desc = cachedMaterialDescAt(m_LastMaterialDescs, slot);
     return desc != nullptr ? desc->m_CustomParams[location->slot][location->component] : 0.0f;
 }
 
 bool BaseRenderer::SetVector(int slot, const eastl::string& name, const Vector4& value)
 {
+    const GameObjectMaterialDesc* desc = cachedMaterialDescAt(m_LastMaterialDescs, slot);
+    const bool known_by_shader =
+        desc != nullptr && ZEngine::ShaderLab::FindSlot(desc->m_ShaderProperties, name.c_str()) != nullptr;
+
     const MaterialCustomParamLocation* location = MaterialCustomParams::FindVector(name);
-    if (location == nullptr)
+    if (location == nullptr && !known_by_shader)
     {
         return false;
     }
@@ -688,10 +813,18 @@ bool BaseRenderer::SetVector(int slot, const eastl::string& name, const Vector4&
         return false;
     }
 
-    // 整个 vec4 一起覆盖：四个分量全打上标记。
-    for (uint32_t component = 0; component < 4; ++component)
+    if (known_by_shader)
     {
-        slot_override->SetCustomComponent(location->slot, component, value[component]);
+        const float values[4] = {value.x, value.y, value.z, value.w};
+        ZEngine::ShaderLab::SetNamedVector(desc->m_ShaderProperties, slot_override->property_blob, name.c_str(), values);
+    }
+    else
+    {
+        // 整个 vec4 一起覆盖：四个分量全打上标记。
+        for (uint32_t component = 0; component < 4; ++component)
+        {
+            slot_override->SetCustomComponent(location->slot, component, value[component]);
+        }
     }
     SubmitRenderState();
     return true;
@@ -699,6 +832,16 @@ bool BaseRenderer::SetVector(int slot, const eastl::string& name, const Vector4&
 
 Vector4 BaseRenderer::GetVector(int slot, const eastl::string& name) const
 {
+    const GameObjectMaterialDesc* desc = cachedMaterialDescAt(m_LastMaterialDescs, slot);
+    if (desc != nullptr)
+    {
+        float values[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+        if (ZEngine::ShaderLab::GetNamedVector(desc->m_ShaderProperties, desc->m_PropertyBlob, name.c_str(), values))
+        {
+            return Vector4(values[0], values[1], values[2], values[3]);
+        }
+    }
+
     const MaterialCustomParamLocation* location = MaterialCustomParams::FindVector(name);
     if (location == nullptr)
     {
@@ -710,7 +853,6 @@ Vector4 BaseRenderer::GetVector(int slot, const eastl::string& name) const
     {
         // 四个分量全被覆盖才算 override 了这个向量；只覆盖了一部分的话逐个分量
         // 回退到资产值，别把没覆盖的分量说成 0。
-        const GameObjectMaterialDesc* desc = cachedMaterialDescAt(m_LastMaterialDescs, slot);
         Vector4 result = desc != nullptr ? desc->m_CustomParams[location->slot]
                                          : Vector4(0.0f, 0.0f, 0.0f, 0.0f);
         for (uint32_t component = 0; component < 4; ++component)
@@ -723,7 +865,6 @@ Vector4 BaseRenderer::GetVector(int slot, const eastl::string& name) const
         return result;
     }
 
-    const GameObjectMaterialDesc* desc = cachedMaterialDescAt(m_LastMaterialDescs, slot);
     return desc != nullptr ? desc->m_CustomParams[location->slot] : Vector4(0.0f, 0.0f, 0.0f, 0.0f);
 }
 
@@ -754,6 +895,14 @@ void BaseRenderer::ClearCustomParams(int slot)
             slot_override->custom_params[param_slot] = Vector4(0.0f, 0.0f, 0.0f, 0.0f);
             changed = true;
         }
+    }
+
+    // 具名属性一并清掉：名字是 shader 给的，槽位是写死的，两条路都得撤干净，
+    // 否则 ClearCustomParams 之后这个 part 还带着一份 override 材质实例。
+    if (slot_override->property_blob.AnyOverride())
+    {
+        slot_override->property_blob.Clear();
+        changed = true;
     }
 
     if (changed)

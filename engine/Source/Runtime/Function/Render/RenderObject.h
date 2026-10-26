@@ -3,6 +3,7 @@
 #include "Runtime/Core/Math/Matrix4.h"
 #include "Runtime/Function/Framework/Object/ObjectIdAllocator.h"
 #include "Runtime/Function/Render/MaterialCustomParamSlots.h"
+#include "Runtime/Function/ShaderLab/ShaderPropertyBlob.h"
 
 #include <EASTL/vector.h>
 #include <vector>
@@ -52,6 +53,20 @@ public:
     /// 内置 shader 在 keyword 打开时按约定消费（现在只有 `_DISSOLVE_ON` 那一组）。
     /// 脚本按名字写，名字到 (槽位, 分量) 的翻译在 MaterialCustomParamNames.h。
     Vector4 m_CustomParams[k_MaterialCustomParamCount] {};
+
+    /// ShaderLab 具名属性：这个材质所用 shader 声明的属性在 UBO 里的落点。
+    ///
+    /// 内置 StandardLit 为空 —— 它的 UBO 是上面那 8 个标量 + 4 个 vec4 的固定布局，
+    /// 没有"具名属性"这回事。只有自定义 ShaderLab 资产才有内容，由
+    /// BaseRenderer::populateMaterialDesc 从 Material 指向的 ShaderRes 抄过来。
+    ///
+    /// 名字 -> offset 的翻译在这里就做完，SetFloat("_Whatever", v) 于是能立刻知道
+    /// "这个名字认不认识"，不用等到上传 UBO 时才发现。
+    std::vector<ZEngine::ShaderLab::ShaderPropertySlot> m_ShaderProperties;
+
+    /// 资产侧保存的属性值（Material 的 Float/Color/Toggle 属性表 + shader 默认值），
+    /// 已经按上面那张落点表铺进字节里。per-renderer 的 override 盖在它之上。
+    ZEngine::ShaderLab::ShaderPropertyBlob m_PropertyBlob;
 
     // Resolved Texture2D .zasset paths at the render boundary (from Material PPtr refs).
     eastl::string m_BaseColorTextureFile;

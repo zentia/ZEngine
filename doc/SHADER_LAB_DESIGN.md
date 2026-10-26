@@ -773,6 +773,51 @@ public:
 };
 ```
 
+### 8.4 运行时属性链路（属性名 -> UBO 字节）
+
+自定义 shader 的具名属性要在运行时真的能改，得走完下面这条链。缺任何一环，
+`SetFloat("_你自己写的属性", v)` 就只能靠引擎写死的名字表（`MaterialCustomParamNames.h`），
+项目加不了新属性名。
+
+```
+.shader 源码
+  │  ShaderImporter：解析 Properties{} + CBUFFER_START(UnityPerMaterial)
+  │  ShaderCbufferReflection：文本反射算出每个属性的字节偏移
+  ▼
+ShaderRes::ShaderPropertyDesc  —— m_CbufferOffset / m_CbufferSize / m_CbufferComponents
+  │  RenderResourceBase::LoadMaterialData
+  ▼
+RenderMaterialData::m_Properties  （RenderShaderPropertyDesc）
+  │  RenderResource::GetOrCreateMaterial → BuildShaderPropertySlots
+  ▼
+GpuPBRMaterial::property_slots / property_defaults / shaderlab_property_layout
+  │  FillMaterialUniformBytes：默认值打底 + per-renderer override 盖上去
+  ▼
+材质 UBO（set = 2, binding = 0，128 字节）
+```
+
+**UBO 契约**（写自定义 shader 时必须遵守，否则 CPU 写的字节会被 shader 按错的 offset 读走）：
+
+| 项 | 值 |
+|---|---|
+| 绑定 | `layout(set = 2, binding = 0)` （与内置 `MeshMaterialUniform` 同一个槽位）—— 自定义 shader 的 PSO 复用内置那条 pipeline layout，没有第二个材质 UBO |
+| 大小 | 128 字节（`sizeof(MeshMaterialUniform)`，两侧有 `static_assert` 钉住） |
+| 打包 | **std140**（GLSL）；同名声明在 HLSL cbuffer 规则下 offset 会不一样，反射按 `m_SourceLanguage` 选规则 |
+| 起始偏移 | 从 **0** 开始 —— 这块 UBO 全部由上面那张落点表解释，不再按 `MeshMaterialUniform` 的固定字段解释 |
+
+两种布局**互斥**，由 `GpuPBRMaterial::shaderlab_property_layout` 决定：内置 StandardLit 用固定
+字段布局，自定义 ShaderLab 用反射布局。同一块字节按两套布局解释会静默读错，所以这个开关只能
+由材质数据给（有带 cbuffer 落点的属性就为 true），不能猜。
+
+能被脚本直接写的属性是**标量 / 二维 / 三维 / 四维**（size ≤ 16 字节）。矩阵和数组走不了标量
+路径 —— 一次 `SetFloat` 表达不了它们的值，写前几个 float 只是写出个半截矩阵，所以落点直接丢掉，
+`SetFloat` 对它们返回 false（比写坏邻居好）。
+
+**两条名字表**：`BaseRenderer::SetFloat` 先查 ShaderLab 反射表（名字和偏移都来自 .shader 自己），
+没命中再回落 `MaterialCustomParamNames.h` 那张写死的表。于是项目加新属性名不用改引擎，改 .shader
+就行。时序前提：反射表要读 `m_LastMaterialDescs`（`BuildRenderParts` 刷的缓存），第一次
+`SubmitRenderState` 之前查不到，会暂时回落到写死的那张表。
+
 ---
 
 ## 九、总结

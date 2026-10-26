@@ -3,6 +3,7 @@
 #include "Runtime/Core/Math/Vector3.h"
 #include "Runtime/Core/Math/Vector4.h"
 #include "Runtime/Function/Render/MaterialCustomParamSlots.h"
+#include "Runtime/Function/ShaderLab/ShaderPropertyBlob.h"
 
 #include <EASTL/string.h>
 
@@ -52,6 +53,10 @@ struct MaterialInstanceOverride
                 return true;
             }
         }
+        if (property_blob.AnyOverride())
+        {
+            return true;
+        }
         return false;
     }
 
@@ -68,6 +73,18 @@ struct MaterialInstanceOverride
     /// 边缘宽度也 override 成 0 —— 没覆盖的分量继续走资产 / 上次的值。
     uint8_t custom_component_mask[k_MaterialCustomParamCount] {};
     Vector4 custom_params[k_MaterialCustomParamCount] {};
+
+    /// ShaderLab 具名属性的覆盖。
+    ///
+    /// 与上面 custom_params 的区别：那边是**引擎写死**的名字表
+    /// （MaterialCustomParamNames.h，内置 shader 按约定消费），这边是**shader 自己
+    /// 声明**的属性 —— 名字和 UBO 偏移都来自 ShaderRes 的 cbuffer 反射。项目加新
+    /// 属性名不用改引擎，改 .shader 就行。
+    ///
+    /// 这里存的是"最终字节 + 每 float 掩码"而不是"名字 -> 值"：名字到偏移的翻译
+    /// 在 BaseRenderer::SetFloat 里就做完了（那时手上有材质的落点表），渲染侧再也
+    /// 不需要按字符串查表。
+    ZEngine::ShaderLab::ShaderPropertyBlob property_blob;
 
     /// per-renderer 的 keyword 覆盖。空 = 全部跟随资产。
     std::vector<MaterialKeywordOverride> keyword_overrides;

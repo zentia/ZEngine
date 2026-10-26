@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Runtime/Core/Base/Hash.h"
+#include "Runtime/Function/ShaderLab/ShaderPropertyBlob.h"
 
 #include <EASTL/string.h>
 #include <EASTL/vector.h>
@@ -1986,6 +1987,70 @@ struct RenderShaderPropertyDesc
 
     bool HasCbufferSlot() const { return m_CbufferOffset >= 0 && m_CbufferSize > 0; }
 };
+
+/// 把导入期反射出的属性表翻译成运行时用的"落点表 + 资产默认值字节"。
+///
+/// 只有落在 UnityPerMaterial 里、且能吃标量写入的属性才进落点表 —— 矩阵和越界的
+/// 属性直接丢掉。这不是偷懒：给它们一个猜出来的偏移，后果是 SetFloat 静默写坏邻
+/// 居的属性；丢掉则只是 SetFloat 返回 false，脚本能立刻发现。
+///
+/// `out_defaults` 的掩码会被清成 0：资产默认值**不是**"用户显式设过"，per-renderer
+/// 的 override 才知道哪些分量该盖上来。
+inline void BuildShaderPropertySlots(const std::vector<RenderShaderPropertyDesc>& properties,
+                                     std::vector<ZEngine::ShaderLab::ShaderPropertySlot>& out_slots,
+                                     ZEngine::ShaderLab::ShaderPropertyBlob& out_defaults)
+{
+    out_slots.clear();
+    out_defaults.Clear();
+
+    for (const RenderShaderPropertyDesc& property : properties)
+    {
+        if (!property.HasCbufferSlot())
+        {
+            continue;
+        }
+
+        ZEngine::ShaderLab::ShaderPropertySlot slot;
+        slot.name = property.m_Name.c_str();
+        slot.offset = static_cast<uint32_t>(property.m_CbufferOffset);
+        slot.size = property.m_CbufferSize;
+        slot.components = property.m_CbufferComponents;
+        if (slot.FloatCount() == 0)
+        {
+            continue;
+        }
+
+        float values[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+        uint32_t value_count = 1;
+        if (property.m_Type == "Color" || property.m_Type == "Vector")
+        {
+            value_count = 4;
+            values[0] = property.m_DefaultColor[0];
+            values[1] = property.m_DefaultColor[1];
+            values[2] = property.m_DefaultColor[2];
+            values[3] = property.m_DefaultColor[3];
+        }
+        else if (property.m_Type == "Toggle" || property.m_Type == "Int")
+        {
+            values[0] = property.m_DefaultToggle ? 1.0f : 0.0f;
+        }
+        else
+        {
+            values[0] = property.m_DefaultFloat;
+        }
+
+        const uint32_t capacity = slot.FloatCount();
+        if (value_count > capacity)
+        {
+            value_count = capacity;
+        }
+
+        ZEngine::ShaderLab::WriteSlot(out_defaults, slot, values, value_count);
+        out_slots.push_back(std::move(slot));
+    }
+
+    out_defaults.mask = 0;
+}
 
 struct RenderMaterialData
 {

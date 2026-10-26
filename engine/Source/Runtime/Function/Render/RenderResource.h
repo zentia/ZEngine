@@ -11,6 +11,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <map>
 #include <memory>
 #include <vector>
@@ -304,6 +305,51 @@ private:
 // 这段刻意内联在头文件里：RenderResource.cpp（Vulkan / Metal / WebGL2）和
 // RenderResourceDx12.cpp 各自被平台宏守卫着，而"要不要建实例、建完怎么复用"这段
 // 逻辑与后端无关，必须两个平台都编到。真正与后端相关的只有下面两个私有方法。
+
+/// 材质 UBO 只有 128 字节，ShaderLab 的具名属性就落在这同一块里 —— 改
+/// MeshMaterialUniform 必须同步改 k_ShaderPropertyBlobBytes，否则反射算出来的
+/// offset 会指到 buffer 外面去。
+static_assert(sizeof(MeshMaterialUniform) == ZEngine::ShaderLab::k_ShaderPropertyBlobBytes,
+              "MeshMaterialUniform and the ShaderLab property blob must be the same size");
+
+/// 把材质 UBO 的 128 个字节填进 `out_bytes`。
+///
+/// 两种布局二选一，由 `material.shaderlab_property_layout` 决定：
+///   · false（内置 StandardLit）= MeshMaterialUniform 那套固定字段；
+///   · true（自定义 ShaderLab）= shader 自己 CBUFFER_START(UnityPerMaterial) 声明
+///     出来的布局，属性按导入期反射出的 offset 落位，资产默认值打底、per-renderer
+///     的 override 盖在上面。
+///
+/// 同一块字节按两套布局解释会**静默**读错（比如把 `_Amount` 当成 metallicFactor
+/// 读走），所以这个开关只能由材质数据给，绝不能猜。
+inline void FillMaterialUniformBytes(const GpuPBRMaterial& material, const RenderEntity& entity, uint8_t* out_bytes)
+{
+    std::memset(out_bytes, 0, ZEngine::ShaderLab::k_ShaderPropertyBlobBytes);
+
+    if (material.shaderlab_property_layout)
+    {
+        ZEngine::ShaderLab::ShaderPropertyBlob final_blob = material.property_defaults;
+        ZEngine::ShaderLab::ApplyOverride(entity.m_PropertyBlob, final_blob);
+        std::memcpy(out_bytes, final_blob.bytes, ZEngine::ShaderLab::k_ShaderPropertyBlobBytes);
+        return;
+    }
+
+    MeshMaterialUniform& ubo = *reinterpret_cast<MeshMaterialUniform*>(out_bytes);
+    ubo.is_blend = entity.m_Blend;
+    ubo.is_double_sided = entity.m_DoubleSided;
+    ubo.baseColorFactor = entity.m_BaseColorFactor;
+    ubo.metallicFactor = entity.m_MetallicFactor;
+    ubo.roughnessFactor = entity.m_RoughnessFactor;
+    ubo.normalScale = entity.m_NormalScale;
+    ubo.occlusionStrength = entity.m_OcclusionStrength;
+    ubo.emissiveFactor = entity.m_EmissiveFactor;
+    for (uint32_t param_index = 0; param_index < k_MaterialCustomParamCount; ++param_index)
+    {
+        ubo.customParams[param_index] = entity.m_CustomParams[param_index];
+    }
+}
+
+
 inline void RenderResource::UploadGameObjectMaterialInstance(RHI* rhi, RenderEntity render_entity)
 {
     if (rhi == nullptr || render_entity.m_MaterialInstanceId == 0)

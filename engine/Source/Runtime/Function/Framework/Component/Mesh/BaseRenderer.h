@@ -104,15 +104,28 @@ public:
 
     // ---- 运行时属性块 ----------------------------------------------------
     //
-    // Unity 的 `renderer.material.SetFloat("_DissolveAmount", v)`。差别是 ZEngine
-    // 这里**属性名是引擎写死的**（MaterialCustomParamNames.h 那张表），项目加不了
-    // 新名字 —— 名字到 UBO offset 的绑定本来该由 shader 反射数据给出，而现在没有
-    // 那条数据。想加新属性名得改那张表 + 在内置 shader 里写消费代码。
+    // Unity 的 `renderer.material.SetFloat("_DissolveAmount", v)`。
+    //
+    // 现在有**两条**名字 -> UBO 偏移的路：
+    //   1. ShaderLab 反射表 —— 名字和偏移都来自 .shader 自己声明的
+    //      `Properties {}` + `CBUFFER_START(UnityPerMaterial)`，导入期算好存进
+    //      ShaderRes，运行时由 populateMaterialDesc 搬到
+    //      GameObjectMaterialDesc::m_ShaderProperties。**项目加新属性名不用改引擎**，
+    //      改 .shader 就行。
+    //   2. MaterialCustomParamNames.h 那张写死的表 —— 内置 shader 的老路子，名字
+    //      加不了，只在第 1 条没命中时回落。
+    //
+    // 先查 1 再查 2，于是自定义 shader 的属性名不会撞上内置那几个写死的槽位。
     //
     // setter 返回 bool：**名字认不认识**。打错名字静默失败最难查，返回 bool 让
     // 脚本能立刻发现（Unity 的 SetFloat 返回 void，这里故意不一样）。
     //
     // 名字不认识 / slot 越界都是静默忽略，不崩不抛。
+    //
+    // 一个时序前提：第 1 条路要读 m_LastMaterialDescs（BuildRenderParts 刷的那份
+    // 缓存），所以第一次 SubmitRenderState 之前查不到 shader 属性名，会暂时回落
+    // 到第 2 条。PostLoadResource / SetSubMeshes 都会 SubmitRenderState，脚本能
+    // 拿到 renderer 时缓存已经在。
 
     ZFUNCTION()
     bool SetFloat(int slot, const eastl::string& name, float value);
