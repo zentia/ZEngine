@@ -288,6 +288,12 @@ void NaniteRenderer::Render(RHI* rhi,
     }
     m_LastVisibilityResult = visibility_result;
 
+    // 流送：按本帧相机更新叶子驻留（页池启用时走 NanitePagePool，否则纯距离裁剪）。
+    // 必须在 PrepareRenderData 之前 —— 后者用 IsClusterLoaded 闸门决定本帧提交哪些叶子。
+    // 以前 UpdateStreaming 从未被任何帧循环调用，cluster_loaded_flags 注册后恒为 true，
+    // streaming 实际处于休眠；这里接管调用后它才真正生效。
+    m_ClusterManager.UpdateStreaming(camera->position(), static_cast<float>(config.max_streaming_distance));
+
     // 逐集群裁剪
     PrepareRenderData(camera, visibility_result, config);
 

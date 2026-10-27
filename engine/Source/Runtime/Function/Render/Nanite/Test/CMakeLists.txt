@@ -305,3 +305,39 @@ if(ZENGINE_BUILD_NANITE_PAGETABLE_SMOKE_TEST)
 
     message(STATUS "Configured Nanite page-slot-table smoke test: NanitePageSlotTableSmokeTest")
 endif()
+
+# =============================================================================
+# NanitePageUploadPlannerSmokeTest — 页池增量上传计划器（NanitePageUploadPlanner.h）
+# 的无头验证。
+# -----------------------------------------------------------------------------
+# 整条 pipeline：PagePool.Update → PlanStreamingUploads（evicted 先释放腾位 →
+# admitted 认领槽位并产出拷贝命令）→ 字节估算。纯 CPU，只链 include root，不链 ZRuntime。
+#
+#   cmake -B build -DZENGINE_BUILD_NANITE_UPLOADPLANNER_SMOKE_TEST=ON
+#   cmake --build build --target NanitePageUploadPlannerSmokeTest
+# =====================================================================
+option(ZENGINE_BUILD_NANITE_UPLOADPLANNER_SMOKE_TEST
+       "Build the Nanite page-upload-planner smoke-test executable"
+       OFF)
+
+if(ZENGINE_BUILD_NANITE_UPLOADPLANNER_SMOKE_TEST)
+    add_executable(NanitePageUploadPlannerSmokeTest NanitePageUploadPlannerSmokeTest.cpp)
+
+    set_target_properties(NanitePageUploadPlannerSmokeTest PROPERTIES
+        CXX_STANDARD 20
+        FOLDER "Engine/Tests"
+    )
+
+    # Header-only include chain: only the engine/Source root is needed.
+    target_include_directories(NanitePageUploadPlannerSmokeTest PRIVATE
+        ${ENGINE_ROOT_DIR}/Source
+    )
+
+    if(MSVC)
+        target_compile_options(NanitePageUploadPlannerSmokeTest PRIVATE /W4)
+    endif()
+
+    add_test(NAME NanitePageUploadPlannerSmokeTest COMMAND NanitePageUploadPlannerSmokeTest)
+
+    message(STATUS "Configured Nanite page-upload-planner smoke test: NanitePageUploadPlannerSmokeTest")
+endif()

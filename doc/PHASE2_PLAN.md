@@ -222,6 +222,43 @@ cluster geometry 改经页表间接寻址。这三步需要真机验证（本地
 
 ---
 
+### 落地记录 · 2.5 增量上传计划器 + 接管 UpdateStreaming（2026-10-27，CPU 侧；UploadBytes/间接寻址待真机）
+
+**做了什么**：兑现页槽位落地记录"剩下①"的 CPU 可验部分——**增量上传计划器**
+`Function/Render/Nanite/NanitePageUploadPlanner.h`（`nanite_pages::PlanStreamingUploads`），header-only
+纯簿记；并把**从未被调用的 `UpdateStreaming` 接管进帧循环**。
+
+**关键发现（本步起点）**：`NaniteClusterManager::UpdateStreaming` **此前从未被任何帧循环调用**——全仓库
+非测试的 `UpdateStreaming` 调用点只有 `WorldPartition` 和 `TextureStreamingManager`。`cluster_loaded_flags`
+注册时置 `true` 后永不变，Nanite streaming 实际处于**休眠**。所以"增量上传"之前得先让 streaming 真正跑起来。
+
+**计划器职责**：输入本帧 `PoolUpdate`（admitted/evicted page_id）+ 每页几何描述符（mesh 流里的
+offset/count，manager 填）+ 页槽位表，输出**具体到字节段**的上传/释放计划：
+- `uploads`：admitted 页 → 认领的 GPU 槽位（dst）+ 从 mesh 流哪段拷（src）。
+- `releases`：evicted 页 → 已归还的槽位区间（渲染器可标记 GPU 段可复用）。
+- `failed_admits`：想进但槽位不够的页（本帧不拷、保守不渲染）。
+- `UploadBytes(elem_sizes)`：估算本计划拷贝字节（渲染器用它估带宽 / 决定分帧）。
+- **先释放后认领**：先处理 evicted 腾位，再处理 admitted，减少误拒。
+
+**接管调用**：`NaniteRenderer::Render` 在裁剪之后、`PrepareRenderData` 之前调用
+`m_ClusterManager.UpdateStreaming(camera->position(), config.max_streaming_distance)`——必须在闸门之前，
+后者用 `IsClusterLoaded` 决定本帧提交哪些叶子。manager 侧 `UpdateStreaming` 页池分支把增量队列存进
+`m_LastPoolUpdate`；新增 `IsPagePoolEnabled()` / `GetLastPoolUpdate()` / `CollectResidentPageGeometry()`
+（填出每个驻留叶子页的几何描述符）供渲染器驱动计划器。
+
+**验证（Windows headless，无需真机）**：
+- 新增 `Nanite/Test/NanitePageUploadPlannerSmokeTest.cpp`（header-only，只链 include 根），**25 项断言全绿**：
+  admitted 产出 uploads（src 来自 mesh offset / dst 来自槽位 base）、evicted 产出 releases 且槽位可复用、
+  槽位不够进 failed_admits 不半驻留、`UploadBytes` 带宽估算、**300 帧 churn 无泄漏不重叠用量有界**。
+- **回归**：`NaniteClusterBuilderSmokeTest` **77/77 全绿**、`NanitePagePoolSmokeTest` 全绿、
+  `NanitePageSlotTableSmokeTest` 全绿；`ZRuntime` 链接干净。
+
+**剩下（真机项）**：渲染器拿到计划后把 `uploads` 逐条 `UploadBytes` 进持久页缓冲（dst slot_base ← src
+几何切片）、把 `releases` 槽位标记空闲；持久 GPU 缓冲容量从"整场景"改成"页池预算换算元素数"；shader
+cluster geometry 改经页表间接寻址（现行稠密 `vertex_base` → `page_table[slot]`）。这三步需真机验证。
+
+---
+
 ### 落地记录 · 2.5 HiZ（2026-10-26，CPU 侧；GPU 侧待真机）
 
 **做了什么**：把 `NaniteHierarchicalZBuffer` 那组纯 TODO 桩（`UpdateDepthBuffer` / `BuildHierarchy` /

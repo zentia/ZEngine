@@ -2,6 +2,7 @@
 
 #include "NaniteTypes.h"
 #include "NanitePagePool.h"
+#include "NanitePageUploadPlanner.h"
 #include "Runtime/Core/Math/AxisAligned.h"
 // BuildClustersFromMesh takes std::vector<Vector2> **by value**, so every caller
 // needs the complete type, not just a forward declaration.
@@ -112,6 +113,19 @@ public:
     // 获取集群数据
     const NaniteCluster* GetCluster(uint64_t mesh_id, uint32_t cluster_index) const;
 
+    // ---- 页池增量上传接口（渲染器用来驱动 NanitePageUploadPlanner）----
+    // 页池启用（streaming_pool_budget_bytes > 0）时，UpdateStreaming 每帧把增量队列
+    // 存进 m_LastPoolUpdate；渲染器取走后调 PlanStreamingUploads 产出拷贝/释放计划。
+    // 未启用页池时返回 false（渲染器应走原稠密上传路径）。
+    bool IsPagePoolEnabled() const { return m_Config.streaming_pool_budget_bytes > 0; }
+
+    // 取本帧页池增量队列（admitted/evicted page_id）。仅在 IsPagePoolEnabled() 时有意义。
+    const nanite_pages::PoolUpdate& GetLastPoolUpdate() const { return m_LastPoolUpdate; }
+
+    // 填出每个已驻留叶子页的几何描述符（在 mesh vertex/index 流里的 offset/count），
+    // 供 PlanStreamingUploads 计算拷贝源。返回 page_id → desc 的映射。
+    std::unordered_map<uint32_t, nanite_pages::PageGeometryDesc> CollectResidentPageGeometry() const;
+
 private:
     struct MeshResourceEntry
     {
@@ -142,4 +156,6 @@ private:
     uint64_t m_StreamingFrame{0};  // 页池 LRU 时间戳（每帧 UpdateStreaming 自增）
     // mesh_id → 该 mesh 每个叶子 cluster 的 page_id（RegisterMeshResource 时分配）。
     std::unordered_map<uint64_t, std::vector<uint32_t>> m_ClusterPageIds;
+    // 本帧页池增量队列（UpdateStreaming 产出，渲染器取走去驱动上传计划器）。
+    nanite_pages::PoolUpdate m_LastPoolUpdate;
 };

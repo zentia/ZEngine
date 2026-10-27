@@ -677,9 +677,10 @@ void NaniteClusterManager::UpdateStreaming(const Vector3& camera_position, float
 
     if (use_pool)
     {
-        // 页池按"距离优先 + LRU"在字节预算内决定最终驻留位；换入/换出队列是渲染绑定的
-        // 真机清单（把 evicted/admitted 真正拷进/释放显存），这里只同步 cluster_loaded_flags。
-        m_PagePool.Update(want_resident, /*now=*/static_cast<double>(m_StreamingFrame++));
+        // 页池按"距离优先 + LRU"在字节预算内决定最终驻留位；换入/换出队列交给渲染器
+        // 驱动 NanitePageUploadPlanner 产出拷贝/释放计划（真正 UploadBytes 是渲染绑定）。
+        // 存下增量队列供渲染器取走，同时同步 cluster_loaded_flags。
+        m_LastPoolUpdate = m_PagePool.Update(want_resident, /*now=*/static_cast<double>(m_StreamingFrame++));
 
         for (auto& entry : m_MeshResources)
         {
@@ -801,4 +802,32 @@ const NaniteCluster* NaniteClusterManager::GetCluster(uint64_t mesh_id, uint32_t
         }
     }
     return nullptr;
+}
+
+std::unordered_map<uint32_t, nanite_pages::PageGeometryDesc>
+NaniteClusterManager::CollectResidentPageGeometry() const
+{
+    // 只收集**当前驻留**的叶子页的几何描述符（offset/count 都在 mesh 的 vertex/index 流里）。
+    // 渲染器用它做 PlanStreamingUploads 的拷贝源。未驻留/结构页不收（结构页不进页池上传路径）。
+    std::unordered_map<uint32_t, nanite_pages::PageGeometryDesc> result;
+    for (const auto& entry : m_MeshResources)
+    {
+        const NaniteMeshResource& mesh = entry.second.mesh_resource;
+        const std::vector<uint32_t>& page_ids = m_ClusterPageIds.at(entry.first);
+        for (uint32_t ci = 0; ci < mesh.clusters.size(); ++ci)
+        {
+            const NaniteCluster& c = mesh.clusters[ci];
+            if (!c.is_leaf)
+                continue;
+            if (!m_PagePool.IsResident(page_ids[ci]))
+                continue;
+            nanite_pages::PageGeometryDesc desc;
+            desc.vertex_offset = c.vertex_offset;
+            desc.vertex_count = c.vertex_count;
+            desc.index_offset = c.index_offset;
+            desc.index_count = c.triangle_count * 3u;
+            result[page_ids[ci]] = desc;
+        }
+    }
+    return result;
 }
