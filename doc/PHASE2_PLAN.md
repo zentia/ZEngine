@@ -46,7 +46,7 @@
 | C1 | **RenderGraph 接管流水线** | 帧图编译器：自动屏障、瞬态 RT 别名、剔除 | **✅ 已默认开·真机验证 PASS**（165 编译+92 执行断言；RP2 图路径 2026-10-26 翻默认开 `c0d1bcfc`，同帧 A/B 逐位等价 + soak 无异常，见 §2 落地记录·2.6） | 阶段一 RHI 注册表 | ★★★ 高价值/低风险 |
 | C2 | **RenderGraph → RP1**（`render_pass_refactor`） | RP1 三子pass 拆成 3 独立 pass，纳入图管理 | **✅ 已默认开·真机验证 PASS**（2.3 三分已在代码：3 独立 render pass/subpass 恒 0；2.4 compiler 200/200 + executor 121/121 已验。`DrawRP1WithGraph` 2026-10-26 翻默认开 `871878e3`，同帧 A/B `rp1.backup_odd` 逐位 IDENTICAL + soak 无异常，见 §2 落地记录·2.6） | **必须在 C1 之后** | ★★ 高价值/中风险 |
 | C3 | **Nanite 收尾** | 流送 → 几何压缩 → HiZ 遮挡 → 页池 | **大部分实现**（真 GPU dispatch 已有；几何压缩✅ + streaming✅ + **页池簿记层✅ 已落地 2026-10-26**（opt-in，`streaming_pool_budget_bytes>0`；显存上传待真机），见 §2 落地记录·2.5 页池；**HiZ CPU 侧✅ 已落地 2026-10-26**，见 §2 落地记录·2.5 HiZ；**HiZ GPU 侧✅ 已落地 2026-10-27**：切法一 compute 生成金字塔 14/14、切法二 GPU 遮挡剔除 16/16，见 `doc/PHASE2_STEP2.5_HIZ_GPU.md` §6/§7；**页池 GPU 路径✅ 逐像素一致 13/13**。剩切法三（device-local+真 mip 纹理，可选打磨）与顶点去重（回归面>收益，主动推迟）） | C1/C2 给其 RG 管理的目标 | ★★★ 高价值/中风险 |
-| C4 | **Virtual Texture 接线** | 分页纹理虚拟化，从"孤儿"到可用 | **CPU 侧✅ + GPU 侧✅ 2026-10-27**（页上传进物理页池 + 页表纹理上传，headless A/B 18/18 全绿、逐字节比对 0 失配，见 §2 落地记录·2.6 VirtualTexture GPU 侧）。页表间接寻址 shader（`vt_common.h` + `vt_resolve.comp`）2026-10-27 已落地并 A/B 22/22（见 §2 落地记录·2.6 VT 页表间接寻址 shader）。**仍无真实材质/draw 消费者** —— 把 `vt_common.h` 接进一个真实 fragment shader 是 VT 从"shader 读得对"到"能画"的最后一步 | C1/C2 的 RG 资源注册 | ★★ 高价值/中高风险 |
+| C4 | **Virtual Texture 接线** | 分页纹理虚拟化，从"孤儿"到可用 | **CPU 侧✅ + GPU 侧✅ 2026-10-27**（页上传进物理页池 + 页表纹理上传，headless A/B 18/18 全绿、逐字节比对 0 失配，见 §2 落地记录·2.6 VirtualTexture GPU 侧）。页表间接寻址 shader（`vt_common.h` + `vt_resolve.comp`）2026-10-27 已落地并 A/B 22/22（见 §2 落地记录·2.6 VT 页表间接寻址 shader）。片元阶段消费者（`vt_blit.frag`，离屏全屏三角形）2026-10-27 也已落地并 A/B 22/22（见 §2 落地记录·2.6 VT 片元阶段页表消费者）。**仍未接进真实材质 / 主相机 pass**（需 2.4 的 RG 资源注册与描述符绑定），且引擎里没有 VT 的生产者 | C1/C2 的 RG 资源注册 | ★★ 高价值/中高风险 |
 | C5 | ~~**Vulkan `MainCameraPass` 崩溃根因修复**~~ | 跨切面阻塞：解除 Vulkan 侧验证能力 | **✅ 已被 `7e5d2521` 修掉（2026-10-25 复核关闭）** | — | ★★★ 已关闭（见 §2 step 2.0） |
 | C6 | **Lumen 收尾（SSR → GPU 化）** | 动态 GI + 反射；取 SSR 一半 + 首个 Lumen shader | **✅ CPU 侧已完整**（GI/反射/接线/CVar/发布桥全落地 + 7 smoke test；2026-10-25 复核，见 §2 落地记录·2.7）。剩 SSR/HWRT/首个 shader 全 GPU 侧 | C2 的 GBuffer/depth 声明 | ★★ 中价值/高风险（CPU 侧无活，剩 GPU 放最后） |
 | C7 | **编辑器/内容管线填充**（低风险稳态轨） | 平台窗口化收尾 / Timeline 四片段 / Prefab §9.4 | 各为**部分实现·机械收尾**（**Timeline 四片段 2026-10-25 已落地**，见 `doc/timeline/TIMELINE_IMPLEMENTATION.md`“片段语义”；**Prefab §9.4 第 1 条落地、第 2 条对象图层已验**，见 `doc/PrefabSystem_Design.md` §9.4.1，顺带修 7 个真 bug；平台窗口化未动；**平台窗口化 2026-10-25 对代码核对**：Step 1-5 早已兑现（零 GLFW 引用），计划文档勾选已按代码更新；核对时修了 Win32 修饰键恒 0 / 拖放不派发 / Linux 原生 #error / Web 启动空指针等，见 `doc/platform_windowing_plan.md`；剩 Linux X11 窗口层与多显示器枚举） | — | ★★ 低风险填缝 |
@@ -655,6 +655,35 @@ validation 错误**；不 notify ⇒ 2 项红；去背压 ⇒ 1 项红。**注�
 
 **至此打开 `r.VirtualTexture.Enable` 的线程安全前置条件已满足。** 仍未满足的：引擎里没有 VT 的真实**生产者**（没人
 `Initialize` 单例、没人 `RequestPages`），所以开关打开也什么都不会发生。
+
+---
+
+### 落地记录 · 2.6 VT 片元阶段页表消费者（2026-10-27，Vulkan headless 离屏，22/22 全绿）
+
+commit `18af6d14`。`vt_resolve.comp` 在 compute 里逐整数 texel 查页表；真实材质是在 **fragment shader 里用光栅化插值的 UV**
+去采样。本步用全屏三角形把虚拟纹理画到**自己的离屏目标**上（`vt_blit.vert`/`vt_blit.frag`，后者 `#include vt_common.h`
+走 `VTSampleUV`），**不碰任何相机 pass**——`VirtualTextureBlitter` 自己持有 render pass/framebuffer/pipeline（Nanite 的
+离屏 pass 是参照），`MainCameraPass` 有崩溃历史，不动它。
+
+- 顶点着色器无顶点输入，位置/UV 全由 `gl_VertexIndex` 算出；输出第 0 行 == 虚拟纹理第 0 行（与 Vulkan y 向下一致）。
+- 目标用 **UNORM 不用 SRGB**：SRGB 会把每个字节重新编码，A/B 就没法逐字节比。
+- **验证** `VirtualTextureBlitABSmokeTest`（选项 `ZENGINE_BUILD_VT_BLIT_AB_SMOKE_TEST`）：A 路 = GPU 光栅化结果，B 路 = CPU
+  按同一套 UV→texel 公式（**fp32 不是 double**，否则与 GPU 最后一位舍入不同）。覆盖：1:1 严格逐字节；300×270 放大 /
+  37×29 / 512×64 缩放；四角点验证方向；池满驱逐后被驱逐区域是 fallback 而非别页像素；卸载后全 fallback。
+  **22/22，连跑 10/10，零 validation error**。
+- **红绿（五种变异）**：顶点翻 Y → 12 项红；翻 X → 12 项红；片元传错虚拟尺寸 → 12 项红；`vt_common.h` 槽位 x/y 互换 →
+  10 项红；UV 偏移半个输出像素 → 9 项红。
+
+**一个值得记的发现——texel 边界歧义**：37×29 输出 + 100×90 虚拟纹理时，像素 18 的 UV = 18.5/37 = 0.5，`texel_f = 50.0`
+**恰好落在 texel 边界**，GPU 取了 49、CPU 取了 50。边界上"取哪一侧"本身就是歧义的（光栅化器逐像素插值与 CPU 精确除法
+的最后一位舍入不同，真实硬件采样同样如此）。**不能放宽成"差一点也行"**，所以只对**确实在边界上**的像素（`texel_f` 距整数
+< 1e-3）接受边界另一侧的合法 texel，其余严格逐字节；被容忍的数量单独统计并断言有界；1:1 用例要求 `boundary_pixels==0`。
+实测 37×29 共 65 个边界像素全被容忍、0 个真失配；**UV 偏移半个像素的变异仍被抓到**，说明容忍没吞掉真问题。
+**这条对将来任何"GPU 光栅化 vs CPU 参照"的 A/B 都适用。**
+
+**至此 VT 的 shader 侧链路闭环**：页表 → compute 查找 → fragment 光栅化消费，三种都 A/B 通过。**仍未做**：接进真实材质 / 主相机
+pass（需要 2.4 的 RG 资源注册与描述符绑定）；双线性 / 各向异性（需页 gutter）；mip 链；引擎里没有 VT 的生产者
+（没人 `Initialize` 单例、没人 `RequestPages`）。
 
 ---
 
