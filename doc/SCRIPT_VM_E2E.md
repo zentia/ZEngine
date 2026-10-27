@@ -2,6 +2,9 @@
 
 > 配套测试：`engine/Source/Runtime/Scripting/ScriptVM/Test/ScriptVMSmokeTest.cpp`
 > 开关：`-DZENGINE_BUILD_SCRIPT_VM_SMOKE_TEST=ON`（且 `PAPI_TYPE=quickjs`）
+>
+> 本测试喂给 `ScriptEnv` 的是**手写**的 CommonJS。用户真正走的那条路
+> （`.ts` → tsc → `.js` → ScriptEnv）见 `doc/SCRIPT_TS_CHAIN.md`。
 
 ## 1. 为什么单独写这个测试
 

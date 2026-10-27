@@ -154,6 +154,14 @@ namespace ScriptBindingRegistry
     /// class. Super classes that have no binding of their own are declared
     /// empty so the emitted TypeScript still compiles.
     void AppendTypeScriptDeclarations(std::string& out);
+
+    /// 完整的 `zengine.d.ts` 内容 = 手写前缀 + `AppendTypeScriptDeclarations`。
+    ///
+    /// 编辑器写文件（`ProjectInfo::EnsureScriptsScaffold`）和任何想在编辑器之外
+    /// 复现同一份声明的地方（工具链校验、冒烟测试）都走这里 —— 分成两处写的后果
+    /// 是用户编译所依赖的 .d.ts 和运行时实际装的 global 悄悄漂移，而两边各自的
+    /// 检查都还是绿的。
+    std::string BuildTypeScriptDeclarationFile();
 }  // namespace ScriptBindingRegistry
 
 struct ZClassScriptBindingRegistrar

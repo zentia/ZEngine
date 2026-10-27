@@ -430,6 +430,13 @@ bool ScriptEnv::LoadModule(const std::string& module_id)
     {
         const char* msg = pesapi_get_exception_as_string(m_Papis, scope, 1);
         LOG_ERROR(ZScripting, "LoadModule('{}') threw: {}", module_id, msg ? msg : "<no message>");
+        // 模块执行到一半抛了（比如 `class X extends NotAConstructor` 在模块求值
+        // 阶段就炸），但 LoadModuleInternal 的 exports 兜底分支仍然拿得到一个
+        // 非空的 module.exports —— 于是它照样把引用塞进 m_Modules。不把这个半
+        // 成品丢掉的话：IsModuleLoaded() 说已加载，之后每次 LoadModule 直接命中
+        // 缓存返回 true，这段模块**永远不会再被执行一次**。改好源码再热重载，
+        // 拿到的还是那次抛异常留下的空壳。
+        UnloadModule(module_id);
         ok = false;
     }
     pesapi_close_scope(m_Papis, scope);

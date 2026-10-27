@@ -993,6 +993,10 @@ list(REMOVE_ITEM SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Scripting/ScriptVM/Test/ScriptVMSmokeTest.cpp")
 list(REMOVE_ITEM REGULAR_SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Scripting/ScriptVM/Test/ScriptVMSmokeTest.cpp")
+list(REMOVE_ITEM SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Scripting/ScriptVM/Test/ScriptTsChainSmokeTest.cpp")
+list(REMOVE_ITEM REGULAR_SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Scripting/ScriptVM/Test/ScriptTsChainSmokeTest.cpp")
 
 # Nanite 页池簿记冒烟测试的 main carve-out（同理由）。它自带 main()，由
 # ZENGINE_BUILD_NANITE_PAGEPOOL_SMOKE_TEST 单独控制（见
