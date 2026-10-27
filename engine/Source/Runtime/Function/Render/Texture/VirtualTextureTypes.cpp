@@ -6,6 +6,7 @@
 #endif
 #if !defined(__APPLE__)
     #include "Runtime/Function/Render/Interface/Vulkan/VulkanRHI.h"
+    #include "Runtime/Function/Render/Interface/Vulkan/VulkanRHIResource.h"
 #endif
 
 #include <algorithm>
@@ -19,7 +20,7 @@
 PhysicalTexturePool::PhysicalTexturePool()
     : m_Rhi(nullptr), m_PhysicalTexture(nullptr), m_PhysicalTextureView(nullptr), m_Allocation(nullptr),
       m_PoolWidthPages(0), m_PoolHeightPages(0), m_PageSize(0), m_Format(RHIFormat::RHI_FORMAT_R8G8B8A8_UNORM),
-      m_LogicalOnly(false)
+      m_LogicalOnly(false), m_HasContent(false)
 {
 }
 
@@ -71,8 +72,12 @@ bool PhysicalTexturePool::Initialize(RHI* rhi,
     image_create_info.format = format;
     image_create_info.tiling = RHIImageTiling::RHI_IMAGE_TILING_OPTIMAL;
     image_create_info.initialLayout = RHIImageLayout::RHI_IMAGE_LAYOUT_UNDEFINED;
-    image_create_info.usage =
-        RHIImageUsageFlagBits::RHI_IMAGE_USAGE_SAMPLED_BIT | RHIImageUsageFlagBits::RHI_IMAGE_USAGE_TRANSFER_DST_BIT;
+    // TRANSFER_SRC_BIT 只为 A/B 验证服务：测试要把页池整图拷回 host，逐像素和源
+    // 纹理比对（"传进显存的页 == 源里那一块"是这条链唯一能证伪的判据）。
+    // 缺它就报 CmdCopyImageToBuffer 的 usage 校验错（HiZ 切法一踩过同一条）。
+    image_create_info.usage = RHIImageUsageFlagBits::RHI_IMAGE_USAGE_SAMPLED_BIT |
+                              RHIImageUsageFlagBits::RHI_IMAGE_USAGE_TRANSFER_DST_BIT |
+                              RHIImageUsageFlagBits::RHI_IMAGE_USAGE_TRANSFER_SRC_BIT;
     image_create_info.samples = RHISampleCountFlagBits::RHI_SAMPLE_COUNT_1_BIT;
     image_create_info.flags = 0;
 
@@ -91,7 +96,8 @@ bool PhysicalTexturePool::Initialize(RHI* rhi,
     vk_image_info.format = (VkFormat)format;
     vk_image_info.tiling = VK_IMAGE_TILING_OPTIMAL;
     vk_image_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    vk_image_info.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    vk_image_info.usage =
+        VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
     vk_image_info.samples = VK_SAMPLE_COUNT_1_BIT;
     vk_image_info.flags = 0;
 
@@ -106,7 +112,13 @@ bool PhysicalTexturePool::Initialize(RHI* rhi,
         return false;
     }
 
-    m_PhysicalTexture = (RHIImage*)vk_image;
+    // ⚠️ 不能直接把 VkImage 强转成 RHIImage*。RHI 侧所有接口都把 RHIImage* 当成
+    // VulkanImage**对象*、用 ((VulkanImage*)image)->getResource() 取句柄
+    // （见 VulkanRHI::CreateImageView / CmdCopyImageToBuffer）。VkImage 是个不透明
+    // 句柄数值，当对象指针解引用直接访问违例 —— 这条路径此前从没被真正跑过（VT 零
+    // 消费者），所以这个坑一直藏着。必须包一层 VulkanImage 对象。
+    m_PhysicalTexture = new VulkanImage();
+    ((VulkanImage*)m_PhysicalTexture)->setResource(vk_image);
     m_Allocation = vk_allocation;
 
     // Create image view
@@ -198,9 +210,11 @@ void PhysicalTexturePool::Shutdown()
             VmaAllocator allocator = vulkan_rhi->getVmaAllocator();
             if (allocator)
             {
-                vmaDestroyImage(allocator, (VkImage)m_PhysicalTexture, m_Allocation);
+                // 从包装对象里取回真正的 VkImage（同上：不能直接强转指针）。
+                vmaDestroyImage(allocator, ((VulkanImage*)m_PhysicalTexture)->getResource(), m_Allocation);
             }
         }
+        delete (VulkanImage*)m_PhysicalTexture;  // 包装对象是我们 new 的，要自己释放
         m_PhysicalTexture = nullptr;
         m_Allocation = nullptr;
 #endif
@@ -325,4 +339,161 @@ bool PhysicalTexturePool::IsSlotAllocated(uint32_t slot_index) const
     }
     std::lock_guard<std::mutex> lock(m_SlotMutex);
     return m_Slots[slot_index].is_allocated;
+}
+
+//////////////////////////////////////////////////////////////////////////
+// UploadImageRegion —— 见 VirtualTextureTypes.h 的契约说明。
+//////////////////////////////////////////////////////////////////////////
+
+bool UploadImageRegion(RHI* rhi,
+                       RHIImage* image,
+                       const void* data,
+                       size_t data_bytes,
+                       uint32_t offset_x,
+                       uint32_t offset_y,
+                       uint32_t width,
+                       uint32_t height,
+                       uint32_t bytes_per_pixel,
+                       bool discard_prior_content)
+{
+    if (rhi == nullptr || image == nullptr || data == nullptr || data_bytes == 0 || width == 0 || height == 0 ||
+        bytes_per_pixel == 0)
+    {
+        return false;
+    }
+
+    const size_t needed =
+        static_cast<size_t>(width) * static_cast<size_t>(height) * static_cast<size_t>(bytes_per_pixel);
+    if (data_bytes < needed)
+    {
+        return false;
+    }
+
+#if defined(__APPLE__) || defined(__EMSCRIPTEN__)
+    return false;
+#else
+    auto vulkan_rhi = static_cast<VulkanRHI*>(rhi);
+    if (!vulkan_rhi)
+    {
+        return false;
+    }
+
+    VmaAllocator allocator = vulkan_rhi->getVmaAllocator();
+    if (!allocator)
+    {
+        return false;
+    }
+
+    // ---- staging buffer（host-visible，写一次就丢）----
+    VkBufferCreateInfo buffer_info {};
+    buffer_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    buffer_info.size = needed;
+    buffer_info.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+    buffer_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+    VmaAllocationCreateInfo staging_alloc_info {};
+    staging_alloc_info.usage = VMA_MEMORY_USAGE_AUTO;
+    staging_alloc_info.flags =
+        VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
+
+    VkBuffer staging_buffer = VK_NULL_HANDLE;
+    VmaAllocation staging_allocation = nullptr;
+    VmaAllocationInfo staging_info {};
+    if (vmaCreateBuffer(allocator, &buffer_info, &staging_alloc_info, &staging_buffer, &staging_allocation,
+                        &staging_info) != VK_SUCCESS)
+    {
+        return false;
+    }
+
+    bool mapped_ok = false;
+    if (staging_info.pMappedData != nullptr)
+    {
+        memcpy(staging_info.pMappedData, data, needed);
+        mapped_ok = true;
+    }
+    else
+    {
+        void* mapped = nullptr;
+        if (vmaMapMemory(allocator, staging_allocation, &mapped) == VK_SUCCESS && mapped != nullptr)
+        {
+            memcpy(mapped, data, needed);
+            vmaUnmapMemory(allocator, staging_allocation);
+            mapped_ok = true;
+        }
+    }
+
+    if (!mapped_ok)
+    {
+        vmaDestroyBuffer(allocator, staging_buffer, staging_allocation);
+        return false;
+    }
+
+    // ---- barrier → TRANSFER_DST ----
+    RHICommandBuffer* rhi_command_buffer = vulkan_rhi->BeginSingleTimeCommands();
+    VkCommandBuffer command_buffer = ((VulkanCommandBuffer*)rhi_command_buffer)->getResource();
+
+    // RHIImage* 是 VulkanImage 包装对象，真正的句柄要 getResource() 取。
+    VkImage image_handle = ((VulkanImage*)image)->getResource();
+
+    VkImageMemoryBarrier to_dst {};
+    to_dst.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    to_dst.oldLayout = discard_prior_content ? VK_IMAGE_LAYOUT_UNDEFINED : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    to_dst.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    to_dst.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    to_dst.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    to_dst.image = image_handle;
+    to_dst.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    to_dst.subresourceRange.baseMipLevel = 0;
+    to_dst.subresourceRange.levelCount = 1;
+    to_dst.subresourceRange.baseArrayLayer = 0;
+    to_dst.subresourceRange.layerCount = 1;
+    to_dst.srcAccessMask = discard_prior_content ? 0 : VK_ACCESS_SHADER_READ_BIT;
+    to_dst.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    vkCmdPipelineBarrier(command_buffer,
+                         discard_prior_content ? VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT
+                                               : VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                         VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         0,
+                         0,
+                         nullptr,
+                         0,
+                         nullptr,
+                         1,
+                         &to_dst);
+
+    // ---- copy（offset 是本函数的全部意义所在）----
+    VkBufferImageCopy region {};
+    region.bufferOffset = 0;
+    region.bufferRowLength = 0;  // 0 = 紧凑打包；Vulkan 单位是 texel 不是字节
+    region.bufferImageHeight = 0;
+    region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    region.imageSubresource.mipLevel = 0;
+    region.imageSubresource.baseArrayLayer = 0;
+    region.imageSubresource.layerCount = 1;
+    region.imageOffset = {(int32_t)offset_x, (int32_t)offset_y, 0};
+    region.imageExtent = {width, height, 1};
+    vkCmdCopyBufferToImage(command_buffer, staging_buffer, image_handle, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+
+    // ---- barrier → SHADER_READ_ONLY ----
+    VkImageMemoryBarrier to_read = to_dst;
+    to_read.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    to_read.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    to_read.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    to_read.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    vkCmdPipelineBarrier(command_buffer,
+                         VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                         0,
+                         0,
+                         nullptr,
+                         0,
+                         nullptr,
+                         1,
+                         &to_read);
+
+    vulkan_rhi->EndSingleTimeCommands(rhi_command_buffer);
+
+    vmaDestroyBuffer(allocator, staging_buffer, staging_allocation);
+    return true;
+#endif
 }

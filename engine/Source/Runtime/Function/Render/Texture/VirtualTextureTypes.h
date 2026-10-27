@@ -275,6 +275,17 @@ public:
     // Check if slot is allocated
     bool IsSlotAllocated(uint32_t slot_index) const;
 
+    // Page-upload bookkeeping for UploadImageRegion's discard_prior_content flag.
+    //
+    // The pool image starts UNDEFINED. The FIRST page upload may pass
+    // discard=true (there is nothing to lose), but every upload after that MUST
+    // pass false -- otherwise the barrier's oldLayout=UNDEFINED silently
+    // invalidates every page already resident in the pool. Callers check
+    // hasContent() before uploading and call markContentUploaded() after a
+    // successful upload.
+    bool hasContent() const { return m_HasContent; }
+    void markContentUploaded() { m_HasContent = true; }
+
 private:
     RHI* m_Rhi;
     RHIImage* m_PhysicalTexture;
@@ -286,7 +297,36 @@ private:
     uint32_t m_PageSize;         // Page size in pixels
     RHIFormat m_Format;          // Texture format
     bool m_LogicalOnly;          // Set when initialized via InitializeLogical (no GPU texture)
+    bool m_HasContent;           // True once at least one page has been uploaded (see hasContent())
 
     std::vector<PhysicalTextureSlot> m_Slots;  // Physical slots
     mutable std::mutex m_SlotMutex;            // Mutex for slot access
 };
+
+// ============================================================================
+// GPU 页上传原语（Vulkan 直连；非 Vulkan 平台直接返回 false）。
+// ----------------------------------------------------------------------------
+// 把 CPU 侧字节写进一张 2D 图像的**矩形区域**，全程走一次性命令缓冲：
+//   barrier(→TRANSFER_DST) → vkCmdCopyBufferToImage → barrier(→SHADER_READ_ONLY)。
+//
+// 为什么不用现成的 VulkanUtil::CopyBufferToImage：那个 helper 把 imageOffset 硬编码成
+// (0,0,0)。页上传要写的是物理页池里**该页槽位对应的那一小块**（px = slot_x * page_size），
+// 不是整图，所以必须带 offset。
+//
+// bufferRowLength / bufferImageHeight 必须传 0（紧凑打包）：Vulkan 把这两个字段当
+// **texel** 数而不是字节数，传 width*bytes_per_pixel 会按倍数溢出（HiZ 切法一踩过）。
+//
+// discard_prior_content：
+//   true  → oldLayout = UNDEFINED（**丢弃**整图既有内容，只能用于"这张图首次上传"）；
+//   false → oldLayout = SHADER_READ_ONLY（保留其它区域已上传的页，逐页增量上传用这个）。
+// 用错方向会静默丢页：往已经上传过部分的页池里再传一页时若传 true，之前那些页会被作废。
+bool UploadImageRegion(RHI* rhi,
+                       RHIImage* image,
+                       const void* data,
+                       size_t data_bytes,
+                       uint32_t offset_x,
+                       uint32_t offset_y,
+                       uint32_t width,
+                       uint32_t height,
+                       uint32_t bytes_per_pixel,
+                       bool discard_prior_content);

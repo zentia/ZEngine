@@ -3,16 +3,19 @@
 #include "Runtime/Core/Math/Vector3.h"
 #include "Runtime/Function/Render/Interface/RHI.h"
 #include "Runtime/Function/Render/Interface/Vulkan/VulkanRHI.h"
+#include "Runtime/Function/Render/Interface/Vulkan/VulkanRHIResource.h"
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 
 VirtualTextureHandle VirtualTextureResource::s_NextHandle = 1;
 
 VirtualTextureResource::VirtualTextureResource()
     : m_Handle(0), m_VirtualWidth(0), m_VirtualHeight(0), m_PageSize(128), m_PagesX(0), m_PagesY(0),
       m_MipLevels(0), m_Format(RHIFormat::RHI_FORMAT_R8G8B8A8_UNORM), m_IsSrgb(false), m_IsInitialized(false),
-      m_PageTableTexture(nullptr), m_PageTableTextureView(nullptr), m_PageTableAllocation(nullptr)
+      m_PageTableTexture(nullptr), m_PageTableTextureView(nullptr), m_PageTableAllocation(nullptr),
+      m_PageTableHasContent(false)
 {
     m_Handle = s_NextHandle++;
 }
@@ -74,6 +77,11 @@ bool VirtualTextureResource::Initialize(std::shared_ptr<TextureData> texture_dat
     m_PageSize = page_size;
     m_Format = texture_data->m_Format;
     m_IsSrgb = (m_Format == RHIFormat::RHI_FORMAT_R8G8B8A8_SRGB);
+
+    // Retain the source pixels. This is what makes the GPU upload path possible
+    // at all: without it the only thing left on the CPU is width/height/format
+    // and "extract page region from source" has nothing to read.
+    m_SourceData = texture_data;
 
     // Calculate number of pages
     m_PagesX = (m_VirtualWidth + page_size - 1) / page_size;
@@ -289,10 +297,178 @@ void VirtualTextureResource::CalculatePagesForMip(uint32_t mip_level, uint32_t& 
     pages_y = (mip_height + m_PageSize - 1) / m_PageSize;
 }
 
+uint32_t VirtualTextureResource::getBytesPerPixel() const
+{
+    // 只认 VT 自己会产出的那两种格式。其余返回 0 —— GPU 上传路径拒绝碰一个自己
+    // 量不出大小的页（比按猜的 stride 拷出一堆错位像素安全）。
+    switch (m_Format)
+    {
+        case RHIFormat::RHI_FORMAT_R8G8B8A8_UNORM:
+        case RHIFormat::RHI_FORMAT_R8G8B8A8_SRGB:
+            return 4;
+        default:
+            return 0;
+    }
+}
+
+bool VirtualTextureResource::ExtractPagePixels(uint32_t page_x,
+                                               uint32_t page_y,
+                                               std::vector<uint8_t>& out_pixels,
+                                               uint32_t& out_width,
+                                               uint32_t& out_height) const
+{
+    out_width = 0;
+    out_height = 0;
+
+    if (!m_SourceData || !m_SourceData->IsValid() || !m_IsInitialized)
+    {
+        return false;
+    }
+
+    const uint32_t bytes_per_pixel = getBytesPerPixel();
+    if (bytes_per_pixel == 0 || page_x >= m_PagesX || page_y >= m_PagesY)
+    {
+        return false;
+    }
+
+    const uint32_t origin_x = page_x * m_PageSize;
+    const uint32_t origin_y = page_y * m_PageSize;
+    if (origin_x >= m_VirtualWidth || origin_y >= m_VirtualHeight)
+    {
+        return false;
+    }
+
+    // 边缘页是残缺的（源尺寸不一定是 page_size 的整数倍）：只拷真实存在的那部分，
+    // 尾部补 0，把真实尺寸报回去让上传只拷真实 texel。
+    const uint32_t copy_width = std::min(m_PageSize, m_VirtualWidth - origin_x);
+    const uint32_t copy_height = std::min(m_PageSize, m_VirtualHeight - origin_y);
+
+    out_pixels.assign(static_cast<size_t>(m_PageSize) * static_cast<size_t>(m_PageSize) * bytes_per_pixel, 0);
+
+    const size_t source_stride = static_cast<size_t>(m_VirtualWidth) * bytes_per_pixel;
+    const size_t dest_stride = static_cast<size_t>(m_PageSize) * bytes_per_pixel;
+    const uint8_t* source = m_SourceData->m_Pixels;
+
+    for (uint32_t row = 0; row < copy_height; ++row)
+    {
+        const uint8_t* source_row =
+            source + static_cast<size_t>(origin_y + row) * source_stride + static_cast<size_t>(origin_x) * bytes_per_pixel;
+        uint8_t* dest_row = out_pixels.data() + static_cast<size_t>(row) * dest_stride;
+        memcpy(dest_row, source_row, static_cast<size_t>(copy_width) * bytes_per_pixel);
+    }
+
+    out_width = copy_width;
+    out_height = copy_height;
+    return true;
+}
+
 void VirtualTextureResource::UpdatePageTableTexture(RHI* rhi)
 {
-    // TODO: Implement page table texture update
-    // This would create/update a 2D texture where each texel represents a page table entry
-    // Format: R32G32_UINT (physical_slot, mip_level)
-    // For now, this is a placeholder
+    if (rhi == nullptr || !m_IsInitialized || m_PagesX == 0 || m_PagesY == 0)
+    {
+        return;
+    }
+
+#if defined(__APPLE__) || defined(__EMSCRIPTEN__)
+    return;
+#else
+    // 格式选 R32G32_SFLOAT 而不是注释里写的 R32G32_UINT —— 本工程 RHIFormat 枚举
+    // 里没有 R32G32_UINT（只有 SFLOAT 那几个），为一个页表去动 4 个后端的格式表不值
+    // 当。槽位下标是小整数，f32 能精确表示（< 2^24），语义无损。
+    const RHIFormat table_format = RHIFormat::RHI_FORMAT_R32G32_SFLOAT;
+    constexpr uint32_t kTableBytesPerTexel = 8;  // 2 x float32
+
+    auto vulkan_rhi = static_cast<VulkanRHI*>(rhi);
+    if (!vulkan_rhi)
+    {
+        return;
+    }
+
+    VmaAllocator allocator = vulkan_rhi->getVmaAllocator();
+    if (!allocator)
+    {
+        return;
+    }
+
+    // ---- 首次调用时建图（mip 0 的页网格，一 texel 一个 PageTableEntry）----
+    if (m_PageTableTexture == nullptr)
+    {
+        VkImageCreateInfo image_info {};
+        image_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        image_info.imageType = VK_IMAGE_TYPE_2D;
+        image_info.extent.width = m_PagesX;
+        image_info.extent.height = m_PagesY;
+        image_info.extent.depth = 1;
+        image_info.mipLevels = 1;
+        image_info.arrayLayers = 1;
+        image_info.format = VK_FORMAT_R32G32_SFLOAT;
+        image_info.tiling = VK_IMAGE_TILING_OPTIMAL;
+        image_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        // 同页池：TRANSFER_SRC 只为 A/B 验证（把页表拷回 host 逐 texel 比对）。
+        image_info.usage =
+            VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+        image_info.samples = VK_SAMPLE_COUNT_1_BIT;
+        image_info.flags = 0;
+
+        VmaAllocationCreateInfo alloc_info = {};
+        alloc_info.usage = VMA_MEMORY_USAGE_AUTO;
+        alloc_info.flags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
+
+        VkImage vk_image = VK_NULL_HANDLE;
+        VmaAllocation vk_allocation = nullptr;
+        VmaAllocationInfo alloc_info_result {};
+        if (vmaCreateImage(allocator, &image_info, &alloc_info, &vk_image, &vk_allocation, &alloc_info_result) !=
+            VK_SUCCESS)
+        {
+            return;
+        }
+
+        // 同 PhysicalTexturePool::Initialize：必须包一层 VulkanImage 对象，不能直接
+        // 把 VkImage 句柄当 RHIImage* 用（RHI 侧会当对象解引用 → 访问违例）。
+        m_PageTableTexture = new VulkanImage();
+        ((VulkanImage*)m_PageTableTexture)->setResource(vk_image);
+        m_PageTableAllocation = vk_allocation;
+
+        rhi->CreateImageView(m_PageTableTexture,
+                             table_format,
+                             RHIImageAspectFlagBits::RHI_IMAGE_ASPECT_COLOR_BIT,
+                             RHIImageViewType::RHI_IMAGE_VIEW_TYPE_2D,
+                             1,
+                             1,
+                             m_PageTableTextureView);
+    }
+
+    // ---- 打包页表：行主序，每 texel = (physical_slot, mip_level) ----
+    // 未驻留的项写 UINT32_MAX（f32 能表示），shader 侧拿它和槽位总数比就知道无效。
+    std::vector<uint8_t> table_bytes(static_cast<size_t>(m_PagesX) * static_cast<size_t>(m_PagesY) *
+                                     kTableBytesPerTexel);
+    float* texels = reinterpret_cast<float*>(table_bytes.data());
+    for (uint32_t page_y = 0; page_y < m_PagesY; ++page_y)
+    {
+        for (uint32_t page_x = 0; page_x < m_PagesX; ++page_x)
+        {
+            const PageTableEntry entry = GetPageTableEntry(0, page_x, page_y);
+            const size_t index = (static_cast<size_t>(page_y) * m_PagesX + page_x) * 2;
+            texels[index + 0] = static_cast<float>(entry.physical_slot);  // UINT32_MAX when invalid
+            texels[index + 1] = static_cast<float>(entry.mip_level);
+        }
+    }
+
+    // discard 只在"这张图还从没传过"时为 true；之后必须 false，否则 oldLayout=
+    // UNDEFINED 会把整张页表作废。
+    const bool discard = !m_PageTableHasContent;
+    if (UploadImageRegion(rhi,
+                          m_PageTableTexture,
+                          table_bytes.data(),
+                          table_bytes.size(),
+                          0,
+                          0,
+                          m_PagesX,
+                          m_PagesY,
+                          kTableBytesPerTexel,
+                          discard))
+    {
+        m_PageTableHasContent = true;
+    }
+#endif
 }

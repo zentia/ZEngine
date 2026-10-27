@@ -87,6 +87,33 @@ public:
     // Get texture format
     RHIFormat getFormat() const { return m_Format; }
 
+    // Bytes per texel for getFormat(). 0 means "unknown/unhandled format" -- the
+    // GPU upload path refuses to touch a page it cannot size.
+    uint32_t getBytesPerPixel() const;
+
+    // Source pixels retained from the TextureData Initialize() overload.
+    //
+    // Without this there is nothing to upload: the old Initialize() copied out
+    // only width/height/format and dropped the pixels, so "load page data from
+    // disk" had no source to read from. Keeping the shared_ptr alive is what
+    // makes the GPU upload verifiable -- the A/B test can compare what landed in
+    // the physical pool against the original source texels.
+    const std::shared_ptr<TextureData>& getSourceData() const { return m_SourceData; }
+
+    // Extract one mip-0 page's pixels out of the retained source data.
+    //
+    // Pages at the right/bottom edge of the texture are partial: the source is
+    // not necessarily an exact multiple of page_size. Those pages are padded
+    // with the last valid row/column replicated? No -- they are padded with
+    // zero bytes, and out_width/out_height report the REAL (unpadded) extent so
+    // the upload copies only real texels into the slot. Padding the tail keeps
+    // the staging buffer exactly page_size*page_size*bytes_per_pixel.
+    bool ExtractPagePixels(uint32_t page_x,
+                           uint32_t page_y,
+                           std::vector<uint8_t>& out_pixels,
+                           uint32_t& out_width,
+                           uint32_t& out_height) const;
+
     // Get texture path
     const std::string& getPath() const { return m_TexturePath; }
 
@@ -111,6 +138,10 @@ public:
 private:
     VirtualTextureHandle m_Handle;  // Virtual texture handle
     std::string m_TexturePath;      // Source texture path
+    // Retained source pixels (TextureData Initialize() overload only). See
+    // getSourceData(). Null when the resource was built from a path/size pair --
+    // in that case there is genuinely nothing on the CPU to upload yet.
+    std::shared_ptr<TextureData> m_SourceData;
     uint32_t m_VirtualWidth;        // Virtual texture width
     uint32_t m_VirtualHeight;       // Virtual texture height
     uint32_t m_PageSize;            // Page size in pixels
@@ -133,6 +164,10 @@ private:
     RHIImage* m_PageTableTexture;
     RHIImageView* m_PageTableTextureView;
     VmaAllocation m_PageTableAllocation;
+    // Same discard_prior_content guard as PhysicalTexturePool::m_HasContent: the
+    // page table is re-uploaded every time any page's mapping changes, so only
+    // the very first upload may treat the image as UNDEFINED.
+    bool m_PageTableHasContent;
 
     // Initialize pages
     void InitializePages();

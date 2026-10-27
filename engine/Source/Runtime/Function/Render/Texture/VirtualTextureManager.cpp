@@ -379,7 +379,66 @@ RHIImageView* VirtualTextureManager::GetPageTableTexture(VirtualTextureHandle ha
 VirtualTextureStats VirtualTextureManager::GetStats() const
 {
     std::lock_guard<std::mutex> lock(m_StatsMutex);
-    return m_Stats;
+
+    // 按需重算，而不是返回缓存的 m_Stats —— 此前**没有任何地方写过 m_Stats**
+    // （LoadPage / UnloadPage 都不碰它），所以统计恒为默认零值：页明明全加载了，
+    // GetStats 却报 loaded=0、pool_total=0。缓存没有写入者就等于死的，这里直接从
+    // 资源与页池的当前状态算。
+    VirtualTextureStats stats {};
+
+    {
+        std::lock_guard<std::mutex> textures_lock(m_VirtualTexturesMutex);
+        stats.total_virtual_textures = static_cast<uint32_t>(m_VirtualTextures.size());
+        for (const auto& entry_pair : m_VirtualTextures)
+        {
+            const VirtualTextureEntry& entry = entry_pair.second;
+            if (!entry.resource)
+            {
+                continue;
+            }
+            for (const auto& page_pair : entry.resource->getAllPages())
+            {
+                ++stats.total_pages;
+                switch (page_pair.second.state)
+                {
+                    case VirtualTexturePageState::Loaded:
+                        ++stats.loaded_pages;
+                        break;
+                    case VirtualTexturePageState::Loading:
+                        ++stats.loading_pages;
+                        break;
+                    case VirtualTexturePageState::Unloaded:
+                        ++stats.unloaded_pages;
+                        break;
+                    default:
+                        break;
+                }
+            }
+        }
+    }
+
+    if (m_PhysicalPool)
+    {
+        stats.physical_pool_total_slots = m_PhysicalPool->getTotalSlots();
+        uint32_t used = 0;
+        for (uint32_t slot = 0; slot < stats.physical_pool_total_slots; ++slot)
+        {
+            if (m_PhysicalPool->IsSlotAllocated(slot))
+            {
+                ++used;
+            }
+        }
+        stats.physical_pool_used_slots = used;
+        stats.total_memory_used = static_cast<size_t>(used) * m_PhysicalPool->getPageSize() *
+                                  m_PhysicalPool->getPageSize() * 4u;  // 4B/texel (R8G8B8A8)
+    }
+
+    stats.memory_budget = m_Config.memory_budget_mb * 1024u * 1024u;
+    stats.memory_usage_ratio =
+        stats.memory_budget > 0 ? static_cast<float>(stats.total_memory_used) / static_cast<float>(stats.memory_budget)
+                                : 0.0f;
+
+    return stats;
 }
 
 void VirtualTextureManager::SetConfig(const VirtualTextureConfig& config)
@@ -567,13 +626,12 @@ bool VirtualTextureManager::LoadPage(const VirtualTexturePageID& page_id, Virtua
     page->state = VirtualTexturePageState::Loading;
     resource->UpdatePageState(page_id, VirtualTexturePageState::Loading);
 
-    // TODO: Load page data from disk
-    // For now, this is a placeholder
-    // In a real implementation, this would:
-    // 1. Load the source texture
-    // 2. Extract the specific page region
-    // 3. Generate mip levels if needed
-    // 4. Upload to physical pool
+    // 页数据从**保留下来的源像素**里取（见 VirtualTextureResource::getSourceData），
+    // 不再从磁盘读 —— 本工程还没有 VT 页的磁盘/DDC 资产管线，硬造一条"读盘"路径
+    // 只会得到一个永远填不满的假实现。真正要传的字节在下面分配槽位之后才动手。
+    //
+    // 仍缺的两块（如实留白，不伪造）：① mip 链（目前只传 mip 0 的页）；② 走
+    // RegisterVirtualTexture(path,...) 建的资源没有源像素，其页只做簿记、槽位留空。
 
     // Allocate physical slot
     if (!m_PhysicalPool)
@@ -609,6 +667,23 @@ bool VirtualTextureManager::LoadPage(const VirtualTexturePageID& page_id, Virtua
     entry.is_valid = true;
     resource->SetPageTableEntry(page_id.mip_level, page_id.page_x, page_id.page_y, entry);
 
+    // ---- 把页像素真正传进物理页池（GPU 侧）----
+    // 有源像素才传；没有（path 方式注册的资源）就只做簿记，槽位留空 —— 如实留白，
+    // 不伪造一份"看起来传过了"的数据。
+    std::vector<uint8_t> page_pixels;
+    uint32_t page_pixel_width = 0;
+    uint32_t page_pixel_height = 0;
+    if (resource->ExtractPagePixels(page_id.page_x, page_id.page_y, page_pixels, page_pixel_width, page_pixel_height))
+    {
+        UploadPageToPhysicalPool(page_id, handle, page_pixels.data(), page_pixel_width, page_pixel_height);
+    }
+
+    // 槽位映射变了 ⇒ 页表纹理要跟着刷。
+    // ⚠️ LoadPage 跑在 m_PageLoadingThread 上，这里会从后台线程提交一次性命令缓冲。
+    // 目前只有 headless 测试走同步路径（直接 LoadPage/ForceLoadPages），真机异步加载
+    // 打开前需要先把这次提交收敛到渲染线程（或给队列加同步）。
+    resource->UpdatePageTableTexture(m_Rhi);
+
     return true;
 }
 
@@ -618,12 +693,74 @@ void VirtualTextureManager::UploadPageToPhysicalPool(const VirtualTexturePageID&
                                                      uint32_t page_width,
                                                      uint32_t page_height)
 {
-    // TODO: Implement page upload to physical pool
-    // This would:
-    // 1. Get physical slot coordinates
-    // 2. Create staging buffer
-    // 3. Copy page data to staging buffer
-    // 4. Transfer to physical texture at correct location
+    if (m_Rhi == nullptr || !m_PhysicalPool || page_data == nullptr || page_width == 0 || page_height == 0)
+    {
+        return;
+    }
+
+    RHIImage* pool_image = m_PhysicalPool->getPhysicalTexture();
+    if (pool_image == nullptr)
+    {
+        return;  // logical-only pool (InitializeLogical): 纯 CPU 簿记，没有 GPU 图可传
+    }
+
+    auto resource = GetVirtualTexture(handle);
+    if (!resource)
+    {
+        return;
+    }
+
+    const uint32_t bytes_per_pixel = resource->getBytesPerPixel();
+    if (bytes_per_pixel == 0)
+    {
+        return;
+    }
+
+    VirtualTexturePage* page = resource->GetPage(page_id.mip_level, page_id.page_x, page_id.page_y);
+    if (!page || page->physical_slot == UINT32_MAX)
+    {
+        return;
+    }
+
+    // 槽位坐标是**页单位**（GetSlotCoordinates：x = index % widthPages），
+    // 乘 page_size 才是像素偏移。
+    uint32_t slot_x = 0;
+    uint32_t slot_y = 0;
+    m_PhysicalPool->GetSlotCoordinates(page->physical_slot, slot_x, slot_y);
+
+    const uint32_t page_size = m_PhysicalPool->getPageSize();
+    if (page_width > page_size || page_height > page_size)
+    {
+        return;
+    }
+
+    const uint32_t offset_x = slot_x * page_size;
+    const uint32_t offset_y = slot_y * page_size;
+
+    // 传**整页块**（page_size × page_size），不是 page_width × page_height。
+    // 原因：UploadImageRegion 按"紧凑行距 = width"拷贝，而源缓冲的行距是 page_size
+    // （ExtractPagePixels 对边缘页补了 0）。若按真实宽高传，残缺页从第二行起就会
+    // 错位。整页传则行距恒等于 page_size，与缓冲布局一致，补的 0 落在槽位尾部
+    // （采样不会碰到，UV 只映射真实区域）。
+    const size_t data_bytes =
+        static_cast<size_t>(page_size) * static_cast<size_t>(page_size) * bytes_per_pixel;
+
+    // discard 只在页池还从没传过任何页时为 true。之后必须 false —— 否则 barrier 的
+    // oldLayout=UNDEFINED 会把此前已驻留的所有页静默作废。
+    const bool discard_prior_content = !m_PhysicalPool->hasContent();
+    if (UploadImageRegion(m_Rhi,
+                          pool_image,
+                          page_data,
+                          data_bytes,
+                          offset_x,
+                          offset_y,
+                          page_size,
+                          page_size,
+                          bytes_per_pixel,
+                          discard_prior_content))
+    {
+        m_PhysicalPool->markContentUploaded();
+    }
 }
 
 void VirtualTextureManager::UnloadPage(const VirtualTexturePageID& page_id, VirtualTextureHandle handle)

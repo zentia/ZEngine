@@ -433,6 +433,12 @@ list(REMOVE_ITEM SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Texture/Test/VirtualTextureStreamingSmokeTest.cpp")
 list(REMOVE_ITEM REGULAR_SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Texture/Test/VirtualTextureStreamingSmokeTest.cpp")
+# VT GPU page-upload A/B test: same rationale (owns a main(); separate exe,
+# gated by ZENGINE_BUILD_VT_GPU_UPLOAD_AB_SMOKE_TEST).
+list(REMOVE_ITEM SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Texture/Test/VirtualTextureGpuUploadABSmokeTest.cpp")
+list(REMOVE_ITEM REGULAR_SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Texture/Test/VirtualTextureGpuUploadABSmokeTest.cpp")
 # PR5c: DX12 bindless smoke-test main. Same exclusion rationale as
 # shader_lab_test above. Built only when ZENGINE_BUILD_BINDLESS_SMOKE_TEST=ON
 # (see Function/Render/Interface/DX12/Test/CMakeLists.txt).
@@ -2071,6 +2077,17 @@ endif()
 # (split -> hierarchy -> geometry bytes), so no GPU/window. Not gated on the
 # Lumen conditions: Function/Render/Nanite is never stripped from ZRuntime.
 add_subdirectory(Function/Render/Nanite/Test)
+
+# VirtualTexture GPU page-upload A/B smoke test. Own main(); carved out of the
+# ZRuntime glob above and built only when
+# ZENGINE_BUILD_VT_GPU_UPLOAD_AB_SMOKE_TEST=ON. It links ZRuntime and drives a
+# headless VulkanRHI, so it is gated on the same condition as Lumen: the
+# "Windows without Vulkan" and Emscripten branches strip
+# Function/Render/Texture/VirtualTexture*.cpp out of ZRuntime, and the test would
+# fail to link there.
+if(NOT (WIN32 AND NOT ZENGINE_USE_VULKAN) AND NOT (EMSCRIPTEN OR CMAKE_SYSTEM_NAME STREQUAL "Emscripten"))
+    add_subdirectory(Function/Render/Texture/Test)
+endif()
 
 # AppleSceneBlit smoke test. Own main(); carved out of the ZRuntime glob above
 # and built only when ZENGINE_BUILD_APPLE_SCENE_BLIT_SMOKE_TEST=ON. On Apple it
