@@ -563,7 +563,17 @@ void BaseRenderer::SubmitRenderState() const
 
     const Transform* transform_component = m_ParentObject->tryGetComponent(Transform);
 
-    RenderSwapContext& render_swap_context = GET_SYSTEM(RenderSystem)->GetSwapContext();
+    // No RenderSystem in a headless process (tools, tests, a server build): there is
+    // nothing to submit to. This used to dereference the null system unconditionally.
+    // Native builds crash on it (SIGSEGV at 0x10, the swap-data offset); wasm does NOT
+    // trap on low linear-memory addresses, so the web smoke tests silently wrote into
+    // address 0x10 and passed — that is how this survived PrefabEndToEndSmokeTest P18.
+    RenderSystem* render_system = GET_SYSTEM(RenderSystem);
+    if (render_system == nullptr)
+    {
+        return;
+    }
+    RenderSwapContext& render_swap_context = render_system->GetSwapContext();
     // 层级激活（Unity activeInHierarchy）：父级被停用，子对象也得藏。
     //
     // 这里以前是 `transform_component == nullptr || transform_component->isEnabled()`，
