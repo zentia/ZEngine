@@ -680,7 +680,20 @@ static bool UploadPageSlice(RHI* rhi,
         rhi->UnmapMemory(dst_vertex_memory);
     }
 
-    // ---- 索引：uint32，值加 dst_vertex_slot_base 变页缓冲全局下标 ----
+    // ---- 索引：uint32，重基到页缓冲槽位段 [dst_vertex_slot_base, +vertex_count) ----
+    //
+    // mesh.index_data 里的索引值是**mesh 局部**的（cluster builder 写的是
+    // out_positions.size()，0 基于整条 mesh 的 cluster-vertex 流，所以 cluster c 的
+    // 索引落在 [c.vertex_offset, +c.vertex_count)）。本页只拷了该 cluster 的顶点切片
+    // [src_vertex_offset, +vertex_count) 进槽位 [dst_vertex_slot_base, +vertex_count)，
+    // 所以索引必须先减掉 cluster 的 vertex_offset（变成本 cluster 内的局部下标）再加
+    // dst_vertex_slot_base，才能指到本页自己拷的那段顶点。
+    //
+    // 之前漏了减 vertex_offset —— 每个 cluster 的索引都指到 vertex_offset 个槽位之后
+    // （下一个 cluster 的顶点）。cluster 0（vertex_offset=0）不受影响，所以顶点 dump 和
+    // 首个 cluster 的索引 dump 都对得上、把 bug 藏住了；后续 cluster 全画错顶点 → 页池
+    // 画面缺像素（covered_pool < covered_dense）。稠密路径不受影响：它整条 mesh 顶点流
+    // 逐实例上传，索引按整段 vertex_base 偏移（NaniteGPUData.h），无需重基。
     if (index_count > 0 && dst_index_memory != nullptr)
     {
         if (dst_index_slot_base + index_count > dst_index_capacity_elems)
@@ -700,13 +713,14 @@ static bool UploadPageSlice(RHI* rhi,
         {
             const uint16_t* src = reinterpret_cast<const uint16_t*>(mesh.index_data.data());
             for (uint32_t i = 0; i < index_count; ++i)
-                out[i] = static_cast<uint32_t>(src[src_index_offset + i]) + dst_vertex_slot_base;
+                out[i] = static_cast<uint32_t>(src[src_index_offset + i]) - src_vertex_offset +
+                         dst_vertex_slot_base;
         }
         else
         {
             const uint32_t* src = reinterpret_cast<const uint32_t*>(mesh.index_data.data());
             for (uint32_t i = 0; i < index_count; ++i)
-                out[i] = src[src_index_offset + i] + dst_vertex_slot_base;
+                out[i] = src[src_index_offset + i] - src_vertex_offset + dst_vertex_slot_base;
         }
         rhi->UnmapMemory(dst_index_memory);
     }
