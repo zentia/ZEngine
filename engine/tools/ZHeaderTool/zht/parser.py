@@ -116,6 +116,13 @@ _TS_TYPES = {
     "AudioVoiceId": "number",
     "std::string": "string",
     "eastl::string": "string",
+    # A path crosses the boundary as a plain string. There must be a matching
+    # ZScript::Converter<std::filesystem::path> (see ScriptBinding.h) -- this
+    # table only decides the .d.ts spelling, the Converter does the marshalling.
+    # Without the entry, `GameObject.Instantiate(path)` fails generate-time with
+    # "cannot be mapped to a TypeScript type" even though the Converter exists:
+    # the two tables are independent.
+    "std::filesystem::path": "string",
 }
 
 # ZPROPERTY field types that may cross into scripts (phase 7). Deliberately a

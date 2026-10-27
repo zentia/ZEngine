@@ -78,6 +78,46 @@ public:
     const LevelObjectsMap& getAllGObjects() const { return m_Gobjects; }
 
     std::weak_ptr<GameObject> GetGObjectByID(GObjectID go_id) const;
+
+    // --- 运行时生成的对象（Instantiate 产物）-------------------------------
+    //
+    // 为什么单开一张表而不塞进 m_Gobjects：
+    //   * 所有权模型不同。m_Gobjects 是 shared_ptr 且是唯一持有者，而
+    //     Instantiate 出来的对象由 ObjectManager::Produce（= new）创建并由
+    //     ObjectManager 管。把裸指针包进 shared_ptr 会双重释放 —— 这正是
+    //     PrefabUtility.cpp:703 警告过的同一类错配（Apple 上 new 不走 mimalloc，
+    //     喂给 mi_free 会在 mi_usable_size 里 EXC_BAD_ACCESS）。
+    //     这里只记指针，不拥有。
+    //   * 持久化语义不同。m_Gobjects 会被关卡保存遍历（本文件 collectObjects），
+    //     进表 = 被写进 .level 文件；运行时生成的子弹 / 特效不该被持久化。
+    //
+    // 代价：Tick 和 Find 都要多看一张表（见 Level::Tick / FindGObjectByName）。
+
+    /// 登记一个运行时生成的对象。非拥有 —— 调用方保证它在 Destroy 前有效。
+    /// 返回 false 表示 id 已被占用（说明调用方没有给它重新分配 GObjectID）。
+    bool RegisterRuntimeGObject(GameObject* gobject);
+
+    /// 从表里摘掉（不销毁对象本身）。
+    bool UnregisterRuntimeGObject(GObjectID go_id);
+
+    GameObject* FindRuntimeGObject(GObjectID go_id) const;
+
+    const std::unordered_map<GObjectID, GameObject*>& GetRuntimeGObjects() const
+    {
+        return m_RuntimeGObjects;
+    }
+
+    /// 按名字查：先主表（关卡对象），再运行时表（Instantiate 产物）。
+    /// O(n)，与 Unity 的 GameObject.Find 同量级 —— 不是给每帧用的。
+    GameObject* FindGObjectByName(const eastl::string& name) const;
+
+    /// 请求销毁。真正销毁发生在 FlushPendingDestroys()（帧末），所以脚本在
+    /// 任何时候调用都安全 —— 包括在某个对象的 Tick 里销毁另一个对象：立即销毁
+    /// 会让 Level::Tick 手里正在用的迭代器 / 指针当场失效。
+    void QueueDestroy(GObjectID go_id);
+
+    /// 执行 QueueDestroy 攒下的销毁。由 Level::Tick 末尾调用。
+    void FlushPendingDestroys();
     std::weak_ptr<Character> getCurrentActiveCharacter() const { return m_CurrentActiveCharacter; }
     CameraComponent* GetMainCameraComponent() const;
     void SetMainCamera(GObjectID go_id);
@@ -115,6 +155,14 @@ protected:
 
     // all game objects in this level, key: object id, value: object instance
     LevelObjectsMap m_Gobjects;
+
+    // Runtime-spawned objects (Instantiate). Non-owning: ObjectManager owns them.
+    // Deliberately NOT part of m_Gobjects -- see the comment on
+    // RegisterRuntimeGObject for why.
+    std::unordered_map<GObjectID, GameObject*> m_RuntimeGObjects;
+
+    // Destroy requests, drained by FlushPendingDestroys() at end of Tick.
+    std::vector<GObjectID> m_PendingDestroys;
 
     std::shared_ptr<Character> m_CurrentActiveCharacter;
     /// Id of the character's object after DeleteGObjectByID unbound it, so

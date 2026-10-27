@@ -6,6 +6,7 @@
 #include "Runtime/Function/Framework/Component/Component.h"
 #include "Runtime/Function/Framework/Object/ObjectIdAllocator.h"
 
+#include <filesystem>
 #include <memory>
 #include <string>
 #include <unordered_set>
@@ -134,6 +135,41 @@ public:
     /// Transform.h includes GameObject.h (the dependency points the other way).
     ZFUNCTION()
     Transform* GetTransform() const;
+
+    /// TS 入口：`GameObject.Instantiate(path)`。
+    ///
+    /// 从 prefab 资产路径生成一份独立拷贝，登记进当前关卡的**运行时对象表**
+    /// （不写进 .level 文件），返回它的根 GameObject。
+    ///
+    /// 实现放在 .cpp：PrefabUtility.h 在 Runtime/Resource 下，而本文件在
+    /// BaseClasses，依赖方向不允许在这里 include（同 GetTransform 的理由）。
+    ///
+    /// 返回 nullptr 的情况：路径加载失败 / prefab 没有根对象 / 拿不到当前关卡 /
+    /// clone 没有拿到新的 GObjectID。
+    ZFUNCTION(Name="Instantiate")
+    static GameObject* InstantiateFromPrefabPath(const std::filesystem::path& prefab_path);
+
+    /// TS 入口：`GameObject.Find(name)`。
+    ///
+    /// 按名字在当前关卡里找对象：先查关卡对象表，再查运行时生成的对象表。
+    /// O(n)，与 Unity 的 GameObject.Find 同量级 —— 每帧 Update 里用它会拖垮帧率，
+    /// 应该缓存结果。
+    ZFUNCTION(Name="Find")
+    static GameObject* FindByName(const eastl::string& name);
+
+    /// TS 入口：`GameObject.Destroy(obj)`。
+    ///
+    /// **延迟**到帧末才真正销毁（Unity 同语义）：脚本可以在任何地方调用，包括
+    /// 在某个对象的 OnUpdate 里销毁另一个对象 —— 立即销毁会让 Level::Tick 手里
+    /// 正在用的迭代器失效。
+    ///
+    /// 只销毁传入的那一个。它的子对象**不会**跟着被销毁，而是提升到场景根 ——
+    /// 否则父 Transform 没了，每个子对象的 m_Father 都指向已释放的内存。（Unity
+    /// 是连整棵子树一起销毁；这里是刻意的选择，改动前先想清楚谁会依赖它。）
+    ///
+    /// 同一帧重复销毁同一个对象是安全的（内部去重）。
+    ZFUNCTION(Name="Destroy")
+    static void DestroyObject(GameObject* gobject);
 
     void addComponent(Component* component)
     {

@@ -41,6 +41,7 @@
 
 #include <cstddef>
 #include <cstdio>
+#include <filesystem>
 #include <string>
 #include <type_traits>
 #include <utility>
@@ -366,6 +367,34 @@ namespace ZScript
             apis->get_value_string_utf8(env, v, &out[0], &capacity);
             out.resize(len);
             return out;
+        }
+    };
+
+    // A path crosses the boundary as a plain string, but the *direction* matters:
+    // ToJs goes through generic_string() so scripts always see forward slashes,
+    // while FromJs accepts whatever the script hands over. Without the
+    // generic_string() the same asset would surface as "a/b.prefab" on Linux and
+    // "a\\b.prefab" on Windows, and any script that compares or concatenates
+    // paths would silently break on exactly one platform.
+    template <>
+    struct Converter<std::filesystem::path>
+    {
+        static pesapi_value ToJs(pesapi_ffi* apis, pesapi_env env, const std::filesystem::path& v)
+        {
+            const std::string s = v.generic_string();
+            return apis->create_string_utf8(env, s.c_str(), s.size());
+        }
+        static std::filesystem::path FromJs(pesapi_ffi* apis, pesapi_env env, pesapi_value v)
+        {
+            std::size_t len = 0;
+            apis->get_value_string_utf8(env, v, nullptr, &len);
+            if (len == 0)
+                return {};
+            std::string out(len + 1, '\0');
+            std::size_t capacity = len + 1;
+            apis->get_value_string_utf8(env, v, &out[0], &capacity);
+            out.resize(len);
+            return std::filesystem::path(out);
         }
     };
 

@@ -467,10 +467,28 @@ void Level::Tick(float delta_time)
             id_object_pair.second->Tick(delta_time);
         }
     }
+
+    // 运行时生成的对象（Instantiate 产物）不在主表里，单独 Tick。
+    //
+    // 这段遍历依赖 Destroy 是**延迟**的（帧末统一执行）：如果脚本在某个对象的
+    // Tick 里 Destroy 了这张表里的另一个对象、而销毁是立即的，这里正在持有的
+    // 迭代器会当场失效。GameObject::Destroy 走延迟队列正是为了保住这一点。
+    for (const auto& id_object_pair : m_RuntimeGObjects)
+    {
+        if (id_object_pair.second != nullptr)
+        {
+            id_object_pair.second->Tick(delta_time);
+        }
+    }
+
     if (m_CurrentActiveCharacter && g_isPlaying)
     {
         m_CurrentActiveCharacter->Tick(delta_time);
     }
+
+    // 所有 Tick 走完才销毁。脚本在某个对象的 OnUpdate 里 Destroy 另一个对象时，
+    // 上面的遍历手里正好拿着那张表的迭代器 —— 立即销毁会让它们当场失效。
+    FlushPendingDestroys();
 
     std::shared_ptr<PhysicsScene> physics_scene = m_PhysicsScene.lock();
     if (physics_scene)
@@ -561,6 +579,182 @@ void Level::SetMainCamera(GObjectID go_id)
         }
 
         camera_component->SetMainCamera(object_pair.first == go_id);
+    }
+}
+
+bool Level::RegisterRuntimeGObject(GameObject* gobject)
+{
+    if (gobject == nullptr)
+    {
+        LOG_ERROR(ZLevel, "RegisterRuntimeGObject: null object");
+        return false;
+    }
+    if (gobject->GetID() == k_invalid_gobject_id)
+    {
+        LOG_ERROR(ZLevel, "RegisterRuntimeGObject: '{}' has no GObjectID", gobject->GetName().c_str());
+        return false;
+    }
+
+    const auto inserted = m_RuntimeGObjects.emplace(gobject->GetID(), gobject);
+    if (!inserted.second)
+    {
+        // 走到这里几乎一定是调用方忘了给 clone 重新分配 GObjectID：序列化往返
+        // 会把模板的 m_Id 一起拷过来，两次 Instantiate 同一个 prefab 就会撞 id。
+        // 撞了不强行覆盖 —— 覆盖会悄悄丢掉前一个对象的唯一引用（本表是非拥有的，
+        // 丢了就再也找不到它，也就永远无法 Destroy，等于泄漏 + 悬挂两个错误）。
+        LOG_ERROR(ZLevel,
+                  "RegisterRuntimeGObject: id {} ('{}') already registered to '{}' — "
+                  "the clone did not get a fresh GObjectID",
+                  gobject->GetID(),
+                  gobject->GetName().c_str(),
+                  inserted.first->second->GetName().c_str());
+        return false;
+    }
+    return true;
+}
+
+bool Level::UnregisterRuntimeGObject(GObjectID go_id)
+{
+    return m_RuntimeGObjects.erase(go_id) != 0;
+}
+
+GameObject* Level::FindRuntimeGObject(GObjectID go_id) const
+{
+    const auto iter = m_RuntimeGObjects.find(go_id);
+    return iter != m_RuntimeGObjects.end() ? iter->second : nullptr;
+}
+
+GameObject* Level::FindGObjectByName(const eastl::string& name) const
+{
+    if (name.empty())
+    {
+        return nullptr;
+    }
+
+    for (const auto& id_object_pair : m_Gobjects)
+    {
+        if (id_object_pair.second != nullptr && id_object_pair.second->GetName() == name)
+        {
+            return id_object_pair.second.get();
+        }
+    }
+
+    for (const auto& id_object_pair : m_RuntimeGObjects)
+    {
+        GameObject* gobject = id_object_pair.second;
+        if (gobject != nullptr && gobject->GetName() == name)
+        {
+            return gobject;
+        }
+    }
+
+    return nullptr;
+}
+
+void Level::QueueDestroy(GObjectID go_id)
+{
+    if (go_id == k_invalid_gobject_id)
+    {
+        return;
+    }
+    // 同一帧里重复 Destroy 同一个对象比想象中常见：两个 Behaviour 都请求销毁它，
+    // 或者脚本在 OnUpdate 里连着调了两次。不去重的话第二次会去碰一个已经析构的
+    // 对象 —— 而销毁是延迟的，第二次请求到达时对象可能还没死，于是看起来"能跑"，
+    // 直到某次顺序变了才崩。
+    if (std::find(m_PendingDestroys.begin(), m_PendingDestroys.end(), go_id) != m_PendingDestroys.end())
+    {
+        return;
+    }
+    m_PendingDestroys.push_back(go_id);
+}
+
+void Level::FlushPendingDestroys()
+{
+    if (m_PendingDestroys.empty())
+    {
+        return;
+    }
+
+    // 先换出来再处理：销毁过程里可能有人再 QueueDestroy（例如某个组件的
+    // OnDestroy 又销毁别的对象），那属于下一帧的事，不该在这一轮里被顺手做掉。
+    std::vector<GObjectID> batch;
+    batch.swap(m_PendingDestroys);
+
+    for (const GObjectID go_id : batch)
+    {
+        // 两个来源的销毁路径**不同**，混用必错：
+        //   主表对象   —— shared_ptr 是唯一持有者，erase 掉 map 条目就析构了。
+        //                 再调一次 ObjectManager::Destroy 是双重释放。
+        //   运行时对象 —— ObjectManager::Produce（= new）出来的，归 ObjectManager
+        //                 管，必须显式 Destroy；只 erase 会泄漏，它的组件还全
+        //                 留在 ObjectManager 的表里。
+        const bool is_runtime = m_RuntimeGObjects.find(go_id) != m_RuntimeGObjects.end();
+
+        GameObject* gobject = nullptr;
+        if (is_runtime)
+        {
+            gobject = FindRuntimeGObject(go_id);
+        }
+        else
+        {
+            const auto iter = m_Gobjects.find(go_id);
+            gobject = (iter != m_Gobjects.end()) ? iter->second.get() : nullptr;
+        }
+        if (gobject == nullptr)
+        {
+            continue;  // 已经被别的路径销毁了（例如同一帧里关卡卸载）
+        }
+
+        if (Transform* transform = gobject->GetTransform())
+        {
+            // 1) 子对象先脱离。父 Transform 马上就没了，留在它的 m_Children 里
+            //    会让每个子对象的 m_Father 指向已释放的内存。这里把子对象提升到
+            //    场景根 —— Unity 是连整棵子树一起销毁，我们刻意只销毁指定的那
+            //    一个（GameObject::DestroyObject 的注释里有说明）。
+            std::vector<Transform*> children;
+            children.reserve(transform->GetChildCount());
+            for (const PPtr<Transform>& child : transform->GetChildren())
+            {
+                if (Transform* child_transform = child)
+                {
+                    children.push_back(child_transform);
+                }
+            }
+            for (Transform* child_transform : children)
+            {
+                child_transform->SetParent(nullptr, Transform::kWorldPositionStays);
+            }
+
+            // 2) 自己也从父的 children 里摘掉。SetParent 内部会走
+            //    DetachFromParentList + UpdateSceneRootRegistration，所以
+            //    TransformSceneRoots 的注册也一并更新了。
+            transform->SetParent(nullptr, Transform::kWorldPositionStays);
+        }
+
+        // 3) 渲染侧。Level::FlushRenderDeletes 是卸载时批量发的，单个对象要自己
+        //    发一条删除，否则它的 render entity 会留在场景里渲染一个野对象。
+        if (auto render_system = GET_SYSTEM(RenderSystem))
+        {
+            RenderSwapData& swap_data = render_system->GetSwapContext().GetLogicSwapData();
+            swap_data.AddDeleteGameObject(GameObjectDesc(go_id, {}));
+        }
+
+        // 4) 摘表 / 销毁
+        if (is_runtime)
+        {
+            m_RuntimeGObjects.erase(go_id);
+            // Produce() 内部是 new T()，Apple 上全局 operator new 故意不接管
+            // mimalloc —— 所以必须走 ObjectManager::Destroy（= delete），
+            // 不能用 MemoryManager::DestroyObject。见 PrefabUtility.cpp:703。
+            if (ObjectManager* object_manager = GET_SYSTEM(ObjectManager))
+            {
+                object_manager->Destroy(gobject);
+            }
+        }
+        else
+        {
+            DeleteGObjectByID(go_id);  // erase -> shared_ptr 析构
+        }
     }
 }
 
