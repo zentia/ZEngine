@@ -191,6 +191,11 @@ protected:
     {
         return static_cast<T*>(m_Widget.get());
     }
+    template<typename T>
+    const T* GetSlateAs() const
+    {
+        return static_cast<const T*>(m_Widget.get());
+    }
 
     ZSlate::EVisibility m_Visibility {ZSlate::EVisibility::Visible};
     bool m_Focusable {false};

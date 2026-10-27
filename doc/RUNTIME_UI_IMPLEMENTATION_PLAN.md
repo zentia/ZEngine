@@ -248,10 +248,32 @@ UMG 用 ZSlate flow layout，无 Unity Anchor。已落地为 `UMG/Layout/UMGAnch
 
 ## 4. P2 落地：内容广度
 
-- **缺口 5**：补 `UProgressBar`（复用 ZSlate `SProgressBar`）、`UComboBox`（复用 `SComboBox`）、
-  `UTabControl`（复用 Docking tab）。每个 widget = 一个 `UWidget` 子类 + `RebuildWidget` + 序列化，
-  照 `UButton.h` 模板抄，单个约 80-120 行。
-- **缺口 7**：`UUserWidget` 加 `SafeZone` 包装（读 viewport 尺寸 - 系统安全区），主机/移动端用。
+### ✅ 缺口 5 + 缺口 7（2026-10-27，widget 广度已落地）
+
+四个 widget 已加，全部照 `UButton.h`/`UImage.h` 模板（`UWidget` 子类 + `RebuildWidget` + 序列化），
+ZRuntime 干净编译，并已注册进 `CreateWidgetByClassName`：
+
+- **`Widgets/UProgressBar.h`** → `ZSlate::SProgressBar`。`Value`(0..1) + 横/竖向 + 三色 + 边框。
+- **`Widgets/UComboBox.h`** → `ZSlate::SComboBox<std::string>`。字符串选项（`\n` join 序列化）+
+  选中项 + 占位符 + 尺寸 + `OnSelectionChanged`（快照回调，不捕 `this`）。
+- **`Widgets/UTabControl.h`** → `ZSlate::SDockingArea`。每个子 widget = 一个 tab（label 取
+  `TabLabels[i]`/子名/`Tab N`），`CanCloseTabs`。子 widget 是 tab 内容。
+- **`Widgets/USafeZone.h`**（缺口 7）→ `ZSlate::SBorder`（`DrawBackground=false`，安全区 inset 作
+  Padding）。单内容面板，把子 widget 推进可见区。`SetUniformPadding` 便捷对称 inset。
+
+**顺带修复**：`UWidget::GetSlateAs<T>()` 加 `const` 重载（`UComboBox::GetSelected()` 在 const
+`SerializeProperties` 里读 Slate 值需要它）。
+
+**仍待真机（留清单）**：
+1. **UTabControl 活动页读回**：`SDockingArea` 未暴露 active-tab 指针/index，用户点别的 tab 后
+   `GetActiveIndex()` 仍返回 wrapper 记的旧值。需给 `SDockingArea` 加 active-index 访问器。
+2. **USafeZone 真实安全区**：inset 目前是手填像素；读 per-platform 系统安全区（notch/圆角/overscan）
+   每帧喂进字段属渲染/窗口绑定。
+
+---
+
+> 之前 P2 计划里的"每个 widget 单个约 80-120 行"已兑现；剩余可做的 widget（如 UListView/UTreeView）
+> 依赖 ZSlate Views 子系统，按需再补。
 
 ---
 

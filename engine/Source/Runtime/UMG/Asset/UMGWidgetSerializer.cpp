@@ -8,10 +8,14 @@
 #include "Runtime/UMG/Widgets/UBoxPanel.h"
 #include "Runtime/UMG/Widgets/UButton.h"
 #include "Runtime/UMG/Widgets/UCheckBox.h"
+#include "Runtime/UMG/Widgets/UComboBox.h"
 #include "Runtime/UMG/Widgets/UEditableText.h"
 #include "Runtime/UMG/Widgets/UImage.h"
 #include "Runtime/UMG/Widgets/UOverlay.h"
+#include "Runtime/UMG/Widgets/UProgressBar.h"
+#include "Runtime/UMG/Widgets/USafeZone.h"
 #include "Runtime/UMG/Widgets/UScrollBox.h"
+#include "Runtime/UMG/Widgets/UTabControl.h"
 #include "Runtime/UMG/Widgets/USizeBox.h"
 #include "Runtime/UMG/Widgets/USlider.h"
 #include "Runtime/UMG/Widgets/USpacer.h"
@@ -145,6 +149,12 @@ std::shared_ptr<UWidget> CreateWidgetByClassName(const std::string& class_name)
         return std::make_shared<UImage>();
     if (class_name == "CheckBox")
         return std::make_shared<UCheckBox>();
+    if (class_name == "ComboBox")
+        return std::make_shared<UComboBox>();
+    if (class_name == "ProgressBar")
+        return std::make_shared<UProgressBar>();
+    if (class_name == "TabControl")
+        return std::make_shared<UTabControl>();
     if (class_name == "Slider")
         return std::make_shared<USlider>();
     if (class_name == "EditableText")
@@ -163,6 +173,8 @@ std::shared_ptr<UWidget> CreateWidgetByClassName(const std::string& class_name)
         return std::make_shared<UScrollBox>();
     if (class_name == "Overlay")
         return std::make_shared<UOverlay>();
+    if (class_name == "SafeZone")
+        return std::make_shared<USafeZone>();
     return nullptr;
 }
 
