@@ -10,10 +10,16 @@
 // Printable keys (letters, digits, punctuation) use ASCII values.
 // Function and special keys use values >= 256.
 
+#include "Runtime/BaseClasses/ObjectMacros.h"
+
 namespace KeyCodes
 {
     // ===== Printable keys (ASCII-compatible) =====
 
+    // 导出到脚本：脚本写 `Input.GetKeyDown(Key.W)`。
+    // ZENUM 支持"文件作用域或恰好一个具名 namespace"，KeyCodes 正好是一个
+    // namespace，所以不需要为了导出而把这套键码复制一份。
+    ZENUM()
     enum class Key : int
     {
         Space            = 32,  // ' '

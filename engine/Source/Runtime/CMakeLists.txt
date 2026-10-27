@@ -977,6 +977,14 @@ list(REMOVE_ITEM SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Scripting/ScriptTime/Test/ScriptTimeSmokeTest.cpp")
 list(REMOVE_ITEM REGULAR_SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Scripting/ScriptTime/Test/ScriptTimeSmokeTest.cpp")
+# 同上：脚本输入 API 冒烟测试的 main carve-out。它自己构造一个
+# EnhancedInputSystem（不 Initialize，不碰 GLFW），纯 CPU、headless。
+# Only built when ZENGINE_BUILD_SCRIPT_INPUT_SMOKE_TEST=ON (see
+# Scripting/ScriptInput/Test/CMakeLists.txt)。
+list(REMOVE_ITEM SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Scripting/ScriptInput/Test/ScriptInputSmokeTest.cpp")
+list(REMOVE_ITEM REGULAR_SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Scripting/ScriptInput/Test/ScriptInputSmokeTest.cpp")
 
 # Nanite 页池簿记冒烟测试的 main carve-out（同理由）。它自带 main()，由
 # ZENGINE_BUILD_NANITE_PAGEPOOL_SMOKE_TEST 单独控制（见
@@ -2031,6 +2039,13 @@ add_subdirectory(Scripting/ScriptMath/Test)
 # timeScale：它是脚本唯一能改变世界推进速度的状态，写错就是物理与脚本各按
 # 一套速度走。纯 CPU、headless。
 add_subdirectory(Scripting/ScriptTime/Test)
+
+# 脚本输入 API 冒烟测试。Own main(); carved out of the ZRuntime glob above and
+# built only when ZENGINE_BUILD_SCRIPT_INPUT_SMOKE_TEST=ON。手工投递
+# OnKey / OnMouseButton / OnScroll / OnTouch 再 Tick，钉住"按下边沿只活一帧"
+# 与"REPEAT 不算新按下"这两条 —— 违反前者会让一次按键丢事件，违反后者会让
+# "按一次跳一下"变成"按住每帧都跳"。
+add_subdirectory(Scripting/ScriptInput/Test)
 
 # =============================================================================
 # ASTC texture decompression support (Phase 6)

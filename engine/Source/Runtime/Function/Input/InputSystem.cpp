@@ -27,6 +27,14 @@ void InputSystem::OnCursorPos(double current_cursor_x, double current_cursor_y)
     // Kept for API compatibility.
 }
 
+void InputSystem::EndFrame()
+{
+    if (m_EnhancedInput)
+    {
+        m_EnhancedInput->EndFrame();
+    }
+}
+
 void InputSystem::clear()
 {
     m_CursorDeltaX = 0;

@@ -157,6 +157,16 @@ bool Application::TickOneFrame(float simulation_delta_time, float frame_delta_ti
         }
     }
 
+    // 输入的帧末滚动：**必须**在 PollEvents 之前。事件是 PollEvents 投递的，
+    // 滚完之后到达的事件会留到下一帧被读到；反过来的话（先 Poll 再滚）本帧
+    // 投的事件刚进来就被清掉了。
+    // 也不受 should_update_logic 影响：暂停时同样要滚，否则暂停期间攒下的
+    // 边沿会在恢复那一帧一次性全部触发。
+    if (auto* input_system = GET_SYSTEM(InputSystem))
+    {
+        input_system->EndFrame();
+    }
+
     GET_SYSTEM(WindowSystem)->PollEvents();
 
     // Window title is owned by the editor (scene name + dirty flag). Standalone
