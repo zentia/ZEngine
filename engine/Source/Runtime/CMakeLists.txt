@@ -960,6 +960,15 @@ list(REMOVE_ITEM SOURCE_FILES
        "${CMAKE_CURRENT_SOURCE_DIR}/Function/AI/Test/ObjectDefinitionMigrator.cpp")
   list(REMOVE_ITEM REGULAR_SOURCE_FILES
        "${CMAKE_CURRENT_SOURCE_DIR}/Function/AI/Test/ComponentRegistryCheck.cpp")
+# 脚本数学 API 冒烟测试的 main carve-out（同理由）。它自带 main()，而且要链
+# ZRuntime（ScriptMath 的三个类是 ZCLASS，反射注册要 Object），绝不能被
+# whole-archive 进 ZRuntime。Only built when
+# ZENGINE_BUILD_SCRIPT_MATH_SMOKE_TEST=ON (see
+# Scripting/ScriptMath/Test/CMakeLists.txt)。纯 CPU，headless。
+list(REMOVE_ITEM SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Scripting/ScriptMath/Test/ScriptMathSmokeTest.cpp")
+list(REMOVE_ITEM REGULAR_SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Scripting/ScriptMath/Test/ScriptMathSmokeTest.cpp")
 
 # UGUI control layer retired (P4). The shared GPU render layer + Font/UITypes/
 # WindowUI moved to Runtime/UI/ and are now picked up by the main GLOB_RECURSE
@@ -1978,6 +1987,12 @@ add_subdirectory(Function/Render/Test)
 # built only when ZENGINE_BUILD_SPINE_IMPORT_TEST=ON. Pure CPU (atlas + json -> bake),
 # so it needs no GPU and no window.
 add_subdirectory(Function/Render/Spine/Test)
+
+# 脚本数学 API 冒烟测试。Own main(); carved out of the ZRuntime glob above and
+# built only when ZENGINE_BUILD_SCRIPT_MATH_SMOKE_TEST=ON. 三个类的方法全是
+# static，所以这个测试直接调它们，根本不经过脚本运行时 —— 纯 CPU、headless，
+# 每台机器都能跑。它链 ZRuntime（ScriptMath 是 ZCLASS，要 Object 的反射注册）。
+add_subdirectory(Scripting/ScriptMath/Test)
 
 # =============================================================================
 # ASTC texture decompression support (Phase 6)

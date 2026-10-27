@@ -3,6 +3,10 @@
 `GameObject.Instantiate` / `Find` / `Destroy` / `SetActive`。这四个之前一个都没有 ——
 脚本只能从 `this.gameObject` 出发，拿不到场景里别的对象，创建不了对象，也关不掉对象。
 
+> 配套：向量 / 旋转 / 标量的运算在 `doc/SCRIPT_MATH_API.md` —— 脚本侧拿到的
+> `Vector3` 是纯数据（一个方法都没有），要算东西得用那里的 `VectorMath` /
+> `QuaternionMath` / `Mathf`。
+
 ```typescript
 const bullet = GameObject.Instantiate("Assets/Prefabs/Bullet.prefab");
 bullet.transform.position = { x: 0, y: 0, z: 0 };
