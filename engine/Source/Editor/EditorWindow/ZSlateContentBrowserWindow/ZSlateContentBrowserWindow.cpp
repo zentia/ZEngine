@@ -1027,6 +1027,16 @@ void ZSlateContentBrowserWindow::OpenContextMenuFor(EditorFileNode* node, const 
             menu.AddItem("Create Material", [this, n]() { ContentBrowserAssetActions::RequestMaterialFromShader(Ctx(), n); }, s);
             menu.AddSeparator(s);
         }
+        else if (n->m_FileExtension == "prefab")
+        {
+            // A Variant is to a prefab what a subclass is to a class: it starts
+            // out identical and diverges as you edit it. Only .prefab (the YAML
+            // authoring format) has an editable enough graph to variant.
+            menu.AddItem("Create Prefab Variant", [this, n]() {
+                ContentBrowserAssetActions::CreatePrefabVariant(Ctx(), n);
+            }, s);
+            menu.AddSeparator(s);
+        }
         else if (is_controller)
         {
             // PR-SK3: a controller is only editable in the Animator panel, so

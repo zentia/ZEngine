@@ -23,6 +23,11 @@ namespace ContentBrowserAssetActions
     void RequestMaterialFromShader(ContentBrowserContext& ctx, EditorFileNode* node);
     void ExecutePendingMaterialFromShader(ContentBrowserContext& ctx);
 
+    /// Create a Prefab Variant of `node` (which must be a .prefab) next to it.
+    /// The new asset starts out identical to its base (zero overrides) and
+    /// diverges as the user edits it. A Variant of a Variant is allowed.
+    void CreatePrefabVariant(ContentBrowserContext& ctx, EditorFileNode* node);
+
     void CreateNewAsset(ContentBrowserContext& ctx, const std::string& asset_type);
 
     bool CanRenameNode(const ContentBrowserContext& ctx, const EditorFileNode* node);

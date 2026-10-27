@@ -770,11 +770,18 @@ GameObject* PrefabUtilityEditor::UnpackPrefabInstance(PrefabInstance* instance)
 // -------------------------------------------------------------------------------------
 // We walk the variant chain bottom-up to find the deepest non-variant base, then
 // instantiate it once via InstantiateAsPrefab (which seeds the corresponding-source
-// map). After that we no longer need the Variant ancestor's modifications to be
-// stored on PrefabAsset (Phase 3 omits storing variant-overrides on the asset
-// itself — see doc/PrefabSystem_Design.md §3.4 for the rationale). The Variant
-// asset pointer becomes the `m_SourcePrefab` of the resulting PrefabInstance, so
-// future Apply/Revert calls target the Variant, not its base.
+// map). Then we apply every link's overrides on top, base -> ... -> variant, so a
+// nearer link wins on the same field.
+//
+// 2026-10-27: the old comment here said "we no longer need the Variant ancestor's
+// modifications to be stored on PrefabAsset". That was wrong and it is why Variant
+// was dead code — nothing ever applied them. Modifications now live in
+// PrefabAsset::m_variant_overrides (NOT on PrefabInstance, which is
+// kTypeIsEditorOnly and therefore invisible to the player build), and this function
+// applies them through the same Runtime helper `PrefabUtility::Instantiate` uses.
+//
+// The Variant asset pointer becomes the `m_SourcePrefab` of the resulting
+// PrefabInstance, so future Apply/Revert calls target the Variant, not its base.
 // =====================================================================================
 
 PrefabInstance* PrefabUtilityEditor::InstantiateVariant(PrefabAsset* variant)
@@ -812,15 +819,90 @@ PrefabInstance* PrefabUtilityEditor::InstantiateVariant(PrefabAsset* variant)
     if (instance == nullptr)
         return nullptr;
 
+    // Apply the chain's overrides on top. Every link's `target` names an object in
+    // the DEEPEST base's graph, which is exactly what the corresponding-source map
+    // is keyed by — so one map serves the whole chain.
+    std::vector<PrefabAsset*> chain;
+    if (!PrefabUtility::ResolveVariantChain(variant, chain))
+    {
+        LOG_ERROR(ZPrefab, "InstantiateVariant: '{}' has a broken variant chain — nothing instantiated",
+                  variant->name.c_str());
+        return nullptr;
+    }
+
+    std::unordered_map<Object*, Object*> source_to_clone;
+    for (const auto& entry : instance->GetCorrespondingSourceMap())
+    {
+        Object* source = static_cast<Object*>(entry.source_object);
+        Object* clone = static_cast<Object*>(entry.instance_object);
+        if (source != nullptr && clone != nullptr)
+        {
+            source_to_clone[source] = clone;
+        }
+    }
+
+    const int applied = PrefabUtility::ApplyVariantOverrides(chain, source_to_clone);
+
     // Re-point m_SourcePrefab at the variant we were called with so future
     // Apply pushes overrides into `variant`, not into `deepest`.
     instance->SetSourcePrefab(PPtr<PrefabAsset>(variant));
 
     LOG_INFO(ZPrefab,
-             "InstantiateVariant: instantiated '{}' (base='{}'); source_prefab=variant, corresponding_source=base",
+             "InstantiateVariant: instantiated '{}' (base='{}'); {} variant override(s) applied; "
+             "source_prefab=variant, corresponding_source=base",
              variant->name.c_str(),
-             deepest->name.c_str());
+             deepest->name.c_str(),
+             applied);
     return instance;
+}
+
+PrefabAsset* PrefabUtilityEditor::CreateVariant(PrefabAsset*                 base,
+                                                const std::filesystem::path& variant_path)
+{
+    if (base == nullptr)
+    {
+        LOG_ERROR(ZPrefab, "CreateVariant: base asset is null");
+        return nullptr;
+    }
+    if (variant_path.empty())
+    {
+        LOG_ERROR(ZPrefab, "CreateVariant: variant_path is empty");
+        return nullptr;
+    }
+
+    const eastl::string variant_name(variant_path.stem().string().c_str());
+
+    // The header is only a vehicle for the write: Produce() gives it no
+    // path-derived instance ID, so what the asset registry / PPtr resolution
+    // needs is the copy that comes back off disk.
+    PrefabAsset* variant = PrefabUtility::CreateVariantAsset(base, variant_name);
+    if (variant == nullptr)
+    {
+        return nullptr;
+    }
+
+    const bool saved = PrefabUtility::SaveVariantAsset(variant, variant_path);
+
+    // Produce() pairs with ObjectManager::Destroy — pairing it with
+    // MemoryManager::DestroyObject crashes in mi_usable_size on Apple.
+    GET_SYSTEM(ObjectManager)->Destroy(variant);
+
+    if (!saved)
+    {
+        return nullptr;
+    }
+
+    PrefabAsset* persisted = PrefabUtility::LoadPrefabAsset(variant_path);
+    if (persisted == nullptr)
+    {
+        LOG_ERROR(ZPrefab, "CreateVariant: wrote '{}' but could not read it back",
+                  variant_path.generic_string());
+        return nullptr;
+    }
+
+    LOG_INFO(ZPrefab, "CreateVariant: '{}' is now a variant of '{}'",
+             variant_path.generic_string(), base->name.c_str());
+    return persisted;
 }
 
 // =====================================================================================
