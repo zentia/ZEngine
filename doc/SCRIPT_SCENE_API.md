@@ -1,7 +1,7 @@
 # 脚本侧场景与生命周期 API
 
-`GameObject.Instantiate` / `Find` / `Destroy`。这三个之前一个都没有 —— 脚本只能从
-`this.gameObject` 出发，拿不到场景里别的对象，也创建不了对象。
+`GameObject.Instantiate` / `Find` / `Destroy` / `SetActive`。这四个之前一个都没有 ——
+脚本只能从 `this.gameObject` 出发，拿不到场景里别的对象，创建不了对象，也关不掉对象。
 
 ```typescript
 const bullet = GameObject.Instantiate("Assets/Prefabs/Bullet.prefab");
@@ -9,6 +9,10 @@ bullet.transform.position = { x: 0, y: 0, z: 0 };
 
 const player = GameObject.Find("Player");       // O(n)，别每帧调
 if (player != null) GameObject.Destroy(player);
+
+const boss = GameObject.Find("Boss");
+if (boss != null) boss.SetActive(false);        // 停 Tick + 停渲染 + 子树一起停
+if (boss != null && boss.activeInHierarchy) { /* ... */ }
 ```
 
 当前导出的 `GameObject`（`--class GameObject` 可以打印）：
@@ -24,6 +28,16 @@ GetTransform(): Transform
 Instantiate(prefab_path: string): GameObject     [static]
 Find(name: string): GameObject                   [static]
 Destroy(gobject: GameObject): void               [static]
+SetActive(active: boolean): void
+GetActiveSelf(): boolean
+IsActiveInHierarchy(): boolean
+```
+
+访问器属性（由 `ZSCRIPTPROPERTY` 发布，不是方法）：
+
+```
+activeSelf        : boolean   // 读写，等价于 SetActive / GetActiveSelf
+activeInHierarchy : boolean   // 只读（祖先决定，不能直接写）
 ```
 
 ---
@@ -91,7 +105,75 @@ render entity，以及一群 `m_Father` 指向已释放内存的子对象。
 Unity 的 `Destroy(gameObject)` 会连整棵子树一起销毁。这里**只销毁指定的那一个**，
 子对象提升到场景根。改动前先想清楚谁会依赖它。
 
-## 4. 两套类型表是独立的
+## 4. SetActive / activeSelf / activeInHierarchy
+
+### 存储复用 `Transform::m_Enabled`，不新建字段
+
+三个既有消费方已经把它当 activeSelf 用了：`GameObject::Tick`、
+`BaseRenderer::SubmitRenderState`、Timeline 的 activation clip
+（`runtime.saved_active = transform->isEnabled()`）。再建一个 `m_ActiveSelf`
+会立刻变成两个真值源 —— 一边开一边没开，谁也说不清。所以 `GameObject::SetActive`
+只是"写这个 flag + 触发副作用"的**唯一入口**。
+
+### 两个概念（与 Unity 同）
+
+| 概念 | 含义 | 谁的开关 |
+| --- | --- | --- |
+| `activeSelf` | 自己这一个开关，不管祖先 | 可读写（`SetActive` / `GetActiveSelf`） |
+| `activeInHierarchy` | 自己**且**所有祖先都开着 | 只读，由祖先决定 |
+
+父级被停用时，子对象的 `activeSelf` **不变**，只有 `activeInHierarchy` 变 false。
+这样父级恢复后，本来就关着的子对象不会跟着被打开。
+
+### 为什么必须由 GameObject 主动推给组件
+
+`GameObject::Tick` 在对象未激活时**直接 return**，组件的 `Tick` 再也跑不到。也就是说
+"停用"这件事在时序上没有任何一次 Tick 能替组件收尾 —— `BaseRenderer` 里那条
+"提交空 parts 撤掉渲染实体"的分支一直是**死代码**：对象停用了，画面上还留着。
+
+所以在 `Component` 上加了虚钩子 `OnOwnerActiveChanged(bool)`，`SetActive` 推一次。
+不排队到帧末：要的就是同一帧内画面跟着变。
+
+### 子树
+
+父级开关一变，整棵子树的 `activeInHierarchy` 都变了，所以 `SetActive` 沿
+`Transform::GetChildren()` 递归重推。每个后代推的是**自己算出来的**值，不是父级传下来的
+值 —— 本来就关着的那些，父级恢复后仍然该是关的。
+
+### 覆盖到的消费方
+
+| 消费方 | 位置 | 改了什么 |
+| --- | --- | --- |
+| Tick | `GameObject::Tick` | 从"只查自己的 Transform"改成 `IsActiveInHierarchy()` |
+| 网格渲染 | `BaseRenderer::SubmitRenderState` | `object_active` 改成 `IsActiveInHierarchy()`；新增 `OnOwnerActiveChanged` 重发 |
+| GPU-Spine | `SpineRenderer::PushTransform` / `OnOwnerActiveChanged` | `active` 改成 `IsActiveInHierarchy()`；停用后补推一次 `visible` |
+| 灯光 | `RenderScene::SyncPointLightsFromLevel` | 新增 `IsActiveInHierarchy()` 门禁（原来只查 `LightComponent::isEnabled()`） |
+| 相机 | `Level::GetMainCameraComponent` | 停用对象上的相机不再当主相机 |
+
+**没覆盖**：物理（Rigidbody 仍参与模拟）、已在播放的音频（停 Tick 不会停 voice）。
+这两个要接得改各自的注册/解注册，不在这一轮。
+
+### 入口收敛：别再直接写 Transform 的 flag
+
+| 位置 | 原来 | 现在 |
+| --- | --- | --- |
+| Timeline activation clip | `transform->SetEnabled(...)` | `target->SetActive(...)` |
+| Inspector 激活勾选框 | `xf->SetEnabled(active)` | `go->SetActive(active)` |
+| 撤销恢复激活状态 | `transform->SetEnabled(state.enabled)` | `owner->SetActive(state.enabled)` |
+
+三处都只写 flag、不通知组件，于是父级开关一变子树就留在旧状态上。
+
+这条不变量有自检钉着：
+
+```bash
+python3 scripts/check_active_api.py              # 检查
+python3 scripts/check_active_api.py --selftest   # 负向验证：确认检查不是摆设
+```
+
+`--selftest` 会把上面三处的旧写法注入一份临时副本，确认检查**会**失败 —— 一个正则
+写错或路径写错的检查会一直"通过"，比没有检查更糟。
+
+## 5. 两套类型表是独立的
 
 加一个新类型到脚本签名里要改**两处**，只改一处会在各自阶段报错：
 
@@ -104,7 +186,7 @@ Unity 的 `Destroy(gameObject)` 会连整棵子树一起销毁。这里**只销�
 `a/b.prefab`、Windows 上是 `a\b.prefab`，任何比较或拼接路径的脚本都会只在其中一个
 平台上静默失效。
 
-## 5. 量化
+## 6. 量化
 
 ```bash
 python3 scripts/quantify_script_binding.py                # 全量

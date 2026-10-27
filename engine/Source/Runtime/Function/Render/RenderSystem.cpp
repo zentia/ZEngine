@@ -534,8 +534,10 @@ void RenderSystem::Tick(float delta_time)
                     {
                         continue;
                     }
+                    // 与 SyncPointLightsFromLevel 同一套门禁：停用的对象上的灯不计数，
+                    // 否则这行日志会和实际参与渲染的灯数对不上（看着像漏光）。
                     if (const LightComponent* light = game_object->tryGetComponentConst(LightComponent);
-                        light != nullptr && light->isEnabled())
+                        light != nullptr && light->isEnabled() && game_object->IsActiveInHierarchy())
                     {
                         ++light_components;
                     }

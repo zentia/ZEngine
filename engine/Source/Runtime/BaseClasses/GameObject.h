@@ -171,6 +171,43 @@ public:
     ZFUNCTION(Name="Destroy")
     static void DestroyObject(GameObject* gobject);
 
+    // ---- 激活状态 ----------------------------------------------------------
+    //
+    // 存储**复用** Transform::m_Enabled（即 Component::m_Enabled），不新建字段。
+    // 三个既有消费方已经把它当 activeSelf 用了：GameObject::Tick、
+    // BaseRenderer::SubmitRenderState、TimelineDirector 的 activation clip
+    // （`runtime.saved_active = transform->isEnabled()`）。另起一个 m_ActiveSelf
+    // 会立刻变成两个真值源 —— 一边开了另一边没开，谁也说不清。
+    //
+    // 与 Unity 一样区分两个概念：
+    //   activeSelf        —— 自己这个开关，不管祖先；
+    //   activeInHierarchy —— 自己**且**所有祖先都开着，决定 Tick / 渲染 / 光照。
+    // 父级被停用时子对象的 activeSelf 不变，只有 activeInHierarchy 变 false，
+    // 所以父级恢复后"本来就关着"的子对象不会跟着被打开。
+
+    /// TS 入口：`go.SetActive(false)`，也可以 `go.activeSelf = false`。
+    ///
+    /// 值没变时直接返回（幂等）：不做无谓的子树遍历和渲染状态重发。
+    ZFUNCTION(Name="SetActive")
+    void SetActive(bool active);
+
+    ZFUNCTION(Name="GetActiveSelf")
+    bool GetActiveSelf() const;
+
+    ZFUNCTION(Name="IsActiveInHierarchy")
+    bool IsActiveInHierarchy() const;
+
+    ZSCRIPTPROPERTY(Name="activeSelf", Getter="GetActiveSelf", Setter="SetActive")
+    // 只读：层级状态是祖先决定的，不能直接写（Unity 同）。
+    ZSCRIPTPROPERTY(Name="activeInHierarchy", Getter="IsActiveInHierarchy")
+
+    /// 把新的激活状态推给本对象的组件，再沿 Transform 子树递归推给所有后代。
+    /// 每个对象推的是**自己算出来**的 activeInHierarchy，不是上一层传下来的值 ——
+    /// 后代里本来就关着的那些，父级恢复后仍然该是关的。
+    ///
+    /// 只由 SetActive 调用。
+    void NotifyActiveChanged();
+
     void addComponent(Component* component)
     {
         if (component != nullptr)

@@ -136,6 +136,15 @@ void RenderScene::SyncPointLightsFromLevel(Level* level)
         {
             continue;
         }
+        // 层级激活：停用（含父级被停用）的对象不该再发光。
+        //
+        // 这里以前只查 LightComponent 自己的 enabled，于是 SetActive(false) 之后
+        // 灯还亮着 —— 网格侧有 BaseRenderer::SubmitRenderState 挡着，灯光没有，
+        // 同一个 SetActive 在两处表现不一致。
+        if (!game_object->IsActiveInHierarchy())
+        {
+            continue;
+        }
         LightComponent* light_component = game_object->tryGetComponent(LightComponent);
         if (light_component == nullptr || !light_component->isEnabled())
         {

@@ -281,7 +281,10 @@ void TimelineDirector::EnterClip(TimelineClip* clip, ClipRuntime& runtime)
                 return;
             }
             runtime.saved_active = transform->isEnabled();
-            transform->SetEnabled(activation_clip->m_Active);
+            // 走 GameObject::SetActive 而不是直接 transform->SetEnabled：后者只写
+            // flag，不会通知组件，网格会留在画面上（GameObject::Tick 停用后直接
+            // return，BaseRenderer 再没机会撤实体）。SetActive 是唯一入口。
+            target->SetActive(activation_clip->m_Active);
             runtime.applied = true;
             break;
         }
@@ -338,10 +341,8 @@ void TimelineDirector::ExitClip(ClipRuntime& runtime)
                 runtime.applied = false;
                 if (GameObject* target = GetTargetObject(runtime.target_id))
                 {
-                    if (Transform* transform = target->tryGetComponent(Transform))
-                    {
-                        transform->SetEnabled(runtime.saved_active);
-                    }
+                    // 同 EnterClip：走 SetActive，别直接写 Transform 的 flag。
+                    target->SetActive(runtime.saved_active);
                 }
             }
             break;

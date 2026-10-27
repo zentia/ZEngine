@@ -101,6 +101,7 @@ public:
     void Tick(float delta_time) override;
     void OnSerializedFieldsUpdated() override;
     void SetEnabled(bool enabled) override;
+    void OnOwnerActiveChanged(bool active) override;
 
     /// TS 入口：`SpineRenderer.Of(this.gameObject)`。GameObject::GetComponent 的返回值在 JS 侧的静态类型是
     /// Component（绑定按声明类型发布），看不到本类的方法 ⇒ 需要一个声明为 SpineRenderer* 的入口（同 GetTransform）。
