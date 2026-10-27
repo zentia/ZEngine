@@ -45,7 +45,7 @@
 | C0 | **Vulkan `MainCameraPass` 崩溃根因修复** | 跨切面阻塞：解除 Vulkan 侧验证能力 | **✅ 已被 `7e5d2521` 修掉（2026-10-25 复核关闭）** | — | ★★★ 已关闭 |
 | C1 | **RenderGraph 接管流水线** | 帧图编译器：自动屏障、瞬态 RT 别名、剔除 | **✅ 已默认开·真机验证 PASS**（165 编译+92 执行断言；RP2 图路径 2026-10-26 翻默认开 `c0d1bcfc`，同帧 A/B 逐位等价 + soak 无异常，见 §2 落地记录·2.6） | 阶段一 RHI 注册表 | ★★★ 高价值/低风险 |
 | C2 | **RenderGraph → RP1**（`render_pass_refactor`） | RP1 三子pass 拆成 3 独立 pass，纳入图管理 | **✅ 已默认开·真机验证 PASS**（2.3 三分已在代码：3 独立 render pass/subpass 恒 0；2.4 compiler 200/200 + executor 121/121 已验。`DrawRP1WithGraph` 2026-10-26 翻默认开 `871878e3`，同帧 A/B `rp1.backup_odd` 逐位 IDENTICAL + soak 无异常，见 §2 落地记录·2.6） | **必须在 C1 之后** | ★★ 高价值/中风险 |
-| C3 | **Nanite 收尾** | 流送 → 几何压缩 → HiZ 遮挡 → 页池 | **大部分实现**（真 GPU dispatch 已有；几何压缩✅ + streaming✅ + **页池簿记层✅ 已落地 2026-10-26**（opt-in，`streaming_pool_budget_bytes>0`；显存上传待真机），见 §2 落地记录·2.5 页池；**HiZ CPU 侧✅ 已落地 2026-10-26**，见 §2 落地记录·2.5 HiZ；剩 HiZ GPU 侧——compute 生成金字塔 + GPU 遮挡剔除，需真机） | C1/C2 给其 RG 管理的目标 | ★★★ 高价值/中风险 |
+| C3 | **Nanite 收尾** | 流送 → 几何压缩 → HiZ 遮挡 → 页池 | **大部分实现**（真 GPU dispatch 已有；几何压缩✅ + streaming✅ + **页池簿记层✅ 已落地 2026-10-26**（opt-in，`streaming_pool_budget_bytes>0`；显存上传待真机），见 §2 落地记录·2.5 页池；**HiZ CPU 侧✅ 已落地 2026-10-26**，见 §2 落地记录·2.5 HiZ；**HiZ GPU 侧✅ 已落地 2026-10-27**：切法一 compute 生成金字塔 14/14、切法二 GPU 遮挡剔除 16/16，见 `doc/PHASE2_STEP2.5_HIZ_GPU.md` §6/§7；**页池 GPU 路径✅ 逐像素一致 13/13**。剩切法三（device-local+真 mip 纹理，可选打磨）与顶点去重（回归面>收益，主动推迟）） | C1/C2 给其 RG 管理的目标 | ★★★ 高价值/中风险 |
 | C4 | **Virtual Texture 接线** | 分页纹理虚拟化，从"孤儿"到可用 | **已实现但零消费者**（6 文件无外部引用、无 CVar、3 处构建排除） | C1/C2 的 RG 资源注册 | ★★ 高价值/中高风险 |
 | C5 | ~~**Vulkan `MainCameraPass` 崩溃根因修复**~~ | 跨切面阻塞：解除 Vulkan 侧验证能力 | **✅ 已被 `7e5d2521` 修掉（2026-10-25 复核关闭）** | — | ★★★ 已关闭（见 §2 step 2.0） |
 | C6 | **Lumen 收尾（SSR → GPU 化）** | 动态 GI + 反射；取 SSR 一半 + 首个 Lumen shader | **✅ CPU 侧已完整**（GI/反射/接线/CVar/发布桥全落地 + 7 smoke test；2026-10-25 复核，见 §2 落地记录·2.7）。剩 SSR/HWRT/首个 shader 全 GPU 侧 | C2 的 GBuffer/depth 声明 | ★★ 中价值/高风险（CPU 侧无活，剩 GPU 放最后） |
@@ -68,7 +68,7 @@
 | **2.2** | C1 | RenderGraph 扩面（ParticlePass / 后处理链） | 复用已验证机制；消除 `RENDER_GRAPH.md:15` 列举的手写屏障。 |
 | **2.3** | C2 | `render_pass_refactor`：RP1 三分 | **必须在 2.1 之后**——此时屏障/别名机制已在真机验证过，单独做它是高风险。 |
 | **2.4** | C2 | RenderGraph 接管 RP1 | 2.3 的直接收益兑现；解锁 Nanite/Lumen/VT 的图管理资源。**编译器层已于 2026-10-25 兑现**（见下方落地记录·2.4）：step 2.3（RP1 三分）此前已落地在代码（3 个独立 render pass，subpass 恒 0），本步骤把 RP1 真实拓扑声明进图（`BuildRp1Wiring`），`RenderGraphSmokeTest` group 19/20 断言执行序 + 9 条屏障（4+5+0）+ transient 生命周期，headless WASM 200/200 全绿；`RENDER_GRAPH.md:117`"图只能表达整段"的旧论断被推翻并加更新注记。**executor 层二次复核**：撤回上一版的"两处语义缺口"（RP1 只在 DX12/Metal 跑，INPUT_ATTACHMENT 在那里就是 SRV；Forward 的 blend 是固定功能，本就是 RenderTarget），并修掉一个真 bug——导入的深度图拿到 COLOR aspect 屏障、D32 拿到 STENCIL aspect（executor group 13/14 回归，红绿验证）。`DrawRP1WithGraph` 已实现（DX12 only；生产声明 `MainCameraRp1GraphDecl.h` 与测试共用，compiler 239/239 + executor 130/130，DX12 TU clang-cl 类型检查通过）。**2026-10-26 翻默认开**（`871878e3`）：同帧 A/B 抓帧 `rp1.backup_odd` 逐位 IDENTICAL + soak 无异常，见落地记录·2.6。 |
-| **2.5** | C3 | Nanite：streaming → 几何压缩 → HiZ 遮挡 | 三个子项风险递增、各自独立可验（streaming/压缩是纯 CPU 数据、可 headless 验；HiZ 是 GPU 侧需真机）；已有真 GPU dispatch 作基线。**几何压缩已于 2026-10-25 落地**（见下方落地记录）：新增 `GeometryCodec::{Raw,Quantized}` 有界有损量化编码，WASM headless 验证 67/67 全绿，vertex_data 10368→5208B、index_data 3456→1728B。**streaming 已于 2026-10-25 落地**（见下方落地记录）：`UpdateStreaming` 从 TODO 兑现为基于距离的叶子驻留判据，WASM headless 验证 77/77 全绿（含 10 项新增 streaming 断言）。剩 HiZ（GPU 侧需真机）。 |
+| **2.5** | C3 | Nanite：streaming → 几何压缩 → HiZ 遮挡 | 三个子项风险递增、各自独立可验（streaming/压缩是纯 CPU 数据、可 headless 验；HiZ 是 GPU 侧需真机）；已有真 GPU dispatch 作基线。**几何压缩已于 2026-10-25 落地**（见下方落地记录）：新增 `GeometryCodec::{Raw,Quantized}` 有界有损量化编码，WASM headless 验证 67/67 全绿，vertex_data 10368→5208B、index_data 3456→1728B。**streaming 已于 2026-10-25 落地**（见下方落地记录）：`UpdateStreaming` 从 TODO 兑现为基于距离的叶子驻留判据，WASM headless 验证 77/77 全绿（含 10 项新增 streaming 断言）。**HiZ GPU 侧 2026-10-27 已落地**（切法一 14/14 + 切法二 16/16，Vulkan headless，见 `doc/PHASE2_STEP2.5_HIZ_GPU.md`）。 |
 | **2.6** | C4 | VirtualTexture 接线（CVar 门控） | 孤岛子系统，不会回归现有路径；需要 2.4 的 RG 资源注册。**已于 2026-10-25 落地**（见下方落地记录）：9 处 TODO 里 6 处 CPU 侧填实（屏幕投影 mip/优先级重算/LRU 淘汰/统计/时间戳/世界足迹），3 处 GPU 侧（页上传/页表纹理）如实留作真机；加 `r.VirtualTexture.Enable` CVar 门控 + 帧循环 `UpdateVirtualTextureForFrame`（3 条 Tick 路径统一入口，默认关、Vulkan 编译门内、零回归）；headless WASM 验证 15/15 全绿。剩页上传/页表纹理（GPU 需真机）+ 2.4 的 RG 资源注册。 |
 | **2.7**（✅ CPU 侧已完整·无需动手） | C6 | Lumen：SSR + 首个 Lumen shader | 依赖 2.4 的 GBuffer/depth 声明；放最后，**只取 SSR 一半**。**HWRT/BLAS-TLAS 明确移出 Phase 2**（需独立专项）。**已于 2026-10-25 复核：Lumen 的整个 CPU 侧（GI + 反射 + 接线 + CVar + 发布桥）此前就已完整落地并有 7 个 smoke test**，见下方落地记录。剩 SSR/HWRT/首个 shader 全是 GPU 侧（需真机 + 2.4 的 GBuffer/depth），本步骤的 CPU 部分无活可干。 |
 | **穿插** | C7 | 平台窗口化收尾 / Timeline 四类片段 / Prefab §9.4 follow-ups | 渲染项卡在真机验证时用来保持节奏；每项都可独立编译演示，低风险。 |
@@ -417,7 +417,7 @@ covered_pool=2136 differing=0 max_channel_delta=0`，页池与稠密路径**逐�
 
 ---
 
-### 落地记录 · 2.5 HiZ（2026-10-26，CPU 侧；GPU 侧待真机）
+### 落地记录 · 2.5 HiZ（2026-10-26 CPU 侧；**2026-10-27 GPU 侧已落地**，见下 §2.5 HiZ GPU）
 
 **做了什么**：把 `NaniteHierarchicalZBuffer` 那组纯 TODO 桩（`UpdateDepthBuffer` / `BuildHierarchy` /
 `BuildMipLevel` / `IsOccluded` 全是空实现）兑现为**可运行的 CPU 侧 HiZ**——从一帧深度图构建层次 Z
@@ -448,6 +448,32 @@ max 归约/空输入）、mip 级别选择、区域采样、遮挡判据（近/�
 - `NaniteHierarchicalZBuffer::IsOccluded` 的 AABB→屏幕矩形投影是 CPU 侧近似（8 角点投影取包围盒 +
   物体最近深度）；相机横跨视锥的角点保守判可见。真实 GPU 版用 HiZ 纹理采样，精度更高。
 - 尚无驱动它的真实渲染帧（深度图从哪来、何时重建），属"核心已验、端到端待真实内容"。
+
+---
+
+### 落地记录 · 2.5 HiZ GPU（2026-10-27，Vulkan headless，本机 RTX 5080）
+
+完整记录见 **`doc/PHASE2_STEP2.5_HIZ_GPU.md`**（§6 切法一 / §7 切法二）。摘要：
+
+- **切法一**（commit `9c57cbef`）：新增 `nanite_hiz.comp` 两阶段 compute（phase 0 深度→mip0、
+  phase 1 2×2 max 下采样）+ `NaniteRenderer` 侧 GPU 金字塔资源。渲染一帧 → 读回 GPU 金字塔与 D32
+  深度 → 与 CPU `BuildHiZPyramid` 逐 texel 比对：**14/14，total_mismatch=0 max_abs_delta=0**。
+- **切法二**（commit `f67a6781`）：把 CPU 侧被遮挡簇判据逐行镜像进 `nanite_cluster_cull.comp`
+  （binding 7 只读 storage buffer + `hiz` vec4 常量），帧首剔除读**上一帧**金字塔（时间性 HiZ）。
+  新增 `NaniteHiZOcclusionABSmokeTest`：**16/16**，场景 B 画 10 簇 → 2 簇（正确遮挡 8 个后平面
+  簇），GBuffer 覆盖均 4096（**无破洞**）。
+
+**关键发现（与上面 CPU 侧记录的假设相反）**：`NaniteHiZ.h` 头注释假设 **reversed-Z**，但**真实深度
+缓冲是 standard-Z**（近=0、远=1）——证据：`MakePerspectiveMatrix` 给 `ret[2][2]=zfar/(znear-zfar)`、
+`ret[3][2]=-1`；深度清屏值 1.0（`NaniteRenderer.cpp:2189`）；`depthCompareOp=LESS`（`:1284`）。
+所以 GPU 判据是"物体最近点（8 角点最小 ndc.z）> 区域最远 texel + eps"才判遮挡，**与 CPU 侧的
+reversed-Z 判据方向相反**。这条已写进代码注释，勿再按 reversed-Z 改回去。
+
+**Nanite 全量回归 9 套全绿**（ClusterBuilder 77、GPUCulling 40、HiZAB 14、HiZOcclusionAB 16、
+PagePool / PagePoolAB / PageSlotTable / PageUploadPlanner / HiZ 全过），零 validation error。
+
+**剩**：切法三（device-local + 真 mip 纹理 + `textureLod`，把逐 texel 循环换成单次硬件采样，
+可选性能打磨）；顶点去重（`NaniteCluster.cpp:277`）按 §2 复扫结论主动推迟。
 
 ---
 
