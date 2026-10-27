@@ -257,9 +257,15 @@ public:
 
     /// 拆成三个欧拉角（度），读的是引擎自己的 GetPitch / GetYaw / GetRoll。
     ///
-    /// **没有反向的 Euler(x, y, z)**：这三个分量在 Z-up 下各自对应哪根轴，代码里
-    /// 读不出来（注释从 Ogre 照搬且互相矛盾），猜错就是静默算错。等真机验证确定
-    /// 了轴向再补。
+    /// **分量 -> 轴的映射已由 ScriptVMSmokeTest 的 C1 钉住**（绕 X 转 90 落在
+    /// x 分量、绕 Y 转 90 落在 z 分量、绕 Z 转 90 落在 y 分量）：
+    ///
+    ///     x = pitch = 绕 X
+    ///     y = yaw   = 绕 Z   ← Z-up 该有的样子，竖直轴是 Z
+    ///     z = roll  = 绕 Y
+    ///
+    /// 仍然**没有反向的 Euler(x, y, z)**：反向要先定死旋转顺序（YXZ 还是 ZYX），
+    /// 定错一样是静默算错，等真有需求再定。
     ZFUNCTION()
     static Vector3 ToEuler(const Quaternion& q)
     {
