@@ -91,10 +91,12 @@
 #include "Runtime/Resource/Asset/RuntimeAssetManager.h"
 #include "Runtime/Resource/Prefab/PrefabAsset.h"
 #include "Runtime/Resource/Prefab/PrefabUtility.h"
+#include "Runtime/Resource/Prefab/PropertyModification.h"
 
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <memory>
@@ -1311,6 +1313,309 @@ static void scenario_P18_positional_stream_symmetry()
     Check(checked > 20, "P18/types", "expected to round-trip the registered runtime types");
 }
 
+// ---- P19 helpers --------------------------------------------------------------------
+namespace
+{
+    int CountMeshRenderers(GameObject* go)
+    {
+        if (go == nullptr)
+            return -1;
+        int n = 0;
+        for (ImmediatePtr<Component>& slot : go->EditorGetComponentsRef())
+            if (Cast<MeshRenderer>(static_cast<Component*>(slot)) != nullptr)
+                ++n;
+        return n;
+    }
+
+    MeshRenderer* FirstMeshRenderer(GameObject* go)
+    {
+        if (go == nullptr)
+            return nullptr;
+        for (ImmediatePtr<Component>& slot : go->EditorGetComponentsRef())
+            if (auto* mr = Cast<MeshRenderer>(static_cast<Component*>(slot)))
+                return mr;
+        return nullptr;
+    }
+
+    /// First material name of a renderer ("<none>" when it has none) — the marker each
+    /// MeshRenderer in P19 is told apart by.
+    std::string MaterialOf(MeshRenderer* mr)
+    {
+        if (mr == nullptr)
+            return "<null>";
+        const auto& mats = mr->getSharedMaterialAssets();
+        return mats.empty() ? std::string("<none>") : std::string(mats[0].c_str());
+    }
+
+    MeshRenderer* MakeMeshRenderer(ObjectManager* om, const char* material)
+    {
+        auto* mr = static_cast<MeshRenderer*>(om->Produce(TypeOf<MeshRenderer>(), 0));
+        if (mr == nullptr)
+            return nullptr;
+        om->AllocateAndAssignInstanceID(mr);
+        SubMeshRes sub;
+        sub.m_MeshAsset = "Cube.obj";
+        mr->SetSubMeshes({sub});
+        mr->SetSharedMaterialAssets({material});
+        return mr;
+    }
+
+    bool IsPaired(const PrefabInstance* instance, const Object* instance_object)
+    {
+        return instance != nullptr && instance_object != nullptr &&
+               !instance->FindSourceForInstance(PPtr<Object>(const_cast<Object*>(instance_object))).IsNull();
+    }
+}  // namespace
+
+// A8: the structural half of a prefab instance's life — components added / suppressed on
+// an instance, and what Apply / Revert / Merge / the Inspector's row model do with them.
+// Runs against a real Variant (base <- variant) because that is where structure got
+// lost: A7 let a Variant carry added / removed components but Revert and Merge never
+// looked at them, Revert put back a suppressed component with the BARE source value,
+// and one field's Apply silently committed the instance's whole structure.
+static void scenario_P19_variant_structure()
+{
+    std::fprintf(stderr, "[P19] Variant structure: Revert / Merge / Apply / Inspector rows\n");
+    namespace M = PrefabOverrideModel;
+    std::error_code ec;
+    const std::filesystem::path base_path = "p19_base.prefab";
+    const std::filesystem::path variant_path = "p19_variant.prefab";
+    std::filesystem::remove(base_path, ec);
+    std::filesystem::remove(variant_path, ec);
+
+    ObjectManager* om = GET_SYSTEM(ObjectManager);
+    GameObject* root = MakeGameObject(om, "P19Root");
+    GameObject* child = MakeGameObject(om, "P19Child");
+    MeshRenderer* base_mr = MakeMeshRenderer(om, "Base.mat");
+    if (root == nullptr || child == nullptr || base_mr == nullptr)
+    {
+        Check(false, "P19", "authoring failed");
+        return;
+    }
+    TransformOf(child)->SetParent(TransformOf(root), false);
+    root->addComponent(base_mr);
+    root->SyncSerializedComponents();
+    base_mr->PostLoadResource(root);
+    Check(PrefabUtility::SaveAsPrefabAsset(root, base_path), "P19", "saving the base prefab failed");
+
+    PrefabAsset* base_asset = PrefabUtility::LoadPrefabAsset(base_path);
+    PrefabAsset* variant = base_asset != nullptr ? PrefabUtilityEditor::CreateVariant(base_asset, variant_path) : nullptr;
+    Check(base_asset != nullptr && variant != nullptr && variant->IsVariant(), "P19", "base / variant creation failed");
+    if (base_asset == nullptr || variant == nullptr || !variant->IsVariant())
+        return;
+    GameObject* base_root = base_asset->GetRootGameObject();
+    MeshRenderer* src_mr = FirstMeshRenderer(base_root);
+    Check(src_mr != nullptr && MaterialOf(src_mr) == "Base.mat", "P19", "the base root should carry the Base.mat renderer");
+    if (src_mr == nullptr)
+        return;
+
+    PrefabSceneBinding::Install();  // for the Level-based Merge below
+    Level level;
+
+    // ---- a fresh Variant instance mirrors the base ----
+    PrefabInstance* a = PrefabUtilityEditor::InstantiateVariant(variant);
+    PrefabInstance* c = PrefabUtilityEditor::InstantiateVariant(variant);  // kept un-applied: the Merge subject
+    if (a == nullptr || c == nullptr)
+    {
+        Check(false, "P19", "InstantiateVariant failed");
+        PrefabSceneBinding::Uninstall();
+        return;
+    }
+    GameObject* a_root = a->GetRootGameObject();
+    GameObject* a_child = FirstChild(a_root);
+    GameObject* c_root = c->GetRootGameObject();
+    GameObject* c_child = FirstChild(c_root);
+    Check(CountMeshRenderers(a_root) == 1 && CountMeshRenderers(a_child) == 0, "P19/inst",
+          "an un-applied Variant instance has the base's shape: renderer on the root, none on the child");
+    Check(!M::HasOverrides(a) && M::ListOverrides(a).empty(), "P19/inst", "a fresh instance has no overrides");
+
+    // ---- suppress + add, then the Inspector's row model ----
+    Check(PrefabUtilityEditor::SuppressSourceComponent(a, PPtr<Component>(src_mr)), "P19/rows", "suppressing the base renderer");
+    MeshRenderer* added = MakeMeshRenderer(om, "Added.mat");
+    Check(added != nullptr && PrefabUtilityEditor::AddComponentOverride(a, PPtr<GameObject>(a_child), added), "P19/rows",
+          "adding a renderer to the child");
+    Check(CountMeshRenderers(a_root) == 0 && CountMeshRenderers(a_child) == 1, "P19/rows", "instance shape after suppress + add");
+    Check(!IsPaired(a, added), "P19/rows", "an instance-only component has no source counterpart");
+
+    const std::vector<M::OverrideRow> rows = M::ListOverrides(a);
+    Check(M::HasOverrides(a) && rows.size() == 2, "P19/rows",
+          "a purely structural override must show up (it used to read \"0 overrides\")");
+    if (rows.size() == 2)
+    {
+        using Kind = M::OverrideRow::Kind;
+        Check(rows[0].kind == Kind::AddedComponent && rows[1].kind == Kind::RemovedComponent, "P19/rows", "row kinds: added then removed");
+        Check(rows[0].can_apply && rows[1].can_apply, "P19/rows", "on a Variant both can be applied");
+        Check(rows[0].label.find("P19Child") != eastl::string::npos, "P19/rows", "the added row names the host GameObject");
+        Check(rows[1].label.find("P19Root") != eastl::string::npos, "P19/rows",
+              "the removed row names the INSTANCE-side host (its target is the shared source)");
+    }
+
+    // ---- structural Revert: row by row ----
+    if (rows.size() == 2)
+    {
+        Check(M::RevertStructuralRow(a, rows[1]), "P19/revert", "reverting the removed-component row");
+        Check(CountMeshRenderers(a_root) == 1 && MaterialOf(FirstMeshRenderer(a_root)) == "Base.mat", "P19/revert",
+              "the suppressed renderer is back, with the base value");
+        Check(IsPaired(a, FirstMeshRenderer(a_root)) && a->GetRemovedComponents().empty(), "P19/revert",
+              "…paired with its source again, and no longer listed as removed");
+        Check(PrefabUtilityEditor::SuppressSourceComponent(a, PPtr<Component>(src_mr)), "P19/revert", "suppress it a second time");
+        int pairs_for_src = 0;
+        for (const auto& e : a->GetCorrespondingSourceMap())
+            if (e.source_object.GetInstanceID() == src_mr->GetInstanceID())
+                ++pairs_for_src;
+        Check(pairs_for_src == 0, "P19/revert",
+              "a suppressed component must leave no stale pair (one round trip used to leave it paired twice)");
+        Check(M::RevertStructuralRow(a, M::ListOverrides(a)[0]) && CountMeshRenderers(a_child) == 0 && a->GetAddedComponents().empty(),
+              "P19/revert", "reverting the added-component row detaches it");
+        Check(PrefabUtilityEditor::AddComponentOverride(a, PPtr<GameObject>(a_child), added), "P19/revert", "re-add for Apply below");
+    }
+
+    // ---- Revert All restores the whole shape ----
+    {
+        PrefabInstance* r = PrefabUtilityEditor::InstantiateVariant(variant);
+        GameObject* r_root = r != nullptr ? r->GetRootGameObject() : nullptr;
+        GameObject* r_child = FirstChild(r_root);
+        Check(r != nullptr && PrefabUtilityEditor::SuppressSourceComponent(r, PPtr<Component>(src_mr)) &&
+                  PrefabUtilityEditor::AddComponentOverride(r, PPtr<GameObject>(r_child), MakeMeshRenderer(om, "Local.mat")),
+              "P19/revertall", "setup");
+        const int n = PrefabUtilityEditor::Revert(r);
+        Check(n == 2, "P19/revertall", "Revert counts one suppressed + one added component");
+        Check(CountMeshRenderers(r_root) == 1 && CountMeshRenderers(r_child) == 0 && !M::HasOverrides(r), "P19/revertall",
+              "Revert All: shape equals the source again and no override is left");
+        Check(MaterialOf(FirstMeshRenderer(r_root)) == "Base.mat", "P19/revertall", "the re-introduced renderer carries the base value");
+    }
+
+    // ---- a re-introduced component carries the Variant chain's overrides on it ----
+    // The Variant overrides a field of the BASE renderer. Suppress that renderer on an
+    // instance, Revert: what comes back must be the Variant's value (9), not the bare
+    // base's (1) — a plain clone of the source would silently drop the variant layer.
+    {
+        PropertyModification layer;
+        // The locator cannot index into arrays of variable-size elements
+        // ("shared_materials[0]" does not resolve), so override the whole array: one
+        // string, laid out as [count=1][len=8]["Over.mat"] — the same 16 bytes as
+        // ["Base.mat"], which is what a same-size splice needs.
+        layer.target = PPtr<Object>(src_mr);
+        layer.property_path = eastl::string("shared_materials");
+        {
+            const int32_t one = 1, eight = 8;
+            layer.value_bytes.resize(16);
+            std::memcpy(layer.value_bytes.data(), &one, 4);
+            std::memcpy(layer.value_bytes.data() + 4, &eight, 4);
+            std::memcpy(layer.value_bytes.data() + 8, "Over.mat", 8);
+        }
+        variant->AddVariantOverride(layer);
+
+        PrefabInstance* q = PrefabUtilityEditor::InstantiateVariant(variant);
+        GameObject* q_root = q != nullptr ? q->GetRootGameObject() : nullptr;
+        Check(q != nullptr && MaterialOf(FirstMeshRenderer(q_root)) == "Over.mat", "P19/layer",
+              "precondition: the Variant's override is applied on instantiate (Base.mat -> Over.mat)");
+        Check(q != nullptr && PrefabUtilityEditor::SuppressSourceComponent(q, PPtr<Component>(src_mr)) &&
+                  CountMeshRenderers(q_root) == 0,
+              "P19/layer", "suppress the base renderer");
+        Check(q != nullptr && PrefabUtilityEditor::Revert(q) == 1 && CountMeshRenderers(q_root) == 1, "P19/layer",
+              "Revert brings it back");
+        Check(MaterialOf(FirstMeshRenderer(q_root)) == "Over.mat", "P19/layer",
+              "…carrying the Variant's override, not the bare base value (Base.mat)");
+
+        // Take the layer back off so the Apply section below starts from a clean Variant.
+        variant->GetVariantOverrides().pop_back();
+    }
+
+    // ---- Apply All commits the structure into the Variant ----
+    const M::ApplyReport applied = M::ApplyAll(&level, a);
+    Check(applied.applied == 2 && applied.saved, "P19/apply", "ApplyAll: one addition + one removal, file written");
+    Check(variant->GetVariantRemovedComponents().size() == 1 && variant->GetVariantAddedComponents().size() == 1, "P19/apply",
+          "the Variant now carries 1 removed / 1 added");
+    Check(!M::HasOverrides(a), "P19/apply", "the instance has nothing left to override");
+    Check(IsPaired(a, added), "P19/apply",
+          "the live component the user added is now paired with the Variant's new template — otherwise "
+          "the next Merge / Revert clones a SECOND copy onto the host");
+
+    // ---- a fresh instance of the applied Variant ----
+    PrefabInstance* b = PrefabUtilityEditor::InstantiateVariant(variant);
+    GameObject* b_root = b != nullptr ? b->GetRootGameObject() : nullptr;
+    GameObject* b_child = FirstChild(b_root);
+    Check(CountMeshRenderers(b_root) == 0 && CountMeshRenderers(b_child) == 1, "P19/fresh",
+          "a new instance: renderer gone from the root, one on the child");
+    Check(MaterialOf(FirstMeshRenderer(b_child)) == "Added.mat", "P19/fresh", "…and it is the Variant's addition");
+    Check(FirstMeshRenderer(b_child) != added && IsPaired(b, FirstMeshRenderer(b_child)), "P19/fresh",
+          "a clone, not the user's live object; paired with the template");
+
+    // ---- Merge: an instance made BEFORE the Apply catches up ----
+    Check(CountMeshRenderers(c_root) == 1 && CountMeshRenderers(c_child) == 0, "P19/merge", "precondition: c still has the old shape");
+    PrefabUtilityEditor::MergeFromSource(c);
+    Check(CountMeshRenderers(c_root) == 0 && CountMeshRenderers(c_child) == 1, "P19/merge",
+          "Merge propagates both the removal and the addition");
+    Check(MaterialOf(FirstMeshRenderer(c_child)) == "Added.mat", "P19/merge", "the merged-in component has the Variant's value");
+    PrefabUtilityEditor::MergeFromSource(c);
+    Check(CountMeshRenderers(c_root) == 0 && CountMeshRenderers(c_child) == 1, "P19/merge",
+          "Merge is idempotent: a second pass does not add another copy");
+
+    // ---- an instance's own structure survives a Merge ----
+    {
+        PrefabInstance* k = PrefabUtilityEditor::InstantiateVariant(variant);
+        GameObject* k_root = k->GetRootGameObject();
+        GameObject* k_child = FirstChild(k_root);
+        // The template of the Variant's addition = the source side of the live clone's pair.
+        MeshRenderer* k_live = FirstMeshRenderer(k_child);
+        Component* k_template =
+            k_live != nullptr ? Cast<Component>(static_cast<Object*>(k->FindSourceForInstance(PPtr<Object>(k_live)))) : nullptr;
+        Check(k_template != nullptr && PrefabUtilityEditor::SuppressSourceComponent(k, PPtr<Component>(k_template)),
+              "P19/keep", "suppress the Variant's own addition on one instance");
+        Check(PrefabUtilityEditor::AddComponentOverride(k, PPtr<GameObject>(k_root), MakeMeshRenderer(om, "Mine.mat")), "P19/keep",
+              "add a renderer of its own");
+        PrefabUtilityEditor::MergeFromSource(k);
+        Check(CountMeshRenderers(k_child) == 0, "P19/keep", "Merge must not re-introduce what the instance suppressed");
+        Check(CountMeshRenderers(k_root) == 1 && MaterialOf(FirstMeshRenderer(k_root)) == "Mine.mat", "P19/keep",
+              "…nor drop what the instance added");
+        // Reverting a suppressed VARIANT-ADDED component brings back exactly one, valued.
+        PrefabUtilityEditor::Revert(k);
+        Check(CountMeshRenderers(k_child) == 1 && MaterialOf(FirstMeshRenderer(k_child)) == "Added.mat" &&
+                  CountMeshRenderers(k_root) == 0,
+              "P19/keep", "Revert: the addition returns exactly once, the instance's own renderer goes");
+    }
+
+    // ---- single-field Apply does not take the structure along ----
+    {
+        PrefabInstance* d = PrefabUtilityEditor::InstantiateVariant(variant);
+        GameObject* d_root = d->GetRootGameObject();
+        GameObject* d_child = FirstChild(d_root);
+        Check(PrefabUtilityEditor::AddComponentOverride(d, PPtr<GameObject>(d_root), MakeMeshRenderer(om, "Leak.mat")), "P19/field",
+              "instance adds a renderer (a structural override)");
+        Transform* tc = TransformOf(d_child);
+        tc->SetLocalScale(Vector3(5.0f, 1.0f, 1.0f));
+        Check(M::SyncFieldOverride(d, tc, "m_LocalScale") == 1, "P19/field", "one property override recorded");
+        const size_t added_before = variant->GetVariantAddedComponents().size();
+        const M::ApplyReport one = M::ApplyField(&level, d, tc, "m_LocalScale");
+        Check(one.applied == 1 && one.saved, "P19/field", "ApplyField applied the scale");
+        Check(variant->GetVariantAddedComponents().size() == added_before, "P19/field",
+              "…and did NOT commit the instance's added renderer into the Variant");
+        Check(d->GetAddedComponents().size() == 1 && CountMeshRenderers(d_root) == 1, "P19/field",
+              "the structural override is still on the instance, still live");
+        Check(M::ApplyAll(&level, d).applied == 1 && variant->GetVariantAddedComponents().size() == added_before + 1, "P19/field",
+              "Apply All is what commits it");
+    }
+
+    // ---- a plain prefab has no structural Apply: Revert-only rows ----
+    {
+        PrefabInstance* plain = PrefabUtilityEditor::InstantiateAsPrefab(base_asset);
+        GameObject* p_root = plain != nullptr ? plain->GetRootGameObject() : nullptr;
+        GameObject* p_child = FirstChild(p_root);
+        Check(plain != nullptr && PrefabUtilityEditor::AddComponentOverride(plain, PPtr<GameObject>(p_child), MakeMeshRenderer(om, "P.mat")),
+              "P19/plain", "adding a renderer on a plain-prefab instance");
+        const std::vector<M::OverrideRow> prows = M::ListOverrides(plain);
+        Check(prows.size() == 1 && !prows[0].can_apply, "P19/plain", "listed, but not applicable");
+        Check(M::ApplyAll(&level, plain).applied == 0 && plain->GetAddedComponents().size() == 1, "P19/plain",
+              "ApplyAll applies nothing and keeps the override rather than losing it");
+        Check(PrefabUtilityEditor::Revert(plain) == 1 && CountMeshRenderers(p_child) == 0, "P19/plain", "Revert still works");
+    }
+
+    PrefabSceneBinding::Uninstall();
+    std::filesystem::remove(base_path, ec);
+    std::filesystem::remove(variant_path, ec);
+}
+
 int main()
 {
     std::fprintf(stderr, "ZEngine prefab end-to-end smoke test\n====================================\n");
@@ -1344,6 +1649,7 @@ int main()
     scenario_P16_build_dependencies();
     scenario_P17_inspector_override_model();
     scenario_P18_positional_stream_symmetry();
+    scenario_P19_variant_structure();
 
     std::error_code ec;
     for (const auto& p : {kPrefabPath, kAppliedPath, kSceneBinaryPath, kSceneYamlPath, kLevelYamlPath, kLevelDeletedPath,

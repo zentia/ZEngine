@@ -33,9 +33,21 @@ namespace PrefabOverrideModel
 {
     struct OverrideRow
     {
+        enum class Kind
+        {
+            Property,          ///< a PropertyModification: (target, property_path)
+            AddedComponent,    ///< target = the component the instance added
+            RemovedComponent,  ///< target = the SOURCE component the instance suppresses
+        };
+
+        Kind kind = Kind::Property;
         PPtr<Object> target;
-        eastl::string property_path;
-        eastl::string label;  ///< "<GameObject name> / <component type>"
+        eastl::string property_path;  ///< empty for the two component kinds
+        eastl::string label;          ///< "<GameObject name> / <component type>"
+        /// Whether Apply can push this row into the source. Component rows can be
+        /// applied only to a Variant (into its own added / removed lists); a plain
+        /// prefab has no structural Apply yet, so the Inspector offers Revert only.
+        bool can_apply = true;
     };
 
     /// The instance `game_object` belongs to in `level` (root or any descendant), or null.
@@ -47,7 +59,19 @@ namespace PrefabOverrideModel
     /// True when an override on `target` covers `path` or lies under it.
     bool IsOverridden(const PrefabInstance* instance, const Object* target, const eastl::string& path);
 
+    /// Property overrides first, then one row per added and per removed component.
+    /// The Inspector's "N overrides" header and its Apply All / Revert All buttons are
+    /// driven by this list — before component rows were listed here, an instance
+    /// whose only overrides were structural showed "0 overrides" and no buttons.
     std::vector<OverrideRow> ListOverrides(const PrefabInstance* instance);
+
+    /// Any property OR structural override.
+    bool HasOverrides(const PrefabInstance* instance);
+
+    /// Revert one component row: an added component is detached, a suppressed one
+    /// comes back (with the source's — and the Variant chain's — values). Returns
+    /// false for a Property row or when the row no longer matches the instance.
+    bool RevertStructuralRow(PrefabInstance* instance, const OverrideRow& row);
 
     /// After an edit of (target, path): record every leaf under `path` whose value now
     /// differs from the source, drop the overrides of leaves that equal it again.
@@ -69,6 +93,10 @@ namespace PrefabOverrideModel
     /// source prefab, write the source file (same fileIDs, so references into it stay
     /// valid), and refresh the level's other instances of that prefab (their own
     /// overrides survive: MergeFromSource).
+    ///
+    /// ApplyField applies that one field only — never the instance's structural
+    /// overrides. ApplyAll on a Variant instance also commits the added / removed
+    /// components; on a plain prefab structural overrides stay on the instance.
     ApplyReport ApplyField(const Level* level, PrefabInstance* instance, Object* target, const eastl::string& path);
     ApplyReport ApplyAll(const Level* level, PrefabInstance* instance);
 
