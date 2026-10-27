@@ -98,6 +98,10 @@ def main() -> int:
     parser.add_argument("test_source", help="冒烟测试的 .cpp（相对仓库根或绝对路径）")
     parser.add_argument("--template", default="Function/Audio/AudioSystem.cpp",
                         help="从 compile_commands.json 里挑哪一条命令当 flags 模板")
+    parser.add_argument("--extra-source", action="append", default=[], metavar="CPP",
+                        help="除测试自身外还要一起编译的 .cpp，可重复。用于**新加的引擎源文件**："
+                             "bin/libZRuntime.a 是上一次 cmake 构建的产物，不含它们的符号，"
+                             "不一起编就是 undefined symbol。")
     args = parser.parse_args()
 
     test_path = Path(args.test_source)
@@ -108,10 +112,20 @@ def main() -> int:
 
     out_bin = f"/tmp/{test_path.stem}"
 
+    extra_paths: list[Path] = []
+    for raw in args.extra_source:
+        p = Path(raw)
+        if not p.is_absolute():
+            p = REPO_ROOT / p
+        if not p.is_file():
+            raise SystemExit(f"--extra-source 文件不存在：{p}")
+        extra_paths.append(p)
+
     cmd = build_command(args.template)
     # ZHeaderTool 的 *.generated.h 是构建产物，不入库；本脚本自己生成一份放 /tmp。
     cmd.append("-I/tmp/zgen_sa/inc")
     cmd += ["-o", out_bin, str(test_path)]
+    cmd += [str(p) for p in extra_paths]
     cmd.append(f"-L{BIN_DIR}")
     cmd.append(f"-F{BIN_DIR}")
     for lib in LINK_LIBS:

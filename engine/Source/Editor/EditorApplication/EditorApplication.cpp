@@ -12,6 +12,7 @@
 #include "Editor/ZSlate/Backend/EditorSlateHost.h"
 #include "Runtime/Application/Application.h"
 #include "Runtime/Core/Thread/ThreadManager.h"
+#include "Runtime/Core/Time/TimeState.h"
 #include "Runtime/Function/Command/CommandSystem.h"
 #include "Runtime/Function/Console/ConsoleManager.h"
 #include "Runtime/Function/Framework/GameFramework/GameEngine.h"
@@ -567,11 +568,19 @@ void Editor::SetPlaybackState(EditorPlaybackState new_state)
     const bool was_playing = (old_state != EditorPlaybackState::Editing);
     if (!was_playing && g_isPlaying)
     {
+        // 每次进入 Play 都把时间归零：脚本读到的 Time.time / frameCount 从 0
+        // 开始（Unity 的语义）。timeScale 也一并回 1，上一次 Play 设的倍速
+        // 不会渗进这一次。
+        TimeState::Get().Reset();
         EnterPIE();
     }
     else if (was_playing && !g_isPlaying)
     {
         ExitPIE();
+        // 退出 Play 时只还 timeScale，不动累计时间：编辑模式下脚本组件也会
+        // Tick（g_editorTickComponentTypes 里放了 TypeScriptComponent），
+        // timeScale 残留会让编辑模式的逻辑按倍速走，表现像"编辑器变卡"。
+        TimeState::Get().ResetTimeScale();
     }
 
     GET_SYSTEM(EditorInputManager)->resetEditorCommand();

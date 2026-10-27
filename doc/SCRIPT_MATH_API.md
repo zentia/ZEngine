@@ -1,5 +1,9 @@
 # 脚本侧数学 API（VectorMath / QuaternionMath / Mathf）
 
+> 配套：时间查询（deltaTime / 累计时间 / timeScale）在 `doc/SCRIPT_TIME_API.md`。
+> 注意脚本的 `OnUpdate(dt)` 本来就收到本帧步长 —— 缺的是 `Time.time` 这类
+> 累计量与 timeScale，不是 delta 本身。
+
 ## 1. 为什么是"装静态方法的空类"
 
 脚本拿到的 `Vector3` 是**纯数据**：
