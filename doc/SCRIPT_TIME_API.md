@@ -1,5 +1,9 @@
 # 脚本侧时间 API（Time）
 
+> 配套：输入查询（键盘 / 鼠标 / 触摸 / action）在 `doc/SCRIPT_INPUT_API.md`。
+> 那边有个坑值得先读：帧内量（按键边沿、鼠标位移）由 `EndFrame()` 滚动，脚本
+> 读到的是**上一帧**的值。
+
 ## 1. 先说清楚：脚本并不缺 delta
 
 `TypeScriptComponent::Tick(dt)` 会把本帧步长直接转发给脚本的 `OnUpdate(dt)`：

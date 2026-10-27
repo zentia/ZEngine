@@ -51,6 +51,22 @@ LINK_LIBS = [
     "astcenc",
     "bc7enc",
     "lmdb",
+    # 拖到脚本层 / 资源层时才会被需要的几个：pesapi 的实现、zlib、puerts
+    # 核心。libZRuntime.a 里的 ScriptEnv.cpp.o 引用 pesapi_*，
+    # AssetBundleFormat.cpp.o 引用 uncompress，少了它们就是一大片
+    # undefined symbols。只列存在的，不影响链不到的测试。
+    "PapiQuickjs",
+    "PuertsCore",
+    "z",
+    # 再往下（typeid(WindowSystem) 顺藤摸瓜拉进来的物理 / 资源层）：
+    "Jolt",
+    "minizip-ng",
+    "xxhash",
+    "ufbx",
+    "tinyobjloader",
+    "curl",
+    "ZSlate",
+    "ShaderLab",
 ]
 
 
@@ -128,11 +144,26 @@ def main() -> int:
     cmd += [str(p) for p in extra_paths]
     cmd.append(f"-L{BIN_DIR}")
     cmd.append(f"-F{BIN_DIR}")
-    for lib in LINK_LIBS:
-        if (BIN_DIR / f"lib{lib}.a").is_file():
-            cmd.append(f"-l{lib}")
+    # 静态库顺序敏感（依赖者在前、被依赖者在后），而我们无从知道真实依赖
+    # 图 —— 列两遍是链接静态库时的常规兜底。
+    for _ in range(2):
+        for lib in LINK_LIBS:
+            if (BIN_DIR / f"lib{lib}.a").is_file():
+                cmd.append(f"-l{lib}")
     if (BIN_DIR / "BqLog.framework").exists():
         cmd += ["-framework", "BqLog"]
+
+    # Apple：只要链接器顺着某个 typeinfo（例如 typeid(WindowSystem)）拉进了
+    # MacOSWindow.mm.o，就会一路要 Objective-C 运行时、Cocoa、乃至 Jolt 物理
+    # —— 越补越多（补到第四层还没完）。
+    #
+    # 所以这里改成让未定义符号延迟到运行时解析：libZRuntime.a 是一个完整的
+    # 构建产物，缺的只是**测试不会走到的**那些分支依赖的第三方库。测试只要
+    # 不调用它们就不会解析，不会崩。真调用到了会 dyld 报错而不是静默出错。
+    if sys.platform == "darwin":
+        cmd.append("-Wl,-undefined,dynamic_lookup")
+        for fw in ("Cocoa", "QuartzCore", "Metal", "IOKit", "CoreVideo", "CoreGraphics"):
+            cmd += ["-framework", fw]
 
     print(f"[build] {test_path.name} ...", flush=True)
     r = subprocess.run(cmd, cwd=REPO_ROOT / "build", capture_output=True, text=True)

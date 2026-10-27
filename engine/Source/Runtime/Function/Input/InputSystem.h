@@ -41,6 +41,12 @@ public:
     bool Initialize() override;
     void Shutdown() override {}
     void Tick();
+
+    /// 帧末滚动输入状态（按键边沿 / 光标位移 / 滚轮 / 触摸帧位移）。由
+    /// Application::TickOneFrame 每帧调用一次，位置在脚本 tick 之后、
+    /// PollEvents 之前。详见 EnhancedInputSystem::EndFrame。
+    void EndFrame();
+
     void clear();
 
     int m_CursorDeltaX {0};

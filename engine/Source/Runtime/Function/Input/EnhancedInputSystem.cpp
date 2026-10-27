@@ -77,10 +77,17 @@ void EnhancedInputSystem::OnKey(int key, int scancode, int action, int mods)
     if (action == KeyCodes::PRESS || action == KeyCodes::REPEAT)
     {
         m_PressedKeys.insert(key_code);
+        // 只有真正的 PRESS 才算"本帧刚按下"。REPEAT 是长按自动重复，算进去
+        // 的话 GetKeyDown 会每帧为真 —— 那就退化成 GetKey 了。
+        if (action == KeyCodes::PRESS)
+        {
+            m_PressedThisFrame.insert(key_code);
+        }
     }
     else if (action == KeyCodes::RELEASE)
     {
         m_PressedKeys.erase(key_code);
+        m_ReleasedThisFrame.insert(key_code);
     }
 }
 
@@ -104,10 +111,12 @@ void EnhancedInputSystem::OnMouseButton(int button, int action, int mods)
     if (action == KeyCodes::PRESS)
     {
         m_PressedKeys.insert(key_code);
+        m_PressedThisFrame.insert(key_code);
     }
     else if (action == KeyCodes::RELEASE)
     {
         m_PressedKeys.erase(key_code);
+        m_ReleasedThisFrame.insert(key_code);
     }
 }
 
@@ -307,12 +316,7 @@ void EnhancedInputSystem::ApplyTouchAxes()
         }
     }
 
-    // 帧内增量用掉即清 —— 它是"这一帧移动了多少"，不是"从按下点移动了多少"。
-    for (auto& entry : m_Touches)
-    {
-        entry.second.frame_dx = 0.0f;
-        entry.second.frame_dy = 0.0f;
-    }
+    // 帧内增量不再在这里清 —— 移到 EndFrame()，理由同上（脚本要读得到）。
 }
 
 void EnhancedInputSystem::SetFocusMode(bool mode)
@@ -778,9 +782,87 @@ void EnhancedInputSystem::Tick()
         action->SetCurrentValue(value);
     }
 
-    // ---- Step 4: Clear per-frame deltas ----
+    // 帧内量（光标位移 / 滚轮 / 按键边沿 / 触摸帧位移）**不在这里清** ——
+    // 由 EndFrame() 在脚本 tick 之后滚动。原因见 EndFrame() 的注释。
+}
+
+void EnhancedInputSystem::EndFrame()
+{
+    // 收集器 -> 读数，然后清空收集器。
+    m_PressedPrevFrame.swap(m_PressedThisFrame);
+    m_PressedThisFrame.clear();
+    m_ReleasedPrevFrame.swap(m_ReleasedThisFrame);
+    m_ReleasedThisFrame.clear();
+
+    m_CursorDeltaPrevX = m_CursorDeltaX;
+    m_CursorDeltaPrevY = m_CursorDeltaY;
     m_CursorDeltaX = 0.0;
     m_CursorDeltaY = 0.0;
+
+    m_ScrollPrevX = m_ScrollAccumX;
+    m_ScrollPrevY = m_ScrollAccumY;
     m_ScrollAccumX = 0.0f;
     m_ScrollAccumY = 0.0f;
+
+    // 触摸的"本帧位移"与鼠标 delta 同语义：用掉即清，清之前已经被 ApplyTouchAxes
+    // 写进 m_AccumulatedValues（喂给 "Look"）了。放在这里（而不是 Tick 内）是
+    // 为了让脚本在帧末之前也读得到。
+    for (auto& entry : m_Touches)
+    {
+        entry.second.frame_dx = 0.0f;
+        entry.second.frame_dy = 0.0f;
+    }
+}
+
+// ============================================================
+// 按键状态查询（脚本 / 玩法层）
+// ============================================================
+
+bool EnhancedInputSystem::IsKeyDown(int key_code) const
+{
+    return m_PressedKeys.find(key_code) != m_PressedKeys.end();
+}
+
+bool EnhancedInputSystem::WasKeyPressedThisFrame(int key_code) const
+{
+    return m_PressedPrevFrame.find(key_code) != m_PressedPrevFrame.end();
+}
+
+bool EnhancedInputSystem::WasKeyReleasedThisFrame(int key_code) const
+{
+    return m_ReleasedPrevFrame.find(key_code) != m_ReleasedPrevFrame.end();
+}
+
+bool EnhancedInputSystem::IsMouseButtonDown(int button) const
+{
+    return IsKeyDown(MouseButtonToKeyCode(button));
+}
+
+bool EnhancedInputSystem::WasMouseButtonPressedThisFrame(int button) const
+{
+    return WasKeyPressedThisFrame(MouseButtonToKeyCode(button));
+}
+
+bool EnhancedInputSystem::WasMouseButtonReleasedThisFrame(int button) const
+{
+    return WasKeyReleasedThisFrame(MouseButtonToKeyCode(button));
+}
+
+int EnhancedInputSystem::GetTouchIdAt(int index) const
+{
+    if (index < 0 || index >= static_cast<int>(m_Touches.size()))
+    {
+        return -1;
+    }
+
+    // unordered_map 的迭代顺序不确定，必须排序才能得到稳定的"第 N 根手指"。
+    // 手指数量是个位数，每帧排一次无所谓。
+    std::vector<int> ids;
+    ids.reserve(m_Touches.size());
+    for (const auto& entry : m_Touches)
+    {
+        ids.push_back(entry.first);
+    }
+    std::sort(ids.begin(), ids.end());
+    return ids[static_cast<size_t>(index)];
 }

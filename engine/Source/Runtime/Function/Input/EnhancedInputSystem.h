@@ -75,6 +75,28 @@ public:
         return delta > k_MaxFrameDeltaS ? k_MaxFrameDeltaS : delta;
     }
 
+    // ---- 帧末滚动 --------------------------------------------------------
+    //
+    // 把"这一帧收集到的"滚动成"上一帧的读数"，并清空收集器。由
+    // Application::TickOneFrame 在每帧末尾（PollEvents 之前、无论本帧有没有
+    // 推进逻辑）调用一次。
+    //
+    // 为什么不放在 Tick() 末尾 —— 那是最自然的写法，但**脚本读不到任何东西**：
+    //
+    //     Application::TickOneFrame
+    //       └─ LogicalTick
+    //            ├─ InputSystem::Tick → EnhancedInputSystem::Tick()   ← 清
+    //            └─ WorldManager::Tick → 组件 Tick → 脚本 OnUpdate    ← 读
+    //
+    // 脚本在清之后才读，于是 GetKeyDown 恒为 false、GetMouseDelta 恒为 0。
+    // 事件又是在帧末尾 PollEvents 才投递的，所以"Tick 开头清"也不行（会把上一
+    // 帧末尾到达的事件直接丢掉）。唯一正确的时机是**脚本 tick 之后**，也就是
+    // 这里。
+    //
+    // 于是每个"帧内量"都有两份：收集器（本帧累积）与 Prev（脚本/玩法层读到的
+    // 上一帧的值）。
+    void EndFrame();
+
     // ---- Raw input callbacks (registered with WindowSystem) ----
     void OnKey(int key, int scancode, int action, int mods);
     void OnCursorPos(double current_cursor_x, double current_cursor_y);
@@ -160,6 +182,52 @@ public:
     // Quick boolean check: is the action currently actuated?
     bool IsActionActive(const std::string& action_name) const;
 
+    // ---- 按键状态查询（脚本 / 玩法层）------------------------------------
+    //
+    // 之前这一层只有"动作查询"（IsActionActive / GetActionValue），没有任何
+    // 直接问"某个键现在是不是按着"的入口 —— m_PressedKeys 是 private，外部
+    // 拿不到。于是脚本（以及任何不走 mapping context 的玩法代码）既读不到
+    // 键盘，也读不到鼠标键。
+    //
+    // 三态是必须的，Unity 的 GetKey / GetKeyDown / GetKeyUp 就靠它区分：
+    //   * IsKeyDown                —— 现在按着（持续）
+    //   * WasKeyPressedThisFrame   —— 本帧刚按下（边沿）
+    //   * WasKeyReleasedThisFrame  —— 本帧刚抬起（边沿）
+    // 边沿集合在 Tick 末尾（Step 4）清空，所以一次按下只会在**一帧**里被读
+    // 到。没这个区分，"跳一次"会变成"按住空格每帧都跳"。
+    //
+    // 键码用 KeyCodes::Key（GLFW 兼容值）。鼠标键也走这里：OnMouseButton 把
+    // button 编成 MouseButton1 + button 塞进同一张 m_PressedKeys，所以下面的
+    // 鼠标查询与键盘共用一套状态。
+    /// 注意这两个"上一帧"的语义：输入事件在帧末尾 PollEvents 才投递，所以脚
+    /// 本在帧 N 读到的，是帧 N-1 末尾到帧 N 开头之间发生的那次按下。比"实时"
+    /// 晚一帧，这是事件投递时机决定的，不是延迟 bug。
+    bool IsKeyDown(int key_code) const;
+    bool WasKeyPressedThisFrame(int key_code) const;
+    bool WasKeyReleasedThisFrame(int key_code) const;
+
+    /// button 是 0-based：0 左键、1 右键、2 中键（GLFW 约定）。
+    bool IsMouseButtonDown(int button) const;
+    bool WasMouseButtonPressedThisFrame(int button) const;
+    bool WasMouseButtonReleasedThisFrame(int button) const;
+
+    /// 上一帧的滚轮量（见 EndFrame 的注释：帧内量在帧末才滚动成读数）。
+    float GetScrollDeltaX() const { return m_ScrollPrevX; }
+    float GetScrollDeltaY() const { return m_ScrollPrevY; }
+
+    /// 上一帧的光标位移。与 `GetCursorDeltaX/Y` 的区别：后者是**收集器**（本
+    /// 帧累积到现在的量），由 InputSystem::Tick 在调 Tick() 之前读走；给脚本
+    /// 和玩法层读的是这个已经滚动过的值。
+    double GetLastTickCursorDeltaX() const { return m_CursorDeltaPrevX; }
+    double GetLastTickCursorDeltaY() const { return m_CursorDeltaPrevY; }
+
+    /// 第 index 根手指的 pointer_id（按 id 升序，保证同一根手指的索引稳定）。
+    /// 越界返回 -1。
+    ///
+    /// 为什么需要它：m_Touches 是 unordered_map，迭代顺序不确定，直接取"第 0
+    /// 个元素"会在帧之间跳。脚本要遍历手指必须先拿到一个稳定的 id 列表。
+    int GetTouchIdAt(int index) const;
+
     // Raw cursor position (for UI hit-testing, etc.)
     double GetCursorX() const { return m_CursorX; }
     double GetCursorY() const { return m_CursorY; }
@@ -216,14 +284,29 @@ private:
 
     // ---- Raw input state ----
     std::unordered_set<int> m_PressedKeys;  // currently-held GLFW key codes
+
+    // 本帧的按下 / 抬起边沿（收集器）。与 m_PressedKeys 的区别见上面那组查询
+    // 的注释：这两个集合由 EndFrame() 滚动成 Prev 后清空，用来回答"本帧刚按下
+    // 吗"。REPEAT（长按自动重复）不算按下边沿 —— 否则按住不放会每帧都触发一次
+    // GetKeyDown。
+    std::unordered_set<int> m_PressedThisFrame;
+    std::unordered_set<int> m_ReleasedThisFrame;
+    // 上一帧的边沿 —— 脚本 / 玩法层实际读到的那份。
+    std::unordered_set<int> m_PressedPrevFrame;
+    std::unordered_set<int> m_ReleasedPrevFrame;
     double m_CursorX = 0.0;
     double m_CursorY = 0.0;
     double m_CursorDeltaX = 0.0;
     double m_CursorDeltaY = 0.0;
     double m_LastCursorX = 0.0;
     double m_LastCursorY = 0.0;
+    // 上一帧滚动出来的读数（见 GetLastTickCursorDelta* / GetScrollDelta*）。
+    double m_CursorDeltaPrevX = 0.0;
+    double m_CursorDeltaPrevY = 0.0;
     float  m_ScrollAccumX = 0.0f;
     float  m_ScrollAccumY = 0.0f;
+    float  m_ScrollPrevX = 0.0f;
+    float  m_ScrollPrevY = 0.0f;
     bool   m_FocusMode = false;
     bool   m_CursorInitialized = false;
 
