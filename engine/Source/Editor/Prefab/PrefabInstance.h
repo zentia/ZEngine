@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Editor/Prefab/PropertyModification.h"
+#include "Runtime/Resource/Prefab/PropertyModification.h"
 #include "Runtime/BaseClasses/GameObject.h"
 #include "Runtime/BaseClasses/Object.h"
 #include "Runtime/BaseClasses/PPtr.h"

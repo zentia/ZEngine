@@ -1,4 +1,4 @@
-#include "Editor/Prefab/PropertyPathResolver.h"
+#include "Runtime/Resource/Prefab/PropertyPathResolver.h"
 
 #include "Runtime/Core/Serialize/SerializationMetaFlags.h"
 #include "Runtime/Core/Serialize/TransferFunctions/GenerateTypeTreeTransfer.h"
@@ -7,7 +7,7 @@
 #include <cstdlib>
 #include <cstring>
 
-namespace prefab_editor
+namespace prefab
 {
 
     namespace
@@ -322,4 +322,4 @@ namespace prefab_editor
         return LocateInTypeTree(type_tree, tokens);
     }
 
-}  // namespace prefab_editor
+}  // namespace prefab

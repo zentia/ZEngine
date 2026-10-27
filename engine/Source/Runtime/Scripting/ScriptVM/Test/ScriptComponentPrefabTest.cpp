@@ -485,6 +485,150 @@ int main(int argc, char** argv)
         }
     }
 
+    // ---- G. 空白 prefab（Content Browser 新建资产那条路径的产出）-----------
+    // ContentBrowserAssetActions::CreateNewAsset("Prefab") 产出的就是"一个只带
+    // Transform 的空 GameObject"的 .prefab。这里用**同一套配方**（Produce +
+    // AddComponentByTypeName("Transform") + SyncSerializedComponents +
+    // SaveAsPrefabAsset）验证这种最小 prefab 存得回来：LoadPrefabAsset 见到
+    // m_RootGameObject 为空的 PrefabAsset 头会直接返回 nullptr，所以只写头的
+    // .prefab 是个打不开的坏资产 —— 这组就是为了挡住那个回归。
+    std::printf("\n--- G. 空白 prefab（Content Browser 新建资产的产出）---\n");
+    GameObject* blank = MakeGameObject(object_manager, "BlankPrefab");
+    CheckTrue("G1", "造出了空 GameObject", blank != nullptr);
+    if (blank != nullptr)
+    {
+        CheckTrue("G2", "挂上了 Transform（Prefab 的根必须有）",
+                  blank->AddComponentByTypeName("Transform") != nullptr);
+        blank->SyncSerializedComponents();
+
+        const std::filesystem::path blank_path = scratch / "Blank.prefab";
+        CheckTrue("G3", "空白 prefab 写盘成功", PrefabUtility::SaveAsPrefabAsset(blank, blank_path));
+        CheckTrue("G4", ".prefab 真的落在磁盘上", std::filesystem::exists(blank_path, ec));
+
+        GameObject* revived = PrefabUtility::InstantiateFromPath(blank_path, /*invoke_post_load=*/true);
+        CheckTrue("G5", "空白 prefab 能反序列化回来（不是个打不开的坏资产）", revived != nullptr);
+        if (revived != nullptr)
+        {
+            CheckEq("G6", "名字穿过了磁盘", std::string(revived->GetName().c_str()), "BlankPrefab");
+            CheckTrue("G7", "根上的 Transform 也跟着回来了",
+                      revived->GetComponentByTypeName("Transform") != nullptr);
+            CheckTrue("G8", "回来的是新对象，不是模板本身", revived != blank);
+        }
+    }
+
+    // ---- H. 多层层级 ------------------------------------------------------
+    // 8.5 节"刻意没做"的第一条。driver 解析不出子 Transform 的 owner 时会
+    // LOG_WARNING 并**跳过整棵子树**（PrefabUtility.cpp:209-212），那一层往下
+    // 的组件就永远拿不到 PostLoadResource —— 不 Awake、TS 组件不绑。
+    // 类注释（:55-60）说 legacy 二进制没有 flat GameObject list，所以多层一直
+    // 受"Phase-1 限制"；但 Instantiate 已经用 clone.clones 拼出完整列表传给
+    // driver 了（:329-348），那条注释很可能是陈的。这一组就是来判这个的。
+    //
+    // 判据不只看"绑没绑"，还看 Awake 时记下的 hostName：driver 是把 owner 当作
+    // PostLoadResource(go) 的参数传下去的，hostName 等于**本层**的名字才能证明
+    // 传下去的是对的那个 GameObject，而不是随便抓到一个。
+    std::printf("\n--- H. 多层层级（Root → Child → GrandChild，每层一个组件）---\n");
+
+    const char* kLevelNames[3] = {"DeepRoot", "DeepChild", "DeepGrandChild"};
+    GameObject*          src_go[3]   = {nullptr, nullptr, nullptr};
+    TypeScriptComponent* src_comp[3] = {nullptr, nullptr, nullptr};
+
+    for (int i = 0; i < 3; ++i)
+    {
+        src_go[i] = MakeGameObject(object_manager, kLevelNames[i]);
+        if (src_go[i] == nullptr)
+        {
+            break;
+        }
+        src_go[i]->AddComponentByTypeName("Transform");
+        src_comp[i] = Cast<TypeScriptComponent>(src_go[i]->AddComponentByTypeName("TypeScriptComponent"));
+        if (src_comp[i] != nullptr)
+        {
+            src_comp[i]->SetScriptGuid(hosted->m_Guid);
+        }
+        if (i > 0)
+        {
+            // worldPositionStays=false：保留子对象自己写的 local pose。
+            src_go[i]->GetTransform()->SetParent(src_go[i - 1]->GetTransform(), false);
+        }
+    }
+
+    CheckTrue("H1", "三层 GameObject 都造出来了",
+              src_go[0] != nullptr && src_go[1] != nullptr && src_go[2] != nullptr);
+    CheckTrue("H2", "三层都挂上了 TypeScriptComponent",
+              src_comp[0] != nullptr && src_comp[1] != nullptr && src_comp[2] != nullptr);
+    CheckEq("H3", "层级挂对了（Root / Child 各有 1 个孩子）",
+            std::to_string(src_go[0]->GetTransform()->GetChildCount()) + "/" +
+                std::to_string(src_go[1]->GetTransform()->GetChildCount()),
+            "1/1");
+
+    // 写盘前每层都要同步：writer 读的是序列化容器，不是活列表。
+    for (int i = 0; i < 3; ++i)
+    {
+        if (src_go[i] != nullptr)
+        {
+            src_go[i]->SyncSerializedComponents();
+        }
+    }
+
+    const std::filesystem::path deep_prefab = scratch / "Deep.prefab";
+    const std::filesystem::path deep_zasset = scratch / "Deep.zasset";
+    CheckTrue("H4", "三层 prefab 写成了 .prefab（YAML）",
+              PrefabUtility::SaveAsPrefabAsset(src_go[0], deep_prefab));
+    CheckTrue("H5", "三层 prefab 写成了 .zasset（二进制 SerializedFile）",
+              PrefabUtility::SaveAsPrefabAsset(src_go[0], deep_zasset));
+
+    auto DeepVerify = [&](const char* tag, const std::filesystem::path& path)
+    {
+        GameObject* root = PrefabUtility::InstantiateFromPath(path, /*invoke_post_load=*/true);
+        CheckTrue(Id(tag, 1).c_str(), "根克隆出来了", root != nullptr);
+        if (root == nullptr)
+        {
+            return;
+        }
+
+        GameObject* go = root;
+        for (int depth = 0; depth < 3; ++depth)
+        {
+            if (depth > 0 && go != nullptr)
+            {
+                Transform* parent_tc = go->GetTransform();
+                go = (parent_tc != nullptr && parent_tc->GetChildCount() > 0)
+                         ? parent_tc->GetChild(0)->GetParentObject()
+                         : nullptr;
+            }
+
+            const std::string level = std::string("第") + std::to_string(depth) + "层 " + kLevelNames[depth];
+            CheckTrue(Id(tag, depth * 5 + 2).c_str(),
+                      (level + " 沿 Transform.m_Children 走到了").c_str(), go != nullptr);
+            if (go == nullptr)
+            {
+                return;
+            }
+            CheckEq(Id(tag, depth * 5 + 3).c_str(), (level + " 名字对").c_str(),
+                    std::string(go->GetName().c_str()), kLevelNames[depth]);
+
+            auto* comp = Cast<TypeScriptComponent>(go->GetComponentByTypeName("TypeScriptComponent"));
+            CheckTrue(Id(tag, depth * 5 + 4).c_str(), (level + " 拿到了组件").c_str(), comp != nullptr);
+            if (comp == nullptr)
+            {
+                return;
+            }
+            CheckTrue(Id(tag, depth * 5 + 5).c_str(),
+                      (level + " 的组件也绑上了（PostLoadResource 发到了这一层）").c_str(),
+                      comp->HasLiveInstance());
+            if (comp->HasLiveInstance())
+            {
+                CheckEq(Id(tag, depth * 5 + 6).c_str(),
+                        (level + " Awake 时宿主就是本层的 GameObject").c_str(),
+                        LiveValue(comp, "hostName"), kLevelNames[depth]);
+            }
+        }
+    };
+
+    DeepVerify("H-prefab", deep_prefab);
+    DeepVerify("H-zasset", deep_zasset);
+
     std::printf("\n---------------------------------------------\n");
     std::printf("checks=%d failed=%d\n", g_Checks, g_Failed);
     if (g_Failed > 0)

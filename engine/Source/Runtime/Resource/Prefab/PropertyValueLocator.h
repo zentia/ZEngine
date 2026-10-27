@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Editor/Prefab/PropertyPathResolver.h"
+#include "Runtime/Resource/Prefab/PropertyPathResolver.h"
 #include "Runtime/BaseClasses/Object.h"
 #include "Runtime/Core/Serialize/TypeTree.h"
 
@@ -31,7 +31,7 @@
 //
 // =====================================================================================
 
-namespace prefab_editor
+namespace prefab
 {
 
     /// Result of a successful property-locate operation.
@@ -82,4 +82,4 @@ namespace prefab_editor
         const void* new_value,
         size_t new_value_size);
 
-}  // namespace prefab_editor
+}  // namespace prefab

@@ -2,8 +2,8 @@
 
 #include "Runtime/Resource/Prefab/PrefabSubtreeCloner.h"
 #include "Editor/Prefab/PrefabInstance.h"
-#include "Editor/Prefab/PropertyPathResolver.h"
-#include "Editor/Prefab/PropertyValueLocator.h"
+#include "Runtime/Resource/Prefab/PropertyPathResolver.h"
+#include "Runtime/Resource/Prefab/PropertyValueLocator.h"
 #include "Runtime/BaseClasses/GameObject.h"
 #include "Runtime/BaseClasses/Object.h"
 #include "Runtime/BaseClasses/ObjectManager.h"
@@ -61,9 +61,9 @@ namespace
         return true;
     }
 
-    bool SnapshotObject(Object& obj, prefab_editor::SerialisedObject& out_tree, std::vector<uint8_t>& out_bytes)
+    bool SnapshotObject(Object& obj, prefab::SerialisedObject& out_tree, std::vector<uint8_t>& out_bytes)
     {
-        if (!prefab_editor::SerialiseObject(&obj, out_tree))
+        if (!prefab::SerialiseObject(&obj, out_tree))
             return false;
         out_bytes.clear();
         TransferUtility::WriteObjectToVector(obj, out_bytes);
@@ -78,11 +78,11 @@ namespace
                               const eastl::string& path,
                               const std::vector<uint8_t>* raw_bytes_override,  // explicit override (RecordPropertyOverride.value_bytes)
                               const std::vector<uint8_t>* donor_bytes,         // OR pull bytes from donor at same path
-                              const prefab_editor::SerialisedObject* donor_tree)
+                              const prefab::SerialisedObject* donor_tree)
     {
         // 1) Snapshot the recipient — we need its current bytes + type tree to
         //    know where to splice.
-        prefab_editor::SerialisedObject recipient_tree;
+        prefab::SerialisedObject recipient_tree;
         std::vector<uint8_t> recipient_bytes;
         if (!SnapshotObject(recipient, recipient_tree, recipient_bytes))
         {
@@ -91,16 +91,16 @@ namespace
         }
 
         // 2) Tokenise the path once.
-        std::vector<prefab_editor::PathToken> tokens;
-        if (!prefab_editor::TokenizePropertyPath(path, tokens))
+        std::vector<prefab::PathToken> tokens;
+        if (!prefab::TokenizePropertyPath(path, tokens))
         {
             LOG_WARNING(ZPrefab, "SpliceFieldValueInto: malformed property_path '{}'", path.c_str());
             return false;
         }
 
         // 3) Locate the field on the recipient's stream.
-        prefab_editor::PropertyLocation recipient_loc;
-        if (!prefab_editor::LocatePropertyInStream(recipient_tree.type_tree, recipient_bytes, tokens, recipient_loc))
+        prefab::PropertyLocation recipient_loc;
+        if (!prefab::LocatePropertyInStream(recipient_tree.type_tree, recipient_bytes, tokens, recipient_loc))
         {
             LOG_WARNING(ZPrefab, "SpliceFieldValueInto: path '{}' not found on recipient", path.c_str());
             return false;
@@ -132,8 +132,8 @@ namespace
         }
         else if (donor_bytes != nullptr && donor_tree != nullptr)
         {
-            prefab_editor::PropertyLocation donor_loc;
-            if (!prefab_editor::LocatePropertyInStream(donor_tree->type_tree, *donor_bytes, tokens, donor_loc))
+            prefab::PropertyLocation donor_loc;
+            if (!prefab::LocatePropertyInStream(donor_tree->type_tree, *donor_bytes, tokens, donor_loc))
             {
                 LOG_WARNING(ZPrefab, "SpliceFieldValueInto: path '{}' not found on donor", path.c_str());
                 return false;
@@ -161,7 +161,7 @@ namespace
 
         // 5) Splice and read the bytes back into the recipient object so the
         //    in-memory object reflects the change.
-        if (!prefab_editor::OverwriteScalarBytes(recipient_bytes, recipient_loc, src_ptr, src_size))
+        if (!prefab::OverwriteScalarBytes(recipient_bytes, recipient_loc, src_ptr, src_size))
         {
             LOG_WARNING(ZPrefab, "SpliceFieldValueInto: OverwriteScalarBytes failed for path '{}'", path.c_str());
             return false;
@@ -313,13 +313,13 @@ bool PrefabUtilityEditor::RecordPropertyOverride(PrefabInstance* instance,
         LOG_WARNING(ZPrefab, "RecordPropertyOverride: target not found in PrefabInstance");
         return false;
     }
-    prefab_editor::SerialisedObject snap;
+    prefab::SerialisedObject snap;
     std::vector<uint8_t> snap_bytes;
     if (!SnapshotObject(*obj, snap, snap_bytes))
         return false;
 
-    prefab_editor::PropertyLocation loc;
-    if (!prefab_editor::LocatePropertyInStream(snap.type_tree, snap_bytes, path, loc))
+    prefab::PropertyLocation loc;
+    if (!prefab::LocatePropertyInStream(snap.type_tree, snap_bytes, path, loc))
     {
         LOG_WARNING(ZPrefab, "RecordPropertyOverride: path '{}' does not exist on target", path.c_str());
         return false;
@@ -370,13 +370,13 @@ bool PrefabUtilityEditor::RecordCurrentValueAsOverride(PrefabInstance* instance,
     if (obj == nullptr)
         return false;
 
-    prefab_editor::SerialisedObject snap;
+    prefab::SerialisedObject snap;
     std::vector<uint8_t> snap_bytes;
     if (!SnapshotObject(*obj, snap, snap_bytes))
         return false;
 
-    prefab_editor::PropertyLocation loc;
-    if (!prefab_editor::LocatePropertyInStream(snap.type_tree, snap_bytes, path, loc))
+    prefab::PropertyLocation loc;
+    if (!prefab::LocatePropertyInStream(snap.type_tree, snap_bytes, path, loc))
     {
         LOG_WARNING(ZPrefab, "RecordCurrentValueAsOverride: path '{}' not found", path.c_str());
         return false;
@@ -458,7 +458,7 @@ int PrefabUtilityEditor::Revert(PrefabInstance* instance)
             continue;
         }
 
-        prefab_editor::SerialisedObject src_tree;
+        prefab::SerialisedObject src_tree;
         std::vector<uint8_t> src_bytes;
         if (!SnapshotObject(*source_obj, src_tree, src_bytes))
             continue;
@@ -488,7 +488,7 @@ bool PrefabUtilityEditor::RevertSingleOverride(PrefabInstance* instance,
     if (source_obj == nullptr)
         return false;
 
-    prefab_editor::SerialisedObject src_tree;
+    prefab::SerialisedObject src_tree;
     std::vector<uint8_t> src_bytes;
     if (!SnapshotObject(*source_obj, src_tree, src_bytes))
         return false;
@@ -882,17 +882,17 @@ int PrefabUtilityEditor::MergeFromSource(PrefabInstance* instance)
         {
             // Build the type tree for the source bytes once so we can locate
             // each override path.
-            prefab_editor::SerialisedObject src_tree;
-            if (prefab_editor::SerialiseObject(source_obj, src_tree))
+            prefab::SerialisedObject src_tree;
+            if (prefab::SerialiseObject(source_obj, src_tree))
             {
                 for (const PropertyModification* mod : it->second)
                 {
-                    std::vector<prefab_editor::PathToken> tokens;
-                    if (!prefab_editor::TokenizePropertyPath(mod->property_path, tokens))
+                    std::vector<prefab::PathToken> tokens;
+                    if (!prefab::TokenizePropertyPath(mod->property_path, tokens))
                         continue;
 
-                    prefab_editor::PropertyLocation loc;
-                    if (!prefab_editor::LocatePropertyInStream(src_tree.type_tree, bytes, tokens, loc))
+                    prefab::PropertyLocation loc;
+                    if (!prefab::LocatePropertyInStream(src_tree.type_tree, bytes, tokens, loc))
                         continue;
                     if (!loc.valid())
                         continue;
@@ -907,7 +907,7 @@ int PrefabUtilityEditor::MergeFromSource(PrefabInstance* instance)
 
                     if (static_cast<int64_t>(override_bytes.size()) != loc.byte_size)
                         continue;
-                    prefab_editor::OverwriteScalarBytes(bytes, loc, override_bytes.data(), override_bytes.size());
+                    prefab::OverwriteScalarBytes(bytes, loc, override_bytes.data(), override_bytes.size());
                 }
             }
         }

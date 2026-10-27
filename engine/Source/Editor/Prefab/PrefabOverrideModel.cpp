@@ -3,8 +3,8 @@
 #include "Editor/Prefab/PrefabInstance.h"
 #include "Editor/Prefab/PrefabSceneBinding.h"
 #include "Editor/Prefab/PrefabUtilityEditor.h"
-#include "Editor/Prefab/PropertyPathResolver.h"
-#include "Editor/Prefab/PropertyValueLocator.h"
+#include "Runtime/Resource/Prefab/PropertyPathResolver.h"
+#include "Runtime/Resource/Prefab/PropertyValueLocator.h"
 #include "Editor/Undo/UndoSystem.h"
 #include "Runtime/BaseClasses/Cast.h"
 #include "Runtime/BaseClasses/GameObject.h"
@@ -25,13 +25,13 @@ namespace
 {
     struct Snapshot
     {
-        prefab_editor::SerialisedObject tree;
+        prefab::SerialisedObject tree;
         std::vector<uint8_t> bytes;
     };
 
     bool TakeSnapshot(Object& obj, Snapshot& out)
     {
-        if (!prefab_editor::SerialiseObject(&obj, out.tree))
+        if (!prefab::SerialiseObject(&obj, out.tree))
             return false;
         out.bytes.clear();
         TransferUtility::WriteObjectToVector(obj, out.bytes);
@@ -49,8 +49,8 @@ namespace
     /// Arrays and variable-size leaves are not overridable through this pipeline.
     void CollectLeaves(const Snapshot& snap, const eastl::string& path, std::vector<eastl::string>& out, int depth = 0)
     {
-        prefab_editor::PropertyLocation loc;
-        if (depth > 8 || !prefab_editor::LocatePropertyInStream(snap.tree.type_tree, snap.bytes, path, loc) || !loc.valid())
+        prefab::PropertyLocation loc;
+        if (depth > 8 || !prefab::LocatePropertyInStream(snap.tree.type_tree, snap.bytes, path, loc) || !loc.valid())
             return;
         if (loc.leaf_node->IsArray())
             return;
@@ -72,11 +72,11 @@ namespace
 
     bool SameLeafValue(const Snapshot& a, const Snapshot& b, const eastl::string& path)
     {
-        prefab_editor::PropertyLocation la;
-        prefab_editor::PropertyLocation lb;
-        if (!prefab_editor::LocatePropertyInStream(a.tree.type_tree, a.bytes, path, la) || !la.valid())
+        prefab::PropertyLocation la;
+        prefab::PropertyLocation lb;
+        if (!prefab::LocatePropertyInStream(a.tree.type_tree, a.bytes, path, la) || !la.valid())
             return false;
-        if (!prefab_editor::LocatePropertyInStream(b.tree.type_tree, b.bytes, path, lb) || !lb.valid())
+        if (!prefab::LocatePropertyInStream(b.tree.type_tree, b.bytes, path, lb) || !lb.valid())
             return false;
         return la.byte_size == lb.byte_size &&
                std::memcmp(a.bytes.data() + la.byte_offset, b.bytes.data() + lb.byte_offset,

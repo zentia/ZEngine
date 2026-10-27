@@ -222,7 +222,7 @@ python3 scripts/run_smoke_test.py \
 
 ## 8. prefab / zasset 反序列化：`ScriptComponentPrefabTest`
 
-第 7 节留下的那条空白由这个测试补上（55 项）。它做的是**真存盘再真读回来**：
+第 7 节留下的那条空白由这个测试补上（100 项）。它做的是**真存盘再真读回来**：
 
 ```
 PrefabUtility::SaveAsPrefabAsset(go, *.prefab)      # YAML 对象图
@@ -245,6 +245,8 @@ PrefabUtility::SaveAsPrefabAsset(go, *.zasset)      # 二进制 SerializedFile
 | D | `.zasset` 读回：同上 13 条 |
 | E | `invoke_post_load=false`：树照常克隆、guid 照常还原，**但不绑** |
 | F | 两轨一致性：guid / override / 活实例 speed 都相同 |
+| G | 空白 prefab：只有 Transform 的根也能存回来（守 Content Browser 新建资产的产出，见 8.6） |
+| H | 多层层级：三层树（Root→Child→GrandChild）每层各挂一个组件，两轨都验到每层都 Awake 且宿主是对的（见 8.5） |
 
 ### 8.2 为什么 override 用 `speed=7`
 
@@ -286,18 +288,45 @@ PrefabUtility::SaveAsPrefabAsset(go, *.zasset)      # 二进制 SerializedFile
 `--exclude-archive-member`：它复制一份 `.a` 到 `/tmp` 再 `ar -d`（按成员列表缓
 存，只付一次复制的代价）。完整 cmake 构建里所有 TU 同源码，这些一条都不需要。
 
-### 8.4 负向验证（都还原后复跑 55/0）
+### 8.4 负向验证（都还原后复跑 100/0）
 
 | 注入 | 结果 |
 |------|------|
 | `BindAndAwake` 里注释掉 `ApplySerializedFields()` | C10/C13 + D10/D13 红（活实例 speed 退回类默认 2，一帧走 1.0）。**C7/C8/C9 保持绿** —— 说明"override 存下来了"和"override 生效了"是两条独立的断言 |
-| `PrefabUtility::Instantiate` 里把 `invoke_post_load` 强制成 false | C8/D8 红（checks 从 55 降到 47，因为不绑时 C10–C13 直接跳过）。**C7（guid 还原）保持绿** —— 说明"还原"和"绑"是两件事 |
+| `PrefabUtility::Instantiate` 里把 `invoke_post_load` 强制成 false | C8/D8 红（checks 少 8：不绑时 C10–C13 + D10–D13 直接跳过，100 → 92）。**C7（guid 还原）保持绿** —— 说明"还原"和"绑"是两件事 |
+| `PrefabUtility::Instantiate` 里给 driver 传空的 `known_gameobjects` | H 组**第 1、2 层**红（H-prefab/H-zasset 的 10 和 15），**第 0 层（根）保持绿**，两轨各 2 条（100 → 96）。这正是 driver 拿不到 flat list 时的失效模式，也证明 H 组不是空断言 |
 
 ### 8.5 刻意没做
 
-* **多层层级**：宿主是单层根节点。`PrefabPostLoadDriver` 在 legacy 二进制路径上
-  没有 flat GameObject list（见第 7 节），挂在下层子节点上的组件能不能拿到
-  `PostLoadResource` 仍旧没测 —— 这是两轨之间一个已知的行为差异。
+* ~~**多层层级**~~ —— **已由 H 组覆盖（2026-10-27）**，结论是两轨行为一致。
+  原先写在这里的判断是错的：`PrefabPostLoadDriver` 的 flat GameObject list
+  **不是从文件读出来的**，而是 `PrefabUtility::Instantiate` 从 `clone.clones`
+  拼出来传进去的（`PrefabUtility.cpp` 的 `Instantiate` 调用点），所以
+  `.prefab`（YAML）和 `.zasset`（二进制）走同一份代码，任意深度都一样。
+  类注释里"legacy 二进制没有 flat list，仍受 Phase-1 限制"那句已按实测改正。
+  现在三层（Root→Child→GrandChild）每层各挂一个 TypeScriptComponent，两轨都验到
+  **每层都 Awake 了、且 Awake 时 `this.gameObject` 就是本层的对象**（用
+  `hostName` 判定，防止"传下去的是抓错的那个 GameObject"也能蒙混过关）。
+  真正的失效模式是"调用方什么都不传"：那时 driver 只会 post-load 根，
+  见 8.4 第三条负向验证。
 * **清理**：测试刻意不销毁克隆出来的对象。`PrefabSubtreeCloner` 的分配器不是
   `ObjectManager::Destroy`（`= delete`）那一套，混着收会在 `mi_usable_size` 里
   SIGSEGV（第 4.3 节踩过一次）。测试进程退出即回收。
+
+### 8.6 G 组：空白 prefab 与 Content Browser 的新建资产
+
+Content Browser 的 `Create ▸ Prefab`（旧标签 "Object"）产出的就是一个**只带
+Transform 的空 GameObject** 的 `.prefab`。G 组用与编辑器**完全相同**的配方
+（`Produce(GameObject)` → `AddComponentByTypeName("Transform")` →
+`SyncSerializedComponents()` → `SaveAsPrefabAsset`）跑一遍存回，守住这条路径。
+
+为什么必须有一个根 GameObject、不能像 `.scene` 那样只写一个空头：
+
+```
+PrefabUtility::LoadPrefabAsset
+    if (asset->GetRootGameObject() == nullptr)   // PrefabUtility.cpp:454
+        -> LOG_ERROR("PrefabAsset has no root GameObject"); return nullptr;
+```
+
+`LevelRes` 头可以空着（场景里的 GameObject 是保存时才追加的），`PrefabAsset`
+不行 —— 只写头的 `.prefab` 是一个**打不开的坏资产**。G5 就是为了挡住这个回归。
