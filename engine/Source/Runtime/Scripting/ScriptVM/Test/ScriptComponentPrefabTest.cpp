@@ -1009,6 +1009,200 @@ int main(int argc, char** argv)
         }
     }
 
+    // ---- M. Variant 的结构性覆盖（加 / 删组件）--------------------------------
+    // m_variant_overrides 只能改 base 上**已有对象**的值。加一个组件或删一个组件是
+    // 结构性变更，得有另一份存储：
+    //   * removed —— 只存 base 里那个 Component 的 PPtr（对象还在 base 手里）；
+    //   * added   —— 要把组件对象本身存进 variant 文件（Variant 本来不拥有对象树），
+    //                外加它挂在哪一个 base GameObject 上。
+    // 这一组钉四件事：
+    //   1. 两者都能穿过磁盘 —— added 的对象要作为独立对象写进 variant 文件再读回，
+    //      这是头一回有 Variant 文件里带着对象；
+    //   2. 实例化时删除生效、新增生效（先删后加）；
+    //   3. **variant 文件里的 added 组件是模板**，交出去会和交出 base 模板一样让所有
+    //      实例共享同一个组件对象 —— 必须克隆；
+    //   4. base 模板本身没被改动（删的是克隆上的那个，不是 base 上的那个）。
+    std::printf("\n--- M. Variant 的结构性覆盖（加 / 删组件）---\n");
+
+    const eastl::string kBaseGuid("M_BASE");
+    const eastl::string kAddedGuid("M_ADDED");
+
+    auto CountScriptComponents = [](GameObject* go) -> int
+    {
+        if (go == nullptr)
+        {
+            return -1;
+        }
+        int n = 0;
+        for (ImmediatePtr<Component>& slot : go->EditorGetComponentsRef())
+        {
+            if (Cast<TypeScriptComponent>(static_cast<Component*>(slot)) != nullptr)
+            {
+                ++n;
+            }
+        }
+        return n;
+    };
+
+    auto OnlyScriptComponent = [](GameObject* go) -> TypeScriptComponent*
+    {
+        if (go == nullptr)
+        {
+            return nullptr;
+        }
+        for (ImmediatePtr<Component>& slot : go->EditorGetComponentsRef())
+        {
+            TypeScriptComponent* tsc = Cast<TypeScriptComponent>(static_cast<Component*>(slot));
+            if (tsc != nullptr)
+            {
+                return tsc;
+            }
+        }
+        return nullptr;
+    };
+
+    GameObject* m_base_go = MakeGameObject(object_manager, "MBase");
+    CheckTrue("M1", "造出了 M 组的 base GameObject", m_base_go != nullptr);
+    if (m_base_go != nullptr)
+    {
+        CheckTrue("M2", "挂上了 Transform",
+                  m_base_go->AddComponentByTypeName("Transform") != nullptr);
+
+        Component* m_raw_base_tsc = m_base_go->AddComponentByTypeName("TypeScriptComponent");
+        CheckTrue("M3", "挂上了 TypeScriptComponent（这就是 variant 要删掉的那个）",
+                  m_raw_base_tsc != nullptr);
+        TypeScriptComponent* m_base_tsc = Cast<TypeScriptComponent>(m_raw_base_tsc);
+        if (m_base_tsc != nullptr)
+        {
+            m_base_tsc->SetScriptGuid(kBaseGuid);
+        }
+        m_base_go->SyncSerializedComponents();
+
+        const std::filesystem::path m_base_path = scratch / "MBase.prefab";
+        CheckTrue("M4", "M base prefab 写盘成功",
+                  PrefabUtility::SaveAsPrefabAsset(m_base_go, m_base_path));
+
+        std::vector<GameObject*> m_base_gos;
+        PrefabAsset* m_base = PrefabUtility::LoadPrefabAsset(m_base_path, &m_base_gos);
+        CheckTrue("M5", "M base prefab 读回来了", m_base != nullptr);
+
+        GameObject* m_base_root = (m_base != nullptr) ? m_base->GetRootGameObject() : nullptr;
+        CheckTrue("M6", "拿得到 base 的根", m_base_root != nullptr);
+        CheckEq("M7", "base 根上有 1 个 TypeScriptComponent",
+                std::to_string(CountScriptComponents(m_base_root)), "1");
+
+        if (m_base != nullptr && m_base_root != nullptr)
+        {
+            TypeScriptComponent* m_src_tsc = OnlyScriptComponent(m_base_root);
+            CheckTrue("M8", "拿得到 base 上那个 TSC（variant 的 removed 记的就是它）",
+                      m_src_tsc != nullptr);
+
+            const char* m_exts[2] = { ".prefab", ".zasset" };
+            for (int t = 0; t < 2 && m_src_tsc != nullptr; ++t)
+            {
+                const std::string m_tag = std::string("M") + (t == 0 ? "-prefab" : "-zasset");
+                const std::filesystem::path var_path = scratch / (std::string("MVar") + m_exts[t]);
+
+                // variant 要"加"的那个组件。它是个独立对象 —— variant 文件会把自己
+                // 加的组件当作自己的对象带在身上（fileID 2..N）。
+                Object* m_raw_added = object_manager->Produce(TypeOf<TypeScriptComponent>(), 0);
+                TypeScriptComponent* m_added = (m_raw_added != nullptr)
+                    ? Cast<TypeScriptComponent>(m_raw_added)
+                    : nullptr;
+                CheckTrue(Id(m_tag.c_str(), 1).c_str(), "造出了要新增的组件", m_added != nullptr);
+                if (m_added == nullptr)
+                {
+                    continue;
+                }
+                object_manager->AllocateAndAssignInstanceID(m_added);
+                m_added->SetScriptGuid(kAddedGuid);
+
+                PrefabAsset* m_var = PrefabUtility::CreateVariantAsset(m_base, eastl::string("MVar"));
+                CheckTrue(Id(m_tag.c_str(), 2).c_str(), "CreateVariantAsset 造出了 variant",
+                          m_var != nullptr);
+                if (m_var == nullptr)
+                {
+                    continue;
+                }
+
+                m_var->GetVariantRemovedComponents().push_back(PPtr<Component>(m_src_tsc));
+                VariantComponentAddition m_addition;
+                m_addition.host      = PPtr<GameObject>(m_base_root);
+                m_addition.component = m_added;
+                m_var->GetVariantAddedComponents().push_back(m_addition);
+                CheckEq(Id(m_tag.c_str(), 3).c_str(), "variant 记下了 1 删 1 加",
+                        std::to_string(m_var->GetVariantRemovedComponents().size()) + "/" +
+                        std::to_string(m_var->GetVariantAddedComponents().size()), "1/1");
+
+                CheckTrue(Id(m_tag.c_str(), 4).c_str(), "SaveVariantAsset 写盘成功",
+                          PrefabUtility::SaveVariantAsset(m_var, var_path));
+
+                std::vector<GameObject*> m_gos;
+                PrefabAsset* m_loaded = PrefabUtility::LoadPrefabAsset(var_path, &m_gos);
+                CheckTrue(Id(m_tag.c_str(), 5).c_str(), "variant 文件读回来了", m_loaded != nullptr);
+                if (m_loaded == nullptr)
+                {
+                    object_manager->Destroy(m_var);
+                    continue;
+                }
+
+                CheckEq(Id(m_tag.c_str(), 6).c_str(), "删/加两条都穿过了磁盘",
+                        std::to_string(m_loaded->GetVariantRemovedComponents().size()) + "/" +
+                        std::to_string(m_loaded->GetVariantAddedComponents().size()), "1/1");
+
+                // 头一回有 Variant 文件里带着对象 —— added 组件必须能从文件里解出来
+                Component* m_loaded_added = m_loaded->GetVariantAddedComponents().empty()
+                    ? nullptr
+                    : static_cast<Component*>(m_loaded->GetVariantAddedComponents()[0].component);
+                CheckTrue(Id(m_tag.c_str(), 7).c_str(),
+                          "读回来的 added 组件能解引用（variant 文件确实带着这个对象）",
+                          m_loaded_added != nullptr);
+
+                GameObject* m_clone = PrefabUtility::Instantiate(m_loaded, /*invoke_post_load=*/true);
+                CheckTrue(Id(m_tag.c_str(), 8).c_str(), "读回来的 variant 能实例化", m_clone != nullptr);
+                if (m_clone != nullptr)
+                {
+                    CheckEq(Id(m_tag.c_str(), 9).c_str(),
+                            "克隆上只剩 1 个 TSC（base 那个被删、variant 这个被加）",
+                            std::to_string(CountScriptComponents(m_clone)), "1");
+
+                    TypeScriptComponent* m_clone_tsc = OnlyScriptComponent(m_clone);
+                    CheckTrue(Id(m_tag.c_str(), 10).c_str(),
+                              "留下的是 variant 加的那个（M_ADDED），base 的（M_BASE）被删了",
+                              m_clone_tsc != nullptr && m_clone_tsc->GetScriptGuid() == kAddedGuid);
+                    // 比的是**文件里读回来**的那个对象（模板），不是测试里 Produce 的那
+                    // 个 —— 后者跟文件里的根本不是同一个，比它等于什么都没钉。
+                    CheckTrue(Id(m_tag.c_str(), 11).c_str(),
+                              "它是新增组件的克隆，不是 variant 文件里那个模板对象本身",
+                              m_clone_tsc != nullptr &&
+                              static_cast<Component*>(m_clone_tsc) != m_loaded_added);
+
+                    // 最直接的一条：variant 文件的图是缓存共享的，把它的 added 组件
+                    // 直接交出去，两次实例化就会拿到同一个组件对象（正是 P14 那个
+                    // "两次拖同一个 prefab 共享一个 Transform"的回归）。
+                    GameObject* m_clone2 = PrefabUtility::Instantiate(m_loaded, /*invoke_post_load=*/true);
+                    TypeScriptComponent* m_clone2_tsc = OnlyScriptComponent(m_clone2);
+                    CheckTrue(Id(m_tag.c_str(), 12).c_str(),
+                              "两次实例化拿到的是两个独立的组件对象（模板没被交出去）",
+                              m_clone2_tsc != nullptr && m_clone_tsc != nullptr &&
+                              m_clone2_tsc != m_clone_tsc);
+                }
+
+                object_manager->Destroy(m_var);
+            }
+
+            // 对照：直接实例化 base —— 它的 TSC 还在，前面的删/加没碰到 base 模板
+            GameObject* m_base_clone = PrefabUtility::Instantiate(m_base, /*invoke_post_load=*/true);
+            CheckTrue("M9", "base 也能实例化", m_base_clone != nullptr);
+            if (m_base_clone != nullptr)
+            {
+                TypeScriptComponent* m_bc = OnlyScriptComponent(m_base_clone);
+                CheckTrue("M10", "base 克隆上那个 TSC 仍是 M_BASE（base 模板没被 variant 的删除污染）",
+                          m_bc != nullptr && m_bc->GetScriptGuid() == kBaseGuid);
+            }
+        }
+    }
+
     std::printf("\n---------------------------------------------\n");
     std::printf("checks=%d failed=%d\n", g_Checks, g_Failed);
     if (g_Failed > 0)
