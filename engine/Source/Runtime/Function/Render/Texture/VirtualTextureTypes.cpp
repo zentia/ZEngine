@@ -5,6 +5,7 @@
     #include <TargetConditionals.h>
 #endif
 #if ZENGINE_VT_GPU
+    #include "Runtime/Core/Base/Macro.h"
     #include "Runtime/Function/Render/Interface/Vulkan/VulkanRHI.h"
     #include "Runtime/Function/Render/Interface/Vulkan/VulkanRHIResource.h"
 #endif
@@ -44,9 +45,37 @@ bool PhysicalTexturePool::Initialize(RHI* rhi,
 #if !ZENGINE_VT_GPU
     return false;  // 无 Vulkan 后端：调用方应走 InitializeLogical
 #else
-    // Calculate physical texture dimensions
-    uint32_t physical_width = pool_width_pages * page_size;
-    uint32_t physical_height = pool_height_pages * page_size;
+    // Calculate physical texture dimensions. 64 位乘：默认配置 2048 页 * 128 px = 262144，
+    // 平方后 2^36 个 texel，32 位乘法在这里不溢出，但再大一点就会，别图省事改回去。
+    const uint64_t physical_width = static_cast<uint64_t>(pool_width_pages) * page_size;
+    const uint64_t physical_height = static_cast<uint64_t>(pool_height_pages) * page_size;
+
+    // 池图必须塞得进设备：默认 VirtualTextureConfig 要 262144 x 262144（RGBA8 = 256 GiB），
+    // 任何 GPU 的 maxImageDimension2D 都远小于它（常见 16384~32768）。不先量一下，
+    // vmaCreateImage 只会返回一个错误码，上层又吞了它，最后是一个"活着但一页也装不下"的
+    // 管理器。量一下就能在 Initialize 里干净地失败，并说明白为什么。
+    RHIPhysicalDeviceProperties device_properties {};
+    rhi->GetPhysicalDeviceProperties(&device_properties);
+    const uint64_t max_dimension = device_properties.limits.maxImageDimension2D;
+    if (page_size == 0 || pool_width_pages == 0 || pool_height_pages == 0 || physical_width > max_dimension ||
+        physical_height > max_dimension)
+    {
+        LOG_ERROR(ZRender,
+                  "virtual texture: physical pool {}x{} pages of {} px = {}x{} px exceeds the device's "
+                  "maxImageDimension2D ({}); shrink VirtualTextureConfig::physical_pool_width/height",
+                  pool_width_pages,
+                  pool_height_pages,
+                  page_size,
+                  physical_width,
+                  physical_height,
+                  max_dimension);
+        return false;
+    }
+
+    // 上面的上限检查已保证两个维度都 <= maxImageDimension2D（uint32），这里安全地收窄回 32 位，
+    // 供下面 Vulkan 结构体的 uint32_t 字段使用。
+    const uint32_t physical_width_px = static_cast<uint32_t>(physical_width);
+    const uint32_t physical_height_px = static_cast<uint32_t>(physical_height);
 
     // Create physical texture
     auto vulkan_rhi = static_cast<VulkanRHI*>(rhi);
@@ -64,8 +93,8 @@ bool PhysicalTexturePool::Initialize(RHI* rhi,
     // Create image
     RHIImageCreateInfo image_create_info {};
     image_create_info.imageType = RHIImageType::RHI_IMAGE_TYPE_2D;
-    image_create_info.extent.width = physical_width;
-    image_create_info.extent.height = physical_height;
+    image_create_info.extent.width = physical_width_px;
+    image_create_info.extent.height = physical_height_px;
     image_create_info.extent.depth = 1;
     image_create_info.mipLevels = 1;
     image_create_info.arrayLayers = 1;
@@ -88,8 +117,8 @@ bool PhysicalTexturePool::Initialize(RHI* rhi,
     VkImageCreateInfo vk_image_info = {};
     vk_image_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
     vk_image_info.imageType = VK_IMAGE_TYPE_2D;
-    vk_image_info.extent.width = physical_width;
-    vk_image_info.extent.height = physical_height;
+    vk_image_info.extent.width = physical_width_px;
+    vk_image_info.extent.height = physical_height_px;
     vk_image_info.extent.depth = 1;
     vk_image_info.mipLevels = 1;
     vk_image_info.arrayLayers = 1;

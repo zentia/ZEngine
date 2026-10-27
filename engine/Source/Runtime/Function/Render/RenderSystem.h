@@ -23,6 +23,7 @@
 class WindowSystem;
 class RHI;
 class RenderResourceBase;
+class VirtualTextureProducer;
 class RenderPipelineBase;
 class RenderScene;
 class RenderCamera;
@@ -146,6 +147,15 @@ private:
     std::shared_ptr<RenderScene> m_RenderScene;
     std::shared_ptr<RenderResourceBase> m_RenderResource;
     std::shared_ptr<RenderPipelineBase> m_RenderPipeline;
+    // VT 最小生产者。用 unique_ptr + 不完整类型：VirtualTextureProducer 只在 Vulkan 路径编译，
+    // 头里不能 include 它。析构发生在 RenderSystem 销毁时，但**真正的拆除**在 Shutdown() 里
+    // 显式做（RHI 此时还活着）——不能指望析构，那时 RHI 可能已经没了。
+    // 自定义删除器是为了让不完整类型的 unique_ptr 在这个头里合法；定义在 .cpp。
+    struct VirtualTextureProducerDeleter
+    {
+        void operator()(VirtualTextureProducer* producer) const;
+    };
+    std::unique_ptr<VirtualTextureProducer, VirtualTextureProducerDeleter> m_VirtualTextureProducer;
     CameraPreviewRequest m_CameraPreviewRequest;
 
     RHIViewport m_RenderThreadSceneViewport {};
@@ -190,6 +200,16 @@ private:
     // no-op。默认由 r.VirtualTexture.Enable 门控（默认关），所以即便 VT 编译进来，
     // 不显式打开也零开销、零回归。
     void UpdateVirtualTextureForFrame(float delta_time);
+
+    // r.VirtualTexture.Source 指向的图片 -> RGBA8 TextureData（VirtualTextureProducer 的 loader 回调）。
+    // 静态函数而非 lambda：Producer 的 TextureLoader 是裸函数指针，这样它不依赖 <functional>
+    // 也不捕获状态。
+    static std::shared_ptr<TextureData> LoadVirtualTextureSource(void* render_system, const std::string& path);
+
+    // 释放 VT 生产者（卸掉纹理、拆它拉起来的管理器）。必须在 RHI 还活着时调用——
+    // RenderSystem 依赖 RHI，所以在 RenderSystem::Shutdown 里调用是安全的。
+    // 同样无条件声明、定义里用 Z_HAS_VULKAN 包住，非 Vulkan 构建下是 no-op。
+    void ShutdownVirtualTexture();
 
     static constexpr uint32_t kMaxFrameDrawLists = 3;
 

@@ -11,6 +11,7 @@
 #include <queue>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 class RHI;
@@ -34,8 +35,13 @@ public:
     // doesn't compile, is never touched at all).
     static VirtualTextureManager& Get();
 
-    // Initialize the virtual texture manager
-    void Initialize(RHI* rhi, RenderResourceBase* render_resource);
+    // Initialize the virtual texture manager. Returns false when the physical page
+    // pool could not be created (the manager is then left uninitialised: no pool, no
+    // worker thread). Callers MUST check it: it used to be void and swallowed the
+    // failure, so a pool too large for the device (the default config asks for a
+    // 262144 x 262144 px = 256 GiB image) left a manager that looked alive but failed
+    // every page load silently.
+    bool Initialize(RHI* rhi, RenderResourceBase* render_resource);
 
     // Headless / logical init: build the physical pool as a logical (no-GPU)
     // pool and start the loading thread. Slot bookkeeping + streaming policy
@@ -246,9 +252,14 @@ private:
     // Evict least recently used pages if memory budget exceeded
     void EvictLRUPages();
 
-    // Calculate page screen size
+    // Calculate page screen size. Takes the RESOURCE, not its handle: the only caller
+    // (UpdatePagePriorities) already holds m_VirtualTexturesMutex while iterating, and
+    // the handle version re-locked that same non-recursive mutex through
+    // GetVirtualTexture() -- a guaranteed self-deadlock the first time Update() met a
+    // page that had ever been requested. It never fired before because nothing called
+    // RequestPages; WASM can't see it either (no pthreads => std::mutex is a no-op).
     float CalculatePageScreenSize(const VirtualTexturePageID& page_id,
-                                  VirtualTextureHandle handle,
+                                  const VirtualTextureResource& resource,
                                   const Vector3& camera_position,
                                   const Vector3& object_position,
                                   const AxisAlignedBox& object_bounds,
@@ -269,6 +280,12 @@ private:
     // Virtual textures
     std::unordered_map<VirtualTextureHandle, VirtualTextureEntry> m_VirtualTextures;
     mutable std::mutex m_VirtualTexturesMutex;
+
+    // Pages that are queued, being prepared, or prepared-but-uncommitted. RequestPages
+    // is called every frame by a producer and used to re-enqueue the whole mip each
+    // time (a 36-page texture reached 19200 queued tasks after 600 frames); this set
+    // makes it idempotent. Guarded by m_PageLoadQueueMutex like the queues it mirrors.
+    std::unordered_set<VirtualTexturePageID, VirtualTexturePageIDHash> m_PendingPages;
 
     // Page load requests (worker input) and prepared pages (worker output). ONE mutex
     // guards both queues AND is the one the condition variable waits on -- the old

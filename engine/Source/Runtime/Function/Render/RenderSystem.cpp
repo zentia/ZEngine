@@ -23,10 +23,23 @@
     // 且未定义 Z_HAS_VULKAN）。这里用同名宏包住，非 Vulkan 构建下 UpdateVirtualTextureForFrame
     // 是 no-op，不引用任何 VT 符号。
     #include "Runtime/Function/Render/Texture/VirtualTextureManager.h"
+    #include "Runtime/Function/Render/Texture/VirtualTextureProducer.h"
     #include "Runtime/Function/Render/Texture/VirtualTextureSettings.h"
 #endif
 #include "Runtime/Function/Render/Passes/MainCameraRp1Pass.h"
 #include "Runtime/Function/Render/Spine/SpineGpuRenderer.h"
+
+// m_VirtualTextureProducer 的删除器。定义放在 Apple / 非 Apple 分叉**之外**：RenderSystem 的
+// 析构在每个平台都会实例化 unique_ptr 的删除器，漏掉任何一边的定义就是链接错误。
+// 非 Vulkan 构建里 VirtualTextureProducer 是不完整类型，而且指针在那里永远为空。
+void RenderSystem::VirtualTextureProducerDeleter::operator()(VirtualTextureProducer* producer) const
+{
+#if defined(Z_HAS_VULKAN)
+    delete producer;
+#else
+    (void)producer;
+#endif
+}
 
 // Lightweight stub only on Metal (Apple) and WebGL2 (Emscripten). Windows
 // DX12-only builds (ZENGINE_USE_VULKAN=OFF) must use the full implementation
@@ -1441,6 +1454,9 @@ void RenderSystem::Shutdown()
         FlushRenderingCommands();
     }
 
+    // VT 生产者要在 RHI 还活着时拆（它销毁的页池图 / 页表纹理要走 RHI），而 m_Rhi 马上就被清空。
+    ShutdownVirtualTexture();
+
     m_Rhi = nullptr;
 
     if (m_RenderScene)
@@ -1949,6 +1965,12 @@ void RenderSystem::UpdateVirtualTextureForFrame(float delta_time)
 #if defined(Z_HAS_VULKAN)
     if (!VirtualTextureSettings::IsEnabled())
     {
+        // 关掉开关时，已经在流送的纹理要被释放（否则 Enable 1 -> 0 后池和页一直占着显存）。
+        // 只在生产者已经存在时才通知：从没开过的工程不为它构造任何东西。
+        if (m_VirtualTextureProducer && m_VirtualTextureProducer->isStreaming())
+        {
+            m_VirtualTextureProducer->Tick(m_Rhi, m_RenderResource.get(), false, "", Vector3(), Vector3());
+        }
         return;
     }
     if (m_RenderScene == nullptr)
@@ -1971,10 +1993,46 @@ void RenderSystem::UpdateVirtualTextureForFrame(float delta_time)
     float fov_rad = fov_deg * 3.14159265358979323846f / 180.0f;
     float aspect = camera->getAspect();
 
+    // 最小生产者：没有它，Enable=1 推进的是一个没池、没纹理、没人请求页的管理器——什么都不会
+    // 发生。它先于 Update 运行，所以本帧请求的页本帧就能提交。r.VirtualTexture.Source 为空时它
+    // 什么都不注册（保持 Enable=1 的旧行为：只推进，不流送）。
+    if (!m_VirtualTextureProducer)
+    {
+        m_VirtualTextureProducer.reset(new VirtualTextureProducer());
+        m_VirtualTextureProducer->Bind(
+            &VirtualTextureManager::Get(), &RenderSystem::LoadVirtualTextureSource, this, VirtualTextureProducer::Config {});
+    }
+    m_VirtualTextureProducer->Tick(
+        m_Rhi, m_RenderResource.get(), true, VirtualTextureSettings::GetSource(), camera_pos, camera_forward);
+
     VirtualTextureManager::Get().Update(camera_pos, camera_forward, fov_rad, aspect,
                                         swapchain_info.extent.width, swapchain_info.extent.height, delta_time);
 #else
     (void)delta_time;
+#endif
+}
+
+std::shared_ptr<TextureData> RenderSystem::LoadVirtualTextureSource(void* render_system, const std::string& path)
+{
+    auto* self = static_cast<RenderSystem*>(render_system);
+    if (self == nullptr || !self->m_RenderResource)
+    {
+        return nullptr;
+    }
+    // allow_cooked=false：cooked 的 BC7/ASTC 是 4x4 块压缩，按像素行列切页会把块边界切碎，
+    // 而且页池是 RGBA8。VT 要的是源图的逐像素 RGBA8。is_srgb=false：页池按 UNORM 存字节，
+    // 不做 sRGB 解码；材质接入时再决定采样侧怎么处理色彩空间。
+    return self->m_RenderResource->LoadTexture(eastl::string(path.c_str()), false, false);
+}
+
+void RenderSystem::ShutdownVirtualTexture()
+{
+#if defined(Z_HAS_VULKAN)
+    if (m_VirtualTextureProducer)
+    {
+        m_VirtualTextureProducer->Shutdown();  // 卸纹理 + 拆它拉起来的管理器（此刻 RHI 还活着）
+        m_VirtualTextureProducer.reset();
+    }
 #endif
 }
 

@@ -208,3 +208,42 @@ if(ZENGINE_BUILD_VT_BLIT_AB_SMOKE_TEST)
         message(STATUS "Configured VT blit A/B smoke test: VirtualTextureBlitABSmokeTest")
     endif()
 endif()
+
+# =============================================================================
+# VirtualTextureProducerABSmokeTest — 最小生产者 A/B（Vulkan headless，真异步 worker）
+# -----------------------------------------------------------------------------
+# r.VirtualTexture.Enable 1 此前是空操作：引擎里没有任何东西初始化管理器单例、注册虚拟纹理或请求页。
+# VirtualTextureProducer 补上这段生命周期。本测试像渲染系统那样每帧 Producer.Tick + Manager.Update，
+# 用 vt_resolve.comp 从 GPU 读回逐 texel 比对；并钉住写生产者时挖出的缺陷：默认配置要 256 GiB 的池图而
+# Initialize 吞掉失败、RequestPages 每帧整 mip 重新入队、enable_mip_streaming 是死字段、无池时页卡在 Loading。
+#
+#   cmake -B build -DZENGINE_BUILD_VT_PRODUCER_AB_SMOKE_TEST=ON
+#   cmake --build build --target VirtualTextureProducerABSmokeTest
+# =============================================================================
+option(ZENGINE_BUILD_VT_PRODUCER_AB_SMOKE_TEST
+       "Build the VirtualTexture minimal-producer A/B (Vulkan headless) smoke-test executable"
+       OFF)
+
+if(ZENGINE_BUILD_VT_PRODUCER_AB_SMOKE_TEST)
+    if(NOT WIN32 AND NOT (UNIX AND NOT APPLE))
+        message(STATUS "VT producer A/B smoke test needs the Vulkan backend (Windows/Linux); skipping")
+    else()
+        add_executable(VirtualTextureProducerABSmokeTest VirtualTextureProducerABSmokeTest.cpp)
+        set_target_properties(VirtualTextureProducerABSmokeTest PROPERTIES
+            CXX_STANDARD 23
+            FOLDER "Engine/Tests"
+        )
+        target_link_libraries(VirtualTextureProducerABSmokeTest PRIVATE ZRuntime)
+        if(TARGET ZEnginePCH)
+            target_link_libraries(VirtualTextureProducerABSmokeTest PRIVATE ZEnginePCH)
+            target_include_directories(VirtualTextureProducerABSmokeTest PRIVATE ${ENGINE_ROOT_DIR}/Source/CommonPCH)
+            add_dependencies(VirtualTextureProducerABSmokeTest ZEnginePCH)
+            target_precompile_headers(VirtualTextureProducerABSmokeTest REUSE_FROM ZEnginePCH)
+        endif()
+        if(MSVC)
+            target_compile_options(VirtualTextureProducerABSmokeTest PRIVATE /W4)
+        endif()
+        add_test(NAME VirtualTextureProducerABSmokeTest COMMAND VirtualTextureProducerABSmokeTest)
+        message(STATUS "Configured VT producer A/B smoke test: VirtualTextureProducerABSmokeTest")
+    endif()
+endif()

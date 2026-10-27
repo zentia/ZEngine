@@ -28,8 +28,18 @@ VirtualTextureManager& VirtualTextureManager::Get()
     return s_Instance;
 }
 
-void VirtualTextureManager::Initialize(RHI* rhi, RenderResourceBase* render_resource)
+bool VirtualTextureManager::Initialize(RHI* rhi, RenderResourceBase* render_resource)
 {
+    // VT 的 GPU 路径（池图、页表纹理、页上传）全是 Vulkan 直连，内部多处
+    // static_cast<VulkanRHI*>(rhi)。Windows 的**默认** RHI 是 DX12（只有 --rhi vulkan 才用
+    // Vulkan），而 Z_HAS_VULKAN 在 Windows 上同样被定义——所以帧钩子在 DX12 运行时也会走到这里，
+    // 把一个 DX12RHI* 当成 VulkanRHI* 用就是未定义行为。必须在入口用类型检查挡住，而不是指望
+    // 各处 static_cast 碰巧不崩。仓库里 BindlessTextureBlitPipeline 用的是同一手法。
+    if (dynamic_cast<VulkanRHI*>(rhi) == nullptr)
+    {
+        return false;
+    }
+
     m_OwnerThread = std::this_thread::get_id();
     m_Rhi = rhi;
     m_RenderResource = render_resource;
@@ -37,10 +47,17 @@ void VirtualTextureManager::Initialize(RHI* rhi, RenderResourceBase* render_reso
     // Create default physical texture pool
     if (!m_PhysicalPool)
     {
-        CreatePhysicalTexturePool(m_Config.physical_pool_width,
-                                  m_Config.physical_pool_height,
-                                  m_Config.page_size,
-                                  m_Config.physical_pool_format);
+        if (!CreatePhysicalTexturePool(m_Config.physical_pool_width,
+                                       m_Config.physical_pool_height,
+                                       m_Config.page_size,
+                                       m_Config.physical_pool_format))
+        {
+            // 不留一个"有池对象、没 GPU 图、零槽位"的半死管理器。
+            m_PhysicalPool.reset();
+            m_Rhi = nullptr;
+            m_RenderResource = nullptr;
+            return false;
+        }
     }
 
     // Initialize page loading thread
@@ -48,6 +65,7 @@ void VirtualTextureManager::Initialize(RHI* rhi, RenderResourceBase* render_reso
     {
         InitializePageLoadingThread();
     }
+    return true;
 }
 
 void VirtualTextureManager::InitializeLogical(uint32_t pool_width_pages,
@@ -222,7 +240,12 @@ void VirtualTextureManager::RequestPages(VirtualTextureHandle handle,
     // Calculate required mip level from the object's screen footprint (was:
     // hardcoded screen_size/0/0 which always returned the coarsest mip).
     float approx_screen_size = screen_size;
-    uint32_t mip_level = resource->CalculateRequiredMipLevel(approx_screen_size, distance, 0.0f);
+    // enable_mip_streaming=false 把请求钉在 mip 0。这个开关此前是死字段（全仓库没人读）；
+    // 现在它有了真实含义：只有 mip 0 的页会被上传（ExtractPagePixels 只抠 mip 0 区域，GPU
+    // 页表也只覆盖 mip 0 网格），所以没有 mip 链之前，生产者必须把它关掉，否则请求 mip>0 会
+    // 白白占用槽位、挤掉有用的 mip 0 页。
+    uint32_t mip_level =
+        m_Config.enable_mip_streaming ? resource->CalculateRequiredMipLevel(approx_screen_size, distance, 0.0f) : 0u;
 
     // Calculate required pages (simplified: request all pages at mip level)
     // In a real implementation, this would calculate based on UV coordinates
@@ -267,6 +290,12 @@ void VirtualTextureManager::RequestPages(VirtualTextureHandle handle,
                 priority = VirtualTexturePagePriority::Low;
             }
 
+            // 幂等：已驻留的不再请求；已在队列里 / 正在准备 / 已准备待提交的不重复入队。
+            if (resource->GetPageTableEntry(mip_level, x, y).is_valid)
+            {
+                continue;
+            }
+
             PageLoadTask task;
             task.page_id = page_id;
             task.virtual_texture_handle = handle;
@@ -277,6 +306,10 @@ void VirtualTextureManager::RequestPages(VirtualTextureHandle handle,
 
             {
                 std::lock_guard<std::mutex> queue_lock(m_PageLoadQueueMutex);
+                if (!m_PendingPages.insert(page_id).second)
+                {
+                    continue;
+                }
                 m_PageLoadQueue.push(task);
             }
         }
@@ -617,12 +650,17 @@ void VirtualTextureManager::ShutdownPageLoadingThread()
         m_PageLoadingThread.join();
     }
 
-    // 丢弃没来得及提交的预备页（它们只是 CPU 缓冲，没有 GPU 对象要释放）。
+    // 丢弃没来得及提交的预备页（它们只是 CPU 缓冲，没有 GPU 对象要释放），连同请求队列与
+    // 待处理集合一起清空——三者必须同进同出，否则残留的 pending 项会让之后对同一页的请求
+    // 被当成"已在队列里"而永远不再入队。
     std::lock_guard<std::mutex> lock(m_PageLoadQueueMutex);
     while (!m_PreparedQueue.empty())
     {
         m_PreparedQueue.pop();
     }
+    m_PageLoadQueue = std::priority_queue<PageLoadTask>();
+    m_PendingPages.clear();
+    m_WorkerInFlight = 0;
 }
 
 void VirtualTextureManager::PageLoadingThreadFunction()
@@ -653,9 +691,10 @@ void VirtualTextureManager::PageLoadingThreadFunction()
             m_PageLoadQueue.pop();
             ++m_WorkerInFlight;  // 取走到入预备队列之间不能"凭空消失"，见头文件注释
         }
-        auto finish_without_page = [this] {
+        auto finish_without_page = [this, &task] {
             std::lock_guard<std::mutex> lock(m_PageLoadQueueMutex);
             --m_WorkerInFlight;
+            m_PendingPages.erase(task.page_id);  // 没进预备队列 ⇒ 不再待处理，允许重新请求
         };
 
         auto resource = GetVirtualTexture(task.virtual_texture_handle);
@@ -676,8 +715,14 @@ void VirtualTextureManager::PageLoadingThreadFunction()
         PreparedPage prepared;
         prepared.page_id = task.page_id;
         prepared.handle = task.virtual_texture_handle;
-        prepared.has_pixels = resource->ExtractPagePixels(
-            task.page_id.page_x, task.page_id.page_y, prepared.pixels, prepared.width, prepared.height);
+        // 只有 mip 0 有像素可传（ExtractPagePixels 只抠 mip 0 区域）：对 mip>0 调它会把
+        // 错位的区域当成该页的内容传进槽位，比不传更糟。
+        prepared.has_pixels = task.page_id.mip_level == 0 &&
+                              resource->ExtractPagePixels(task.page_id.page_x,
+                                                          task.page_id.page_y,
+                                                          prepared.pixels,
+                                                          prepared.width,
+                                                          prepared.height);
 
         {
             std::lock_guard<std::mutex> lock(m_PageLoadQueueMutex);
@@ -714,6 +759,7 @@ void VirtualTextureManager::ProcessPageLoadRequests(float delta_time)
                 }
                 prepared = std::move(m_PreparedQueue.front());
                 m_PreparedQueue.pop();
+                m_PendingPages.erase(prepared.page_id);  // 本次提交后（成败皆然）不再"待处理"
             }
 
             auto resource = GetVirtualTexture(prepared.handle);
@@ -745,6 +791,7 @@ void VirtualTextureManager::ProcessPageLoadRequests(float delta_time)
             }
             task = m_PageLoadQueue.top();
             m_PageLoadQueue.pop();
+            m_PendingPages.erase(task.page_id);
         }
 
         // Check if page is already loaded
@@ -797,6 +844,13 @@ bool VirtualTextureManager::LoadPage(const VirtualTexturePageID& page_id,
 
     VirtualTexturePage* page = resource->GetPage(page_id.mip_level, page_id.page_x, page_id.page_y);
     if (!page || page->state == VirtualTexturePageState::Loaded)
+    {
+        return false;
+    }
+
+    // 没有池就别动页状态：旧代码先把页标成 Loading、再发现没池返回 false，页永远卡在
+    // Loading（之后的请求都因 state != Unloaded 被过滤）。
+    if (!m_PhysicalPool)
     {
         return false;
     }
@@ -868,7 +922,7 @@ bool VirtualTextureManager::LoadPage(const VirtualTexturePageID& page_id,
         std::vector<uint8_t> page_pixels;
         uint32_t page_pixel_width = 0;
         uint32_t page_pixel_height = 0;
-        if (resource->ExtractPagePixels(
+        if (page_id.mip_level == 0 && resource->ExtractPagePixels(
                 page_id.page_x, page_id.page_y, page_pixels, page_pixel_width, page_pixel_height))
         {
             UploadPageToPhysicalPool(page_id, handle, page_pixels.data(), page_pixel_width, page_pixel_height);
@@ -1015,7 +1069,7 @@ void VirtualTextureManager::UpdatePagePriorities(const Vector3& camera_position,
                 continue;
             }
 
-            float screen_size = CalculatePageScreenSize(page.id, pair.first, camera_position,
+            float screen_size = CalculatePageScreenSize(page.id, *resource, camera_position,
                                                         page.object_position, page.object_bounds, fov,
                                                         aspect_ratio, screen_width, screen_height);
             float distance = (page.object_position - camera_position).length();
@@ -1122,7 +1176,7 @@ void VirtualTextureManager::EvictLRUPages()
 }
 
 float VirtualTextureManager::CalculatePageScreenSize(const VirtualTexturePageID& page_id,
-                                                     VirtualTextureHandle handle,
+                                                     const VirtualTextureResource& resource,
                                                      const Vector3& camera_position,
                                                      const Vector3& object_position,
                                                      const AxisAlignedBox& object_bounds,
@@ -1137,14 +1191,13 @@ float VirtualTextureManager::CalculatePageScreenSize(const VirtualTexturePageID&
     // in each dimension (a mip-m page spans 2^m texels = 2^m x the mip-0 page
     // region = 1/pages_x(m) of the object width). We use the object's X-Y
     // footprint (the surface the texture is sampled from).
-    auto resource = GetVirtualTexture(handle);
-    if (!resource || screen_height == 0 || screen_width == 0)
+    if (screen_height == 0 || screen_width == 0)
     {
         return 0.0f;
     }
 
     uint32_t pages_x = 0, pages_y = 0;
-    resource->CalculatePagesForMip(page_id.mip_level, pages_x, pages_y);
+    resource.CalculatePagesForMip(page_id.mip_level, pages_x, pages_y);
     if (pages_x == 0 || pages_y == 0)
     {
         return 0.0f;

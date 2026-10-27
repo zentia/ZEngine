@@ -17,6 +17,11 @@ namespace VirtualTextureSettings
     // r.VirtualTexture.Enable：0=off（默认，休眠），1=on。
     bool IsEnabled();
 
+    // r.VirtualTexture.Source：要作为虚拟纹理流送的图片资产路径（空 = 不流送任何东西）。
+    // 这是**最小生产者**的输入：没有它，Enable=1 也什么都不会发生，因为引擎里没有别的东西
+    // 会注册虚拟纹理或请求页。返回值按值，因为 CVar 可能在别的线程被改写。
+    const char* GetSource();
+
     // 注册 r.VirtualTexture.*（从 RegisterRuntimeConsoleCommands 调用）
     void RegisterConsoleVariables(ConsoleManager& console);
 }  // namespace VirtualTextureSettings
