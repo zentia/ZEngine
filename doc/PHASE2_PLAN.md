@@ -630,6 +630,34 @@ commit `dbeca4c7`。页表纹理此前"能传、能验、没人读"——前两�
 
 ---
 
+### 落地记录 · 2.6 VT 异步加载线程收口（2026-10-27，Vulkan headless 真多线程，22/22 全绿）
+
+commit `e25e2afd`。`enable_async_loading` **默认 true**、`Initialize` 会拉起后台加载线程，但那条路径此前一直是坏的，
+只是因为从没真正跑起来才没出事（引擎里没人调 `Initialize`/`RequestPages`，`r.VirtualTexture.Enable` 默认关）。三个缺陷叠加：
+
+1. `RequestPages` 入队后**从不 notify**（全文件唯一的 notify 是关停）⇒ worker 只会被虚假唤醒碰上。
+2. 一旦跑起来就是错的：worker **直接调 `LoadPage`**，而 `LoadPage` 分配槽位、改页状态、提交 GPU 命令缓冲，
+   与渲染线程并发 = 数据竞争 + 并发 queue submit。
+3. cv 等的锁与队列的锁不是同一把（等待谓词无同步读队列）；关停置标志也没持锁 ⇒ 丢失唤醒。
+
+**新线程契约**：worker **只做 CPU 活**（`ExtractPagePixels`），产出 `PreparedPage`；槽位 / GPU 上传 / 页表簿记 /
+资源释放**只在 owner 线程**（调 `Initialize` 的线程）经 `PumpLoads()`/`Update()` 提交。一把锁同时保护两个队列并作为
+cv 的锁；**背压**：预备未提交页 ≤ `2*max_concurrent_loads`（每页是 `page_size²*4` 字节 CPU 缓冲，不设上限会把整张大
+纹理堆进内存）；`m_WorkerInFlight` 计数保证任何时刻页恰好在一个地方，`getPendingLoadCount()==0` 才真代表排空。
+新增 `PumpLoads()` 与诊断接口（`getGpuThreadViolationCount`/`getAsyncPreparedCount`/`getPreparedBacklogPeak`）。
+
+**验证** `VirtualTextureAsyncLoadABSmokeTest`（选项 `ZENGINE_BUILD_VT_ASYNC_LOAD_AB_SMOKE_TEST`）：4 线程并发
+`RequestPages` + owner 同时 Pump，36 页纹理压 16 槽位池；真 shader 读回逐 texel（驻留页读自己的像素、被驱逐页读 fallback
+而非别人像素）；断言 worker 真的跑了、GPU 活零次发生在 owner 线程外、背压有界、带队列关停不死锁、可重新初始化。
+**22/22，连跑 10/10，零 validation error**。红绿（三种旧缺陷各注入一次）：worker 直调 `LoadPage` ⇒ **段错误 + 10 条
+validation 错误**；不 notify ⇒ 2 项红；去背压 ⇒ 1 项红。**注意**：第一版测试**漏了"不 notify"**——owner 的 Pump 在腾出
+预备队列后也会 notify，掩盖了缺失；后补"不 Pump、worker 仅凭 `RequestPages` 醒来并备到背压上限"的隔离断言才抓到。
+
+**至此打开 `r.VirtualTexture.Enable` 的线程安全前置条件已满足。** 仍未满足的：引擎里没有 VT 的真实**生产者**（没人
+`Initialize` 单例、没人 `RequestPages`），所以开关打开也什么都不会发生。
+
+---
+
 ### 落地记录 · 2.7 Lumen（2026-10-25，复核：CPU 侧已完整，无需动手）
 
 **结论**：本步骤的 CPU 侧工作在进入前**就已经全部落地并有测试**。计划表里那句"部分实现（CPU 探针网格
