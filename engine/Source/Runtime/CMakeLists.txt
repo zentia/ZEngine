@@ -997,6 +997,13 @@ list(REMOVE_ITEM SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Scripting/ScriptVM/Test/ScriptTsChainSmokeTest.cpp")
 list(REMOVE_ITEM REGULAR_SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Scripting/ScriptVM/Test/ScriptTsChainSmokeTest.cpp")
+# 同上：TypeScriptComponent 真身冒烟测试的 main carve-out（把 tsc 产物挂到
+# GameObject 上跑完整生命周期，含热重载）。同一开关
+# ZENGINE_BUILD_SCRIPT_VM_SMOKE_TEST，同一 quickjs 前提。
+list(REMOVE_ITEM SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Scripting/ScriptVM/Test/ScriptComponentSmokeTest.cpp")
+list(REMOVE_ITEM REGULAR_SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Scripting/ScriptVM/Test/ScriptComponentSmokeTest.cpp")
 
 # Nanite 页池簿记冒烟测试的 main carve-out（同理由）。它自带 main()，由
 # ZENGINE_BUILD_NANITE_PAGEPOOL_SMOKE_TEST 单独控制（见
