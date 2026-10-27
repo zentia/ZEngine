@@ -51,6 +51,7 @@
 | C6 | **Lumen 收尾（SSR → GPU 化）** | 动态 GI + 反射；取 SSR 一半 + 首个 Lumen shader | **✅ CPU 侧已完整**（GI/反射/接线/CVar/发布桥全落地 + 7 smoke test；2026-10-25 复核，见 §2 落地记录·2.7）。剩 SSR/HWRT/首个 shader 全 GPU 侧 | C2 的 GBuffer/depth 声明 | ★★ 中价值/高风险（CPU 侧无活，剩 GPU 放最后） |
 | C7 | **编辑器/内容管线填充**（低风险稳态轨） | 平台窗口化收尾 / Timeline 四片段 / Prefab §9.4 | 各为**部分实现·机械收尾**（**Timeline 四片段 2026-10-25 已落地**，见 `doc/timeline/TIMELINE_IMPLEMENTATION.md`“片段语义”；**Prefab §9.4 第 1 条落地、第 2 条对象图层已验**，见 `doc/PrefabSystem_Design.md` §9.4.1，顺带修 7 个真 bug；平台窗口化未动；**平台窗口化 2026-10-25 对代码核对**：Step 1-5 早已兑现（零 GLFW 引用），计划文档勾选已按代码更新；核对时修了 Win32 修饰键恒 0 / 拖放不派发 / Linux 原生 #error / Web 启动空指针等，见 `doc/platform_windowing_plan.md`；剩 Linux X11 窗口层与多显示器枚举） | — | ★★ 低风险填缝 |
 | C7b | **Linux X11 窗口层 + 多显示器枚举**（C7 收尾） | 原生 X11 后端 + XRandR 多屏 | **代码已落地·未真机实测**（2026-10-26，见 `doc/platform_windowing_plan.md`「Linux X11 落地记录」）：`Platform/Linux/LinuxWindow`+`LinuxApplication`（xlib 窗口/事件/剪贴板/光标）+ `vkCreateXlibSurfaceKHR`；XRandR 多显示器枚举（顺带覆盖 C7 的多屏子项）。工厂返回 `LinuxApplication`，CMake `find_package(X11/Xrandr)`+链接，窗口层 TU 用 `Z_PLATFORM_LINUX && !__EMSCRIPTEN__` 守卫。**本机 WSL 被安全策略拦、无 X11 SDK，未编译/运行**——按 Windows/MacOS 接口契约镜像，待 Linux 多屏真机按 doc 步骤验 | — | ★★ 中风险（未验证） |
+| C8 | **运行时 UI（UMG）补齐** | 数据绑定 / 焦点导航 / 动画 / 锚点 / widget 广度 | **可本地验证部分全部落地**（2026-10-27，见 `doc/RUNTIME_UI_IMPLEMENTATION_PLAN.md` 与 §2 落地记录·穿插 UI）：P0 数据绑定（`UMGEventRegistry` 22 断言）+ 焦点导航 + 逐帧 Tick（`UMGTree` 全绿）；P1 动画纯核心（`UMGAnimation` 43 断言）+ 锚点换算（`UMGAnchor` 17 断言）；P2 widget 广度（`UProgressBar`/`UComboBox`/`UTabControl`/`USafeZone`，ZRuntime 干净编译）。**剩全是真机绑定**：ZSlate paint 链（RenderOpacity 乘 tint / RenderTransform 折进几何）、`FGeometry::MakeChild` 喂锚点结果、UISystem 取帧 delta 驱动 TickTree、手柄导航、UTabControl 活动页读回、USafeZone 真实 per-platform 安全区 | — | ★★ 高价值（CPU 侧已清，剩真机） |
 | — | **RHI 胖接口拆分**（阶段一 #9 遗留） | 124 纯虚 `RHI.h` 拆成职责子接口 | **未动手**（阶段一明确后置） | 触碰 4 后端 + 所有调用点 | ✗ **不建议进 Phase 2**（见 §3） |
 
 ---
@@ -451,6 +452,81 @@ CPU 能力缺口兑现——GAS 的冷却时间（此前 3 处 TODO：`GameplayA
   **19/19 全绿**。ZRuntime 同步重建（ASC/spec 接线类型检查通过）。
 - **诚实边界**：纯 CPU 算术语义已验；ASC 层端到端（真实 DoT 效果按周期跳伤害的运行时流程）尚无驱动
   它的游戏内容，属"接线已通、待真实内容"。至此 `Function/Gas/` 下非测试 TODO 已清零。
+
+---
+
+### 落地记录 · 穿插（2026-10-27）：运行时 UI（UMG）补齐——可本地验证部分全部落地
+
+主线渲染候选（C3 HiZ GPU / C4 GPU / C6 GPU / C7b Linux 实测）仍卡真机，转去兑现 UI 子系统的 CPU
+缺口。**重要勘误**：早期对比分析称"ZEngine 完全没有运行时 UI"是**错的**——实测存在完整的 UE UMG
+风格系统（`Runtime/UI/` 22 文件 + `Runtime/UMG/` + ZSlate submodule 完整 Slate widget 库），走
+retained-widgets 路线（非 Unity uGUI）。所以这不是从零建 UI，是补齐相对 Unity uGUI / UE UMG 的缺口。
+全部细节见 `doc/RUNTIME_UI_IMPLEMENTATION_PLAN.md`；此处只记总账。
+
+- **P0 数据绑定 + 焦点导航 + 逐帧 Tick**：`UMG/Core/UMGDelegates.h`（`UMGEventRegistry` 命名事件
+  id→handler 表，Invoke 前拷贝列表防自解绑/重入崩）+ `UMG/Core/UMGTree.h`（模板遍历：深度优先
+  Tick + Collapsed 子树跳过 / 焦点收集 / Tab 循环索引算术，模板参数化节点类型让测试用最小桩 struct
+  headless 验）。`UWidget` 加 `NativeTick`/焦点字段/虚子节点访问。`UMGDelegatesSmokeTest` 22/22 +
+  `UMGTreeSmokeTest` 全绿。
+- **P1 动画纯核心 + 渲染变换字段**：`UMG/Animation/UMGAnimation.h`（`ApplyEasing` 越界夹紧 /
+  `AnimTrack::Evaluate` 先缓动再插值 / `RenderTransform` 6 槽属性路径分派，只覆盖命中槽）+
+  `UWidgetAnimation.h`（命名轨道 + 自持归一化进度状态机 Play/Reverse/Loop/瞬时；**不依赖
+  ZSlate::FCurveSequence**——其成员函数前向声明顺序在 MSVC 单独包含时报 C2027）。`UWidget` 加
+  `m_RenderTransform`+`m_Animations`，`Tick(dt)` 先推进动画再调 NativeTick。`UMGAnimationSmokeTest`
+  43/43。
+- **P1 锚点/自适应**：`UMG/Layout/UMGAnchor.h`（Unity RectTransform 最小子集：`ResolveTopLeft` =
+  `parent_pos + anchor*parent_size + offset - pivot*size` 统一四角/中心锚 / 拉伸锚跨距 / Clamp01）。
+  `UWidget` 加 `anchor_min/max/pivot/offset`（默认贴左上=ZSlate flow layout 现状，现有 widget 不受影响）
+  + 序列化 round-trip。`UMGAnchorSmokeTest` 17/17。
+- **P2 widget 广度**：`UProgressBar`→`SProgressBar`、`UComboBox`→`SComboBox<std::string>`、
+  `UTabControl`→`SDockingArea`、`USafeZone`→`SBorder(DrawBackground=false)`，全部注册进
+  `CreateWidgetByClassName`。顺带给 `UWidget::GetSlateAs<T>()` 加 const 重载。
+- **验证**：4 个新 smoke test 全绿 + ZRuntime 每步同步重建（接线类型检查通过）。每个新测试都走既定
+  手法：header-only 纯核心（只链 include root）+ Runtime/CMakeLists.txt main carve-out +
+  `add_subdirectory`。
+- **诚实边界 / 剩全是真机绑定**：ZSlate paint 链（`SWidget` 无 opacity/transform 字段，`ISlateRenderer`
+  draw 原语吃 `UIColor`，要把 RenderOpacity 乘 tint / RenderTransform 折进 layout/paint/hit-test 全链）；
+  `FGeometry::MakeChild` 喂锚点结果；UISystem 取帧 delta 驱动 `TickTree`（`IEngineSystem` 无 Tick(delta)
+  接口）；手柄导航；`UTabControl` 活动页读回（`SDockingArea` 未暴露 active index）；`USafeZone` 真实
+  per-platform 安全区。
+
+---
+
+### 落地记录 · 全仓库 TODO 复扫（2026-10-27，CPU 可验证项 vs 待补项盘点）
+
+剔除 vendored `zstb_truetype.h`（13 处）、`/Test/`、`.gen.`、`Generated` 后，`engine/Source` 非测试
+TODO/FIXME 共 **95 处**。逐簇核对后结论：**真正能本机 headless 验证的 CPU 项已基本清零**，剩余按
+"能否离机验证"分两类。
+
+**A. 纯后端/GPU 绑定（约 88 处，全部需真机/设备，无法本机验证）**：
+- **RHI 后端**：DX12 13（command buffer/pool/fence/semaphore/viewport RT/内存 flush——全是 device API）、
+  WebGL2 11（深度 rb/program/释放）、Vulkan 4。触碰 `RHI.h` 实现的都属此类。
+- **Lumen 20**：距离场/表面缓存/GPU 资源更新/释放（GPU）、HWRT（`LumenRayTracing.cpp:171` 已明确移出
+  Phase 2）、SSR（`LumenReflections.cpp:138` 需 depth+GBuffer）。`LumenGlobalIllumination.cpp:328`
+  `view_direction` 是**死参数**（函数体从不引用，2.7 落地记录已勘误），非活。
+- **Nanite 13**：GPU 裁剪/GPU 资源初始化/释放（GPU 侧）。`NaniteCluster.cpp:277` 顶点去重见 B。
+- **VirtualTexture 4**：页上传/页表纹理（Vulkan transfer，2.6 落地记录已如实留真机）。
+- **Render passes 6**：`PointLightPass.cpp:1022` / `DirectionalLightPass.cpp:1008` "render from near to
+  far"（阴影 early-Z 排序，排序键 CPU 可算但收益只在真机渲染可见，且 batch 结构深绑 render pass）、
+  `PointLightPass.cpp:775` "test more"、`PickPass`/`MainCameraPass`/`SplashScreen` 各 1。
+- **RenderResource/RenderCommon 8**：sampler maxLod、irradiance mip、unmap 时机、cluster lighting、
+  data caching——多为调优常量或生命周期收尾，低价值或需真机。
+
+**B. CPU 可做但需权衡（1 处，唯一剩下的本机可验项）**：
+- **`NaniteCluster.cpp:277` 顶点去重**：当前每个三角形独占 3 顶点（`vertex_count == triangle_count*3`，
+  索引恒 `0,1,2,...`），可用 hash set 去重共享顶点，省 vertex_data 字节。**权衡**：这会打破刚落地的
+  `GeometryCodec` 量化格式与 54 项 Raw 断言依赖的"连续索引"不变量，需同步改 codec + smoke test；
+  收益（顶点数下降）对已量化的 `int16` 位置有限。属"可做但回归面 > 收益"，**暂不动**，等页池落地
+  （2.5 后续）一起评估。
+
+**C. 编辑器/内容管线（约 6 处，注释性/低优先）**：`ZSlateInspectorWindow` 4、`TextureImporter` 2
+（非 RGBA 目标、DDS 解码——route B 明确留白）、`AnimationImporter` 1（PR-SK2 代码共享）、
+`SkeletonData`/`LMDBDerivedDataCache`/`ShaderCbufferReflection` 各 1。均为机械收尾或概念注记，非阻塞。
+
+**结论**：与 §0 第 3 条（"~80% 集中在 Nanite+Lumen+VT+RHI 后端，且都是各系统最硬的那一半"）一致——
+经过 2.5/2.6/2.7 + GAS + UI 五轮 CPU 侧清剿，**本机可闭环的 CPU 项已基本耗尽**。继续推进必须开真机
+闸门（C3 HiZ GPU / C4 VT GPU / C6 Lumen GPU / C7b Linux 实测 / UI paint 链），或开新专项（页池、HWRT、
+mobile 前向管线——均已在 §5 移出 Phase 2）。
 
 ---
 
