@@ -104,7 +104,8 @@ namespace
         prefab::PropertyLocation recipient_loc;
         if (!prefab::LocatePropertyInStream(recipient_tree.type_tree, recipient_bytes, tokens, recipient_loc))
         {
-            LOG_WARNING(ZPrefab, "SpliceFieldValueInto: path '{}' not found on recipient", path.c_str());
+            LOG_WARNING(ZPrefab, "SpliceFieldValueInto: path '{}' not found on recipient — {}", path.c_str(),
+                        prefab::ExplainPathFailure(recipient_tree.type_tree, tokens).c_str());
             return false;
         }
         if (!recipient_loc.valid())
@@ -137,7 +138,8 @@ namespace
             prefab::PropertyLocation donor_loc;
             if (!prefab::LocatePropertyInStream(donor_tree->type_tree, *donor_bytes, tokens, donor_loc))
             {
-                LOG_WARNING(ZPrefab, "SpliceFieldValueInto: path '{}' not found on donor", path.c_str());
+                LOG_WARNING(ZPrefab, "SpliceFieldValueInto: path '{}' not found on donor — {}", path.c_str(),
+                            prefab::ExplainPathFailure(donor_tree->type_tree, tokens).c_str());
                 return false;
             }
             if (donor_loc.byte_size != recipient_loc.byte_size)
@@ -425,7 +427,8 @@ bool PrefabUtilityEditor::RecordPropertyOverride(PrefabInstance* instance,
     prefab::PropertyLocation loc;
     if (!prefab::LocatePropertyInStream(snap.type_tree, snap_bytes, path, loc))
     {
-        LOG_WARNING(ZPrefab, "RecordPropertyOverride: path '{}' does not exist on target", path.c_str());
+        LOG_WARNING(ZPrefab, "RecordPropertyOverride: path '{}' does not exist on target — {}", path.c_str(),
+                    prefab::ExplainPathFailure(snap.type_tree, path).c_str());
         return false;
     }
     if (!loc.valid() || loc.byte_size != static_cast<int64_t>(value_bytes.size()))
@@ -482,7 +485,8 @@ bool PrefabUtilityEditor::RecordCurrentValueAsOverride(PrefabInstance* instance,
     prefab::PropertyLocation loc;
     if (!prefab::LocatePropertyInStream(snap.type_tree, snap_bytes, path, loc))
     {
-        LOG_WARNING(ZPrefab, "RecordCurrentValueAsOverride: path '{}' not found", path.c_str());
+        LOG_WARNING(ZPrefab, "RecordCurrentValueAsOverride: path '{}' not found — {}", path.c_str(),
+                    prefab::ExplainPathFailure(snap.type_tree, path).c_str());
         return false;
     }
     if (!loc.valid() || loc.byte_size <= 0)

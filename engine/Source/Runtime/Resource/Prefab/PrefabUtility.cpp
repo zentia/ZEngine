@@ -448,7 +448,12 @@ bool PrefabUtility::SpliceModificationIntoBytes(std::vector<uint8_t>&           
     prefab::PropertyLocation loc;
     if (!prefab::LocatePropertyInStream(tree.type_tree, bytes, tokens, loc) || !loc.valid())
     {
-        LOG_WARNING(ZPrefab, "override splice: path '{}' not found in the stream", mod.property_path.c_str());
+        // Say WHY. "path not found" alone cost three guesses in a row on 2026-10-27
+        // (m_ScriptGuid is serialized as m_script_guid; the member name is not the
+        // serialized name) — listing what the type DOES have makes the cause one line.
+        LOG_WARNING(ZPrefab, "override splice: path '{}' not found in the stream — {}",
+                    mod.property_path.c_str(),
+                    prefab::ExplainPathFailure(tree.type_tree, tokens).c_str());
         return false;
     }
 

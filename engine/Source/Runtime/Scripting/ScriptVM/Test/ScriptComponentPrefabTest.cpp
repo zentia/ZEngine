@@ -1374,11 +1374,23 @@ int main(int argc, char** argv)
                     prefab::SerialisedObject tree;
                     std::vector<uint8_t> bytes;
                     PrefabUtility::SnapshotWithOverrides(*tpl, {}, tree, bytes);
+
+                    // 先问"这个路径在类型树里解不解析"：失败时 got= 直接列出可用字段名，
+                    // 不用再猜（序列化名不是 C++ 成员名：m_ScriptGuid -> m_script_guid）。
+                    CheckEq("N-ov5a", "m_script_guid 在 TypeScriptComponent 的类型树里解析得出",
+                            std::string(prefab::ExplainPathFailure(tree.type_tree, eastl::string("m_script_guid")).c_str()),
+                            "resolves");
+
                     prefab::PropertyLocation loc;
                     std::vector<prefab::PathToken> tokens;
                     prefab::TokenizePropertyPath(eastl::string("m_script_guid"), tokens);
                     const bool located = prefab::LocatePropertyInStream(tree.type_tree, bytes, tokens, loc) && loc.valid();
                     CheckTrue("N-ov5", "定位到模板上的 m_script_guid 字段", located);
+                    if (!located)
+                    {
+                        std::printf("    (stream is %zu bytes; locator said: offset=%lld size=%lld)\n", bytes.size(),
+                                    static_cast<long long>(loc.byte_offset), static_cast<long long>(loc.byte_size));
+                    }
                     if (located)
                     {
                         PropertyModification mod;
@@ -1413,6 +1425,19 @@ int main(int argc, char** argv)
                                     seen = tsc->GetScriptGuid().c_str();
                         }
                         CheckEq("N-ov7", "override 落在 mid 新增的组件上（N_OV -> N_XX）", seen, "N_XX");
+                        if (seen != "N_XX")
+                        {
+                            // 失败时把链的形状打出来：层数、每层的 override / 新增 / 删除个数，
+                            // 以及 override 的 target 是否还能解析回 mid 文件里的模板。
+                            std::vector<PrefabAsset*> dbg_chain;
+                            PrefabUtility::ResolveVariantChain(ov_leaf_loaded, dbg_chain);
+                            std::printf("    (chain=%zu links;", dbg_chain.size());
+                            for (PrefabAsset* l : dbg_chain)
+                                std::printf(" [ov=%zu add=%zu rm=%zu]", l->GetVariantOverrides().size(),
+                                            l->GetVariantAddedComponents().size(), l->GetVariantRemovedComponents().size());
+                            std::printf(" template=%p; see the engine log for 'override splice' / 'variant override')\n",
+                                        static_cast<void*>(tpl));
+                        }
                     }
                     object_manager->Destroy(ov_leaf);
                 }
@@ -1421,6 +1446,44 @@ int main(int argc, char** argv)
             {
                 object_manager->Destroy(ov_mid);
             }
+        }
+    }
+
+    // ---- N-diag. ExplainPathFailure 本身：失败信息要真的有用 ------------------------
+    // 这条诊断是为"路径猜错"准备的（序列化名不是 C++ 成员名）。钉住它的几种输出，免得
+    // 以后有人改了 locator 却让诊断悄悄变成废话。
+    {
+        GameObject* diag_go = MakeGameObject(object_manager, "NDiag");
+        Component* diag_raw = (diag_go != nullptr) ? diag_go->AddComponentByTypeName("TypeScriptComponent") : nullptr;
+        CheckTrue("N-diag0", "造出了用于诊断的 TypeScriptComponent", diag_raw != nullptr);
+        if (diag_raw != nullptr)
+        {
+            prefab::SerialisedObject dt;
+            std::vector<uint8_t> db;
+            PrefabUtility::SnapshotWithOverrides(*diag_raw, {}, dt, db);
+            auto Explain = [&](const char* p) {
+                return std::string(prefab::ExplainPathFailure(dt.type_tree, eastl::string(p)).c_str());
+            };
+            auto Contains = [](const std::string& hay, const char* needle) { return hay.find(needle) != std::string::npos; };
+
+            const std::string wrong = Explain("m_ScriptGuid");  // C++ 成员名，不是序列化名
+            CheckTrue("N-diag1", "猜错名字：指出缺哪个字段并列出真名 m_script_guid",
+                      Contains(wrong, "no field 'm_ScriptGuid'") && Contains(wrong, "m_script_guid"));
+            if (!(Contains(wrong, "no field 'm_ScriptGuid'") && Contains(wrong, "m_script_guid")))
+                std::printf("    got: %s\n", wrong.c_str());
+
+            const std::string idx = Explain("m_script_guid[0]");
+            CheckTrue("N-diag2", "对非数组用 [n]：说明它不是数组",
+                      Contains(idx, "cannot index into 'm_script_guid'") && Contains(idx, "not an array"));
+            if (!(Contains(idx, "cannot index into 'm_script_guid'")))
+                std::printf("    got: %s\n", idx.c_str());
+
+            const std::string bad = Explain("m_script_guid..x");
+            CheckTrue("N-diag3", "畸形路径：说明是路径本身有问题", Contains(bad, "malformed path"));
+            if (!Contains(bad, "malformed path"))
+                std::printf("    got: %s\n", bad.c_str());
+
+            CheckEq("N-diag4", "存在的路径：resolves", Explain("m_script_guid"), "resolves");
         }
     }
 
