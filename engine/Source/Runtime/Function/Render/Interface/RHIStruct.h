@@ -1265,10 +1265,13 @@ struct QueueFamilyIndices
     std::optional<uint32_t> present_family;
     std::optional<uint32_t> m_ComputeFamily;
 
-    bool IsComplete()
+    // require_present：无头渲染（Nanite 离屏 / 无窗口宿主）没有 present queue，
+    // present_family 会留空。此时用 IsComplete(false) 判完备——只要求 graphics +
+    // compute。默认 true 保持既有行为（有 surface 的正常路径仍要求 present）。
+    bool IsComplete(bool require_present = true)
     {
-        return graphics_family.has_value() && present_family.has_value() && m_ComputeFamily.has_value();
-        ;
+        return graphics_family.has_value() && m_ComputeFamily.has_value() &&
+               (!require_present || present_family.has_value());
     }
 };
 

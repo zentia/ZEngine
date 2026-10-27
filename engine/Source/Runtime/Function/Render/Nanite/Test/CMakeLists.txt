@@ -341,3 +341,53 @@ if(ZENGINE_BUILD_NANITE_UPLOADPLANNER_SMOKE_TEST)
 
     message(STATUS "Configured Nanite page-upload-planner smoke test: NanitePageUploadPlannerSmokeTest")
 endif()
+
+# =============================================================================
+# NanitePagePoolABSmokeTest — 页池 A/B 真机对比（Vulkan headless）。
+# -----------------------------------------------------------------------------
+# 整条页池链唯一一处真的跑在 GPU 上的验证：把 VulkanRHI 在无窗口环境下整个拉起
+# （依赖本批改的 headless 路径），同一场景跑两遍 —— budget=0（稠密基线）vs
+# budget=巨大（页池全驻留，几何拷进持久页缓冲 + 集群 geometry 改写成槽位基址）——
+# 判据是两张离屏 GBufferA 逐像素一致（±1 LSB 容差）。附带钉住页池真的在跑：pool-on
+# 必须建出持久页缓冲、pool-off 必须留空。
+#
+# 与 NaniteGPUCullingSmokeTest 不同：它链具体后端（VulkanRHI.h），且需要注册一个
+# 无主窗口的 WindowSystem（VulkanRHI::Initialize 无条件 deref 它判 headless）。只在
+# Windows/Linux（有 Vulkan 后端）下配置；Apple 走 Metal，另有 GPU-culling 测试覆盖。
+#
+#   cmake -B build -DZENGINE_BUILD_NANITE_PAGEPOOL_AB_SMOKE_TEST=ON
+#   cmake --build build --target NanitePagePoolABSmokeTest
+# =============================================================================
+option(ZENGINE_BUILD_NANITE_PAGEPOOL_AB_SMOKE_TEST
+       "Build the Nanite page-pool A/B (Vulkan headless) smoke-test executable"
+       OFF)
+
+if(ZENGINE_BUILD_NANITE_PAGEPOOL_AB_SMOKE_TEST)
+    if(NOT WIN32 AND NOT (UNIX AND NOT APPLE))
+        message(STATUS "Nanite page-pool A/B smoke test needs the Vulkan backend (Windows/Linux); skipping on this platform")
+    else()
+        add_executable(NanitePagePoolABSmokeTest NanitePagePoolABSmokeTest.cpp)
+
+        set_target_properties(NanitePagePoolABSmokeTest PROPERTIES
+            CXX_STANDARD 23
+            FOLDER "Engine/Tests"
+        )
+
+        target_link_libraries(NanitePagePoolABSmokeTest PRIVATE ZRuntime)
+
+        if(TARGET ZEnginePCH)
+            target_link_libraries(NanitePagePoolABSmokeTest PRIVATE ZEnginePCH)
+            target_include_directories(NanitePagePoolABSmokeTest PRIVATE ${ENGINE_ROOT_DIR}/Source/CommonPCH)
+            add_dependencies(NanitePagePoolABSmokeTest ZEnginePCH)
+            target_precompile_headers(NanitePagePoolABSmokeTest REUSE_FROM ZEnginePCH)
+        endif()
+
+        if(MSVC)
+            target_compile_options(NanitePagePoolABSmokeTest PRIVATE /W4)
+        endif()
+
+        add_test(NAME NanitePagePoolABSmokeTest COMMAND NanitePagePoolABSmokeTest)
+
+        message(STATUS "Configured Nanite page-pool A/B smoke test: NanitePagePoolABSmokeTest")
+    endif()
+endif()

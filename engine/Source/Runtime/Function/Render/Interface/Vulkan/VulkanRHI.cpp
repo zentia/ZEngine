@@ -309,15 +309,10 @@ bool VulkanRHI::Initialize()
     }
 
     InitializePhysicalDevice();
-
     CreateLogicalDevice();
-
     CreateCommandPool();
-
     CreateCommandBuffers();
-
     CreateDescriptorPool();
-
     CreateSyncPrimitives();
 
     if (!m_Headless)
@@ -339,7 +334,6 @@ bool VulkanRHI::Initialize()
     }
 
     CreateFramebufferImageAndView();
-
     CreateAssetAllocator();
 
     // -----------------------------------------------------------------
@@ -5133,7 +5127,9 @@ QueueFamilyIndices VulkanRHI::FindQueueFamilies(VkPhysicalDevice physicalm_devic
             }
         }
 
-        if (indices.IsComplete())
+        // 无头时 present_family 恒空，用 IsComplete(false) 才能提前收工——否则会白扫
+        // 完所有 queue family（结果仍正确，但没必要）。
+        if (indices.IsComplete(!m_Headless))
         {
             break;
         }
@@ -5164,17 +5160,52 @@ bool VulkanRHI::IsDeviceSuitable(VkPhysicalDevice physicalm_device)
     auto queue_indices = FindQueueFamilies(physicalm_device);
     bool is_extensions_supported = CheckDeviceExtensionSupport(physicalm_device);
     bool is_swapchain_adequate = false;
-    if (is_extensions_supported)
+    // 无头模式：m_Surface 是 null，QuerySwapChainSupport 会对 null surface 调
+    // vkGetPhysicalDeviceSurface*KHR（validation 报错 + 返回空）。swapchain adequacy
+    // 是"有没有可用的 present 表面/格式"，无头根本没有 present，这条判据必须跳过——
+    // 否则每个设备都被判不适合，InitializePhysicalDevice 落到 "failed to find suitable
+    // physical device"，后续拿着 null 物理设备直接崩。device 扩展里的 VK_KHR_swapchain
+    // 同理：无头不启用它，CheckDeviceExtensionSupport 会因此误判"扩展不全"。
+    const bool check_swapchain = !m_Headless;
+    if (check_swapchain && is_extensions_supported)
     {
         SwapChainSupportDetails swapchain_support_details = QuerySwapChainSupport(physicalm_device);
         is_swapchain_adequate =
             !swapchain_support_details.formats.empty() && !swapchain_support_details.presentModes.empty();
     }
+    else if (!check_swapchain)
+    {
+        // 无头时把 swapchain 从"必须支持"的集合里临时拿掉再判扩展，判完不回写——
+        // CreateLogicalDevice 里会再次 clear（那里才是真正传给 device_create_info 的时刻）。
+        std::vector<VkExtensionProperties> available;
+        uint32_t count = 0;
+        vkEnumerateDeviceExtensionProperties(physicalm_device, nullptr, &count, nullptr);
+        available.resize(count);
+        vkEnumerateDeviceExtensionProperties(physicalm_device, nullptr, &count, available.data());
+        std::set<std::string> required;
+        for (const char* name : m_DeviceExtensions)
+        {
+            if (std::strcmp(name, VK_KHR_SWAPCHAIN_EXTENSION_NAME) != 0)
+            {
+                required.insert(name);
+            }
+        }
+        for (const auto& ext : available)
+        {
+            required.erase(ext.extensionName);
+        }
+        is_extensions_supported = required.empty();
+    }
 
     VkPhysicalDeviceFeatures physicalm_device_features;
     vkGetPhysicalDeviceFeatures(physicalm_device, &physicalm_device_features);
 
-    if (!queue_indices.IsComplete() || !is_swapchain_adequate || !physicalm_device_features.samplerAnisotropy)
+    // 无头时 present_family 留空，IsComplete 必须放宽为"不要求 present"。
+    // check_swapchain == !m_Headless：有 surface 时为 true（要求 present），无头为 false
+    // （不要求 present）。这正是 IsComplete 的 require_present 语义。
+    const bool q_complete = queue_indices.IsComplete(check_swapchain);
+    if (!q_complete || !is_extensions_supported ||
+        (check_swapchain && !is_swapchain_adequate) || !physicalm_device_features.samplerAnisotropy)
     {
         return false;
     }
@@ -5322,6 +5353,15 @@ bool VulkanRHI::IsPointLightShadowEnabled()
 
 RHICommandBuffer* VulkanRHI::GetCurrentCommandBuffer() const
 {
+    // 无头模式没有帧循环（PrepareBeforePass 早退，从没把真实命令缓冲赋给
+    // m_CurrentCommandBuffer）。它默认是个 new 出来的空 VulkanCommandBuffer，
+    // getResource() 返回未初始化的 VkCommandBuffer —— 拿它当"当前帧缓冲"会让
+    // Nanite 误以为自己在 pass 里、把命令录进垃圾句柄，vkCmdBindPipeline 直接
+    // access violation。无头时明确返回 null，让调用方退到 BeginSingleTimeCommands。
+    if (m_Headless)
+    {
+        return nullptr;
+    }
     return m_CurrentCommandBuffer;
 }
 RHICommandBuffer* const* VulkanRHI::GetCommandBufferList() const

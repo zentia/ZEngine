@@ -724,6 +724,28 @@ void NaniteRenderer::ExecuteStreamingUploads()
     const nanite_pages::PoolUpdate& pool = m_ClusterManager.GetLastPoolUpdate();
     std::unordered_map<uint32_t, nanite_pages::PageGeometryDesc> geometry =
         m_ClusterManager.CollectResidentPageGeometry();
+
+    // 槽位表容量 = 本帧所有可驻留页的顶点/索引总数（上界）。构造时的占位容量是 (1,1)，
+    // 不重设的话 Admit 全部失败（页池路径一个页都驻留不进 → 什么都不画）。这里按
+    // geometry 总和铺满：预算足够时全部页都进得去，与稠密路径逐像素等价；预算不够时
+    // 页池自己的字节闸会先拒（failed_admits），槽位表只是"装得下预算内所有页"的容器。
+    {
+        uint64_t total_vertices = 0;
+        uint64_t total_indices = 0;
+        for (const auto& kv : geometry)
+        {
+            total_vertices += kv.second.vertex_count;
+            total_indices += kv.second.index_count;
+        }
+        // 只在容量不够时重设（重设会清空所有槽位 → 已驻留页的几何映射丢失，必须重拷）。
+        if (m_PageSlots.GetVertexCapacity() < total_vertices ||
+            m_PageSlots.GetIndexCapacity() < total_indices)
+        {
+            m_PageSlots.ResetWithCapacity(static_cast<uint32_t>(total_vertices),
+                                          static_cast<uint32_t>(total_indices));
+        }
+    }
+
     nanite_pages::StreamingUploadPlan plan =
         nanite_pages::PlanStreamingUploads(pool, geometry, m_PageSlots);
 

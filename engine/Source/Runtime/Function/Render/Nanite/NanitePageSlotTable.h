@@ -143,6 +143,15 @@ namespace nanite_pages
             ResetFreeLists();
         }
 
+        // 重设容量并全清。渲染器在页池启用时按"页池预算换算的元素数"（或整场景上界）
+        // 调它，把构造时的占位容量（1,1）换成真实容量。必须在使用 Admit 之前调。
+        void ResetWithCapacity(uint32_t vertex_capacity, uint32_t index_capacity)
+        {
+            m_VertexCapacity = vertex_capacity;
+            m_IndexCapacity = index_capacity;
+            Reset();
+        }
+
     private:
         struct Segment
         {
