@@ -14,6 +14,20 @@
 set(CMAKE_SYSTEM_NAME iOS)
 set(CMAKE_SYSTEM_PROCESSOR arm64)
 
+# `IOS` 是工程侧判断"这是 iOS 构建"的唯一开关：
+#   engine/CMakeLists.txt            elseif(IOS) -> add_subdirectory(Source/Player/IOS)
+#   Source/Player/IOS/CMakeLists.txt if(NOT IOS) -> FATAL_ERROR
+#
+# CMake 自己的 Darwin 平台模块在 project() 时也会设 IOS，但那属于内部行为，
+# 而且时机在 toolchain 之后 —— 一旦它不成立，iOS 那个 target 会被**静默跳过**
+# （elseif 走空），症状是"配出来没有 ZGameIOS，也不知道为什么"。这里显式设一
+# 次，把"依赖 CMake 内部"变成"自己保证"，两者不冲突（值相同）。
+set(IOS TRUE)
+
+# 与 ZGameIOS target 上的 XCODE_ATTRIBUTE_IPHONEOS_DEPLOYMENT_TARGET 对齐。
+# 不设的话 CMake 的编译器检测走 SDK 默认版本，可能与 Xcode 属性不一致。
+set(CMAKE_OSX_DEPLOYMENT_TARGET "16.0" CACHE STRING "Minimum iOS deployment target")
+
 # 真机 SDK。要跑模拟器就换成 iphonesimulator，并把 CMAKE_OSX_ARCHITECTURES
 # 改成宿主架构（Apple Silicon 是 arm64，Intel 是 x86_64）。
 set(CMAKE_OSX_SYSROOT "iphoneos")

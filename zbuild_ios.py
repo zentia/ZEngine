@@ -120,15 +120,28 @@ def build_app(config: str) -> Path:
          "-destination", "generic/platform=iOS",
          "build"], cwd=BUILD_DIR)
 
-    app = BUILD_DIR / f"bin/{config}/ZEngine.app"
-    if app.is_dir():
-        return app
-    # CMake 的 Xcode 生成器把产物放在配置目录下，不同版本位置略有差异。
-    candidates = sorted(BUILD_DIR.rglob("ZEngine.app"))
-    if not candidates:
-        fail("编完了但没找到 ZEngine.app")
+    # 不要硬猜一个路径。Xcode 生成器的产物位置随 CMake 版本和
+    # CMAKE_XCODE_OUTPUT_DIRECTORY 变（`<Config>-iphoneos/` 与 `bin/<Config>/`
+    # 都见过），猜错就是在 xcodebuild 成功之后报"没找到 .app"。
+    #
+    # 先把几个已知位置列出来，都没有再 rglob —— rglob 能兜住，但它在整棵
+    # build 树里找，慢，且可能捞到上一次的陈产物。
+    candidates = [
+        BUILD_DIR / f"{config}-iphoneos" / "ZEngine.app",
+        BUILD_DIR / "bin" / config / "ZEngine.app",
+    ]
+    for candidate in candidates:
+        if candidate.is_dir():
+            return candidate
+
+    fallback = sorted(BUILD_DIR.rglob("ZEngine.app"))
+    if not fallback:
+        fail("编完了但没找到 ZEngine.app"
+             f"（找过 {[str(c) for c in candidates]}，也在整个 build 目录里搜过）")
         raise SystemExit(1)
-    return candidates[0]
+
+    log(f"产物不在预期位置，rglob 找到: {fallback[0]}")
+    return fallback[0]
 
 
 def archive_and_export(config: str, team: str | None) -> Path:

@@ -398,6 +398,21 @@ namespace
                 }
                 break;
 
+            case APP_CMD_CONFIG_CHANGED:
+                // 旋转 / 分屏 / 折叠屏展开。Manifest 里声明了 configChanges，
+                // 所以 Activity **不会**重建 —— 于是不会走 TERM_WINDOW +
+                // INIT_WINDOW 那对回调，窗口尺寸变了却没人通知引擎，swapchain
+                // 不重建，画面就被拉伸到新尺寸上。
+                //
+                // 这里自己补一次 Resize。它是幂等的：如果系统随后还是发了
+                // TERM/INIT 那一对，多调一次不会产生额外开销也不会错乱。
+                if (app->window != nullptr && g_window_ready)
+                {
+                    ZPlayer_Resize(ANativeWindow_getWidth(app->window),
+                                   ANativeWindow_getHeight(app->window));
+                }
+                break;
+
             case APP_CMD_TERM_WINDOW:
                 // ANativeWindow 即将失效。必须先让引擎放手：继续拿它 present
                 // 是 Android 上最典型的 Vulkan 崩溃点（surface lost / 野指针）。

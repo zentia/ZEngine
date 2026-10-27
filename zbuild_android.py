@@ -118,11 +118,38 @@ def run(cmd: list[str], cwd: Path, env: dict[str, str] | None = None) -> None:
 
 
 def locate_output(kind: str, config: str) -> Path:
+    """在 Gradle 的输出目录里找产物。
+
+    不要在文件名上猜。这个 Gradle 工程是**单模块根工程**（rootProject.name =
+    "ZEngineAndroid"，没有 :app 子目录），AGP 的产物名跟 module name 走，是
+    `ZEngineAndroid-<variant>.apk` 还是 `app-<variant>.apk` 取决于 AGP 版本和
+    archivesBaseName —— 猜错的后果是 Gradle 明明成功了、脚本却报"没找到产物"，
+    而且报错信息指着一个不存在的文件，比不猜更难查。
+
+    所以按扩展名 glob，找不到时把目录里**实际有什么**列出来。
+    """
     if kind == "aab":
-        path = ANDROID_PROJECT_DIR / "build" / "outputs" / "bundle" / config / f"app-{config}.aab"
+        out_dir = ANDROID_PROJECT_DIR / "build" / "outputs" / "bundle" / config
+        pattern = "*.aab"
     else:
-        path = ANDROID_PROJECT_DIR / "build" / "outputs" / "apk" / config / f"app-{config}.apk"
-    return path
+        out_dir = ANDROID_PROJECT_DIR / "build" / "outputs" / "apk" / config
+        # output-metadata.json 之类也在里面，只要 .apk。
+        pattern = "*.apk"
+
+    if not out_dir.is_dir():
+        fail(f"没有输出目录 {out_dir}：Gradle 真的编了吗？")
+
+    found = sorted(out_dir.glob(pattern))
+    if not found:
+        listing = "\n  ".join(p.name for p in sorted(out_dir.iterdir())) or "(空目录)"
+        fail(f"{out_dir} 里没有 {pattern}。目录内容：\n  {listing}")
+        raise SystemExit(1)
+
+    if len(found) > 1:
+        log(f"输出目录里有 {len(found)} 个 {pattern}，取最新的一个：{[p.name for p in found]}")
+        return max(found, key=lambda p: p.stat().st_mtime)
+
+    return found[0]
 
 
 def adb_install(apk: Path, package: str = "com.zengine.player") -> None:
