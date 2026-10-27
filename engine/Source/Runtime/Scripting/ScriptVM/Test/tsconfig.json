@@ -1,0 +1,18 @@
+{
+  "compilerOptions": {
+    "target": "es2020",
+    "module": "commonjs",
+    "outDir": "./TscOutput",
+    "rootDir": "./Scripts",
+    "sourceMap": false,
+    "experimentalDecorators": true,
+    "strict": false,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true
+  },
+  "include": [
+    "Scripts/**/*.ts",
+    "Typings/**/*.d.ts"
+  ]
+}

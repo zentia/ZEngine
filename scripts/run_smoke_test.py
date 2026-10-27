@@ -37,6 +37,11 @@ zsyntax.py 只做 `-fsyntax-only`。也就是说在这台没有 cmake / ninja �
     ScriptInput   --extra-source engine/Source/Runtime/Function/Input/EnhancedInputSystem.cpp
                   --extra-source engine/Source/Runtime/Function/Input/InputSystem.cpp
     ScriptVM      见 doc/SCRIPT_VM_E2E.md 第 4 节（还要额外 4 个 .gen.cpp）
+    ScriptTsChain ScriptVM 的那 6 个，再加
+                  --extra-source engine/Source/Runtime/Scripting/Wrapper/ScriptEnv.cpp
+
+  一般不用手写：`scripts/check_ts_chain.py` 自带完整清单，一条命令跑完
+  "导出 d.ts -> tsc 编译 -> 与签入产物 diff -> 跑测试" 四步。
 
 症状很好认：BqLog 打完 "log_manager is constructed" 就没了，`echo $?` 是 139。
 """
@@ -127,6 +132,9 @@ def main() -> int:
     parser.add_argument("test_source", help="冒烟测试的 .cpp（相对仓库根或绝对路径）")
     parser.add_argument("--template", default="Function/Audio/AudioSystem.cpp",
                         help="从 compile_commands.json 里挑哪一条命令当 flags 模板")
+    parser.add_argument("--run-arg", action="append", default=[], metavar="ARG",
+                        help="跑可执行文件时追加的命令行参数，可重复。用于带 argv 模式的"
+                             "测试（例如 ScriptTsChainSmokeTest 的 --dump-dts / --js-root）。")
     parser.add_argument("--extra-source", action="append", default=[], metavar="CPP",
                         help="除测试自身外还要一起编译的 .cpp，可重复。用于**新加的引擎源文件**："
                              "bin/libZRuntime.a 是上一次 cmake 构建的产物，不含它们的符号，"
@@ -186,7 +194,7 @@ def main() -> int:
         return r.returncode
 
     print(f"\n[run] {out_bin}", flush=True)
-    rr = subprocess.run([out_bin], capture_output=True, text=True)
+    rr = subprocess.run([out_bin] + args.run_arg, capture_output=True, text=True)
     sys.stdout.write(rr.stdout)
     sys.stderr.write(rr.stderr)
     return rr.returncode

@@ -101,6 +101,64 @@ if(PAPI_TYPE STREQUAL "quickjs")
 
         add_test(NAME ScriptVMSmokeTest COMMAND ScriptVMSmokeTest)
         message(STATUS "Configured script VM end-to-end smoke test: ScriptVMSmokeTest")
+
+        # ---------------------------------------------------------------------
+        # TS -> tsc -> .js -> ScriptEnv -> C++ 全链路。
+        #
+        # 与上面那个测试的区别：它喂给 ScriptEnv 的不是手写 CommonJS，而是 **tsc
+        # 按本目录 tsconfig.json 编译 Test/Scripts/*.ts 的产物**（TscOutput/，签进
+        # 仓库，所以这里不需要 node）。这补的是用户真正走的那条路：
+        #
+        #   1. tsc 的 CommonJS 产物（Object.defineProperty(exports, "__esModule")
+        #      + ES2020 原生 class）能不能被 LoadModuleInternal 的 IIFE 包装执行；
+        #   2. `class Mover extends Behaviour` 的**原生 class 继承**能不能被
+        #      __zNewInstance new 出来 —— instanceof Behaviour 必须为真；
+        #   3. 生成的 zengine.d.ts 到底能不能被真正的类型检查器接受（交给
+        #      scripts/check_ts_chain.py 用 tsc 验，那边需要 node）。
+        #
+        # 产物漂移由 scripts/check_ts_chain.py 管：它重新生成 d.ts、重新编译、与
+        # TscOutput/ diff，再跑本测试（--js-root 指向刚编译出来的目录）。
+        # ---------------------------------------------------------------------
+        add_executable(ScriptTsChainSmokeTest ScriptTsChainSmokeTest.cpp)
+
+        set_target_properties(ScriptTsChainSmokeTest PROPERTIES
+            CXX_STANDARD 23
+            FOLDER "Engine/Tests"
+        )
+
+        set_source_files_properties(${_zht_bind_sources} PROPERTIES GENERATED TRUE)
+        target_sources(ScriptTsChainSmokeTest PRIVATE ${_zht_bind_sources})
+        if(TARGET ZRuntime_ZHeaderTool)
+            add_dependencies(ScriptTsChainSmokeTest ZRuntime_ZHeaderTool)
+        endif()
+
+        # js root 的默认位置：签进仓库的 tsc 产物目录。测试也接受 --js-root 覆盖
+        # （scripts/check_ts_chain.py 用它指向刚编译出来的临时目录）。
+        target_compile_definitions(ScriptTsChainSmokeTest PRIVATE
+            ZENGINE_TS_CHAIN_TSCOUT_DIR="${CMAKE_CURRENT_SOURCE_DIR}/TscOutput")
+
+        target_compile_definitions(ScriptTsChainSmokeTest PRIVATE PAPI_QUICKJS=1)
+
+        target_link_libraries(ScriptTsChainSmokeTest PRIVATE ZRuntime)
+
+        if(TARGET ZEnginePCH)
+            target_link_libraries(ScriptTsChainSmokeTest PRIVATE ZEnginePCH)
+            target_include_directories(ScriptTsChainSmokeTest PRIVATE ${ENGINE_ROOT_DIR}/Source/CommonPCH)
+            add_dependencies(ScriptTsChainSmokeTest ZEnginePCH)
+            target_precompile_headers(ScriptTsChainSmokeTest REUSE_FROM ZEnginePCH)
+        endif()
+
+        if(APPLE)
+            target_sources(ScriptTsChainSmokeTest PRIVATE
+                ${ENGINE_ROOT_DIR}/Source/Runtime/Core/Serialize/Test/SmokeTestAppleLinkStubs.cpp)
+        endif()
+
+        if(MSVC)
+            target_compile_options(ScriptTsChainSmokeTest PRIVATE /W4)
+        endif()
+
+        add_test(NAME ScriptTsChainSmokeTest COMMAND ScriptTsChainSmokeTest)
+        message(STATUS "Configured TS->tsc->VM chain smoke test: ScriptTsChainSmokeTest")
     endif()
 else()
     message(STATUS "ScriptVMSmokeTest skipped: requires -DPAPI_TYPE=quickjs (current: ${PAPI_TYPE})")

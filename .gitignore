@@ -495,3 +495,7 @@ build_ctest_check/
 # WorkBuddy per-user session data (memory, plans). Untracked by design.
 .workbuddy/
 
+
+# 脚本全链路测试用的 zengine.d.ts：scripts/check_ts_chain.py 从运行时注册表现导
+# 出来的，和编辑器给项目写的那份同源，不能签进 VCS。
+/engine/Source/Runtime/Scripting/ScriptVM/Test/Typings/
