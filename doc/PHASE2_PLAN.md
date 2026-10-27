@@ -46,7 +46,7 @@
 | C1 | **RenderGraph 接管流水线** | 帧图编译器：自动屏障、瞬态 RT 别名、剔除 | **✅ 已默认开·真机验证 PASS**（165 编译+92 执行断言；RP2 图路径 2026-10-26 翻默认开 `c0d1bcfc`，同帧 A/B 逐位等价 + soak 无异常，见 §2 落地记录·2.6） | 阶段一 RHI 注册表 | ★★★ 高价值/低风险 |
 | C2 | **RenderGraph → RP1**（`render_pass_refactor`） | RP1 三子pass 拆成 3 独立 pass，纳入图管理 | **✅ 已默认开·真机验证 PASS**（2.3 三分已在代码：3 独立 render pass/subpass 恒 0；2.4 compiler 200/200 + executor 121/121 已验。`DrawRP1WithGraph` 2026-10-26 翻默认开 `871878e3`，同帧 A/B `rp1.backup_odd` 逐位 IDENTICAL + soak 无异常，见 §2 落地记录·2.6） | **必须在 C1 之后** | ★★ 高价值/中风险 |
 | C3 | **Nanite 收尾** | 流送 → 几何压缩 → HiZ 遮挡 → 页池 | **大部分实现**（真 GPU dispatch 已有；几何压缩✅ + streaming✅ + **页池簿记层✅ 已落地 2026-10-26**（opt-in，`streaming_pool_budget_bytes>0`；显存上传待真机），见 §2 落地记录·2.5 页池；**HiZ CPU 侧✅ 已落地 2026-10-26**，见 §2 落地记录·2.5 HiZ；**HiZ GPU 侧✅ 已落地 2026-10-27**：切法一 compute 生成金字塔 14/14、切法二 GPU 遮挡剔除 16/16，见 `doc/PHASE2_STEP2.5_HIZ_GPU.md` §6/§7；**页池 GPU 路径✅ 逐像素一致 13/13**。剩切法三（device-local+真 mip 纹理，可选打磨）与顶点去重（回归面>收益，主动推迟）） | C1/C2 给其 RG 管理的目标 | ★★★ 高价值/中风险 |
-| C4 | **Virtual Texture 接线** | 分页纹理虚拟化，从"孤儿"到可用 | **CPU 侧✅ + GPU 侧✅ 2026-10-27**（页上传进物理页池 + 页表纹理上传，headless A/B 18/18 全绿、逐字节比对 0 失配，见 §2 落地记录·2.6 VirtualTexture GPU 侧）。页表间接寻址 shader（`vt_common.h` + `vt_resolve.comp`）2026-10-27 已落地并 A/B 22/22（见 §2 落地记录·2.6 VT 页表间接寻址 shader）。片元阶段消费者（`vt_blit.frag`，离屏全屏三角形）2026-10-27 也已落地并 A/B 22/22（见 §2 落地记录·2.6 VT 片元阶段页表消费者）。**仍未接进真实材质 / 主相机 pass**（需 2.4 的 RG 资源注册与描述符绑定），且引擎里没有 VT 的生产者 | C1/C2 的 RG 资源注册 | ★★ 高价值/中高风险 |
+| C4 | **Virtual Texture 接线** | 分页纹理虚拟化，从"孤儿"到可用 | **CPU 侧✅ + GPU 侧✅ 2026-10-27**（页上传进物理页池 + 页表纹理上传，headless A/B 18/18 全绿、逐字节比对 0 失配，见 §2 落地记录·2.6 VirtualTexture GPU 侧）。页表间接寻址 shader（`vt_common.h` + `vt_resolve.comp`）2026-10-27 已落地并 A/B 22/22（见 §2 落地记录·2.6 VT 页表间接寻址 shader）。片元阶段消费者（`vt_blit.frag`，离屏全屏三角形）2026-10-27 也已落地并 A/B 22/22（见 §2 落地记录·2.6 VT 片元阶段页表消费者）。**仍未接进真实材质 / 主相机 pass**（需 2.4 的 RG 资源注册与描述符绑定），。**最小生产者 2026-10-27 已落地**（`r.VirtualTexture.Source`，A/B 48/48，见 §2 落地记录·2.6 VT 最小生产者），但接线未在真实引擎里端到端验证 | C1/C2 的 RG 资源注册 | ★★ 高价值/中高风险 |
 | C5 | ~~**Vulkan `MainCameraPass` 崩溃根因修复**~~ | 跨切面阻塞：解除 Vulkan 侧验证能力 | **✅ 已被 `7e5d2521` 修掉（2026-10-25 复核关闭）** | — | ★★★ 已关闭（见 §2 step 2.0） |
 | C6 | **Lumen 收尾（SSR → GPU 化）** | 动态 GI + 反射；取 SSR 一半 + 首个 Lumen shader | **✅ CPU 侧已完整**（GI/反射/接线/CVar/发布桥全落地 + 7 smoke test；2026-10-25 复核，见 §2 落地记录·2.7）。剩 SSR/HWRT/首个 shader 全 GPU 侧 | C2 的 GBuffer/depth 声明 | ★★ 中价值/高风险（CPU 侧无活，剩 GPU 放最后） |
 | C7 | **编辑器/内容管线填充**（低风险稳态轨） | 平台窗口化收尾 / Timeline 四片段 / Prefab §9.4 | 各为**部分实现·机械收尾**（**Timeline 四片段 2026-10-25 已落地**，见 `doc/timeline/TIMELINE_IMPLEMENTATION.md`“片段语义”；**Prefab §9.4 第 1 条落地、第 2 条对象图层已验**，见 `doc/PrefabSystem_Design.md` §9.4.1，顺带修 7 个真 bug；平台窗口化未动；**平台窗口化 2026-10-25 对代码核对**：Step 1-5 早已兑现（零 GLFW 引用），计划文档勾选已按代码更新；核对时修了 Win32 修饰键恒 0 / 拖放不派发 / Linux 原生 #error / Web 启动空指针等，见 `doc/platform_windowing_plan.md`；剩 Linux X11 窗口层与多显示器枚举） | — | ★★ 低风险填缝 |
@@ -684,6 +684,47 @@ commit `18af6d14`。`vt_resolve.comp` 在 compute 里逐整数 texel 查页表�
 **至此 VT 的 shader 侧链路闭环**：页表 → compute 查找 → fragment 光栅化消费，三种都 A/B 通过。**仍未做**：接进真实材质 / 主相机
 pass（需要 2.4 的 RG 资源注册与描述符绑定）；双线性 / 各向异性（需页 gutter）；mip 链；引擎里没有 VT 的生产者
 （没人 `Initialize` 单例、没人 `RequestPages`）。
+
+---
+
+### 落地记录 · 2.6 VT 最小生产者（2026-10-27，Vulkan headless，48/48 全绿）
+
+commit `09c31b1c`。此前 `r.VirtualTexture.Enable 1` 是**空操作**：引擎里没有任何东西初始化 `VirtualTextureManager` 单例、
+注册虚拟纹理或请求页——开关推进的是一个没池、没纹理、没人请求页的管理器。
+
+**新增** `VirtualTextureProducer` + CVar `r.VirtualTexture.Source`（图片资产路径）：帧钩子里先 `Producer.Tick` 再
+`Manager.Update`（本帧请求的页本帧提交）；懒拉起管理器并把池定为设备放得下的大小（默认 16×16 页 = 2048 px = 16 MiB）；
+加载源图时 `allow_cooked=false`（BC7/ASTC 是 4×4 块压缩，按像素行列切页会切碎块）并**拒绝非 RGBA8**；路径变了换纹理；关掉
+开关释放纹理但保留池；失败只尝试一次；只拆**自己拉起来**的管理器，在 `RenderSystem::Shutdown` 里 RHI 仍活着时拆除。
+**不画任何东西**——没有材质采样虚拟纹理；"流送成功"体现在驻留情况（`GetStats`/周期日志/测试），不是像素。
+
+**写生产者时挖出的六个此前被"没人调用"掩盖的缺陷**（全部修复，有测试钉住）：
+
+1. **自死锁（致命）**：`Update → UpdatePagePriorities` 持 `m_VirtualTexturesMutex` 遍历，里面调 `CalculatePageScreenSize`，后者经
+   `GetVirtualTexture` **重锁同一把非递归 mutex**。只要有页被 `RequestPages` 过，第一次 `Update` 就挂死（Windows 上表现为
+   `0xC0000409` 直接崩）。**WASM 看不见**（无 pthreads 时 mutex 是空操作）。改为传 resource 引用。
+2. **默认 `VirtualTextureConfig` 要 2048×2048 页 = 262144×262144 px = 256 GiB 的池图**，任何设备都放不下（实测
+   `maxImageDimension2D=32768`）。`Initialize` 过去是 `void` 且吞掉失败。现在返回 `bool`，池创建前先量设备上限。
+3. **Windows 默认 RHI 是 DX12**（`--rhi vulkan` 才用 Vulkan），而 `Z_HAS_VULKAN` 在 Windows 上同样定义，帧钩子在 DX12 运行时也会
+   走到 VT，把 `DX12RHI*` 当 `VulkanRHI*` 用是未定义行为。`Initialize` 入口用 `dynamic_cast` 挡掉非 Vulkan RHI。
+   **⚠️ 此项没有测试覆盖**：RHI 有 124 个纯虚函数，写桩不值当。判别本身是标准语义，但"DX12 下确实被拒绝"没被真跑过。
+4. `RequestPages` 每帧调用会把整个 mip 重新入队（36 页纹理 600 帧 = **19200 个任务**）。现在幂等。
+5. `enable_mip_streaming` 是**死字段**（全仓库没人读）。现在它决定请求是否钉在 mip 0；没有 mip 链之前生产者必须关掉它。
+   mip>0 的页也不再被灌入 mip 0 区域的像素。
+6. `LoadPage` 在没有池时先把页标成 `Loading` 再返回 false，页永远卡在 `Loading`。
+
+**验证** `VirtualTextureProducerABSmokeTest`（选项 `ZENGINE_BUILD_VT_PRODUCER_AB_SMOKE_TEST`）：真异步 worker + 真 shader 读回。
+像渲染系统那样每帧 Tick+Update 流送 700×500 纹理（含残缺边缘页）逐 texel 读回；请求幂等（200 次请求 ≤24 个任务）；换路径；
+失败/非 RGBA8 只尝试一次并能恢复；运行时关掉再打开；Shutdown 拆自己拉起的、不拆别人的；VMA 分配数端到端回到基线。
+**48/48，连跑 10/10，零 validation error**。红绿（十种变异各有测试对应）：其中"去掉设备上限检查"**第一版测试没抓到**——
+`vmaCreateImage` 对超限图像本来就会失败，所以"Initialize 返回 false"照样为真，只是多出 2 条校验层错误。改为进程内接管
+`std::cerr` 并断言"**根本没把超限请求发给驱动**"后才红。
+
+**⚠️ 接线本身没有端到端验证**：`RenderSystem` 里的帧钩子/关停接线编译通过、静态上核对过调用点，但 `bin/` 里的 `ZEditor.exe` 是
+10-23/10-26 的旧构建、不含这次改动，没有重编整个编辑器真跑一遍 `r.VirtualTexture.Enable 1` + `r.VirtualTexture.Source <路径>`。
+测试里的 `Frame::Run()` 是**对渲染系统行为的模拟**，不是渲染系统本身。**下一步务必在真实引擎里跑一遍**（需 `--rhi vulkan`）。
+
+**剩**：接进真实材质 / 主相机 pass（需 RG 资源注册与描述符绑定）；双线性（需页 gutter）；mip 链；**引擎端到端验证**（上条）。
 
 ---
 
