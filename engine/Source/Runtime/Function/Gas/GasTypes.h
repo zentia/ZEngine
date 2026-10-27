@@ -1,5 +1,7 @@
 #pragma once
 
+#include "GasPeriodic.h"
+
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -324,6 +326,18 @@ public:
     void updateRemainingTime(float delta_time) { m_RemainingTime -= delta_time; }
     bool isExpired() const { return m_RemainingTime <= 0.0f && m_Duration > 0.0f; }
 
+    // ---- 周期性效果计时（薄封装，转发到 gas_periodic 纯算术）------------------
+    // m_PeriodElapsed 记"距上次周期触发的秒数"；ASC 每帧据 period 求本帧应触发
+    // 次数并调用 onPeriodicExecute 若干次。算术语义见 GasPeriodic.h。
+    // 返回本帧应触发的执行次数（0 表示本帧不触发）。
+    int StepPeriodic(float period, float delta_time)
+    {
+        return gas_periodic::PendingExecutions(m_PeriodElapsed, period, delta_time);
+    }
+    // 应用时立即执行一次：把计时归零，避免首个周期被重复补触发。
+    void ResetPeriodic() { m_PeriodElapsed = 0.0f; }
+    float GetPeriodElapsed() const { return m_PeriodElapsed; }
+
     const GameplayTagContainer& getGrantedTags() const { return m_GrantedTags; }
     void setGrantedTags(const GameplayTagContainer& tags) { m_GrantedTags = tags; }
 
@@ -335,6 +349,7 @@ private:
     int32_t m_Level;
     float m_Duration;
     float m_RemainingTime;
+    float m_PeriodElapsed {0.0f};  // 周期性效果：距上次触发的秒数
     GameplayTagContainer m_GrantedTags;
     GameObject* m_SourceObject;
 };

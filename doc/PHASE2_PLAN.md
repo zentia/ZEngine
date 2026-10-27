@@ -431,6 +431,29 @@ CPU 能力缺口兑现——GAS 的冷却时间（此前 3 处 TODO：`GameplayA
 
 ---
 
+### 落地记录 · 穿插（2026-10-27）：GAS 周期性效果执行（同簇 CPU 活）
+
+紧接 GAS 冷却，兑现同在 `AbilitySystemComponent::UpdateEffects` 里的最后一处 GAS CPU TODO——周期性
+效果（DoT/HoT 类）的周期执行（此前 `// TODO: 实现周期性执行逻辑`，`onPeriodicExecute` 从未被调用）。
+
+- **设计**：与冷却同一手法。周期计时状态落在 **`GameplayEffectSpec`**（`m_PeriodElapsed` = 距上次触发
+  的秒数），纯算术抽成 header-only 的 `Function/Gas/GasPeriodic.h`（`gas_periodic::PendingExecutions /
+  IsValidPeriod`），spec 只做薄封装（`StepPeriodic`）转发。核心语义：**跨周期补触发**——推进后只要
+  计时跨过 period 就触发一次并**减去 period（不清零）**，低帧率/卡顿下一次 Update 跨过多个周期时正确
+  补触发多次，不丢拍；`period<=0` 视为无效周期永不触发（防除零/死循环），负 dt 视为 0，病态输入封顶
+  64 次防拖死帧。
+- **接线**：`UpdateEffects` 里对 `is_periodic && IsValidPeriod(period)` 的 spec 推进计时并按返回次数调
+  `onPeriodicExecute`；`ApplyEffect` 里对 `execute_on_application` 的周期效果在应用时立即执行一次并
+  `ResetPeriodic()`（归零计时，避免首个周期被重复补触发）。
+- **验证**：新增 `Function/Gas/Test/GasPeriodicSmokeTest.cpp`（header-only，只链 include root，开关
+  `ZENGINE_BUILD_GAS_PERIODIC_SMOKE_TEST`），19 项 Check：IsValidPeriod 边界、单触发/不触发不清零、
+  跨多周期补触发、病态输入防御（无效 period/负 dt/封顶）、端到端触发次数、帧率无关性、低帧率不丢拍。
+  **19/19 全绿**。ZRuntime 同步重建（ASC/spec 接线类型检查通过）。
+- **诚实边界**：纯 CPU 算术语义已验；ASC 层端到端（真实 DoT 效果按周期跳伤害的运行时流程）尚无驱动
+  它的游戏内容，属"接线已通、待真实内容"。至此 `Function/Gas/` 下非测试 TODO 已清零。
+
+---
+
 ## 3. 关于阶段一 #9（RHI 胖接口拆分）—— 建议**不**进 Phase 2
 
 阶段一已正确论证并后置（`PHASE1_FOUNDATION_PLAN.md:688-692, :822-824`）：`RHI.h` = **124 个纯虚、

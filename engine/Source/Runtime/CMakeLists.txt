@@ -558,6 +558,14 @@ list(REMOVE_ITEM SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/Gas/Test/GasCooldownSmokeTest.cpp")
 list(REMOVE_ITEM REGULAR_SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/Gas/Test/GasCooldownSmokeTest.cpp")
+# GAS periodic-effect smoke-test main. Same carve-out rationale: it owns main()
+# and must not be whole-archived into ZRuntime. Built only when
+# ZENGINE_BUILD_GAS_PERIODIC_SMOKE_TEST=ON (see Function/Gas/Test/CMakeLists.txt).
+# Header-only (gas_periodic arithmetic), links nothing but the include root.
+list(REMOVE_ITEM SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Gas/Test/GasPeriodicSmokeTest.cpp")
+list(REMOVE_ITEM REGULAR_SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Gas/Test/GasPeriodicSmokeTest.cpp")
 # Physics character/joint smoke-test main. This one was NOT carved out, so its
 # unguarded main() ended up inside ZRuntime.lib and broke every other test that
 # links ZRuntime + defines its own main() with LNK2005 (e.g. the RHI factory
