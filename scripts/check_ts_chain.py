@@ -18,6 +18,9 @@ d.ts 变了，却忘了重新编译，于是测试喂给 ScriptEnv 的其实是�
        目录，证明新产物也跑得通
     5. 再跑一遍 ScriptComponentSmokeTest：同一批产物挂到真的 GameObject 上，
        走 PostLoadResource -> OnAwake/OnStart -> Tick -> 热重载 -> OnDestroy
+    6. 最后跑 ScriptComponentPrefabTest：把同一个组件存成 .prefab（YAML）和
+       .zasset（二进制 SerializedFile），再读回来验"从资产文件里还原出来的
+       guid 能绑上、Inspector override 能跟着生效"
 
 用法
 ----
@@ -88,6 +91,39 @@ SCRIPT_COMPONENT_EXTRA_SOURCES = EXTRA_SOURCES + [
     "build/Generated/ZHT/ZRuntime/Src/TypeScriptComponent.gen.cpp",
 ]
 
+# prefab / zasset 反序列化那条路在 ScriptComponent 之外还要的几份：
+#   * PrefabUtility.cpp + PrefabSubtreeCloner.cpp —— .a 那份里根本没有
+#     LoadPrefabAsset（整图加载是 .a 构建之后才加的），链出来是
+#     "dynamically looked up"，一跳进去就崩。
+#   * PrefabAsset / PrefabRefComponent / RigidbodyComponent 的 .gen.cpp ——
+#     PrefabUtility 里的 TypeOf<PrefabAsset> / Cast<PrefabRefComponent> /
+#     Cast<RigidBodyComponent> 要它们的 TypeContainer<T>::m_Type。
+#   * 序列化层的五份（见下 ARCHIVE_MEMBER_EXCLUSIONS）：这条路径是"按旧布局
+#     构造 + 按新布局序列化"最容易崩的地方。
+SCRIPT_PREFAB_SRC = TEST_DIR / "ScriptComponentPrefabTest.cpp"
+SCRIPT_PREFAB_EXTRA_SOURCES = SCRIPT_COMPONENT_EXTRA_SOURCES + [
+    "engine/Source/Runtime/Resource/Prefab/PrefabUtility.cpp",
+    "engine/Source/Runtime/Resource/Prefab/PrefabSubtreeCloner.cpp",
+    "engine/Source/Runtime/Core/YamlSerialize/YamlObjectGraph.cpp",
+    "engine/Source/Runtime/Resource/Asset/AssetManager.cpp",
+    "engine/Source/Runtime/BaseClasses/ImmediatePtr.cpp",
+    "engine/Source/Runtime/BaseClasses/IPPtrResolver.cpp",
+    "engine/Source/Runtime/Function/Framework/Component/Transform/Transform.cpp",
+    "build/Generated/ZHT/ZRuntime/Src/PrefabAsset.gen.cpp",
+    "build/Generated/ZHT/ZRuntime/Src/PrefabRefComponent.gen.cpp",
+    "build/Generated/ZHT/ZRuntime/Src/RigidbodyComponent.gen.cpp",
+]
+
+# 上面这五份 .cpp 在 .a 里都有同名成员，且会因为别处引用了它们独有的旧符号
+# 被拉进来 —— 两边都定义同一批符号就是 duplicate symbol，所以要把成员踢掉。
+ARCHIVE_MEMBER_EXCLUSIONS = [
+    "YamlObjectGraph.cpp.o",
+    "AssetManager.cpp.o",
+    "ImmediatePtr.cpp.o",
+    "IPPtrResolver.cpp.o",
+    "Transform.cpp.o",
+]
+
 
 def find_tsc() -> list[str]:
     env = os.environ.get("ZENGINE_TSC")
@@ -123,7 +159,7 @@ def main() -> int:
 
     # 1) 当前的 zengine.d.ts
     if not args.skip_build:
-        print("[1/5] 导出当前 zengine.d.ts ...", flush=True)
+        print("[1/6] 导出当前 zengine.d.ts ...", flush=True)
         cmd = [sys.executable, str(RUN_SMOKE), str(TS_CHAIN_SRC),
                "--template", "Function/Audio/AudioSystem.cpp"]
         for s in EXTRA_SOURCES:
@@ -139,7 +175,7 @@ def main() -> int:
         dts_path.parent.mkdir(parents=True, exist_ok=True)
 
     # 2) tsc 编译
-    print("[2/5] tsc 编译 Scripts/*.ts ...", flush=True)
+    print("[2/6] tsc 编译 Scripts/*.ts ...", flush=True)
     TYPINGS.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(dts_path, TYPINGS / "zengine.d.ts")
     tsc = find_tsc()
@@ -162,7 +198,7 @@ def main() -> int:
             print("[strict-dts] d.ts 单独检查通过")
 
     # 3) 与签入产物 diff
-    print("[3/5] 与签入的 TscOutput/ 比对 ...", flush=True)
+    print("[3/6] 与签入的 TscOutput/ 比对 ...", flush=True)
     fresh = sorted(p.name for p in out_dir.iterdir() if p.is_file())
     if not fresh:
         print("tsc 没产出任何文件")
@@ -188,7 +224,7 @@ def main() -> int:
     print("  一致")
 
     # 4) 跑测试，指向刚编译出来的产物
-    print("[4/5] 跑 ScriptTsChainSmokeTest（js root = 刚编译出来的目录）...", flush=True)
+    print("[4/6] 跑 ScriptTsChainSmokeTest（js root = 刚编译出来的目录）...", flush=True)
     cmd = [sys.executable, str(RUN_SMOKE), str(TS_CHAIN_SRC),
            "--template", "Function/Audio/AudioSystem.cpp"]
     for s in EXTRA_SOURCES:
@@ -206,11 +242,30 @@ def main() -> int:
     # 5) 再跑一遍组件侧：同一批 tsc 产物挂到 GameObject 上跑完整生命周期。
     #    （本测试自己造临时工程，把 Scripts/ 和 TscOutput/ 拷过去，所以传的是
     #     resource-dir 而不是 js root。）
-    print("[5/5] 跑 ScriptComponentSmokeTest（TypeScriptComponent 真身）...", flush=True)
+    print("[5/6] 跑 ScriptComponentSmokeTest（TypeScriptComponent 真身）...", flush=True)
     cmd = [sys.executable, str(RUN_SMOKE), str(SCRIPT_COMPONENT_SRC),
            "--template", "Function/Audio/AudioSystem.cpp"]
     for s in SCRIPT_COMPONENT_EXTRA_SOURCES:
         cmd += ["--extra-source", s]
+    cmd += ["--run-arg=--resource-dir", f"--run-arg={TEST_DIR}"]
+    r = run(cmd)
+    for line in r.stdout.splitlines():
+        if line.startswith("[build]") or line.startswith("In file included"):
+            continue
+        print(line)
+    if r.returncode != 0:
+        return r.returncode
+
+    # 6) 最后跑 prefab / zasset 反序列化：把同一个组件先存成 .prefab（YAML）
+    #    和 .zasset（二进制），再读回来走 PostLoadResource —— 验的是"从资产
+    #    文件里还原出来的 guid 能不能绑上、override 能不能跟着生效"。
+    print("[6/6] 跑 ScriptComponentPrefabTest（.prefab / .zasset 反序列化）...", flush=True)
+    cmd = [sys.executable, str(RUN_SMOKE), str(SCRIPT_PREFAB_SRC),
+           "--template", "Function/Audio/AudioSystem.cpp"]
+    for s in SCRIPT_PREFAB_EXTRA_SOURCES:
+        cmd += ["--extra-source", s]
+    for m in ARCHIVE_MEMBER_EXCLUSIONS:
+        cmd += ["--exclude-archive-member", m]
     cmd += ["--run-arg=--resource-dir", f"--run-arg={TEST_DIR}"]
     r = run(cmd)
     for line in r.stdout.splitlines():

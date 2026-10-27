@@ -225,6 +225,79 @@ if(PAPI_TYPE STREQUAL "quickjs")
 
         add_test(NAME ScriptComponentSmokeTest COMMAND ScriptComponentSmokeTest)
         message(STATUS "Configured TypeScriptComponent smoke test: ScriptComponentSmokeTest")
+
+        # ---------------------------------------------------------------------
+        # TypeScriptComponent 的 prefab / zasset 反序列化。
+        #
+        # ScriptComponentSmokeTest 走的是**运行时挂载**（AddComponentByTypeName
+        # -> SetScriptGuid）。用户真正拿到一个带脚本的 GameObject 绝大多数时候
+        # 是从**资产文件**里反序列化出来的，那条路多出三件事：
+        #
+        #   1. m_ScriptGuid / m_ClassName / m_SerializedFields 穿过磁盘往返；
+        #   2. 还原出来的 guid 能不能被 PostLoadResource 用来绑上 ——
+        #      PrefabPostLoadDriver 沿 Transform.m_Children DFS 下发；
+        #   3. Inspector override 能不能跟着还原并在 ApplySerializedFields 里
+        #      生效（HostedMover 的类默认 speed 是 2，测试改成 7，看一帧走
+        #      3.5 还是 1.0）。
+        #
+        # 资产两轨：editor 的 `.prefab`（YAML 对象图，扩展名即权威）、真机 /
+        # legacy 的 `.zasset`（二进制 SerializedFile）。分流点是
+        # AssetManager::IsYamlAuthoringAssetPath()。两轨各测一遍 + 一致性。
+        #
+        # 额外要编进来的 .gen.cpp：PrefabAsset / PrefabRefComponent /
+        # RigidbodyComponent —— PrefabUtility.cpp 里的 TypeOf<PrefabAsset> /
+        # Cast<PrefabRefComponent> / Cast<RigidBodyComponent> 要它们的
+        # TypeContainer<T>::m_Type。
+        # ---------------------------------------------------------------------
+        add_executable(ScriptComponentPrefabTest ScriptComponentPrefabTest.cpp)
+
+        set_target_properties(ScriptComponentPrefabTest PROPERTIES
+            CXX_STANDARD 23
+            FOLDER "Engine/Tests"
+        )
+
+        set(_zht_prefab_gen_sources
+            "${ZHT_GEN_SRC}/GameObject.gen.cpp"
+            "${ZHT_GEN_SRC}/Transform.gen.cpp"
+            "${ZHT_GEN_SRC}/Behaviour.gen.cpp"
+            "${ZHT_GEN_SRC}/TypeScriptComponent.gen.cpp"
+            "${ZHT_GEN_SRC}/PrefabAsset.gen.cpp"
+            "${ZHT_GEN_SRC}/PrefabRefComponent.gen.cpp"
+            "${ZHT_GEN_SRC}/RigidbodyComponent.gen.cpp"
+        )
+        set_source_files_properties(${_zht_bind_sources} ${_zht_prefab_gen_sources}
+                                    PROPERTIES GENERATED TRUE)
+        target_sources(ScriptComponentPrefabTest PRIVATE
+            ${_zht_bind_sources} ${_zht_prefab_gen_sources})
+        if(TARGET ZRuntime_ZHeaderTool)
+            add_dependencies(ScriptComponentPrefabTest ZRuntime_ZHeaderTool)
+        endif()
+
+        target_compile_definitions(ScriptComponentPrefabTest PRIVATE
+            ZENGINE_SCRIPT_COMPONENT_RESOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+
+        target_compile_definitions(ScriptComponentPrefabTest PRIVATE PAPI_QUICKJS=1)
+
+        target_link_libraries(ScriptComponentPrefabTest PRIVATE ZRuntime)
+
+        if(TARGET ZEnginePCH)
+            target_link_libraries(ScriptComponentPrefabTest PRIVATE ZEnginePCH)
+            target_include_directories(ScriptComponentPrefabTest PRIVATE ${ENGINE_ROOT_DIR}/Source/CommonPCH)
+            add_dependencies(ScriptComponentPrefabTest ZEnginePCH)
+            target_precompile_headers(ScriptComponentPrefabTest REUSE_FROM ZEnginePCH)
+        endif()
+
+        if(APPLE)
+            target_sources(ScriptComponentPrefabTest PRIVATE
+                ${ENGINE_ROOT_DIR}/Source/Runtime/Core/Serialize/Test/SmokeTestAppleLinkStubs.cpp)
+        endif()
+
+        if(MSVC)
+            target_compile_options(ScriptComponentPrefabTest PRIVATE /W4)
+        endif()
+
+        add_test(NAME ScriptComponentPrefabTest COMMAND ScriptComponentPrefabTest)
+        message(STATUS "Configured TypeScriptComponent prefab/zasset smoke test: ScriptComponentPrefabTest")
     endif()
 else()
     message(STATUS "ScriptVMSmokeTest skipped: requires -DPAPI_TYPE=quickjs (current: ${PAPI_TYPE})")

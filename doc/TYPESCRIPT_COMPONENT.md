@@ -193,9 +193,10 @@ python3 scripts/run_smoke_test.py \
   这看起来像是没写完，但组件的所有权可能归场景/资源系统，不在 GameObject 手上
   —— 没改，只在这里记一笔，测试按"宿主不拥有组件"来写。
 * **V8 后端**：和另外两个脚本测试一样，非 QuickJS 构建直接 `#error`。
-* **Prefab / 场景反序列化过来的组件**：测的是 `AddComponentByTypeName` 这条
+* **Prefab / 场景反序列化过来的组件**：本测试测的是 `AddComponentByTypeName` 这条
   运行时挂载路径；从资产文件里反序列化出来的 `TypeScriptComponent` 是另一条路，
-  没覆盖。当前资产分两轨（`.object.json` 早已废弃）：
+  **由 `ScriptComponentPrefabTest` 单独覆盖（见第 8 节）**。资产分两轨
+  （`.object.json` 早已废弃）：
   * **编辑器：`.prefab`** —— 人类可读的 YAML 对象图，扩展名即权威（不用读
     header），由 `AssetManager::WriteObjectsToYaml` 写。
   * **真机 / legacy：`.zasset`** —— 二进制 SerializedFile（`AssetFileHeader`
@@ -205,17 +206,98 @@ python3 scripts/run_smoke_test.py \
   * 两条路**共用同一份有序对象表和同一套引用模型**：文件内引用用 `ImmediatePtr`
     （file-local fileID + pathID），跨文件引用用 `PPtr`（GUID）。判定时
     `path.extension() == ".prefab"` 优先，否则走 `isPrefabZAsset()`（legacy 二进制）。
-* **那这条为什么还是"没测"**：`m_script_guid` / `m_class_name` /
+* **那条路验到哪一步**：`m_script_guid` / `m_class_name` /
   `m_serialized_fields` 三个字段都是 `ZPROPERTY` 且都在 `-- Serialised --` 段内，
-  原则上会随 prefab / zasset 一起 round-trip；反序列化后走
+  会随 prefab / zasset 一起 round-trip；反序列化后走
   `LoadPrefabAsset → Instantiate → CloneSubtree → PrefabPostLoadDriver::Run`，
-  最终也落到同一个 `PostLoadResource` 入口。**没测过**的是两件事：还原出来的 guid
-  是否一定能绑上（脚本资产要能在 runtime 侧按 guid 解析到编译产物），以及
-  `m_SerializedFields`（Inspector override）能否跟着一起还原、并在
-  `ApplySerializedFields()` 里生效。
+  最终也落到同一个 `PostLoadResource` 入口。第 8 节那个测试把这三件事都钉住了：
+  还原出来的 guid 能绑上、override 跟着还原、并在 `ApplySerializedFields()` 里
+  真的生效。
 * **顺带观察到的一个层级限制**：`PrefabPostLoadDriver` 靠
   `{child Transform → owning GameObject}` 映射做 DFS 下发 `PostLoadResource`。
   `.prefab` 路径能拿到完整的 `known_gameobjects`（YAML reader 直接给出），多层层级
   全通；legacy `.zasset` 路径没有这份 flat list，只能从 root 发现，多层层级仍受
   Phase-1 限制 —— 挂在下层子节点上的 `TypeScriptComponent` 在二进制路径上有可能
-  拿不到 `PostLoadResource`。
+  拿不到 `PostLoadResource`。（目前没测：本测试的宿主是单层根节点。）
+
+## 8. prefab / zasset 反序列化：`ScriptComponentPrefabTest`
+
+第 7 节留下的那条空白由这个测试补上（55 项）。它做的是**真存盘再真读回来**：
+
+```
+PrefabUtility::SaveAsPrefabAsset(go, *.prefab)      # YAML 对象图
+PrefabUtility::SaveAsPrefabAsset(go, *.zasset)      # 二进制 SerializedFile
+  -> PrefabUtility::InstantiateFromPath(path, invoke_post_load)
+     -> LoadPrefabAsset      整图读回，读一次后缓存（path 派生的 InstanceID）
+     -> Instantiate          CloneSubtree 深克隆（模板不动）
+     -> PrefabPostLoadDriver::Run  沿 Transform.m_Children DFS 逐组件下发
+                                   PostLoadResource
+```
+
+### 8.1 分组
+
+| 组 | 钉什么 |
+|----|--------|
+| A0 | 类型表前提（GameObject / Transform / TypeScriptComponent / **PrefabAsset**） |
+| A | ScriptRegistry 扫到 `HostedMover.ts`，拿到 guid |
+| B | 造宿主：`Produce(GameObject)` + Transform + TypeScriptComponent，设 guid，记 `speed=7` 的 Inspector override，**两份资产都写盘成功** |
+| C | `.prefab` 读回：克隆是新对象、名字还原、guid 还原、**凭 guid 绑上**、override 还原、override 生效、Awake 一次、宿主注入、一帧走 3.5 |
+| D | `.zasset` 读回：同上 13 条 |
+| E | `invoke_post_load=false`：树照常克隆、guid 照常还原，**但不绑** |
+| F | 两轨一致性：guid / override / 活实例 speed 都相同 |
+
+### 8.2 为什么 override 用 `speed=7`
+
+`HostedMover` 的类默认 `speed` 是 2。反序列化出来的实例一帧走 **3.5**
+（=7×0.5）而不是 1（=2×0.5），才说明 override 真的穿过了磁盘并在
+`ApplySerializedFields()` 里生效。只看"字段在不在"不够，得看它有没有起作用。
+
+对照组也钉住了：内存里那份用 `SetSerializedField`（只写 authoring 数据，不推活
+实例），所以它的活实例仍是 2（B5）。克隆体上看到 7，就一定是文件里带过来的。
+
+### 8.3 本机跑（无 cmake）
+
+`scripts/check_ts_chain.py` 的第 6 步自带完整清单。要点是**除了**第 5 节那套，
+还要多现编 7 份、并踢掉 5 个 .a 成员：
+
+```bash
+--extra-source engine/Source/Runtime/Resource/Prefab/PrefabUtility.cpp
+--extra-source engine/Source/Runtime/Resource/Prefab/PrefabSubtreeCloner.cpp
+--extra-source engine/Source/Runtime/Core/YamlSerialize/YamlObjectGraph.cpp
+--extra-source engine/Source/Runtime/Resource/Asset/AssetManager.cpp
+--extra-source engine/Source/Runtime/BaseClasses/ImmediatePtr.cpp
+--extra-source engine/Source/Runtime/BaseClasses/IPPtrResolver.cpp
+--extra-source .../Component/Transform/Transform.cpp
+--exclude-archive-member YamlObjectGraph.cpp.o AssetManager.cpp.o \
+--exclude-archive-member ImmediatePtr.cpp.o IPPtrResolver.cpp.o Transform.cpp.o
+```
+
+两个坑，都是同一类病（`.a` 比源码旧）：
+
+* **`PrefabUtility` 里根本没有 `LoadPrefabAsset`** —— 整图加载是 .a 构建之后加
+  的。不现编的话符号是 `dynamically looked up`，一跳进去就崩。
+* **构造方和生成式 `Transfer()` 不是同一份布局** —— `Transform` 按旧布局 `new`
+  出来、又被按新布局序列化，`CloneSubtree` 里 `CloneObjectViaSerialization` 读
+  回来就是越界（`si_addr` 是个小负数，崩在 `CachedReader::UpdateReadCache`）。
+  这是最隐蔽的一条：写盘那一侧完全正常，文件的内容逐字节都对。
+
+现编了同名 .cpp 之后，链接期两边都定义同一批符号就是 duplicate symbol —— 因为
+那个旧成员仍会因为别处引用了它独有的旧符号被拉进来。所以加了
+`--exclude-archive-member`：它复制一份 `.a` 到 `/tmp` 再 `ar -d`（按成员列表缓
+存，只付一次复制的代价）。完整 cmake 构建里所有 TU 同源码，这些一条都不需要。
+
+### 8.4 负向验证（都还原后复跑 55/0）
+
+| 注入 | 结果 |
+|------|------|
+| `BindAndAwake` 里注释掉 `ApplySerializedFields()` | C10/C13 + D10/D13 红（活实例 speed 退回类默认 2，一帧走 1.0）。**C7/C8/C9 保持绿** —— 说明"override 存下来了"和"override 生效了"是两条独立的断言 |
+| `PrefabUtility::Instantiate` 里把 `invoke_post_load` 强制成 false | C8/D8 红（checks 从 55 降到 47，因为不绑时 C10–C13 直接跳过）。**C7（guid 还原）保持绿** —— 说明"还原"和"绑"是两件事 |
+
+### 8.5 刻意没做
+
+* **多层层级**：宿主是单层根节点。`PrefabPostLoadDriver` 在 legacy 二进制路径上
+  没有 flat GameObject list（见第 7 节），挂在下层子节点上的组件能不能拿到
+  `PostLoadResource` 仍旧没测 —— 这是两轨之间一个已知的行为差异。
+* **清理**：测试刻意不销毁克隆出来的对象。`PrefabSubtreeCloner` 的分配器不是
+  `ObjectManager::Destroy`（`= delete`）那一套，混着收会在 `mi_usable_size` 里
+  SIGSEGV（第 4.3 节踩过一次）。测试进程退出即回收。

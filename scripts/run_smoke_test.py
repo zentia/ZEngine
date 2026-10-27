@@ -44,6 +44,11 @@ zsyntax.py 只做 `-fsyntax-only`。也就是说在这台没有 cmake / ninja �
                   --extra-source engine/Source/Runtime/BaseClasses/TypeManager.cpp：
                   .a 里那份的 TypeRegistrationDesc 布局是旧的，现编 .gen.cpp 的
                   注册器喂进去 desc.type 会是 nullptr，类型表就是空的。
+    ScriptComponentPrefab
+                  ScriptComponent 那套，再加 7 份现编 + 5 个 --exclude-archive-member。
+                  穿过序列化层的路径对"构造方和生成式 Transfer 是不是同一份布局"
+                  特别敏感：Transform 按旧布局 new 出来、又按新布局序列化，读回来
+                  就崩在 CachedReader 里。见测试文件头的"关于本机怎么跑"一节。
 
   一般不用手写：`scripts/check_ts_chain.py` 自带完整清单，一条命令跑完
   "导出 d.ts -> tsc 编译 -> 与签入产物 diff -> 跑测试" 四步。
@@ -57,8 +62,10 @@ import argparse
 import json
 import os
 import shlex
+import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -95,6 +102,37 @@ LINK_LIBS = [
     "ZSlate",
     "ShaderLab",
 ]
+
+
+def prepare_pruned_lib_dir(members: list[str]) -> Path:
+    """造一个 bin/ 的替身目录：其余 .a 软链过去，libZRuntime.a 复制后 ar -d 掉 members。
+
+    为什么要复制而不是改 bin/ 里那份：那是 cmake 的构建产物，改了下次 cmake
+    就对不上了。按成员列表做缓存键，所以同一批排除只付一次复制的代价
+    （libZRuntime.a 有 600+ MB，复制一次十几秒）。
+    """
+    import hashlib
+
+    key = hashlib.sha1("\n".join(sorted(members)).encode()).hexdigest()[:12]
+    out = Path(tempfile.gettempdir()) / f"zengine_libs_{key}"
+    marker = out / ".pruned"
+    if marker.is_file() and marker.read_text() == "\n".join(sorted(members)):
+        return out
+
+    out.mkdir(parents=True, exist_ok=True)
+    for src in BIN_DIR.glob("*"):
+        dst = out / src.name
+        if dst.exists() or dst.is_symlink():
+            dst.unlink()
+        if src.name == "libZRuntime.a":
+            shutil.copy2(src, dst)
+        else:
+            dst.symlink_to(src)
+
+    subprocess.run(["ar", "-d", str(out / "libZRuntime.a")] + members,
+                   check=True, capture_output=True, text=True)
+    marker.write_text("\n".join(sorted(members)))
+    return out
 
 
 def build_command(template_fragment: str) -> list[str]:
@@ -148,6 +186,12 @@ def main() -> int:
                         help="除测试自身外还要一起编译的 .cpp，可重复。用于**新加的引擎源文件**："
                              "bin/libZRuntime.a 是上一次 cmake 构建的产物，不含它们的符号，"
                              "不一起编就是 undefined symbol。")
+    parser.add_argument("--exclude-archive-member", action="append", default=[], metavar="OBJ",
+                        help="把 libZRuntime.a 里的这个成员（形如 Transform.cpp.o）从本次链接里"
+                             "踢掉，可重复。用于 --extra-source 现编了同名 .cpp 的情况：两个"
+                             "目标文件都定义同一批符号就是 duplicate symbol，而该成员仍会因为"
+                             "别处引用了它独有的旧符号被拉进来。实现是复制一份 .a 到 /tmp 再 "
+                             "ar -d（按成员列表缓存，只做一次）。")
     args = parser.parse_args()
 
     test_path = Path(args.test_source)
@@ -172,13 +216,16 @@ def main() -> int:
     cmd.append("-I/tmp/zgen_sa/inc")
     cmd += ["-o", out_bin, str(test_path)]
     cmd += [str(p) for p in extra_paths]
-    cmd.append(f"-L{BIN_DIR}")
+    link_dir = BIN_DIR
+    if args.exclude_archive_member:
+        link_dir = prepare_pruned_lib_dir(args.exclude_archive_member)
+    cmd.append(f"-L{link_dir}")
     cmd.append(f"-F{BIN_DIR}")
     # 静态库顺序敏感（依赖者在前、被依赖者在后），而我们无从知道真实依赖
     # 图 —— 列两遍是链接静态库时的常规兜底。
     for _ in range(2):
         for lib in LINK_LIBS:
-            if (BIN_DIR / f"lib{lib}.a").is_file():
+            if (link_dir / f"lib{lib}.a").is_file():
                 cmd.append(f"-l{lib}")
     if (BIN_DIR / "BqLog.framework").exists():
         cmd += ["-framework", "BqLog"]
