@@ -37,10 +37,13 @@
 //     - "managedReferences[<refid>].xxx" (SerializeReference dynamic dispatch)
 //     - "m_Dict.<key>" (string-keyed maps; TypeTree models them as KV-pair arrays)
 //
-// Resolver is purely Editor-side. Runtime consumers never see PropertyPaths.
+// 2026-10-27: moved from Editor/Prefab/ to Runtime — Prefab Variant (model A) has to
+// resolve its overrides on the runtime/device side too, not just in the editor.
+// Nothing here depends on an Editor type: the only includes are Runtime's Object.h
+// and TypeTree.h, which is what made the move mechanical.
 // =====================================================================================
 
-namespace prefab_editor
+namespace prefab
 {
 
     // One step inside a PropertyPath. Walking the path consumes these in order.
@@ -100,4 +103,4 @@ namespace prefab_editor
     /// Convenience overload: tokenise + locate in one call.
     TypeTreeIterator LocateInTypeTree(const TypeTree& type_tree, const eastl::string& path);
 
-}  // namespace prefab_editor
+}  // namespace prefab

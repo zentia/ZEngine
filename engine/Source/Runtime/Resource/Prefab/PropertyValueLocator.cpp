@@ -1,10 +1,10 @@
-#include "Editor/Prefab/PropertyValueLocator.h"
+#include "Runtime/Resource/Prefab/PropertyValueLocator.h"
 
 #include "Runtime/Utility/Align.h"
 
 #include <cstring>
 
-namespace prefab_editor
+namespace prefab
 {
 
     namespace
@@ -270,4 +270,4 @@ namespace prefab_editor
         return true;
     }
 
-}  // namespace prefab_editor
+}  // namespace prefab

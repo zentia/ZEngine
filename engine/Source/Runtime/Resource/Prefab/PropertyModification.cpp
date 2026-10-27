@@ -1,4 +1,4 @@
-#include "Editor/Prefab/PropertyModification.h"
+#include "Runtime/Resource/Prefab/PropertyModification.h"
 
 #include "Runtime/Core/JsonSerialize/JSONRead.h"
 #include "Runtime/Core/JsonSerialize/JSONWrite.h"
