@@ -37,6 +37,11 @@ zsyntax.py 只做 `-fsyntax-only`。也就是说在这台没有 cmake / ninja �
     ScriptInput   --extra-source engine/Source/Runtime/Function/Input/EnhancedInputSystem.cpp
                   --extra-source engine/Source/Runtime/Function/Input/InputSystem.cpp
     ScriptVM      见 doc/SCRIPT_VM_E2E.md 第 4 节（还要额外 4 个 .gen.cpp）
+    ScriptTsChain ScriptVM 的那 6 个，再加
+                  --extra-source engine/Source/Runtime/Scripting/Wrapper/ScriptEnv.cpp
+
+  一般不用手写：`scripts/check_ts_chain.py` 自带完整清单，一条命令跑完
+  "导出 d.ts -> tsc 编译 -> 与签入产物 diff -> 跑测试" 四步。
 
 症状很好认：BqLog 打完 "log_manager is constructed" 就没了，`echo $?` 是 139。
 """
