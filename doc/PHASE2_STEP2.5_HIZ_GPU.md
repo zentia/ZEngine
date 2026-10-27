@@ -109,3 +109,54 @@
 
 从**切法一**开始：写 `nanite_hiz.comp` + GPU 金字塔资源 + 逐 texel 比对测试。这一步不碰
 culling/draw，风险最低，且把"compute 读深度附件"这个最不确定的环节单独验掉。通过后再进切法二。
+
+---
+
+## 6. 切法一落地记录（commit 9c57cbef，A/B 14/14 全绿）
+
+**结论等级：A（已验证，逐 texel 全绿，零 validation error）。**
+
+新增 `nanite_hiz.comp` 两阶段 compute kernel + `NaniteRenderer` 侧 GPU 金字塔资源
+（`EnsureHiZResources` / `BuildHiZPyramidGPU` / `DestroyHiZResources`）+ headless A/B
+测试 `NaniteHiZABSmokeTest`。渲染一帧 → 读回 GPU 金字塔 + D32 深度 → 与 CPU
+`BuildHiZPyramid` 逐 texel 比对：**14/14，total_mismatch=0 max_abs_delta=0**。
+
+### 三个踩坑（都已在代码注释里留痕）
+
+1. **深度图 usage 缺 TRANSFER_SRC_BIT**：A/B 测试要把 `target_depth` 拷回 host 做对比，
+   `CmdCopyImageToBuffer` 要求 `TRANSFER_SRC_BIT`。`EnsureRasterTarget` 建图时补上
+   （`DEPTH_STENCIL_ATTACHMENT | SAMPLED | TRANSFER_SRC`）。
+
+2. **深度图 layout 不回转**：`BuildHiZPyramidGPU` 采样前把深度图
+   `DEPTH_STENCIL_ATTACHMENT_OPTIMAL → SHADER_READ_ONLY_OPTIMAL`，采完不转回去，下一帧
+   render pass（和测试读回 barrier）拿到 `SHADER_READ_ONLY` 就报
+   「expected DEPTH_STENCIL_ATTACHMENT_OPTIMAL」。采样结束后补一道 barrier 转回
+   `DEPTH_STENCIL_ATTACHMENT_OPTIMAL`。
+
+3. **header 立即模式写入被覆盖（最隐蔽，也是 GPU 全 0 的真根因）**：原实现每个 dispatch 前
+   `UploadBytes(hiz_header, ...)` 重写 header。但 `UploadBytes` 是**立即模式 host memcpy**
+   （Map→memcpy→Unmap），录制命令流期间多次写同一 buffer 只留最后一次——GPU 真正执行时
+   **所有 dispatch 都读到同一份（最后一份 downsample）header**，mip0 拷贝阶段拿错 header，
+   金字塔全 0（`gpu=0.0` 全场）。修复：所有 dispatch 的 header 一次写进 staging buffer，
+   每个 dispatch 前 `CmdCopyBuffer` 把对应份拷进 `hiz_header` + 一道 transfer→compute
+   barrier。`CmdCopyBuffer` 在命令流内、按 dispatch 顺序生效，根除覆盖。
+
+> **教训**：RHI 没有 push constant（只有单 32 位 bindless index 的 `CmdSetBindlessIndexPFN`），
+> 也没有 `CmdUpdateBuffer`。要在**同一命令流内给多次 dispatch 喂不同小常量**，唯一干净的路子是
+> staging buffer + `CmdCopyBuffer`。凡是"每个 dispatch 参数不同"的 compute，都不能用立即模式
+> `UploadBytes` 写常量 buffer。
+
+### 现状
+
+- `hiz_data` 仍是 host-visible storage buffer（`kNaniteHostMemory`），布局与 CPU
+  `HiZPyramid.data` 逐字节一致，测试直接读回比对。切法三再升级成 device-local + 真 mip 纹理。
+- HiZ 有自己独立的 descriptor set / layout / pipeline（3 binding：header UBO / depth
+  combined image sampler / data storage buffer），不与剔除那套 7-binding set 共用，避免动
+  compute+vertex 共享 layout。
+- 金字塔建在 `DrawClustersIndirect()` 之后（深度是那一遍光栅写出来的），`Render` 里
+  `target_depth != nullptr` 时触发。
+
+### 下一步
+
+进**切法二**：把 CPU 侧 `TestOccluded` 保守判据逐行镜像进 `nanite_cluster_cull.comp`，A/B
+验证「被遮挡簇消失 / 可见簇完整 / 无破洞（GBuffer 覆盖率不降）」。③无破洞是硬门槛。
