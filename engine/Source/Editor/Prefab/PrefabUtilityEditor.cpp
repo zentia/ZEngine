@@ -192,17 +192,6 @@ namespace
     /// has full coverage for it whereas std::vector<uint8_t> would need a new
     /// uint8_t specialization). The string can hold arbitrary bytes including 0x00,
     /// so this is a faithful round-trip.
-    eastl::string BytesToStorageString(const std::vector<uint8_t>& bytes)
-    {
-        return eastl::string(reinterpret_cast<const char*>(bytes.data()), bytes.size());
-    }
-
-    std::vector<uint8_t> StorageStringToBytes(const eastl::string& s)
-    {
-        return std::vector<uint8_t>(reinterpret_cast<const uint8_t*>(s.data()),
-                                    reinterpret_cast<const uint8_t*>(s.data()) + s.size());
-    }
-
     /// Find the existing modification entry for (target, path), or nullptr.
     PropertyModification* FindModification(PrefabInstance* instance, PPtr<Object> target, const eastl::string& path)
     {
@@ -337,14 +326,14 @@ bool PrefabUtilityEditor::RecordPropertyOverride(PrefabInstance* instance,
     // Insert / overwrite.
     if (PropertyModification* existing = FindModification(instance, target, path))
     {
-        existing->value_bytes = BytesToStorageString(value_bytes);
+        existing->value_bytes = value_bytes;
         existing->object_reference = PPtr<Object>();
         return true;
     }
     PropertyModification mod;
     mod.target = target;
     mod.property_path = path;
-    mod.value_bytes = BytesToStorageString(value_bytes);
+    mod.value_bytes = value_bytes;
     instance->AddModification(mod);
     return true;
 }
@@ -416,8 +405,7 @@ int PrefabUtilityEditor::ApplyAll(PrefabInstance* instance)
         }
         else if (!mod.value_bytes.empty())
         {
-            const std::vector<uint8_t> raw = StorageStringToBytes(mod.value_bytes);
-            if (SpliceFieldValueInto(*source_obj, mod.property_path, &raw, nullptr, nullptr))
+            if (SpliceFieldValueInto(*source_obj, mod.property_path, &mod.value_bytes, nullptr, nullptr))
                 ++applied;
         }
         else
@@ -901,7 +889,7 @@ int PrefabUtilityEditor::MergeFromSource(PrefabInstance* instance)
                     if (!mod->object_reference.IsNull())
                         override_bytes = EncodePPtrAsBytes(mod->object_reference);
                     else if (!mod->value_bytes.empty())
-                        override_bytes = StorageStringToBytes(mod->value_bytes);
+                        override_bytes = mod->value_bytes;
                     else
                         continue;
 

@@ -638,6 +638,16 @@ int main(int argc, char** argv)
     //
     // override 打在 Transform 的 local position x 上：字段名是 m_LocalPositionD
     // （Transform 走手写 Transfer，m_LocalPosition 是 Vector3d，所以是 double）。
+    //
+    // value_bytes 是裸字节（host-endian），和 OverwriteScalarBytes 期待的布局一致。
+    // 注意 42.0 的小端字节以 6 个 0x00 开头 —— 这正是以前用 eastl::string 当字节袋
+    // 时被 YAML 截成空串的形状，K 组专测这个往返。
+    auto DoubleBytes = [](double v) {
+        std::vector<uint8_t> out(sizeof(double));
+        std::memcpy(out.data(), &v, sizeof(double));
+        return out;
+    };
+
     std::printf("\n--- I. Prefab Variant（base 的对象树 + variant 的 overrides）---\n");
 
     GameObject* base_go = MakeGameObject(object_manager, "VariantBase");
@@ -685,10 +695,7 @@ int main(int argc, char** argv)
             mod.target = PPtr<Object>(src_tf);
             mod.property_path = eastl::string("m_LocalPositionD.x");
             const double kOverrideX = 42.0;
-            eastl::string payload;
-            payload.resize(sizeof(double));
-            std::memcpy(payload.data(), &kOverrideX, sizeof(double));
-            mod.value_bytes = payload;
+            mod.value_bytes = DoubleBytes(kOverrideX);
             variant->AddVariantOverride(mod);
             CheckEq("I9", "variant 记下了 1 条 override",
                     std::to_string(variant->GetVariantOverrides().size()), "1");
@@ -789,10 +796,7 @@ int main(int argc, char** argv)
                     mod.target = PPtr<Object>(j_src_tf);
                     mod.property_path = eastl::string(kv.first);
                     const double d = kv.second;
-                    eastl::string payload;
-                    payload.resize(sizeof(double));
-                    std::memcpy(payload.data(), &d, sizeof(double));
-                    mod.value_bytes = payload;
+                    mod.value_bytes = DoubleBytes(d);
                     v->AddVariantOverride(mod);
                 }
                 return v;
@@ -841,6 +845,106 @@ int main(int argc, char** argv)
                     CheckEq("J14", "base 仍是 0/0/0（证明这些值确实来自 variant 各层）",
                             PosStr(j_base_clone->GetTransform()), "0.0/0.0/0.0");
                 }
+            }
+        }
+    }
+
+    // ---- K. Variant 落盘再读回（Create / Save / Load 往返）----------------------
+    // I / J 两组的 variant 都是内存里现造的。真实用法是把它存成一个 .prefab 文件，
+    // 而 Variant 文件的形状很特殊：**里面只有一个 PrefabAsset 头，没有 root** ——
+    // 这恰恰是 LoadPrefabAsset 以前会直接判失败的形状。这一组钉四件事：
+    //   1. CreateVariantAsset + SaveVariantAsset 写得出来；
+    //   2. LoadPrefabAsset 肯读回一个"没有 root 但 IsVariant()"的资产；
+    //   3. 读回来的 base 指针指向的还是同一个 base 资产（跨文件 PPtr 通）；
+    //   4. 实例化读回来的 variant，override 照样生效。
+    std::printf("\n--- K. Variant 落盘再读回（无 root 的单对象 prefab）---\n");
+
+    GameObject* k_base_go = MakeGameObject(object_manager, "KBase");
+    CheckTrue("K1", "造出了 K 组的 base GameObject", k_base_go != nullptr);
+    if (k_base_go != nullptr)
+    {
+        CheckTrue("K2", "K base 挂上了 Transform",
+                  k_base_go->AddComponentByTypeName("Transform") != nullptr);
+        k_base_go->SyncSerializedComponents();
+
+        const std::filesystem::path k_base_path = scratch / "KBase.prefab";
+        CheckTrue("K3", "K base prefab 写盘成功",
+                  PrefabUtility::SaveAsPrefabAsset(k_base_go, k_base_path));
+
+        std::vector<GameObject*> k_base_gos;
+        PrefabAsset* k_base = PrefabUtility::LoadPrefabAsset(k_base_path, &k_base_gos);
+        CheckTrue("K4", "K base prefab 读回来了", k_base != nullptr);
+
+        GameObject* k_base_root = (k_base != nullptr) ? k_base->GetRootGameObject() : nullptr;
+        Transform* k_src_tf = (k_base_root != nullptr) ? k_base_root->GetTransform() : nullptr;
+        CheckTrue("K5", "拿得到 K base 的 Transform", k_src_tf != nullptr);
+
+        if (k_base != nullptr && k_src_tf != nullptr)
+        {
+            // 两轨各跑一遍：.prefab（YAML 对象图）和 .zasset（二进制 SerializedFile）
+            const char* k_exts[2] = { ".prefab", ".zasset" };
+            for (int t = 0; t < 2; ++t)
+            {
+                const std::string k_tag = std::string("K") + (t == 0 ? "-prefab" : "-zasset");
+                const std::filesystem::path var_path =
+                    scratch / (std::string("KVar") + k_exts[t]);
+
+                PrefabAsset* k_var = PrefabUtility::CreateVariantAsset(k_base, eastl::string("KVar"));
+                CheckTrue(Id(k_tag.c_str(), 1).c_str(), "CreateVariantAsset 造出了 variant",
+                          k_var != nullptr);
+                if (k_var == nullptr)
+                {
+                    continue;
+                }
+
+                CheckTrue(Id(k_tag.c_str(), 2).c_str(),
+                          "新 variant 没有 root（Variant 本来就不拥有对象树）",
+                          k_var->GetRootGameObject() == nullptr);
+
+                PropertyModification k_mod;
+                k_mod.target = PPtr<Object>(k_src_tf);
+                k_mod.property_path = eastl::string("m_LocalPositionD.x");
+                const double k_x = 42.0;
+                k_mod.value_bytes = DoubleBytes(k_x);
+                k_var->AddVariantOverride(k_mod);
+
+                CheckTrue(Id(k_tag.c_str(), 3).c_str(), "SaveVariantAsset 写盘成功",
+                          PrefabUtility::SaveVariantAsset(k_var, var_path));
+                CheckTrue(Id(k_tag.c_str(), 4).c_str(), "文件确实落盘了",
+                          std::filesystem::exists(var_path));
+
+                // 读回 —— 这个文件只有一个 PrefabAsset 头、没有 root
+                std::vector<GameObject*> k_var_gos;
+                PrefabAsset* k_loaded = PrefabUtility::LoadPrefabAsset(var_path, &k_var_gos);
+                CheckTrue(Id(k_tag.c_str(), 5).c_str(), "无 root 的 variant 文件能读回来",
+                          k_loaded != nullptr);
+                if (k_loaded != nullptr)
+                {
+                    CheckTrue(Id(k_tag.c_str(), 6).c_str(), "读回来的确实认自己是 Variant",
+                              k_loaded->IsVariant());
+                    CheckTrue(Id(k_tag.c_str(), 7).c_str(),
+                              "base 指针指回了同一个 base 资产（跨文件 PPtr 通）",
+                              k_loaded->GetVariantBase() == k_base);
+                    CheckEq(Id(k_tag.c_str(), 8).c_str(), "override 跟着穿过了磁盘",
+                            std::to_string(k_loaded->GetVariantOverrides().size()), "1");
+
+                    GameObject* k_clone = PrefabUtility::Instantiate(k_loaded, /*invoke_post_load=*/true);
+                    CheckTrue(Id(k_tag.c_str(), 9).c_str(), "读回来的 variant 能实例化",
+                              k_clone != nullptr);
+                    if (k_clone != nullptr)
+                    {
+                        CheckEq(Id(k_tag.c_str(), 10).c_str(), "克隆的是 base 的那棵树",
+                                std::string(k_clone->GetName().c_str()), "KBase");
+                        CheckEq(Id(k_tag.c_str(), 11).c_str(),
+                                "落盘再读回后 override 照样生效（x=42）",
+                                std::to_string(k_clone->GetTransform()->GetLocalPositionD().x),
+                                std::to_string(42.0));
+                    }
+                }
+
+                // Produce() 配 ObjectManager::Destroy —— 见 SaveAsPrefabAsset 里那段
+                // 关于 mimalloc / mi_usable_size 的说明。
+                object_manager->Destroy(k_var);
             }
         }
     }
