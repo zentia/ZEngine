@@ -50,6 +50,19 @@ namespace NaniteGPUBinding
 }  // namespace NaniteGPUBinding
 
 // ---------------------------------------------------------------------------
+// HiZ GPU 金字塔的描述符绑定槽。**独立于** NaniteGPUBinding 那套——HiZ 用自己的
+// descriptor set / pipeline layout，不碰剔除那 7 个 storage binding（compute 与
+// vertex 共用，动它会波及光栅）。三处（C++ / GLSL / 测试）必须用同一组数字。
+// ---------------------------------------------------------------------------
+namespace NaniteHiZBinding
+{
+    constexpr uint32_t kHeader  = 0;  // uniform：每级尺寸/偏移 + phase/dstLevel
+    constexpr uint32_t kDepth   = 1;  // combined image sampler：D32 深度图
+    constexpr uint32_t kData    = 2;  // storage（写）：平铺金字塔 float[]
+    constexpr uint32_t kBindingCount = 3;
+}  // namespace NaniteHiZBinding
+
+// ---------------------------------------------------------------------------
 // 与 GLSL 的 uvec4 对应。Vector4 是 float，这里需要的是整数槽位。
 // ---------------------------------------------------------------------------
 struct NaniteGPUUVec4
@@ -59,6 +72,17 @@ struct NaniteGPUUVec4
     uint32_t z {0};
     uint32_t w {0};
 };
+
+// 与 GLSL 侧 nanite_hiz.comp 的 _hiz_header 逐字节对应（std140：uvec4 数组）。
+// 每级 mips[i] = (width, height, offset_texel, 保留)；params = (numMips, phase,
+// dstLevel, 保留)；dims = (baseW, baseH, 0, 0)。
+struct NaniteHiZGPUHeader
+{
+    NaniteGPUUVec4 mips[16];
+    NaniteGPUUVec4 params;
+    NaniteGPUUVec4 dims;
+};
+static_assert(sizeof(NaniteHiZGPUHeader) == 16 * 16 + 16 + 16, "HiZ header must match GLSL std140 layout");
 
 // ---------------------------------------------------------------------------
 // 一个集群在 GPU 上的样子。80 字节。

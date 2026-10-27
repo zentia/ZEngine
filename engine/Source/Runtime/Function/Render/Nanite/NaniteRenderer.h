@@ -119,6 +119,36 @@ struct NaniteGPUResources
     RHIDescriptorPool* descriptor_pool {nullptr};
     RHIDescriptorSet* descriptor_set {nullptr};
 
+    // ---- HiZ GPU 金字塔（切法一：深度 → max 归约金字塔，独立于剔除那套描述符）----
+    // 深度图本身加 SAMPLED usage 后的采样视图（compute 读它生成 mip0）。
+    RHIImageView* hiz_depth_view {nullptr};
+    RHISampler* hiz_sampler {nullptr};
+    // 平铺金字塔 storage buffer（布局与 CPU nanite_hiz::HiZPyramid.data 逐字节一致）。
+    RHIBuffer* hiz_data {nullptr};
+    RHIDeviceMemory* hiz_data_memory {nullptr};
+    uint32_t hiz_data_capacity {0};   // float 元素容量
+    // HiZ header uniform buffer（每级尺寸/偏移 + phase/dstLevel）。独立于剔除那套
+    // cull_constants——两个 dispatch 各写各的 header，互不冲掉。
+    RHIBuffer* hiz_header {nullptr};
+    RHIDeviceMemory* hiz_header_memory {nullptr};
+    // header 的 staging 拷贝源：一次写进 N 份（每 phase/level 一份），再由 CmdCopyBuffer
+    // 逐份拷进 hiz_header。之所以不直接 UploadBytes(hiz_header)：UploadBytes 是立即模式
+    // 的 host memcpy，录制期间多次写同一 buffer 只会留下最后一次，GPU 真正执行时所有
+    // dispatch 都读到同一个（最后一份）header——mip0 拷贝阶段拿到的却是 downsample 的
+    // header，金字塔全 0。CmdCopyBuffer 是命令流内的，天然按 dispatch 顺序生效。
+    RHIBuffer* hiz_header_staging {nullptr};
+    RHIDeviceMemory* hiz_header_staging_memory {nullptr};
+    // HiZ 自己的描述符 / 管线（不与剔除共用，避免动 compute+vertex 共享的那套 layout）。
+    RHIDescriptorSetLayout* hiz_descriptor_set_layout {nullptr};
+    RHIDescriptorSet* hiz_descriptor_set {nullptr};
+    RHIPipelineLayout* hiz_pipeline_layout {nullptr};
+    RHIPipeline* hiz_pipeline {nullptr};
+    bool hiz_pipeline_ready {false};
+    // 金字塔尺寸（与 CPU 侧一致），供测试读回比对。
+    uint32_t hiz_base_width {0};
+    uint32_t hiz_base_height {0};
+    int hiz_num_mips {0};
+
     bool compute_ready {false};
     bool raster_ready {false};
 
@@ -352,6 +382,16 @@ private:
 
     // 执行GPU裁剪
     NaniteVisibilityResult PerformGPUCulling(const std::shared_ptr<RenderCamera>& camera, const NaniteConfig& config);
+
+    // ---- HiZ GPU 金字塔（切法一）--------------------------------------------
+    // 确保深度采样视图 + 采样器 + 金字塔 buffer + HiZ compute 管线就绪。失败静默
+    // 返回 false（与 EnsureComputePipeline 同款：不刷屏，测试据此证伪）。
+    bool EnsureHiZResources(uint32_t width, uint32_t height);
+    // 从离屏深度 target 生成 max 归约金字塔（阶段①拷 mip0 + 阶段②逐级 downsample）。
+    // 产出写进 m_GPU.hiz_data，布局与 CPU nanite_hiz::HiZPyramid.data 一致，供测试
+    // 读回逐 texel 比对。headless 退到 BeginSingleTimeCommands。
+    void BuildHiZPyramidGPU();
+    void DestroyHiZResources();
 
 private:
     // 容量不足就重建缓冲；返回是否全部就绪。

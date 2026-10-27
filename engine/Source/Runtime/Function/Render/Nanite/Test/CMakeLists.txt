@@ -391,3 +391,51 @@ if(ZENGINE_BUILD_NANITE_PAGEPOOL_AB_SMOKE_TEST)
         message(STATUS "Configured Nanite page-pool A/B smoke test: NanitePagePoolABSmokeTest")
     endif()
 endif()
+
+# =============================================================================
+# NaniteHiZABSmokeTest — HiZ GPU 金字塔真机验证（Vulkan headless，切法一）。
+# -----------------------------------------------------------------------------
+# 把 VulkanRHI 在无窗口环境下拉起，跑一遍 Nanite 离屏渲染（产出真实 D32 深度
+# target），触发 nanite_hiz.comp 生成 max 归约金字塔（写进平铺 storage buffer），
+# 读回 GPU 金字塔，与 CPU 侧 nanite_hiz::BuildHiZPyramid（喂同一张 readback 深度图）
+# 逐 texel 比对。判据：GPU 与 CPU 金字塔逐 texel 一致（±量化容差）。
+#
+# 这是 HiZ GPU 侧最不确定的一环（compute 能否读深度附件并产出正确金字塔）的单独
+# 验证——不碰剔除/draw。与 NanitePagePoolABSmokeTest 同一套 harness 手法。
+#
+#   cmake -B build -DZENGINE_BUILD_NANITE_HIZ_AB_SMOKE_TEST=ON
+#   cmake --build build --target NaniteHiZABSmokeTest
+# =============================================================================
+option(ZENGINE_BUILD_NANITE_HIZ_AB_SMOKE_TEST
+       "Build the Nanite HiZ GPU-pyramid (Vulkan headless) smoke-test executable"
+       OFF)
+
+if(ZENGINE_BUILD_NANITE_HIZ_AB_SMOKE_TEST)
+    if(NOT WIN32 AND NOT (UNIX AND NOT APPLE))
+        message(STATUS "Nanite HiZ A/B smoke test needs the Vulkan backend (Windows/Linux); skipping on this platform")
+    else()
+        add_executable(NaniteHiZABSmokeTest NaniteHiZABSmokeTest.cpp)
+
+        set_target_properties(NaniteHiZABSmokeTest PROPERTIES
+            CXX_STANDARD 23
+            FOLDER "Engine/Tests"
+        )
+
+        target_link_libraries(NaniteHiZABSmokeTest PRIVATE ZRuntime)
+
+        if(TARGET ZEnginePCH)
+            target_link_libraries(NaniteHiZABSmokeTest PRIVATE ZEnginePCH)
+            target_include_directories(NaniteHiZABSmokeTest PRIVATE ${ENGINE_ROOT_DIR}/Source/CommonPCH)
+            add_dependencies(NaniteHiZABSmokeTest ZEnginePCH)
+            target_precompile_headers(NaniteHiZABSmokeTest REUSE_FROM ZEnginePCH)
+        endif()
+
+        if(MSVC)
+            target_compile_options(NaniteHiZABSmokeTest PRIVATE /W4)
+        endif()
+
+        add_test(NAME NaniteHiZABSmokeTest COMMAND NaniteHiZABSmokeTest)
+
+        message(STATUS "Configured Nanite HiZ A/B smoke test: NaniteHiZABSmokeTest")
+    endif()
+endif()

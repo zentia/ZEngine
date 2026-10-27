@@ -139,6 +139,39 @@ namespace nanite_hiz
         return py;
     }
 
+    // 计算金字塔每级的 (width, height, offset)。与 BuildHiZPyramid 的 mip 数/尺寸
+    // 推导**逐位一致**——GPU 侧（nanite_hiz.comp）据此填 header，保证 GLSL 与 C++
+    // 对同一张深度图产出完全相同的平铺布局，逐 texel 比对才有意义。
+    // 返回总 texel 数（= data.size()），并把每级写入 outMips[i] = {w, h, off, 0}。
+    inline uint32_t HiZMipLayout(uint32_t baseW, uint32_t baseH, uint32_t outMips[16][4], int& outNumMips)
+    {
+        if (baseW == 0 || baseH == 0)
+        {
+            outNumMips = 0;
+            return 0;
+        }
+        const uint32_t maxDim = std::max(baseW, baseH);
+        int numMips = 1;
+        while ((maxDim >> numMips) > 0u && numMips < 32)
+            ++numMips;
+        if (numMips > 16)
+            numMips = 16;  // GPU header 只留 16 级（足够 65536×65536）。
+        outNumMips = numMips;
+
+        uint32_t offset = 0;
+        for (int level = 0; level < numMips; ++level)
+        {
+            const uint32_t w = (baseW >> level) ? (baseW >> level) : 1u;
+            const uint32_t h = (baseH >> level) ? (baseH >> level) : 1u;
+            outMips[level][0] = w;
+            outMips[level][1] = h;
+            outMips[level][2] = offset;
+            outMips[level][3] = 0;
+            offset += w * h;
+        }
+        return offset;
+    }
+
     // 一个屏幕矩形（基础像素坐标 [x0, x1) x [y0, y1)，左闭右开）该采哪个 mip：
     // 选使矩形在金字塔上覆盖约 1~4 个 texel 的那一级——矩形越大，mip 越粗。
     // 返回的 level 满足 (x0>>level, y0>>level) 到 (x1>>level, y1>>level) 覆盖矩形。

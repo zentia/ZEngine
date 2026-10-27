@@ -1,0 +1,94 @@
+#version 450
+
+// ===========================================================================
+// Nanite HiZ 金字塔生成（compute）。
+//
+// 从一帧深度图（D32，reversed-Z 或 standard-Z 均可——本 kernel 只做 max 归约，
+// 深度约定由调用方保证一致）构建 max 归约 mip 金字塔，写进一个平铺 storage
+// buffer，布局与 CPU 侧 nanite_hiz::HiZPyramid 逐字节一致：
+//
+//   data[0 .. baseW*baseH)                 = mip 0（= 深度图本身）
+//   data[baseW*baseH .. +mip1W*mip1H)      = mip 1（2x2 max）
+//   ...
+//
+// 平铺偏移 / 每级尺寸由 CPU 侧算好塞进常量（HiZPyramidHeader），kernel 不重复
+// 推导——避免 GLSL 与 C++ 各算一遍 log2 走偏。
+//
+// 两个 dispatch 阶段：
+//   ① 拷贝深度 → mip 0：一个线程一个 texel，从 depth 采样图读、写 data[mip0]。
+//   ② 逐级 downsample：一个线程一个较粗 texel，读上一级 2x2 取 max。
+// 用 u_constants.phase 区分（0 = 拷贝 mip0，1 = downsample 到 dstLevel）。
+//
+// 之所以用 storage buffer 而不是 mip 纹理：第一版要和 CPU 侧 HiZPyramid 逐 texel
+// 比对，buffer 布局与 CPU 完全一致、无 image layout / 采样器介入，最稳。等比对
+// 通过、要上硬件宽采样再升级成真 mip 纹理（切法三）。
+// ===========================================================================
+
+#extension GL_GOOGLE_include_directive : enable
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+// 与 C++ 侧 NaniteHiZGPUHeader 逐字节对应（std140）。
+layout(set = 0, binding = 0) uniform _hiz_header
+{
+    uvec4 mips[16];   // x = width, y = height, z = offset(texel), w = 保留
+    uvec4 params;     // x = numMips, y = phase(0=copy mip0, 1=downsample), z = dstLevel, w = baseW
+    uvec4 dims;       // x = baseW, y = baseH, z/w = 保留
+} u_header;
+
+layout(set = 0, binding = 1) uniform sampler2D _depth;  // D32 深度图
+
+// 不能 writeonly：downsample 阶段要读上一级（同 buffer）的 2x2 再写本级。
+layout(std430, set = 0, binding = 2) buffer _hiz_data
+{
+    float data[];
+};
+
+void main()
+{
+    const uint numMips = u_header.params.x;
+    const uint phase   = u_header.params.y;
+    const uint dstLvl  = u_header.params.z;
+
+    if (phase == 0u)
+    {
+        // ---- 阶段①：深度 → mip 0 ----
+        const uint w = u_header.mips[0].x;
+        const uint h = u_header.mips[0].y;
+        const ivec2 uv = ivec2(gl_GlobalInvocationID.xy);
+        if (uint(uv.x) >= w || uint(uv.y) >= h)
+            return;
+
+        // texelFetch 免采样器过滤，读到的就是那个 texel 的原始深度，与 CPU 逐位对齐。
+        const float d = texelFetch(_depth, uv, 0).r;
+        data[u_header.mips[0].z + uint(uv.y) * w + uint(uv.x)] = d;
+    }
+    else
+    {
+        // ---- 阶段②：dstLvl = 上一级 2x2 的 max ----
+        if (dstLvl == 0u || dstLvl >= numMips)
+            return;
+        const uint dw = u_header.mips[dstLvl].x;
+        const uint dh = u_header.mips[dstLvl].y;
+        const uint sw = u_header.mips[dstLvl - 1u].x;
+        const uint sh = u_header.mips[dstLvl - 1u].y;
+        const uint srcOff = u_header.mips[dstLvl - 1u].z;
+        const uint dstOff = u_header.mips[dstLvl].z;
+
+        const uint x = gl_GlobalInvocationID.x;
+        const uint y = gl_GlobalInvocationID.y;
+        if (x >= dw || y >= dh)
+            return;
+
+        const uint sx0 = x * 2u;
+        const uint sy0 = y * 2u;
+        const uint sx1 = min(sx0 + 1u, sw - 1u);
+        const uint sy1 = min(sy0 + 1u, sh - 1u);
+
+        const float a = data[srcOff + sy0 * sw + sx0];
+        const float b = data[srcOff + sy0 * sw + sx1];
+        const float c = data[srcOff + sy1 * sw + sx0];
+        const float d = data[srcOff + sy1 * sw + sx1];
+        data[dstOff + y * dw + x] = max(max(a, b), max(c, d));
+    }
+}

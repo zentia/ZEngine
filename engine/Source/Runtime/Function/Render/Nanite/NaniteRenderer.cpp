@@ -33,6 +33,10 @@
 #include <nanite_cluster_frag.h>
 #define ZENGINE_NANITE_HAS_FRAG_SPIRV 1
 #endif
+#if __has_include(<nanite_hiz_comp.h>)
+#include <nanite_hiz_comp.h>
+#define ZENGINE_NANITE_HAS_HIZ_SPIRV 1
+#endif
 #endif
 
 #ifndef ZENGINE_NANITE_HAS_CULL_SPIRV
@@ -48,6 +52,11 @@ static const std::vector<unsigned char> NANITE_CLUSTER_VERT {};
 #ifndef ZENGINE_NANITE_HAS_FRAG_SPIRV
 namespace Z { namespace Shader {
 static const std::vector<unsigned char> NANITE_CLUSTER_FRAG {};
+}}  // namespace Z::Shader
+#endif
+#ifndef ZENGINE_NANITE_HAS_HIZ_SPIRV
+namespace Z { namespace Shader {
+static const std::vector<unsigned char> NANITE_HIZ_COMP {};
 }}  // namespace Z::Shader
 #endif
 
@@ -333,6 +342,18 @@ void NaniteRenderer::Render(RHI* rhi,
         //     调 DrawClustersIndirectInPass。DrawClustersIndirect 自己也认这个约定。
         //   * 没注入 ⇒ Nanite 用自己的离屏 target，自己开/关 pass。
         DrawClustersIndirect();
+
+        // HiZ 金字塔：从刚画完的离屏深度 target 生成（切法一，只建金字塔不接剔除）。
+        // 必须在 DrawClustersIndirect 之后——深度是那一遍光栅写出来的。离屏 target
+        // 尺寸即金字塔尺寸。没有离屏 target（外部注入且这里没画）时 BuildHiZPyramidGPU
+        // 会因 target_depth 为空而 no-op。
+        if (m_GPU.target_depth != nullptr)
+        {
+            if (EnsureHiZResources(m_GPU.target_width, m_GPU.target_height))
+            {
+                BuildHiZPyramidGPU();
+            }
+        }
     }
 }
 
@@ -580,7 +601,9 @@ void NaniteRenderer::DestroyGPUResources()
     // 页槽位表一并清空，避免残留登记在下次 Initialize 后仍占预算。
     m_PageSlots.Reset();
 
-    // 离屏光栅目标跟着重建（改尺寸、clear 都会走到这里）。
+    // 离屏光栅目标跟着重建（改尺寸、clear 都会走到这里）。HiZ 资源依赖 target_depth
+    // 的采样视图，一并清掉，下次 Initialize/DrawClustersIndirect 重建。
+    DestroyHiZResources();
     DestroyRasterTarget();
     m_GPU.raster_render_pass = nullptr;
     m_GPU.raster_framebuffer = nullptr;
@@ -1513,6 +1536,577 @@ void NaniteRenderer::DispatchClusterCulling(const std::shared_ptr<RenderCamera>&
     m_GPU.dispatch_cluster_count = cluster_count;
 }
 
+// ===========================================================================
+// HiZ GPU 金字塔（切法一）：从离屏深度 target 生成 max 归约金字塔，写进平铺
+// storage buffer，布局与 CPU nanite_hiz::HiZPyramid.data 逐字节一致，供测试读回
+// 逐 texel 比对。**不碰剔除/draw**——先把"compute 能读深度附件并产出正确金字塔"
+// 这个最不确定的环节单独验掉。
+// ===========================================================================
+bool NaniteRenderer::EnsureHiZResources(uint32_t width, uint32_t height)
+{
+    if (m_Rhi == nullptr || width == 0 || height == 0)
+    {
+        return false;
+    }
+    if (Z::Shader::NANITE_HIZ_COMP.empty())
+    {
+        return false;  // shader 没编出来（无 glslangValidator 的环境），静默不启用
+    }
+    if (m_GPU.target_depth == nullptr)
+    {
+        return false;  // 没有离屏深度 target（EnsureRasterTarget 没跑过）
+    }
+
+    // 深度采样视图：只建一次（target_depth 重建时会被 DestroyHiZResources 清掉）。
+    // CreateImageView 是 void，成功与否看输出句柄是否非空。
+    if (m_GPU.hiz_depth_view == nullptr)
+    {
+        m_Rhi->CreateImageView(m_GPU.target_depth,
+                               RHI_FORMAT_D32_SFLOAT,
+                               RHI_IMAGE_ASPECT_DEPTH_BIT,
+                               RHI_IMAGE_VIEW_TYPE_2D,
+                               1,
+                               1,
+                               m_GPU.hiz_depth_view);
+        if (m_GPU.hiz_depth_view == nullptr)
+        {
+            return false;
+        }
+    }
+
+    // 采样器：NEAREST + clamp，texelFetch 其实不用过滤，但 combined image sampler
+    // 描述符需要一个合法 sampler 句柄。
+    if (m_GPU.hiz_sampler == nullptr)
+    {
+        RHISamplerCreateInfo sampler_info {};
+        sampler_info.sType = RHI_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+        sampler_info.magFilter = RHI_FILTER_NEAREST;
+        sampler_info.minFilter = RHI_FILTER_NEAREST;
+        sampler_info.mipmapMode = RHI_SAMPLER_MIPMAP_MODE_NEAREST;
+        sampler_info.addressModeU = RHI_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        sampler_info.addressModeV = RHI_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        sampler_info.addressModeW = RHI_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        sampler_info.minLod = 0.0f;
+        sampler_info.maxLod = 0.0f;
+        if (!m_Rhi->CreateSampler(&sampler_info, m_GPU.hiz_sampler))
+        {
+            return false;
+        }
+    }
+
+    // 金字塔 buffer：容量按当前尺寸的 mip 布局算。尺寸变了才重建。
+    uint32_t mips[16][4];
+    int num_mips = 0;
+    const uint32_t total_texels = nanite_hiz::HiZMipLayout(width, height, mips, num_mips);
+    if (total_texels == 0 || num_mips <= 0)
+    {
+        return false;
+    }
+    if (m_GPU.hiz_data == nullptr || m_GPU.hiz_data_capacity < total_texels)
+    {
+        if (m_GPU.hiz_data_memory != nullptr)
+        {
+            m_Rhi->FreeMemory(m_GPU.hiz_data_memory);
+            m_GPU.hiz_data_memory = nullptr;
+        }
+        if (m_GPU.hiz_data != nullptr)
+        {
+            m_Rhi->DestroyBuffer(m_GPU.hiz_data);
+            m_GPU.hiz_data = nullptr;
+        }
+        const RHIDeviceSize bytes = static_cast<RHIDeviceSize>(total_texels) * sizeof(float);
+        // CreateBuffer 是 void，成功与否看输出句柄。
+        m_Rhi->CreateBuffer(bytes,
+                            RHI_BUFFER_USAGE_STORAGE_BUFFER_BIT | RHI_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                            kNaniteHostMemory,
+                            m_GPU.hiz_data,
+                            m_GPU.hiz_data_memory);
+        if (m_GPU.hiz_data == nullptr || m_GPU.hiz_data_memory == nullptr)
+        {
+            return false;
+        }
+        m_GPU.hiz_data_capacity = total_texels;
+    }
+
+    // HiZ header uniform buffer（每帧两个 phase 各重填一次内容）。
+    if (m_GPU.hiz_header == nullptr || m_GPU.hiz_header_memory == nullptr)
+    {
+        if (m_GPU.hiz_header_memory != nullptr)
+        {
+            m_Rhi->FreeMemory(m_GPU.hiz_header_memory);
+            m_GPU.hiz_header_memory = nullptr;
+        }
+        if (m_GPU.hiz_header != nullptr)
+        {
+            m_Rhi->DestroyBuffer(m_GPU.hiz_header);
+            m_GPU.hiz_header = nullptr;
+        }
+        m_Rhi->CreateBuffer(sizeof(NaniteHiZGPUHeader),
+                            RHI_BUFFER_USAGE_UNIFORM_BUFFER_BIT | RHI_BUFFER_USAGE_TRANSFER_DST_BIT,
+                            kNaniteHostMemory,
+                            m_GPU.hiz_header,
+                            m_GPU.hiz_header_memory);
+        if (m_GPU.hiz_header == nullptr || m_GPU.hiz_header_memory == nullptr)
+        {
+            return false;
+        }
+    }
+
+    m_GPU.hiz_base_width = width;
+    m_GPU.hiz_base_height = height;
+    m_GPU.hiz_num_mips = num_mips;
+
+    // HiZ 自己的 descriptor set layout / set / pipeline layout / compute pipeline。
+    if (m_GPU.hiz_descriptor_set_layout == nullptr)
+    {
+        RHIDescriptorSetLayoutBinding bindings[NaniteHiZBinding::kBindingCount] = {};
+        bindings[NaniteHiZBinding::kHeader] = {NaniteHiZBinding::kHeader,
+                                               RHI_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                                               1,
+                                               RHI_SHADER_STAGE_COMPUTE_BIT,
+                                               nullptr};
+        bindings[NaniteHiZBinding::kDepth] = {NaniteHiZBinding::kDepth,
+                                              RHI_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                                              1,
+                                              RHI_SHADER_STAGE_COMPUTE_BIT,
+                                              nullptr};
+        bindings[NaniteHiZBinding::kData] = {NaniteHiZBinding::kData,
+                                             RHI_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                             1,
+                                             RHI_SHADER_STAGE_COMPUTE_BIT,
+                                             nullptr};
+        RHIDescriptorSetLayoutCreateInfo layout_info {};
+        layout_info.sType = RHI_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        layout_info.bindingCount = NaniteHiZBinding::kBindingCount;
+        layout_info.pBindings = bindings;
+        if (!m_Rhi->CreateDescriptorSetLayout(&layout_info, m_GPU.hiz_descriptor_set_layout))
+        {
+            return false;
+        }
+    }
+
+    if (m_GPU.hiz_pipeline_layout == nullptr)
+    {
+        RHIPipelineLayoutCreateInfo layout_info {};
+        layout_info.sType = RHI_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        layout_info.setLayoutCount = 1;
+        layout_info.pSetLayouts = &m_GPU.hiz_descriptor_set_layout;
+        if (!m_Rhi->CreatePipelineLayout(&layout_info, m_GPU.hiz_pipeline_layout))
+        {
+            return false;
+        }
+    }
+
+    if (m_GPU.hiz_descriptor_set == nullptr)
+    {
+        RHIDescriptorSetAllocateInfo alloc_info {};
+        alloc_info.sType = RHI_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        alloc_info.descriptorPool = m_Rhi->GetDescriptorPoor();
+        alloc_info.descriptorSetCount = 1;
+        alloc_info.pSetLayouts = &m_GPU.hiz_descriptor_set_layout;
+        if (RHI_SUCCESS != m_Rhi->AllocateDescriptorSets(&alloc_info, m_GPU.hiz_descriptor_set))
+        {
+            return false;
+        }
+    }
+
+    if (m_GPU.hiz_pipeline == nullptr)
+    {
+        RHIShader* shader = m_Rhi->CreateShaderModule(Z::Shader::NANITE_HIZ_COMP);
+        if (shader == nullptr)
+        {
+            return false;
+        }
+        RHIPipelineShaderStageCreateInfo stage {};
+        stage.sType = RHI_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stage.stage = RHI_SHADER_STAGE_COMPUTE_BIT;
+        stage.module = shader;
+        stage.pName = "main";
+        RHIComputePipelineCreateInfo pipeline_info {};
+        pipeline_info.sType = RHI_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+        pipeline_info.pStages = &stage;
+        pipeline_info.layout = m_GPU.hiz_pipeline_layout;
+        const bool ok = m_Rhi->CreateComputePipelines(RHI_NULL_HANDLE, 1, &pipeline_info, m_GPU.hiz_pipeline);
+        m_Rhi->DestroyShaderModule(shader);
+        if (!ok || m_GPU.hiz_pipeline == nullptr)
+        {
+            return false;
+        }
+    }
+
+    // 描述符写入：header UBO + 深度采样图 + 金字塔 buffer，一次写定（内容每帧重填）。
+    {
+        RHIDescriptorBufferInfo header_info {};
+        header_info.offset = 0;
+        header_info.range = sizeof(NaniteHiZGPUHeader);
+        header_info.buffer = m_GPU.hiz_header;
+
+        RHIDescriptorImageInfo depth_info {};
+        depth_info.sampler = m_GPU.hiz_sampler;
+        depth_info.imageView = m_GPU.hiz_depth_view;
+        depth_info.imageLayout = RHI_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+        RHIDescriptorBufferInfo data_info {};
+        data_info.offset = 0;
+        data_info.range = static_cast<RHIDeviceSize>(m_GPU.hiz_data_capacity) * sizeof(float);
+        data_info.buffer = m_GPU.hiz_data;
+
+        RHIWriteDescriptorSet writes[NaniteHiZBinding::kBindingCount] = {};
+        writes[NaniteHiZBinding::kHeader].sType = RHI_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[NaniteHiZBinding::kHeader].dstSet = m_GPU.hiz_descriptor_set;
+        writes[NaniteHiZBinding::kHeader].dstBinding = NaniteHiZBinding::kHeader;
+        writes[NaniteHiZBinding::kHeader].descriptorCount = 1;
+        writes[NaniteHiZBinding::kHeader].descriptorType = RHI_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        writes[NaniteHiZBinding::kHeader].pBufferInfo = &header_info;
+
+        writes[NaniteHiZBinding::kDepth].sType = RHI_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[NaniteHiZBinding::kDepth].dstSet = m_GPU.hiz_descriptor_set;
+        writes[NaniteHiZBinding::kDepth].dstBinding = NaniteHiZBinding::kDepth;
+        writes[NaniteHiZBinding::kDepth].descriptorCount = 1;
+        writes[NaniteHiZBinding::kDepth].descriptorType = RHI_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        writes[NaniteHiZBinding::kDepth].pImageInfo = &depth_info;
+
+        writes[NaniteHiZBinding::kData].sType = RHI_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[NaniteHiZBinding::kData].dstSet = m_GPU.hiz_descriptor_set;
+        writes[NaniteHiZBinding::kData].dstBinding = NaniteHiZBinding::kData;
+        writes[NaniteHiZBinding::kData].descriptorCount = 1;
+        writes[NaniteHiZBinding::kData].descriptorType = RHI_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        writes[NaniteHiZBinding::kData].pBufferInfo = &data_info;
+
+        m_Rhi->UpdateDescriptorSets(NaniteHiZBinding::kBindingCount, writes, 0, nullptr);
+    }
+
+    m_GPU.hiz_pipeline_ready = true;
+    return true;
+}
+
+void NaniteRenderer::BuildHiZPyramidGPU()
+{
+    if (!m_GPU.hiz_pipeline_ready || m_GPU.hiz_pipeline == nullptr || m_GPU.hiz_data == nullptr)
+    {
+        return;
+    }
+    const uint32_t width = m_GPU.hiz_base_width;
+    const uint32_t height = m_GPU.hiz_base_height;
+    const int num_mips = m_GPU.hiz_num_mips;
+    if (width == 0 || height == 0 || num_mips <= 0)
+    {
+        return;
+    }
+
+    // 每级尺寸/偏移（与 CPU 侧 HiZMipLayout 一致）。
+    uint32_t mips[16][4];
+    int layout_mips = 0;
+    nanite_hiz::HiZMipLayout(width, height, mips, layout_mips);
+
+    RHICommandBuffer* command_buffer = m_Rhi->GetCurrentCommandBuffer();
+    const bool owns_command_buffer = (command_buffer == nullptr);
+    if (owns_command_buffer)
+    {
+        command_buffer = m_Rhi->BeginSingleTimeCommands();
+    }
+    if (command_buffer == nullptr)
+    {
+        return;
+    }
+
+    // ---- 一次性把所有 dispatch 的 header 写进 staging（每份一个 slot）----
+    // dispatch 数 = 1（mip0 拷贝）+ (num_mips - 1)（downsample）= num_mips。
+    // 关键：这些 header 必须经 CmdCopyBuffer 进 hiz_header（命令流内、按 dispatch
+    // 顺序生效），不能 UploadBytes 直接写 hiz_header——那是立即模式 host memcpy，
+    // 录制期间多次写同一 buffer 只留最后一次，GPU 执行时所有 dispatch 都读到同一份。
+    const int dispatch_count = num_mips;
+    std::vector<NaniteHiZGPUHeader> headers(static_cast<size_t>(dispatch_count));
+    for (int d = 0; d < dispatch_count; ++d)
+    {
+        NaniteHiZGPUHeader& header = headers[static_cast<size_t>(d)];
+        header.params.x = static_cast<uint32_t>(num_mips);
+        if (d == 0)
+        {
+            header.params.y = 0u;  // phase = copy mip0
+            header.params.z = 0u;
+        }
+        else
+        {
+            header.params.y = 1u;  // phase = downsample
+            header.params.z = static_cast<uint32_t>(d);
+        }
+        header.dims.x = width;
+        header.dims.y = height;
+        for (int i = 0; i < num_mips; ++i)
+        {
+            header.mips[i].x = mips[i][0];
+            header.mips[i].y = mips[i][1];
+            header.mips[i].z = mips[i][2];
+        }
+    }
+
+    // staging buffer：dispatch_count 份 header，host-visible，一次写满。
+    const RHIDeviceSize staging_bytes =
+        static_cast<RHIDeviceSize>(dispatch_count) * static_cast<RHIDeviceSize>(sizeof(NaniteHiZGPUHeader));
+    if (m_GPU.hiz_header_staging == nullptr || m_GPU.hiz_header_staging_memory == nullptr)
+    {
+        if (m_GPU.hiz_header_staging_memory != nullptr)
+        {
+            m_Rhi->FreeMemory(m_GPU.hiz_header_staging_memory);
+            m_GPU.hiz_header_staging_memory = nullptr;
+        }
+        if (m_GPU.hiz_header_staging != nullptr)
+        {
+            m_Rhi->DestroyBuffer(m_GPU.hiz_header_staging);
+            m_GPU.hiz_header_staging = nullptr;
+        }
+        m_Rhi->CreateBuffer(staging_bytes,
+                            RHI_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                            kNaniteHostMemory,
+                            m_GPU.hiz_header_staging,
+                            m_GPU.hiz_header_staging_memory);
+        if (m_GPU.hiz_header_staging == nullptr || m_GPU.hiz_header_staging_memory == nullptr)
+        {
+            return;
+        }
+    }
+    if (!UploadBytes(m_GPU.hiz_header_staging, m_GPU.hiz_header_staging_memory, headers.data(),
+                     static_cast<size_t>(staging_bytes)))
+    {
+        if (owns_command_buffer)
+        {
+            m_Rhi->EndSingleTimeCommands(command_buffer);
+        }
+        return;
+    }
+
+    // 阶段①：深度 → mip0。先把深度图从 DEPTH_STENCIL_ATTACHMENT_OPTIMAL 转到
+    // SHADER_READ_ONLY_OPTIMAL（描述符写的就是这个 layout）。
+    RHIImageMemoryBarrier to_shader_read {};
+    to_shader_read.sType = RHI_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    to_shader_read.srcAccessMask = RHI_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    to_shader_read.dstAccessMask = RHI_ACCESS_SHADER_READ_BIT;
+    to_shader_read.oldLayout = RHI_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    to_shader_read.newLayout = RHI_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    to_shader_read.srcQueueFamilyIndex = ~0u;
+    to_shader_read.dstQueueFamilyIndex = ~0u;
+    to_shader_read.image = m_GPU.target_depth;
+    to_shader_read.subresourceRange.aspectMask = RHI_IMAGE_ASPECT_DEPTH_BIT;
+    to_shader_read.subresourceRange.baseMipLevel = 0;
+    to_shader_read.subresourceRange.levelCount = 1;
+    to_shader_read.subresourceRange.baseArrayLayer = 0;
+    to_shader_read.subresourceRange.layerCount = 1;
+    m_Rhi->CmdPipelineBarrier(command_buffer,
+                              RHI_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+                              RHI_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                              0,
+                              0,
+                              nullptr,
+                              0,
+                              nullptr,
+                              1,
+                              &to_shader_read);
+
+    m_Rhi->CmdBindPipelinePFN(command_buffer, RHI_PIPELINE_BIND_POINT_COMPUTE, m_GPU.hiz_pipeline);
+    m_Rhi->CmdBindDescriptorSetsPFN(command_buffer,
+                                    RHI_PIPELINE_BIND_POINT_COMPUTE,
+                                    m_GPU.hiz_pipeline_layout,
+                                    0,
+                                    1,
+                                    &m_GPU.hiz_descriptor_set,
+                                    0,
+                                    nullptr);
+
+    // 每个 dispatch 前：CmdCopyBuffer 把 staging 里第 d 份 header 拷进 hiz_header，
+    // 再插一道 buffer barrier 保证拷贝对随后的 compute 可见。
+    auto copy_header_for_dispatch = [&](int d)
+    {
+        RHIBufferCopy region {};
+        region.srcOffset = static_cast<RHIDeviceSize>(d) * static_cast<RHIDeviceSize>(sizeof(NaniteHiZGPUHeader));
+        region.dstOffset = 0;
+        region.size = static_cast<RHIDeviceSize>(sizeof(NaniteHiZGPUHeader));
+        m_Rhi->CmdCopyBuffer(command_buffer, m_GPU.hiz_header_staging, m_GPU.hiz_header, 1, &region);
+
+        RHIBufferMemoryBarrier bar {};
+        bar.sType = RHI_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+        bar.srcAccessMask = RHI_ACCESS_TRANSFER_WRITE_BIT;
+        bar.dstAccessMask = RHI_ACCESS_SHADER_READ_BIT;
+        bar.srcQueueFamilyIndex = ~0u;
+        bar.dstQueueFamilyIndex = ~0u;
+        bar.buffer = m_GPU.hiz_header;
+        bar.offset = 0;
+        bar.size = static_cast<RHIDeviceSize>(sizeof(NaniteHiZGPUHeader));
+        m_Rhi->CmdPipelineBarrier(command_buffer,
+                                  RHI_PIPELINE_STAGE_TRANSFER_BIT,
+                                  RHI_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                  0,
+                                  0,
+                                  nullptr,
+                                  1,
+                                  &bar,
+                                  0,
+                                  nullptr);
+    };
+
+    // 阶段① dispatch：一个线程一个 mip0 texel。
+    {
+        copy_header_for_dispatch(0);
+        const uint32_t gx = (width + 15u) / 16u;
+        const uint32_t gy = (height + 15u) / 16u;
+        m_Rhi->CmdDispatch(command_buffer, gx, gy, 1);
+    }
+
+    // 阶段①写完 mip0 → 阶段②要读它，插一道 buffer barrier（write-after-read / 自读）。
+    {
+        RHIBufferMemoryBarrier bar {};
+        bar.sType = RHI_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+        bar.srcAccessMask = RHI_ACCESS_SHADER_WRITE_BIT;
+        bar.dstAccessMask = RHI_ACCESS_SHADER_READ_BIT | RHI_ACCESS_SHADER_WRITE_BIT;
+        bar.srcQueueFamilyIndex = ~0u;
+        bar.dstQueueFamilyIndex = ~0u;
+        bar.buffer = m_GPU.hiz_data;
+        bar.offset = 0;
+        bar.size = static_cast<RHIDeviceSize>(m_GPU.hiz_data_capacity) * sizeof(float);
+        m_Rhi->CmdPipelineBarrier(command_buffer,
+                                  RHI_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                  RHI_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                  0,
+                                  0,
+                                  nullptr,
+                                  1,
+                                  &bar,
+                                  0,
+                                  nullptr);
+    }
+
+    // 阶段②：逐级 downsample（dstLevel = 1 .. num_mips-1）。每级一次 dispatch +
+    // 一道 barrier（下一级读上一级的结果）。
+    for (int level = 1; level < num_mips; ++level)
+    {
+        copy_header_for_dispatch(level);
+
+        const uint32_t gw = mips[level][0];
+        const uint32_t gh = mips[level][1];
+        const uint32_t gx = (gw + 15u) / 16u;
+        const uint32_t gy = (gh + 15u) / 16u;
+        m_Rhi->CmdDispatch(command_buffer, gx, gy, 1);
+
+        if (level + 1 < num_mips)
+        {
+            RHIBufferMemoryBarrier bar {};
+            bar.sType = RHI_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+            bar.srcAccessMask = RHI_ACCESS_SHADER_WRITE_BIT;
+            bar.dstAccessMask = RHI_ACCESS_SHADER_READ_BIT | RHI_ACCESS_SHADER_WRITE_BIT;
+            bar.srcQueueFamilyIndex = ~0u;
+            bar.dstQueueFamilyIndex = ~0u;
+            bar.buffer = m_GPU.hiz_data;
+            bar.offset = 0;
+            bar.size = static_cast<RHIDeviceSize>(m_GPU.hiz_data_capacity) * sizeof(float);
+            m_Rhi->CmdPipelineBarrier(command_buffer,
+                                      RHI_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                      RHI_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                      0,
+                                      0,
+                                      nullptr,
+                                      1,
+                                      &bar,
+                                      0,
+                                      nullptr);
+        }
+    }
+
+    // 采样结束，把深度图转回 DEPTH_STENCIL_ATTACHMENT_OPTIMAL：下一帧的 render pass
+    // 要拿它当深度附件，A/B 测试的读回 barrier 也以它为 oldLayout。不转回去的话
+    // vkQueueSubmit 会报「期望 DEPTH_STENCIL_ATTACHMENT_OPTIMAL，实为 SHADER_READ_ONLY」。
+    RHIImageMemoryBarrier to_depth_attachment {};
+    to_depth_attachment.sType = RHI_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    to_depth_attachment.srcAccessMask = RHI_ACCESS_SHADER_READ_BIT;
+    to_depth_attachment.dstAccessMask = RHI_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT |
+                                        RHI_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
+    to_depth_attachment.oldLayout = RHI_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    to_depth_attachment.newLayout = RHI_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    to_depth_attachment.srcQueueFamilyIndex = ~0u;
+    to_depth_attachment.dstQueueFamilyIndex = ~0u;
+    to_depth_attachment.image = m_GPU.target_depth;
+    to_depth_attachment.subresourceRange.aspectMask = RHI_IMAGE_ASPECT_DEPTH_BIT;
+    to_depth_attachment.subresourceRange.baseMipLevel = 0;
+    to_depth_attachment.subresourceRange.levelCount = 1;
+    to_depth_attachment.subresourceRange.baseArrayLayer = 0;
+    to_depth_attachment.subresourceRange.layerCount = 1;
+    m_Rhi->CmdPipelineBarrier(command_buffer,
+                              RHI_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                              RHI_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
+                              0,
+                              0,
+                              nullptr,
+                              0,
+                              nullptr,
+                              1,
+                              &to_depth_attachment);
+
+    if (owns_command_buffer)
+    {
+        m_Rhi->EndSingleTimeCommands(command_buffer);
+    }
+}
+
+void NaniteRenderer::DestroyHiZResources()
+{
+    if (m_Rhi == nullptr)
+    {
+        return;
+    }
+    // 采样器 / 视图 / buffer / memory 有销毁入口，正常释放。
+    if (m_GPU.hiz_sampler != nullptr)
+    {
+        m_Rhi->DestroySampler(m_GPU.hiz_sampler);
+        m_GPU.hiz_sampler = nullptr;
+    }
+    if (m_GPU.hiz_depth_view != nullptr)
+    {
+        m_Rhi->DestroyImageView(m_GPU.hiz_depth_view);
+        m_GPU.hiz_depth_view = nullptr;
+    }
+    if (m_GPU.hiz_header_memory != nullptr)
+    {
+        m_Rhi->FreeMemory(m_GPU.hiz_header_memory);
+        m_GPU.hiz_header_memory = nullptr;
+    }
+    if (m_GPU.hiz_header != nullptr)
+    {
+        m_Rhi->DestroyBuffer(m_GPU.hiz_header);
+        m_GPU.hiz_header = nullptr;
+    }
+    if (m_GPU.hiz_data_memory != nullptr)
+    {
+        m_Rhi->FreeMemory(m_GPU.hiz_data_memory);
+        m_GPU.hiz_data_memory = nullptr;
+    }
+    if (m_GPU.hiz_data != nullptr)
+    {
+        m_Rhi->DestroyBuffer(m_GPU.hiz_data);
+        m_GPU.hiz_data = nullptr;
+    }
+    if (m_GPU.hiz_header_staging_memory != nullptr)
+    {
+        m_Rhi->FreeMemory(m_GPU.hiz_header_staging_memory);
+        m_GPU.hiz_header_staging_memory = nullptr;
+    }
+    if (m_GPU.hiz_header_staging != nullptr)
+    {
+        m_Rhi->DestroyBuffer(m_GPU.hiz_header_staging);
+        m_GPU.hiz_header_staging = nullptr;
+    }
+    // 已知缺口（同 DestroyGPUResources）：RHI 抽象层没有 DestroyComputePipeline /
+    // DestroyPipelineLayout / DestroyDescriptorSetLayout，hiz_pipeline /
+    // hiz_pipeline_layout / hiz_descriptor_set_layout 只能随进程结束。每个实例只建
+    // 一次（懒建），不是每帧增长。descriptor_set 归还进 pool，不单独释放。
+    m_GPU.hiz_pipeline = nullptr;
+    m_GPU.hiz_pipeline_layout = nullptr;
+    m_GPU.hiz_descriptor_set_layout = nullptr;
+    m_GPU.hiz_descriptor_set = nullptr;
+    m_GPU.hiz_data_capacity = 0;
+    m_GPU.hiz_pipeline_ready = false;
+    m_GPU.hiz_base_width = m_GPU.hiz_base_height = 0;
+    m_GPU.hiz_num_mips = 0;
+}
+
 void NaniteRenderer::DrawClustersIndirect()
 {
     if (m_Rhi == nullptr || m_GPU.dispatch_cluster_count == 0)
@@ -1845,7 +2439,10 @@ bool NaniteRenderer::EnsureRasterTarget()
                        height,
                        kDepthFormat,
                        RHI_IMAGE_TILING_OPTIMAL,
-                       RHI_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+                       // SAMPLED：HiZ compute 要采样这张深度图生成金字塔 mip0。
+                       // TRANSFER_SRC：A/B 冒烟测试要把它拷回 host 读回做逐 texel 对比。
+                       RHI_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | RHI_IMAGE_USAGE_SAMPLED_BIT |
+                           RHI_IMAGE_USAGE_TRANSFER_SRC_BIT,
                        RHI_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
                        m_GPU.target_depth,
                        m_GPU.target_depth_memory,
