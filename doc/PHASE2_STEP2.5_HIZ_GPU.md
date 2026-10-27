@@ -160,3 +160,81 @@ culling/draw，风险最低，且把"compute 读深度附件"这个最不确定�
 
 进**切法二**：把 CPU 侧 `TestOccluded` 保守判据逐行镜像进 `nanite_cluster_cull.comp`，A/B
 验证「被遮挡簇消失 / 可见簇完整 / 无破洞（GBuffer 覆盖率不降）」。③无破洞是硬门槛。
+
+---
+
+## 7. 切法二落地记录（commit f67a6781，A/B 16/16 全绿）
+
+**结论等级：A（已验证，GPU 镜像 CPU 判据，A/B 16/16 全绿，零 validation error）。**
+
+把 CPU 侧被遮挡簇判据逐行镜像进 `nanite_cluster_cull.comp`，剔除发生在帧首、读
+**上一帧**金字塔（时间性 HiZ）。新增 headless A/B 测试 `NaniteHiZOcclusionABSmokeTest`：
+场景 A（无遮挡）+ 场景 B（墙遮后平面），各渲 4 帧（让时间性金字塔就位）。
+
+### 深度约定（关键，与 NaniteHiZ.h 头注释相反）
+
+`NaniteHiZ.h` 的 CPU 核心注释假设 **reversed-Z**（1.0=最近），但**真实深度缓冲是
+standard-Z**（近=0、远=1）。证据链：
+
+- `Math::MakePerspectiveMatrix` 给 `ret[2][2]=zfar/(znear-zfar)`、`ret[3][2]=-1`
+  ⇒ ndc.z 近平面→0、远平面→1。
+- 离屏深度 target 清屏值 **1.0**（`NaniteRenderer.cpp:2189`）。
+- `depthCompareOp = RHI_COMPARE_OP_LESS`（`:1284`）。
+
+所以 GPU 侧判据按 standard-Z 走：金字塔 max 归约存区域里**最远**的深度；物体被遮挡
+⟺ 物体**最近**点（8 角点里最小的 ndc.z）比区域最远 texel 还远：
+
+```
+nearest_depth > regionMax + kOcclusionEps   ⇒  遮挡（可剔除）
+```
+
+保守底线：只要有一个 texel 比物体最近点更近或相等，就判可见、绝不剔除——**误剔=破洞，
+比不剔更糟**。`kOcclusionEps=1e-3` 让贴深度边界的簇（CPU/GPU 各自算 ndc.z 最后一位 ulp
+级差异）两边统一走可见分支。
+
+### 接线
+
+- shader：`hiz` vec4 常量（`x=enable, y=baseW, z=baseH, w=numMips`）+ binding 7 只读
+  storage buffer `_nanite_hiz_data`（平铺，布局与 CPU `HiZPyramid.data` 逐字节一致）。
+  `numMips==0`（帧 0 无金字塔）时 `SampleMaxDepth` 早退 → 不遮挡（保守）。
+- `NaniteGPUBinding::kHiZData=7`（`kBindingCount=8`）；`NaniteCullConstants` 加 `hiz`
+  vec4（sizeof 208→224，static_assert 同步）；`NaniteConfig::enable_hiz_occlusion` 开关。
+- `EnsureGPUResources` 分配 **1-float 占位** `hiz_data`：cull shader 静态引用 binding 7，
+  Vulkan 要求每次 dispatch 它都有效（VUID-08114），帧 0 金字塔还没建时占位兜底。
+- `BuildCullConstants` 从 `m_HiZPyramid` 填 `constants.hiz`；描述符写 binding 7。
+
+### 三个踩坑
+
+1. **binding 7 帧首必须有效**：cull shader 静态引用 `_nanite_hiz_data`，帧 0 金字塔未建时
+   若写 null 描述符，Vulkan 报「Binding 7 ... never been updated」（VUID-08114）。占位
+   1-float buffer 兜底。
+
+2. **`CmdCopyImageToBuffer` 的 `bufferRowLength` 单位**：切法一已踩过——Vulkan 把它当
+   **texel** 数（Metal 当字节），传 `width*4` 会 4× 溢出。必须传 0（紧凑打包）。
+
+3. **注释里误含 layout 绑定槽字面量**（本次新踩）：`NaniteGPUCullingSmokeTest` 的
+   `ExtractBindings` 按出现顺序抽 `binding = N`。我在 binding 7 的注释里写了「别写
+   "binding = 数字"免得被误抽」——这句注释本身含 `binding = ` 后跟非数字，抽取器读到
+   `digits==0` 直接 **break**，把真正的 binding 7 漏掉，返回 `{0,1,2,3,4,5}`（6 个），
+   镜像检查 size 不匹配红。改写注释去掉该字面量后全绿。
+
+> **教训**：`ExtractBindings` 遇到 `binding = ` 后非数字会 `break`（不是 `continue`），
+> 所以 shader 里任何注释/字符串只要含 `binding = ` 且后面不是紧跟数字，就会截断后续所有
+> 真实槽位的抽取。写 shader 注释时避免出现这个前缀。
+
+### A/B 结果
+
+- **场景 A（无遮挡）**：HiZ on/off 可见数一致（8=8）、逐簇 draw 决策完全一致、GBuffer
+  覆盖不变（4096=4096）、GPU 可见集与 CPU golden 逐簇一致。
+- **场景 B（墙遮后平面）**：HiZ off 画 **10** 簇，on 画 **2** 簇（GPU 正确遮挡 8 个后平面
+  簇）；覆盖均 **4096**（无破洞）；CPU 判 10 遮挡、GPU 判 8（±20% 容差内一致，差异来自
+  墙自身簇的自遮挡边界，保守容差统一走可见分支）；GPU 金字塔与 CPU 逐 texel 一致
+  （`mism=0`，mip0 min=max=0.9849）。
+
+### 现状与下一步
+
+- `hiz_data` 仍是 host-visible storage buffer，`SampleMaxDepth` 是**循环 texel 采样**而非
+  硬件 mip 采样。切法三再升级成 device-local + 真 mip 纹理 + sampler（`textureLod` 一次取
+  区域 max），把逐 texel 循环换成单次硬件采样。
+- 剔除那套 descriptor set 现在 8 个 binding（含 binding 7）。HiZ 生成那套（3 binding）仍独立。
+- 金字塔建在 `DrawClustersIndirect()` 之后（深度是那一遍光栅写出来的），下一帧帧首被 cull 读。
