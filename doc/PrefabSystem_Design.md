@@ -130,21 +130,30 @@ public:
 
 > 一个 Prefab Asset 可以「**继承**」另一个 Prefab Asset：base 中的更改自动传播；自身的 modifications 在 base 之上叠加。
 
-实现 = `PrefabAsset` 多两个字段：
+实现 = `PrefabAsset` 多两个字段（**都在 Runtime 侧**，2026-10-27 落地）：
 
 ```cpp
-PPtr<PrefabAsset>          variantBase;       // 非空表示这是 Variant
-std::vector<PropertyModification> variantOverrides; // 相对 base 的 override
+ZPROPERTY(Name="m_variant_base")
+PPtr<PrefabAsset> m_VariantBase;               // 非空表示这是 Variant
+ZPROPERTY(Name="m_variant_overrides")
+std::vector<PropertyModification> m_VariantOverrides; // 相对 base 链、本层改了什么
 ```
 
-加载/Flatten 顺序：
+⚠️ **Variant 不拥有对象树**：它没有 root GameObject，只有"base 是谁 + 本层改了什么"。
 
-1. 递归 flatten `variantBase`（直到根 base）
-2. 把 `variantOverrides` 套到 flattened tree 上
-3. 把自己内部增删的 GameObject/Component（addedGameObjects/removedGameObjects）应用上去
-4. 得到该 PrefabAsset 的 "effective tree"
+实例化（Runtime `PrefabUtility::Instantiate`，Editor `PrefabUtilityEditor::InstantiateVariant` 共用同一条通路）：
 
-PrefabInstance 引用 Variant 时，再叠加 `PrefabInstance.modifications` —— 三层叠加顺序：**base → variant overrides → instance overrides**（与 Unity 一致）。
+1. `ResolveVariantChain` 走链到**最深非 variant 的 base**（>64 环或链断裂直接失败，不静默退化成"渲染 base"）
+2. 克隆**那一棵**树（整条链共用这一份克隆）
+3. 用 `CloneResult::ptr_map`（Runtime）/ `corresponding_source`（Editor）把 override 的 `target` 从 base 图翻译到克隆体
+4. **top-down**（base → … → variant）逐层 `ApplyVariantOverrides`，同一字段上近的覆盖远的
+5. `PostLoadResource`
+
+因为链上每一环的 `target` 都指向**同一个最深 base** 图里的对象，任意长度的链都能套在同一份克隆树上。
+
+PrefabInstance 引用 Variant 时，再叠加 `PrefabInstance.m_modifications` —— 三层叠加顺序：**base → variant overrides → instance overrides**（与 Unity 一致）。
+
+创建入口（2026-10-27）：Content Browser 右键 `.prefab` → *Create Prefab Variant*，在 base 旁边生成 `<stem> Variant.prefab`（重名自动 `_1`/`_2`），零 override。Variant 的 Variant 也允许。
 
 ---
 
@@ -424,6 +433,7 @@ public:
 - [x] **Phase 3b**：Variant 实例化（`InstantiateVariant`）—— 走到链尾 base 后实例化，并把 `m_source_prefab` 指回 variant
 - [x] **Phase 3c**：`UnpackPrefabInstance` 清理 bookkeeping 并保留 cloned 子树
 - [x] **Phase 3d**：`MergeFromSource` 三层叠加（base → variant overrides → instance overrides，Phase 3 阶段 variant overrides 暂以 instance.m_modifications 通道叠加）
+- [x] **Variant 真·继承（2026-10-27）**：`PropertyModification` 下沉 Runtime + `PrefabAsset::m_variant_overrides`（schema 1→2）；`PrefabUtility::Instantiate` 沿 base 链展开并 top-down 应用 override，近的赢；`LoadPrefabAsset` 对"无 root 但 IsVariant()"放行；`CreateVariantAsset`/`SaveVariantAsset` 落盘；Editor 的 `InstantiateVariant` 改为复用同一条 Runtime 通路；Content Browser 右键 `.prefab` → *Create Prefab Variant*。测试 `ScriptComponentPrefabTest` I 组（单层）/ J 组（base←mid←leaf 三层链）/ K 组（落盘再读回，两轨各 11 项），checks 100 → 158 全绿。
 - [x] **Phase 4**：全量构建零 error/LNK/fatal（最后一次构建 `_phase3bcd_build.log` ExitCode=0）
 - [ ] **后续**：示例 `.zasset` 文件 / 端到端单测 / 编辑器 UI 集成
 
@@ -435,15 +445,16 @@ public:
 
 | 模块 | 路径 | 关键类型 / 函数 |
 | --- | --- | --- |
-| Runtime Asset | `engine/Source/Runtime/Resource/Prefab/PrefabAsset.{h,cpp}` | `PrefabAsset`（含 `m_variant_base` / `kCurrentSchemaVersion`；**无独立 GUID 字段，跨文件引用走 PPtr**） |
-| Runtime Utility | `engine/Source/Runtime/Resource/Prefab/PrefabUtility.{h,cpp}` | `PrefabUtility::Instantiate` / `InstantiateFromPath` / `SetInstantiatedRootParent`；内嵌 `PrefabPostLoadDriver` 含 `ExpandNestedPrefabsOn` |
+| Runtime Asset | `engine/Source/Runtime/Resource/Prefab/PrefabAsset.{h,cpp}` | `PrefabAsset`（含 `m_variant_base` / **`m_variant_overrides`** / `kCurrentSchemaVersion`（=2）；**无独立 GUID 字段，跨文件引用走 PPtr**） |
+| Runtime Utility | `engine/Source/Runtime/Resource/Prefab/PrefabUtility.{h,cpp}` | `PrefabUtility::Instantiate` / `InstantiateFromPath` / `LoadPrefabAsset` / `SetInstantiatedRootParent`；Variant：`ResolveVariantChain` / `ApplyVariantOverrides` / `CreateVariantAsset` / `SaveVariantAsset`；内嵌 `PrefabPostLoadDriver` 含 `ExpandNestedPrefabsOn` |
+| Runtime 模型 | `engine/Source/Runtime/Resource/Prefab/PropertyModification.{h,cpp}` | `PropertyModification`（`value` 文本占位 + `value_bytes` **std::vector\<uint8_t\>** 装载真二进制 + `object_reference`）—— 2026-10-27 从 `Editor/Prefab/` 下沉，命名空间 `prefab_editor` → `prefab` |
+| Runtime 路径 | `engine/Source/Runtime/Resource/Prefab/PropertyPathResolver.{h,cpp}` | `TokenizePropertyPath`（点分路径 + `[n]`）—— 同上，2026-10-27 下沉 |
+| Runtime 路径 | `engine/Source/Runtime/Resource/Prefab/PropertyValueLocator.{h,cpp}` | `LocatePropertyInStream` / `OverwriteScalarBytes` —— 在 StreamedBinary 字节流上定位字段；同上，2026-10-27 下沉 |
 | Runtime Component | `engine/source/runtime/function/framework/component/PrefabRefComponent.{h,cpp}` | 嵌套 Prefab 的安装点组件 |
 | Editor 模型 | `engine/Source/Editor/Prefab/PrefabInstance.{h,cpp}` | `PrefabInstance` + `CorrespondingSourceEntry` + `m_added_components` / `m_removed_components` |
-| Editor 模型 | `engine/Source/Editor/Prefab/PropertyModification.{h,cpp}` | `PropertyModification`（`value` 文本占位 + `value_bytes` eastl::string 装载真二进制 + `object_reference`） |
-| Editor 路径 | `engine/Source/Editor/Prefab/PropertyPathResolver.{h,cpp}` | `TokenizePropertyPath`（点分路径 + `[n]`） |
-| Editor 路径 | `engine/Source/Editor/Prefab/PropertyValueLocator.{h,cpp}` | `LocatePropertyInStream` / `OverwriteScalarBytes` —— 在 StreamedBinary 字节流上定位字段 |
 | Editor 克隆 | `engine/Source/Editor/Prefab/EditorPrefabCloner.{h,cpp}` | `CloneSubtree` 结构化克隆（围绕 PPtr/ImmediatePtr Transfer 缺陷做指针重连） |
-| Editor 主入口 | `engine/Source/Editor/Prefab/PrefabUtilityEditor.{h,cpp}` | `InstantiateAsPrefab` / `InstantiateVariant` / `RecordPropertyOverride` / `ApplyAll` / `Revert` / `RevertSingleOverride` / `AddComponentOverride` / `RemoveAddedComponent` / `SuppressSourceComponent` / `UnsuppressSourceComponent` / `UnpackPrefabInstance` / `MergeFromSource` |
+| Editor 主入口 | `engine/Source/Editor/Prefab/PrefabUtilityEditor.{h,cpp}` | `InstantiateAsPrefab` / `InstantiateVariant` / **`CreateVariant`** / `RecordPropertyOverride` / `ApplyAll` / `Revert` / `RevertSingleOverride` / `AddComponentOverride` / `RemoveAddedComponent` / `SuppressSourceComponent` / `UnsuppressSourceComponent` / `UnpackPrefabInstance` / `MergeFromSource` |
+| Content Browser | `engine/Source/Editor/EditorUI/ContentBrowser/ContentBrowserAssetActions.{h,cpp}` | `CreateNewAsset`（Prefab / Material / …）+ **`CreatePrefabVariant`**（右键 `.prefab` → *Create Prefab Variant*） |
 
 ### 9.2 实施过程发现的 ZEngine 设施差距
 
@@ -451,14 +462,18 @@ public:
 
 1. **`PPtr<T>::Transfer` 是空实现**（`PPtr.h:97-99`）—— 普通 round-trip 序列化无法在内存里 deep-clone 含 PPtr 的对象。**绕过方案**：`EditorPrefabCloner` 自带的结构化克隆 + `ptr_map` 指针重写。
 2. **`ImmediatePtr<T>::Transfer` 只写 `LocalSerializedObjectIdentifier`，不还原运行时指针** —— GameObject 的 `m_components` 字段 round-trip 后变全 null。**绕过方案**：`RebuildCloneComponents` 用 `ptr_map` 重新挂回。
-3. **`SerializeTraits` 只为 int32/uint32/int64/uint64/char/float/bool 特化 `std::vector<T>`，没有 `uint8_t`** —— `PropertyModification` 的字节字段被迫改用 `eastl::string`，并提供 `BytesToStorageString`/`StorageStringToBytes` 桥接。
+3. ~~**`SerializeTraits` 没有 `uint8_t` 特化**~~ —— **前提本身是错的（2026-10-27 更正）**：`SerializeTraits<uint8_t>` 一直存在（`SerializeTraits.h:57`，当初就是为 `Texture2D::m_Pixels` 加的），配 `SerializeTraits<std::vector<T>>` 泛化特化可直接用。原先把 `PropertyModification::value_bytes` 写成 `eastl::string` 当字节袋，代价是 **YAML 轨静默损坏**：YAML 把 string 写成标量，遇到以 `0x00` 开头的载荷就截断成空串，而这几乎涵盖所有载荷（小端 `double 42.0` = `00 00 00 00 00 00 45 40`）。表现是 `.zasset` 正常、`.prefab` 的 override 读回来变成 0 字节，日志里只有一句 `value size 0 != field size 8`。已改为 `std::vector<uint8_t>`，`BytesToStorageString`/`StorageStringToBytes` 那层桥接随之删除，两轨行为一致。
 4. **`MemoryCacheReader::m_Memory` 原本是 `std::vector<uint8_t>` 值** —— 与 `MemoryCacheWriter` 已是引用语义不一致。改为引用，并新增 `TransferUtility::ReadObjectFromVector`、`CloneObjectViaSerialization`。
 5. **`Component::m_parent_object` 无 getter** —— Suppress/Unsuppress 链需要从 Component 反查 host GO，已加 `Component::GetParentObject()`。
 6. **`GameObject::getComponents()` 按值返回** —— 编辑器需要原地增删，已加 `EditorGetComponentsRef()` / `EditorRemoveComponent()`。
 
 ### 9.3 设计决策与简化
 
-* **Variant 的 overrides 暂不烘进 `PrefabAsset`**。当前设计把 Variant 的 modification 当作运行期的 `PrefabInstance.m_modifications` 走 `MergeFromSource` 叠加；Variant `m_variant_base` 字段只用于 `InstantiateVariant` 时的 base 解析。后续如果需要"无 PrefabInstance 单独打开 Variant 资源"也能保持 override，再把 `PropertyModification` 搬到 Runtime 模块并在 PrefabAsset 里加 `m_variant_overrides` 字段。
+* ~~**Variant 的 overrides 暂不烘进 `PrefabAsset`**~~ —— **已推翻并落地（2026-10-27）**。原方案把 Variant 的 modification 当作运行期的 `PrefabInstance.m_modifications` 走 `MergeFromSource` 叠加，但 `PrefabInstance` 是 `kTypeIsEditorOnly`，所以真机 `GameObject.Instantiate(variantPath)` 只会拿到 base 的裸拷贝 —— 编辑器里"Variant"看起来有用，打包后完全没有。现在：
+  * `PropertyModification` 已从 `Editor/Prefab/` 下沉到 `Runtime/Resource/Prefab/`（命名空间 `prefab_editor` → `prefab`）；
+  * `PrefabAsset` 新增 `m_variant_overrides`（`kCurrentSchemaVersion` 1 → 2，追加在末尾，老文件照旧可读）；
+  * `PrefabUtility::Instantiate` / `PrefabUtilityEditor::InstantiateVariant` 都走同一条 Runtime 通路 `PrefabUtility::ApplyVariantOverrides`，编辑器与真机由构造保证一致。
+* **Variant 不拥有对象树**。一个 Variant 文件里只有 PrefabAsset 头、没有 root —— `LoadPrefabAsset` 因此对"无 root 但 `IsVariant()`"放行，否则 Variant 根本存不成资产。实例化 = 走链到最深非 variant base → 克隆那一棵树 → 用 `ptr_map`（Runtime）/ `corresponding_source`（Editor）把 override 的 target 翻译成克隆对象 → 逐层 top-down 应用。**链上每一环的 target 都指向同一个最深 base 图里的对象**，所以任意长度链都能套在同一份克隆树上，近的覆盖远的。
 * **嵌套 Prefab 通过 `PrefabRefComponent` 而非 PrefabInstance-as-object**。Unity 在 SerializedFile 内嵌 sub-PrefabInstance；ZEngine 改为更轻量的"Component 标记 + 运行时展开"，是否有展开代价由 `m_expanded` 标记控制（保存场景时把展开状态烘进去，避免双展开）。
 * **`PropertyModification.value`（文本）保留但不走 Apply 通路**。所有 Apply/Revert/Merge 都用 `value_bytes` + `object_reference`。`value` 字段留作未来 YAML 调试或 .meta 文件输出用，避免 Phase 阶段就引入 string↔bytes 编解码层。
 
@@ -475,7 +490,16 @@ public:
    ZSlate Inspector（`ZSlateInspectorWindow.cpp`）：选中 Prefab 实例里的物体时顶部出现 "Prefab <源文件>  N overrides" + Apply All / Revert All，下面每条覆盖一行带 Revert / Apply；被覆盖字段的标签是蓝色；Transform 的位置 / 旋转 / 缩放和通用字段的提交都走同步。**界面只做了 clang-cl 类型检查，没上机看过**。ZSlate 没有右键菜单设施，所以没做成右键菜单。Apply 改的是源文件，和 Unity 一样不进撤销。
    
    内容浏览器拖 Prefab 进场景**已接（2026-10-26）**：`EditorScenePlacement` 改走 `PrefabSceneBinding::InstantiateIntoLevel`（= `InstantiateAsPrefab` + `PlaceInLevel`），一个撤销步骤；以前那条路径（`InstantiateFromPath` + 只 `CreateObject` 根）只把根放进关卡，子 GameObject 挂在根的 Transform 下却不是关卡对象，也不留 Prefab 关联。
-4. ~~**Cook 阶段 flatten**~~ —— **已落地（2026-10-26）**。场景里的 GameObject 树本来就是实例化 + 覆盖后的实体（`PrefabSceneBinding` 保存的就是它），所以 flatten = 去掉簿记对象，不需要重新展开。`Editor/Build/SceneCook.{h,cpp}`：`CookSceneFile` 去掉所有 `kTypeIsEditorOnly` 类型的对象，并裁掉只被它们引用的外部引用（源 `.prefab`），其余对象里的外部引用索引随之重编号；指向被删对象的引用置空并计数。纯文本层（`ZYaml::StripObjectsFromGraph`），不 Produce 对象，编辑器里开着同一个场景时打包也不受影响。`AssetBundleBuilder` 对 `.scene` 在源文件比烘焙副本新时重烘焙到 `Intermediate/Cooked/<平台>/` 并打包烘焙副本。只处理 YAML 场景；二进制关卡原样拷贝并告警。
+4. ~~**Prefab Variant**~~ —— **已落地（2026-10-27）**，采用模型 A（真·继承）。此前它是**死代码**：`SetVariantBase` 零调用者，`IsVariant()` 恒 false，`InstantiateVariant` 永远退化成 `InstantiateAsPrefab`，1365 行端到端测试零覆盖。落地内容：
+   - 存储：`PropertyModification` 等三份从 `Editor/Prefab/` 下沉到 `Runtime/Resource/Prefab/`；`PrefabAsset` 加 `m_variant_overrides`（schema 1→2）。**没有选 `PrefabInstance.m_modifications`** —— 它是 `kTypeIsEditorOnly`，真机拿不到，等于"编辑器里看着有用、打包后没有"；
+   - 实例化：`PrefabUtility::Instantiate` 走链到最深非 variant base → 克隆它的树 → `ptr_map` 翻译 target → top-down 应用（近的赢）。Editor 的 `InstantiateVariant` 改用同一条 Runtime 通路，两边由构造保证一致；
+   - 落盘：Variant 文件只有一个 PrefabAsset 头、没有 root，`LoadPrefabAsset` 因此对"无 root 但 `IsVariant()`"放行；`CreateVariantAsset` / `SaveVariantAsset` 写入；
+   - 入口：Content Browser 右键 `.prefab` → *Create Prefab Variant*；
+   - 顺带修掉一个真 bug：`value_bytes` 原是 `eastl::string` 当字节袋，YAML 写标量遇到 `0x00` 开头就截断 —— 小端 `double 42.0` 正是 `00 00 00 00 00 00 45 40`，所以 `.prefab` 轨的 override 读回来是空（`.zasset` 轨正常，只有 authoring 轨坏）。改为 `std::vector<uint8_t>`。
+   - 测试：`ScriptComponentPrefabTest` I 组（单层 variant + 直接实例化 base 的对照）/ J 组（`base←mid←leaf` 三层链，x 取近的、y/z 保留远的）/ K 组（落盘再读回，`.prefab` 与 `.zasset` 两轨各 11 项），checks 100 → 158 全绿。**编辑器部分本机只能 `-fsyntax-only`**（`bin/` 里没有 editor 库，链不了），`Editor/Prefab` 四份 TU + Content Browser 两份 TU 语法通过。
+   - 尚未做：Variant 在 Inspector 里改字段时**记 override 到 `m_variant_overrides`** 的那条通路（现在 `RecordPropertyOverride` 只写 `PrefabInstance.m_modifications`），以及 Variant 的 Apply/Revert；`MergeFromSource` 的 variant 层也仍是零覆盖。
+
+5. ~~**Cook 阶段 flatten**~~ —— **已落地（2026-10-26）**。场景里的 GameObject 树本来就是实例化 + 覆盖后的实体（`PrefabSceneBinding` 保存的就是它），所以 flatten = 去掉簿记对象，不需要重新展开。`Editor/Build/SceneCook.{h,cpp}`：`CookSceneFile` 去掉所有 `kTypeIsEditorOnly` 类型的对象，并裁掉只被它们引用的外部引用（源 `.prefab`），其余对象里的外部引用索引随之重编号；指向被删对象的引用置空并计数。纯文本层（`ZYaml::StripObjectsFromGraph`），不 Produce 对象，编辑器里开着同一个场景时打包也不受影响。`AssetBundleBuilder` 对 `.scene` 在源文件比烘焙副本新时重烘焙到 `Intermediate/Cooked/<平台>/` 并打包烘焙副本。只处理 YAML 场景；二进制关卡原样拷贝并告警。
    - 顺带修：`REGISTER_CLASS_TRAITS(kTypeIsEditorOnly)` 以前是**死元数据**——`IMPLEMENT_REGISTER_CLASS` 只把 `kTypeIsAbstract` 传进运行时 `Type`。现在 `Type::isEditorOnly` / `IsEditorOnly()`（末位成员带默认值，既有的位置初始化列表不受影响）。
    - ~~打包器的依赖遍历仍按源场景走~~ —— **已改（2026-10-26）**：依赖遍历抽成 `Editor/Build/BuildDependencyWalk`，`.scene` 先烘焙、再从烘焙副本读依赖（`AssetRegistry::GetDependenciesOfFile`），只被 PrefabInstance 引用的 `.prefab` 不再进包。做这一步时发现 **YAML 场景在 AssetRegistry 里根本没有依赖**：依赖索引只认二进制 SerializedFile 头，YAML 文件读失败就当成零依赖——也就是打包一个 `.scene` 时它引用的 Prefab / 材质 / 网格**都不会**跟着进包。现在 YAML 资产从 externals 表取依赖（`ZYaml::ReadExternalRefs`）。另外两处：扫描时边扫边建依赖，场景排在它引用的资产前面时（目录序）那条边被永久丢掉，改为整轮扫完再建；`AssetRegistry::ScanAssets` 原来是空函数，现在是同步扫描。见 P16。
 
@@ -543,12 +567,12 @@ public:
 | --- | --- | --- |
 | `Prefab` (旧) | Runtime/BaseClasses/PrefabBackwardsCompatibility.h | 不实现，纯历史包袱 |
 | `PrefabInstance` | Editor/Src/Prefabs/PrefabInstance.h | `Editor/Prefab/PrefabInstance` |
-| `PropertyModification` | Editor/Src/Prefabs/PropertyModification.h | `Editor/Prefab/PropertyModification` |
+| `PropertyModification` | Editor/Src/Prefabs/PropertyModification.h | `Runtime/Resource/Prefab/PropertyModification`（2026-10-27 从 Editor 下沉，Variant 要进真机） |
 | `PrefabUtility::InstantiatePrefab` | Editor/Src/Prefabs/PrefabUtility.cpp | `Runtime/Prefab/PrefabUtility::Instantiate` |
 | `PrefabUtility::SaveAsPrefabAsset` | Editor/Src/Prefabs/PrefabUtility.cpp | `Editor/Prefab/PrefabSave.cpp` |
 | `CorrespondingObjectFromSource` | EditorExtensionImpl::m_CorrespondingSourceObject | `PropertyModification.correspondingSource` + `PrefabInstantiateContext` |
 | `m_PrefabAsset` | EditorExtensionImpl 字段 | `PrefabInstance.sourcePrefab` |
-| Variant base 链 | PrefabAsset 自身字段 | `PrefabAsset.variantBase` |
+| Variant base 链 | PrefabAsset 自身字段 | `PrefabAsset.m_variant_base` + `m_variant_overrides`（Variant 不拥有对象树） |
 
 > 本文档以 Unity 2023.1 在 `e:/Engine/unity2023.1` 的源码为参考；具体到 ZEngine 上的语义有调整（去除历史 API、合并 Editor-only/Runtime 边界、`.zasset` 二进制取代 YAML）。
 
