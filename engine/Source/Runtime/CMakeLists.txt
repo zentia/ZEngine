@@ -1004,6 +1004,13 @@ list(REMOVE_ITEM SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Scripting/ScriptVM/Test/ScriptComponentSmokeTest.cpp")
 list(REMOVE_ITEM REGULAR_SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Scripting/ScriptVM/Test/ScriptComponentSmokeTest.cpp")
+# 同上：prefab / zasset 反序列化冒烟测试的 main carve-out（把组件存成资产
+# 文件再读回来，验 guid 与 Inspector override 的往返）。同一开关、同一
+# quickjs 前提。
+list(REMOVE_ITEM SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Scripting/ScriptVM/Test/ScriptComponentPrefabTest.cpp")
+list(REMOVE_ITEM REGULAR_SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Scripting/ScriptVM/Test/ScriptComponentPrefabTest.cpp")
 
 # Nanite 页池簿记冒烟测试的 main carve-out（同理由）。它自带 main()，由
 # ZENGINE_BUILD_NANITE_PAGEPOOL_SMOKE_TEST 单独控制（见
