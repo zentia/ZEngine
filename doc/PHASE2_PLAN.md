@@ -551,8 +551,9 @@ commit `15f40a25`。把上节留的两处 GPU TODO 兑现：**页像素上传进
    对象指针解引用，`CreateImageView` 当场访问违例。改为包一层 `new VulkanImage()` + `setResource`，
    `Shutdown` 对称 `delete`。页表纹理同样处理。
    **这条对全工程适用**：凡是绕过 RHI 自己 `vmaCreateImage`，都必须包 `VulkanImage`。
-2. **`GetStats` 恒为默认零值**：`m_Stats` 从来没有任何写入者（LoadPage/UnloadPage 都不碰它），
-   页全加载了却报 `loaded=0、pool_total=0`。改为按需从资源与页池当前状态重算。
+2. **`GetStats` 读到零值**：`GetStats` 返回的是只在 `Update()` 里刷新的快照，绕过 `Update` 的路径
+   （如直接 `ForceLoadPages`）页全加载了却报 `loaded=0、pool_total=0`。改为按需从资源与页池当前状态重算。
+   （**勘误**：初版写"`m_Stats` 从来没有任何写入者"是错的——`Update()` 写它，2026-10-27 复核更正。）
 
 **验证**：新增 `VirtualTextureGpuUploadABSmokeTest`（Vulkan headless，选项
 `ZENGINE_BUILD_VT_GPU_UPLOAD_AB_SMOKE_TEST`）。256×256 源纹理（4×4 页）→ 同步 `ForceLoadPages`
@@ -561,12 +562,44 @@ commit `15f40a25`。把上节留的两处 GPU TODO 兑现：**页像素上传进
 页表坏 texel **0**。判据覆盖：①每页落在自己槽位的像素块上（offset 算错当场红）；②逐页增量上传
 不冲掉先前驻留的页（discard 闸的回归保护）；③页表 texel == CPU `PageTableEntry`。
 
-Nanite + VT 全量回归 **10 套全绿**。
+Nanite + VT 全量回归 **10 套全绿**。（**勘误**：这 10 套是原生 exe，**没覆盖 VT 的 WASM 冒烟测试**——
+本轮引入的 `VulkanRHIResource.h` 让 `verify_vt_wasm.sh` 编译失败，下一节修复。）
 
 **剩**：① mip 链（目前只传 mip 0 的页）；② 走 `RegisterVirtualTexture(path,...)` 注册的资源没有
 源像素，其页只做簿记、槽位留空（如实留白，不伪造）；③ 2.4 的 RG 资源注册（VT 图资源进 RenderGraph）；
 ④ shader 侧真正按页表间接寻址采样（页表已可采样，但没有消费者 shader）——**这是 VT 从"能传"到
 "能画"的最后一公里**。
+
+---
+
+### 落地记录 · 2.6 VT 页表纹理生命周期（2026-10-27，Vulkan headless，36/36 全绿）
+
+commit `30ddd24b`。上节只做了页表纹理的**加载**方向，另外两半生命周期此前根本没实现，补齐这两个接口：
+
+1. **失效同步**：`UnloadPage` 清 CPU 页表项却从不重传 GPU 页表 → GPU 继续说"驻留在槽位 N"，而 N 已分给
+   别的页，shader **静默采到别人的像素**。现在 `SetPageTableEntry` 只标脏，`FlushPageTableTexture` 脏才传，
+   `VirtualTextureManager::FlushPageTables` 遍历**所有** VT（驱逐 B 会弄脏 A 的表），由
+   `ForceLoadPages`/`UnloadPages`/`Update` 批末各调一次 ⇒ 每个脏表每批恰好一次上传（原先每页一次，且在后台
+   加载线程提交）。未驻留哨兵改 `-1.0f`（`float(UINT32_MAX)` 舍入为 2^32，转回 uint32 是 UB）。**懒创建**：
+   从未驻留过的 VT 不建页表，`GetPageTableTexture()==null` 即"无驻留"。
+2. **释放**：`Resource::Shutdown` 只置空指针、注释称"由 manager 销毁"，manager 从未销毁 ⇒ 每个 VT 泄漏一张
+   页表纹理。新增幂等的 `ReleasePageTableTexture`；页池 image view 同样补销毁。
+
+**同族真 bug**：三处自死锁（`Unregister` 持 VT 锁调 `UnloadPages→GetVirtualTexture`；池满时 `AllocateSlot`
+持槽锁调 `FindLRUSlot`）——WASM 一直绿是因为无 pthreads 时 mutex 是空操作；**池满偷槽位别名**（`AllocateSlot`
+把 LRU 槽改派新页而不通知原主人）——改为满则失败，由 `LoadPage` 经 `UnloadPage` 驱逐后重试；LRU 时钟改单调计数
+（毫秒时钟下同批页时间戳全等）；**WASM 回归**——新增 `ZENGINE_VT_GPU` 统一守卫，Apple/Emscripten 编译掉全部
+VT Vulkan 路径，WASM 恢复 15/15。
+
+**验证** `VirtualTexturePageTableLifecycleABSmokeTest`（选项 `ZENGINE_BUILD_VT_PAGETABLE_LIFECYCLE_AB_SMOKE_TEST`）：
+4 槽位池、VT-A 2×2 + VT-B 2×1（6 页 > 4 槽）。A/B = **模拟 shader 间接寻址**：读回 GPU 页表 → 槽位 → 读回
+GPU 页池，必须与直接取源纹理逐字节一致。五阶段（加载 / 卸载 / 池满跨 VT 驱逐 / 注销 B / 注销 A+Shutdown），
+另钉批量（上传计数精确）与无泄漏（VMA 分配数逐阶段精确、最终回到基线）；会死锁的调用跑在看门狗里。
+**36/36，零 validation error**。红绿：注入"卸载不标脏"突变 → 12/36 红，还原全绿。回归：原生 11 套 + WASM 15/15。
+
+**剩**：mip 链；path 注册无源像素；RG 资源注册；**shader 侧消费页表**（最后一公里）；页像素上传仍在后台加载线程
+提交（真机异步加载前要收敛到渲染线程）；`ReleasePageTableTexture` 依赖"无在途 GPU 工作"（目前全是 single-time
+提交 + `vkQueueWaitIdle` 故成立，绑进帧描述符后需改帧围栏延迟销毁）。
 
 ---
 
