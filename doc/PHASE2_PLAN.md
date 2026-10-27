@@ -46,7 +46,7 @@
 | C1 | **RenderGraph 接管流水线** | 帧图编译器：自动屏障、瞬态 RT 别名、剔除 | **✅ 已默认开·真机验证 PASS**（165 编译+92 执行断言；RP2 图路径 2026-10-26 翻默认开 `c0d1bcfc`，同帧 A/B 逐位等价 + soak 无异常，见 §2 落地记录·2.6） | 阶段一 RHI 注册表 | ★★★ 高价值/低风险 |
 | C2 | **RenderGraph → RP1**（`render_pass_refactor`） | RP1 三子pass 拆成 3 独立 pass，纳入图管理 | **✅ 已默认开·真机验证 PASS**（2.3 三分已在代码：3 独立 render pass/subpass 恒 0；2.4 compiler 200/200 + executor 121/121 已验。`DrawRP1WithGraph` 2026-10-26 翻默认开 `871878e3`，同帧 A/B `rp1.backup_odd` 逐位 IDENTICAL + soak 无异常，见 §2 落地记录·2.6） | **必须在 C1 之后** | ★★ 高价值/中风险 |
 | C3 | **Nanite 收尾** | 流送 → 几何压缩 → HiZ 遮挡 → 页池 | **大部分实现**（真 GPU dispatch 已有；几何压缩✅ + streaming✅ + **页池簿记层✅ 已落地 2026-10-26**（opt-in，`streaming_pool_budget_bytes>0`；显存上传待真机），见 §2 落地记录·2.5 页池；**HiZ CPU 侧✅ 已落地 2026-10-26**，见 §2 落地记录·2.5 HiZ；**HiZ GPU 侧✅ 已落地 2026-10-27**：切法一 compute 生成金字塔 14/14、切法二 GPU 遮挡剔除 16/16，见 `doc/PHASE2_STEP2.5_HIZ_GPU.md` §6/§7；**页池 GPU 路径✅ 逐像素一致 13/13**。剩切法三（device-local+真 mip 纹理，可选打磨）与顶点去重（回归面>收益，主动推迟）） | C1/C2 给其 RG 管理的目标 | ★★★ 高价值/中风险 |
-| C4 | **Virtual Texture 接线** | 分页纹理虚拟化，从"孤儿"到可用 | **CPU 侧✅ + GPU 侧✅ 2026-10-27**（页上传进物理页池 + 页表纹理上传，headless A/B 18/18 全绿、逐字节比对 0 失配，见 §2 落地记录·2.6 VirtualTexture GPU 侧）。**仍零渲染消费者**：页表纹理已可采样但**没有 shader 用它做间接寻址** —— 这是 VT 从"能传"到"能画"的最后一公里 | C1/C2 的 RG 资源注册 | ★★ 高价值/中高风险 |
+| C4 | **Virtual Texture 接线** | 分页纹理虚拟化，从"孤儿"到可用 | **CPU 侧✅ + GPU 侧✅ 2026-10-27**（页上传进物理页池 + 页表纹理上传，headless A/B 18/18 全绿、逐字节比对 0 失配，见 §2 落地记录·2.6 VirtualTexture GPU 侧）。页表间接寻址 shader（`vt_common.h` + `vt_resolve.comp`）2026-10-27 已落地并 A/B 22/22（见 §2 落地记录·2.6 VT 页表间接寻址 shader）。**仍无真实材质/draw 消费者** —— 把 `vt_common.h` 接进一个真实 fragment shader 是 VT 从"shader 读得对"到"能画"的最后一步 | C1/C2 的 RG 资源注册 | ★★ 高价值/中高风险 |
 | C5 | ~~**Vulkan `MainCameraPass` 崩溃根因修复**~~ | 跨切面阻塞：解除 Vulkan 侧验证能力 | **✅ 已被 `7e5d2521` 修掉（2026-10-25 复核关闭）** | — | ★★★ 已关闭（见 §2 step 2.0） |
 | C6 | **Lumen 收尾（SSR → GPU 化）** | 动态 GI + 反射；取 SSR 一半 + 首个 Lumen shader | **✅ CPU 侧已完整**（GI/反射/接线/CVar/发布桥全落地 + 7 smoke test；2026-10-25 复核，见 §2 落地记录·2.7）。剩 SSR/HWRT/首个 shader 全 GPU 侧 | C2 的 GBuffer/depth 声明 | ★★ 中价值/高风险（CPU 侧无活，剩 GPU 放最后） |
 | C7 | **编辑器/内容管线填充**（低风险稳态轨） | 平台窗口化收尾 / Timeline 四片段 / Prefab §9.4 | 各为**部分实现·机械收尾**（**Timeline 四片段 2026-10-25 已落地**，见 `doc/timeline/TIMELINE_IMPLEMENTATION.md`“片段语义”；**Prefab §9.4 第 1 条落地、第 2 条对象图层已验**，见 `doc/PrefabSystem_Design.md` §9.4.1，顺带修 7 个真 bug；平台窗口化未动；**平台窗口化 2026-10-25 对代码核对**：Step 1-5 早已兑现（零 GLFW 引用），计划文档勾选已按代码更新；核对时修了 Win32 修饰键恒 0 / 拖放不派发 / Linux 原生 #error / Web 启动空指针等，见 `doc/platform_windowing_plan.md`；剩 Linux X11 窗口层与多显示器枚举） | — | ★★ 低风险填缝 |
@@ -600,6 +600,33 @@ GPU 页池，必须与直接取源纹理逐字节一致。五阶段（加载 / �
 **剩**：mip 链；path 注册无源像素；RG 资源注册；**shader 侧消费页表**（最后一公里）；页像素上传仍在后台加载线程
 提交（真机异步加载前要收敛到渲染线程）；`ReleasePageTableTexture` 依赖"无在途 GPU 工作"（目前全是 single-time
 提交 + `vkQueueWaitIdle` 故成立，绑进帧描述符后需改帧围栏延迟销毁）。
+
+---
+
+### 落地记录 · 2.6 VT 页表间接寻址 shader（2026-10-27，Vulkan headless，22/22 全绿）
+
+commit `dbeca4c7`。页表纹理此前"能传、能验、没人读"——前两个 VT 测试的 A 路是**测试里的 C++ 在模拟 shader**。
+现在第一个真正的 GLSL 消费者落地：
+
+- `engine/shader/include/vt_common.h`：**采样契约的唯一一份**（`VTResolveTexel`/`VTFetch`/`VTSampleUV`）。
+  虚拟 texel → 页表 `texelFetch`（`x<0` = 不驻留）→ 槽位 → `(slot%poolW, slot/poolW)*page_size + 页内偏移` → 页池
+  `texelFetch`。任何材质 shader `#include` 它即可读 VT。**只做点采样**：跨页边界的双线性会读到相邻*物理*槽位里毫不
+  相干的页（页池无 gutter），要双线性必须先给页加边界（未做）。
+- `vt_resolve.comp` + `VirtualTextureResolver`：每线程一个虚拟 texel，结果写 SSBO 读回。从未驻留的 VT 无页表纹理
+  （懒创建）→ CPU 兜底"全不驻留"；池图还是 UNDEFINED 时如实失败。
+- `VirtualTextureResolveABSmokeTest`：A 路 = GPU 上 shader，B 路 = 源纹理/fallback。100×90 非整页纹理（右/下边缘
+  残缺页）、池满跨 VT 驱逐后**被驱逐页在 shader 里读到 fallback 而不是占了它旧槽位的别的页的像素**（页表失效同步在
+  shader 层面的最终证据）、整数入口 == UV 入口、卸载/重载/槽位复用。**22/22，零 validation error**。
+- 红绿：在 `vt_common.h` 注入契约错误——槽位 x/y 互换 → 5 项红；丢页内偏移 → 5 项红；槽位 0 当不驻留 → 4 项红。
+
+**构建系统真 bug（突变测试揪出）**：`cmake/ShaderCompile.cmake` 的 SPIR-V 命令只 `DEPENDS` 了 `.comp` 本身，不含它
+`#include` 的头 ⇒ 改 `nanite_common.h`/`vt_common.h` 这类共享头**不会重编任何 SPIR-V**，二进制里的 shader 悄悄停在旧
+契约，C++ 侧却已按新契约走。我的第一轮突变测试因此全程假绿（"改了头、重建、测试照绿"是唯一的线索）。现把 include
+目录下全部文件列为依赖。**这对全工程所有 shader 生效**（Nanite 的也是）。
+
+**剩**：材质管线接入（让真实 draw 的 fragment shader `#include vt_common.h`——需要 2.4 的 RG 资源注册与描述符绑定）；
+双线性/各向异性（需页 gutter）；mip 链（现只传 mip 0）；path 注册无源像素。VT 至此从"能传"变成"shader 真能读到对的像素"，
+**距"能画"只差把 `vt_common.h` 接进一个真实材质**。
 
 ---
 
