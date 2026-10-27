@@ -6,6 +6,7 @@
 #include "Editor/EditorWindow/PreviewWindow/MeshDataPreview.h"
 #include "Editor/Menu/AssetsMenu.h"
 #include "Editor/Platform/Interface/EditorUtility.h"
+#include "Runtime/BaseClasses/GameObject.h"
 #include "Runtime/BaseClasses/ObjectManager.h"
 #include "Runtime/BaseClasses/TypeManager.h"
 #include "Runtime/Core/Base/SystemRegistry.h"
@@ -1100,9 +1101,14 @@ namespace ContentBrowserAssetActions
         {
             extension = ".scene";
         }
-        else if (asset_type == "Object")
+        // "Object" is the legacy label for what is now a prefab: the old
+        // `.object.json` format is gone, and the authoring format for a
+        // Game-Object subtree is `.prefab` (human-readable YAML object graph;
+        // `.zasset` is its binary SerializedFile counterpart used at runtime).
+        else if (asset_type == "Prefab" || asset_type == "Object")
         {
-            extension = ".object.json";
+            extension = ".prefab";
+            base_name = "New Prefab";
         }
 
         std::filesystem::path new_file_path;
@@ -1171,6 +1177,74 @@ namespace ContentBrowserAssetActions
             if (!level_created)
             {
                 LOG_ERROR(ZEditor, "failed to create scene asset {}", new_file_path.generic_string());
+                return;
+            }
+        }
+        else if (asset_type == "Prefab" || asset_type == "Object")
+        {
+            // A new prefab is a YAML object graph holding one empty GameObject
+            // (fileID 2) with its Transform (fileID 3), fronted by a PrefabAsset
+            // header at fileID 1.
+            //
+            // ⚠️ 不能像 Level 那样只写一个空头：`LoadPrefabAsset` 见到
+            // `m_RootGameObject == nullptr` 会直接报 "PrefabAsset has no root
+            // GameObject" 并返回 nullptr —— 只有头的 .prefab 是个打不开的坏资产。
+            //
+            // 走 `PrefabUtility::SaveAsPrefabAsset` 而不是手搓对象表，是为了和
+            // Hierarchy 里的 "Save As Prefab" 走完全同一条产出路径（同一份有序
+            // 对象表、同一套 ImmediatePtr/PPtr 引用模型），避免两边格式漂移。
+            const std::string prefab_name = new_file_path.stem().string();
+
+            ObjectManager* object_manager = GET_SYSTEM(ObjectManager);
+            GameObject* root = nullptr;
+            Component* root_transform = nullptr;
+            bool prefab_created = false;
+
+            if (object_manager != nullptr)
+            {
+                Object* raw = object_manager->Produce(TypeOf<GameObject>(), 0);
+                if (raw != nullptr)
+                {
+                    // Produce(…, 0) skips registration; give the transient object a
+                    // real ID so the writer/serializer can key it like any other.
+                    object_manager->AllocateAndAssignInstanceID(raw);
+
+                    root = static_cast<GameObject*>(raw);
+                    root->SetName(eastl::string(prefab_name.c_str()));
+                    root_transform = root->AddComponentByTypeName("Transform");
+
+                    // The writer reads the serialized m_Component container, not the
+                    // live list. Without this the GameObject would come back with no
+                    // components at all.
+                    root->SyncSerializedComponents();
+
+                    prefab_created = root_transform != nullptr &&
+                                     PrefabUtility::SaveAsPrefabAsset(root, new_file_path) &&
+                                     std::filesystem::exists(new_file_path);
+                }
+            }
+
+            // Tear down the transient objects. They were produced with plain `new`
+            // (ProduceHelper), so the matching release is ObjectManager::Destroy
+            // (= delete) — NOT MemoryManager::DestroyObject (mimalloc), which faults
+            // on Apple where global new/delete is deliberately not routed to mimalloc.
+            // GameObject::~GameObject does not own its components, hence destroying
+            // the Transform explicitly first.
+            if (object_manager != nullptr)
+            {
+                if (root_transform != nullptr)
+                {
+                    object_manager->Destroy(root_transform);
+                }
+                if (root != nullptr)
+                {
+                    object_manager->Destroy(root);
+                }
+            }
+
+            if (!prefab_created)
+            {
+                LOG_ERROR(ZEditor, "failed to create prefab asset {}", new_file_path.generic_string());
                 return;
             }
         }

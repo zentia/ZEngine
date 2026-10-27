@@ -222,7 +222,7 @@ python3 scripts/run_smoke_test.py \
 
 ## 8. prefab / zasset 反序列化：`ScriptComponentPrefabTest`
 
-第 7 节留下的那条空白由这个测试补上（55 项）。它做的是**真存盘再真读回来**：
+第 7 节留下的那条空白由这个测试补上（63 项）。它做的是**真存盘再真读回来**：
 
 ```
 PrefabUtility::SaveAsPrefabAsset(go, *.prefab)      # YAML 对象图
@@ -245,6 +245,7 @@ PrefabUtility::SaveAsPrefabAsset(go, *.zasset)      # 二进制 SerializedFile
 | D | `.zasset` 读回：同上 13 条 |
 | E | `invoke_post_load=false`：树照常克隆、guid 照常还原，**但不绑** |
 | F | 两轨一致性：guid / override / 活实例 speed 都相同 |
+| G | 空白 prefab：只有 Transform 的根也能存回来（守 Content Browser 新建资产的产出，见 8.6） |
 
 ### 8.2 为什么 override 用 `speed=7`
 
@@ -286,12 +287,12 @@ PrefabUtility::SaveAsPrefabAsset(go, *.zasset)      # 二进制 SerializedFile
 `--exclude-archive-member`：它复制一份 `.a` 到 `/tmp` 再 `ar -d`（按成员列表缓
 存，只付一次复制的代价）。完整 cmake 构建里所有 TU 同源码，这些一条都不需要。
 
-### 8.4 负向验证（都还原后复跑 55/0）
+### 8.4 负向验证（都还原后复跑 63/0）
 
 | 注入 | 结果 |
 |------|------|
 | `BindAndAwake` 里注释掉 `ApplySerializedFields()` | C10/C13 + D10/D13 红（活实例 speed 退回类默认 2，一帧走 1.0）。**C7/C8/C9 保持绿** —— 说明"override 存下来了"和"override 生效了"是两条独立的断言 |
-| `PrefabUtility::Instantiate` 里把 `invoke_post_load` 强制成 false | C8/D8 红（checks 从 55 降到 47，因为不绑时 C10–C13 直接跳过）。**C7（guid 还原）保持绿** —— 说明"还原"和"绑"是两件事 |
+| `PrefabUtility::Instantiate` 里把 `invoke_post_load` 强制成 false | C8/D8 红（checks 少 8：不绑时 C10–C13 + D10–D13 直接跳过，63 → 55）。**C7（guid 还原）保持绿** —— 说明"还原"和"绑"是两件事 |
 
 ### 8.5 刻意没做
 
@@ -301,3 +302,21 @@ PrefabUtility::SaveAsPrefabAsset(go, *.zasset)      # 二进制 SerializedFile
 * **清理**：测试刻意不销毁克隆出来的对象。`PrefabSubtreeCloner` 的分配器不是
   `ObjectManager::Destroy`（`= delete`）那一套，混着收会在 `mi_usable_size` 里
   SIGSEGV（第 4.3 节踩过一次）。测试进程退出即回收。
+
+### 8.6 G 组：空白 prefab 与 Content Browser 的新建资产
+
+Content Browser 的 `Create ▸ Prefab`（旧标签 "Object"）产出的就是一个**只带
+Transform 的空 GameObject** 的 `.prefab`。G 组用与编辑器**完全相同**的配方
+（`Produce(GameObject)` → `AddComponentByTypeName("Transform")` →
+`SyncSerializedComponents()` → `SaveAsPrefabAsset`）跑一遍存回，守住这条路径。
+
+为什么必须有一个根 GameObject、不能像 `.scene` 那样只写一个空头：
+
+```
+PrefabUtility::LoadPrefabAsset
+    if (asset->GetRootGameObject() == nullptr)   // PrefabUtility.cpp:454
+        -> LOG_ERROR("PrefabAsset has no root GameObject"); return nullptr;
+```
+
+`LevelRes` 头可以空着（场景里的 GameObject 是保存时才追加的），`PrefabAsset`
+不行 —— 只写头的 `.prefab` 是一个**打不开的坏资产**。G5 就是为了挡住这个回归。

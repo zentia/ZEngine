@@ -967,7 +967,10 @@ void ZSlateContentBrowserWindow::OpenCreateMenu(const ZSlate::Vector2& screen_po
         create_sub->AddItem("Shader", create("Shader"), s);
         create_sub->AddItem("Blueprint", create("Blueprint"), s);
         create_sub->AddItem("Level", create("Level"), s);
-        create_sub->AddItem("Object", create("Object"), s);
+        // "Object" was the legacy label; it produced a `.object.json`, a format
+        // that no longer exists. The entry now authors a `.prefab`, so it is
+        // labelled Prefab. CreateNewAsset still accepts "Object" as an alias.
+        create_sub->AddItem("Prefab", create("Prefab"), s);
         create_sub->AddSeparator(s);
         create_sub->AddItem("Folder", create("Folder"), s);
         menu.AddSeparator(s);
@@ -1010,7 +1013,7 @@ void ZSlateContentBrowserWindow::OpenContextMenuFor(EditorFileNode* node, const 
             create_sub->AddItem("Shader", create("Shader"), s);
             create_sub->AddItem("Blueprint", create("Blueprint"), s);
             create_sub->AddItem("Level", create("Level"), s);
-            create_sub->AddItem("Object", create("Object"), s);
+            create_sub->AddItem("Prefab", create("Prefab"), s);
             create_sub->AddSeparator(s);
             create_sub->AddItem("Folder", create("Folder"), s);
             menu.AddItem("Import...", [this, n]() {

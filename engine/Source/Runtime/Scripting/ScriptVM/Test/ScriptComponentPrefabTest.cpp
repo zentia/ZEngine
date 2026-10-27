@@ -485,6 +485,37 @@ int main(int argc, char** argv)
         }
     }
 
+    // ---- G. 空白 prefab（Content Browser 新建资产那条路径的产出）-----------
+    // ContentBrowserAssetActions::CreateNewAsset("Prefab") 产出的就是"一个只带
+    // Transform 的空 GameObject"的 .prefab。这里用**同一套配方**（Produce +
+    // AddComponentByTypeName("Transform") + SyncSerializedComponents +
+    // SaveAsPrefabAsset）验证这种最小 prefab 存得回来：LoadPrefabAsset 见到
+    // m_RootGameObject 为空的 PrefabAsset 头会直接返回 nullptr，所以只写头的
+    // .prefab 是个打不开的坏资产 —— 这组就是为了挡住那个回归。
+    std::printf("\n--- G. 空白 prefab（Content Browser 新建资产的产出）---\n");
+    GameObject* blank = MakeGameObject(object_manager, "BlankPrefab");
+    CheckTrue("G1", "造出了空 GameObject", blank != nullptr);
+    if (blank != nullptr)
+    {
+        CheckTrue("G2", "挂上了 Transform（Prefab 的根必须有）",
+                  blank->AddComponentByTypeName("Transform") != nullptr);
+        blank->SyncSerializedComponents();
+
+        const std::filesystem::path blank_path = scratch / "Blank.prefab";
+        CheckTrue("G3", "空白 prefab 写盘成功", PrefabUtility::SaveAsPrefabAsset(blank, blank_path));
+        CheckTrue("G4", ".prefab 真的落在磁盘上", std::filesystem::exists(blank_path, ec));
+
+        GameObject* revived = PrefabUtility::InstantiateFromPath(blank_path, /*invoke_post_load=*/true);
+        CheckTrue("G5", "空白 prefab 能反序列化回来（不是个打不开的坏资产）", revived != nullptr);
+        if (revived != nullptr)
+        {
+            CheckEq("G6", "名字穿过了磁盘", std::string(revived->GetName().c_str()), "BlankPrefab");
+            CheckTrue("G7", "根上的 Transform 也跟着回来了",
+                      revived->GetComponentByTypeName("Transform") != nullptr);
+            CheckTrue("G8", "回来的是新对象，不是模板本身", revived != blank);
+        }
+    }
+
     std::printf("\n---------------------------------------------\n");
     std::printf("checks=%d failed=%d\n", g_Checks, g_Failed);
     if (g_Failed > 0)
