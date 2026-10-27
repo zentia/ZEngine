@@ -432,10 +432,11 @@ public:
 - [x] **Phase 3a**：嵌套 Prefab 通过 `PrefabRefComponent` 实现（运行时由 `PrefabPostLoadDriver::ExpandNestedPrefabsOn` 展开）
 - [x] **Phase 3b**：Variant 实例化（`InstantiateVariant`）—— 走到链尾 base 后实例化，并把 `m_source_prefab` 指回 variant
 - [x] **Phase 3c**：`UnpackPrefabInstance` 清理 bookkeeping 并保留 cloned 子树
-- [x] **Phase 3d**：`MergeFromSource` 三层叠加（base → variant overrides → instance overrides，2026-10-27 改为经 `SnapshotEffectiveSource` 读"base 字节 + variant 层"，不再只认裸 base）
+- [x] **Phase 3d**：`MergeFromSource` 三层叠加（base → variant overrides → instance overrides，2026-10-27 改为经 `SnapshotEffectiveSource` 读"base 字节 + 整条 Variant 链的 override"，不再只认裸 base 或只认叶子；组件结构由 `ReconcileStructure` 先行校正）
 - [x] **Variant 真·继承（2026-10-27）**：`PropertyModification` 下沉 Runtime + `PrefabAsset::m_variant_overrides`（schema 1→2）；`PrefabUtility::Instantiate` 沿 base 链展开并 top-down 应用 override，近的赢；`LoadPrefabAsset` 对"无 root 但 IsVariant()"放行；`CreateVariantAsset`/`SaveVariantAsset` 落盘；Editor 的 `InstantiateVariant` 改为复用同一条 Runtime 通路；Content Browser 右键 `.prefab` → *Create Prefab Variant*。测试 `ScriptComponentPrefabTest` I 组（单层）/ J 组（base←mid←leaf 三层链）/ K 组（落盘再读回，两轨各 11 项），checks 100 → 158 全绿。
 - [x] **Variant 可写（2026-10-27）**：覆盖的拼接提到字节层（`PrefabUtility::SpliceModificationIntoBytes` / `SnapshotWithOverrides`），Apply 到 Variant 时 target 换回 base 图对象并 upsert 进 `m_variant_overrides` + `SaveVariantAsset`，写盘失败保留 modifications；`Revert` / `RevertSingleOverride` / `MergeFromSource` 的源快照改走 `SnapshotEffectiveSource` 因而认得 variant 层；`PrefabOverrideModel::ApplyField` / `ApplyAll` 按 `SourceIsVariant` 分派。测试 `ScriptComponentPrefabTest` L 组 10 项（含 L6：Apply 之后 base 模板对象本身没被改），checks 158 → 168 全绿。
-- [x] **Variant 结构性覆盖（2026-10-27）**：`PrefabAsset` 追加 `m_variant_removed_components`（base 组件的 PPtr）与 `m_variant_added_components`（`VariantComponentAddition` = variant 文件内的组件对象 + base 宿主 GO），schema 2→3；`SaveVariantAsset` 把新增组件作为 fileID 2..N 一起写盘；`PrefabUtility::ApplyVariantStructuralChanges` 在实例化时先删后加，新增组件必须克隆；`ApplyAllToVariant` 顺带提交 `m_added_components` / `m_removed_components` 并在写盘成功后一并清空。测试 M 组 32 项（两轨各 12，含"两次实例化拿到的是两个独立组件"），checks 168 → 202 全绿，2 处变异验证各转红。
+- [x] **Variant 结构性覆盖（2026-10-27）**：`PrefabAsset` 追加 `m_variant_removed_components`（base 组件的 PPtr）与 `m_variant_added_components`（`VariantComponentAddition` = variant 文件内的组件对象 + base 宿主 GO），schema 2→3；`SaveVariantAsset` 把新增组件作为额外对象一起写盘；`PrefabUtility::ApplyVariantStructuralChanges` 在实例化时先删后加，新增组件必须克隆；`ApplyAllToVariant` 顺带提交 `m_added_components` / `m_removed_components` 并在写盘成功后一并清空。测试 M 组 32 项（两轨各 12，含"两次实例化拿到的是两个独立组件"），checks 168 → 202 全绿，2 处变异验证各转红。
+- [x] **Variant 结构性覆盖的编辑器侧（A8，2026-10-27）**：`ReconcileStructure` 让 `InstantiateVariant` / `MergeFromSource` / `Revert` 对组件结构的认识一致；链级净结构（后层可删前层新增）；override 可指向 Variant 新增的组件；单字段 Apply 不再泄漏结构；Apply 后收养活组件；`SaveVariantAsset` 保持 fileID 稳定；Inspector 列出加/删组件行（`can_apply` 控制 Apply）。测试 E2E P19（53 项）+ `ScriptComponentPrefabTest` N 组（34 项，两轨）= 236 + 339；11 处变异全红；同时挖出并修掉 `BaseRenderer` 空指针与 `AssetRegistry` 反向索引两个 web 轨看不到的 bug（§9.4.1 19、20）。
 - [x] **Phase 4**：全量构建零 error/LNK/fatal（最后一次构建 `_phase3bcd_build.log` ExitCode=0）
 - [ ] **后续**：示例 `.zasset` 文件 / 端到端单测 / 编辑器 UI 集成
 
@@ -448,15 +449,15 @@ public:
 | 模块 | 路径 | 关键类型 / 函数 |
 | --- | --- | --- |
 | Runtime Asset | `engine/Source/Runtime/Resource/Prefab/PrefabAsset.{h,cpp}` | `PrefabAsset`（含 `m_variant_base` / **`m_variant_overrides`** / **`m_variant_removed_components`** / **`m_variant_added_components`**（`VariantComponentAddition` = 文件内组件 + base 宿主 GO）/ `kCurrentSchemaVersion`（=3）；**无独立 GUID 字段，跨文件引用走 PPtr**） |
-| Runtime Utility | `engine/Source/Runtime/Resource/Prefab/PrefabUtility.{h,cpp}` | `PrefabUtility::Instantiate` / `InstantiateFromPath` / `LoadPrefabAsset` / `SetInstantiatedRootParent`；Variant：`ResolveVariantChain` / `ApplyVariantOverrides` / **`ApplyVariantStructuralChanges`** / `CreateVariantAsset` / `SaveVariantAsset` / **`SpliceModificationIntoBytes`** / **`SnapshotWithOverrides`**；内嵌 `PrefabPostLoadDriver` 含 `ExpandNestedPrefabsOn` |
+| Runtime Utility | `engine/Source/Runtime/Resource/Prefab/PrefabUtility.{h,cpp}` | `PrefabUtility::Instantiate` / `InstantiateFromPath` / `LoadPrefabAsset` / `SetInstantiatedRootParent`；Variant：`ResolveVariantChain` / `ApplyVariantOverrides` / **`ApplyVariantStructuralChanges`** / **`ResolveVariantStructure`** / **`CollectVariantLayerOverrides`** / `CreateVariantAsset` / `SaveVariantAsset` / `SpliceModificationIntoBytes` / `SnapshotWithOverrides`；内嵌 `PrefabPostLoadDriver` 含 `ExpandNestedPrefabsOn` |
 | Runtime 模型 | `engine/Source/Runtime/Resource/Prefab/PropertyModification.{h,cpp}` | `PropertyModification`（`value` 文本占位 + `value_bytes` **std::vector\<uint8_t\>** 装载真二进制 + `object_reference`）—— 2026-10-27 从 `Editor/Prefab/` 下沉，命名空间 `prefab_editor` → `prefab` |
 | Runtime 路径 | `engine/Source/Runtime/Resource/Prefab/PropertyPathResolver.{h,cpp}` | `TokenizePropertyPath`（点分路径 + `[n]`）—— 同上，2026-10-27 下沉 |
 | Runtime 路径 | `engine/Source/Runtime/Resource/Prefab/PropertyValueLocator.{h,cpp}` | `LocatePropertyInStream` / `OverwriteScalarBytes` —— 在 StreamedBinary 字节流上定位字段；同上，2026-10-27 下沉 |
 | Runtime Component | `engine/source/runtime/function/framework/component/PrefabRefComponent.{h,cpp}` | 嵌套 Prefab 的安装点组件 |
 | Editor 模型 | `engine/Source/Editor/Prefab/PrefabInstance.{h,cpp}` | `PrefabInstance` + `CorrespondingSourceEntry` + `m_added_components` / `m_removed_components` |
 | Editor 克隆 | `engine/Source/Editor/Prefab/EditorPrefabCloner.{h,cpp}` | `CloneSubtree` 结构化克隆（围绕 PPtr/ImmediatePtr Transfer 缺陷做指针重连） |
-| Editor 主入口 | `engine/Source/Editor/Prefab/PrefabUtilityEditor.{h,cpp}` | `InstantiateAsPrefab` / `InstantiateVariant` / **`CreateVariant`** / `RecordPropertyOverride` / `ApplyAll` / **`ApplyAllToVariant`** / `Revert` / `RevertSingleOverride` / `AddComponentOverride` / `RemoveAddedComponent` / `SuppressSourceComponent` / `UnsuppressSourceComponent` / `UnpackPrefabInstance` / `MergeFromSource` |
-| Editor 覆盖模型 | `engine/Source/Editor/Prefab/PrefabOverrideModel.{h,cpp}` | `SyncFieldOverride` / `IsOverridden` / `ListOverrides` / `RevertField` / `ApplyField` / `ApplyAll`（后两者按 `SourceIsVariant` 分派到 `ApplyToSource` / `ApplyAllToVariant`） |
+| Editor 主入口 | `engine/Source/Editor/Prefab/PrefabUtilityEditor.{h,cpp}` | `InstantiateAsPrefab` / `InstantiateVariant` / **`CreateVariant`** / `RecordPropertyOverride` / `ApplyAll` / **`ApplyAllToVariant(include_structure)`** / `Revert` / `RevertSingleOverride` / `AddComponentOverride` / `RemoveAddedComponent` / `SuppressSourceComponent` / `UnsuppressSourceComponent` / **`ReconcileStructure`** / `UnpackPrefabInstance` / `MergeFromSource` |
+| Editor 覆盖模型 | `engine/Source/Editor/Prefab/PrefabOverrideModel.{h,cpp}` | `SyncFieldOverride` / `IsOverridden` / `ListOverrides`（含 `OverrideRow::Kind` 与 `can_apply`）/ **`HasOverrides`** / `RevertField` / **`RevertStructuralRow`** / `ApplyField` / `ApplyAll`（后两者按 `SourceIsVariant` 分派到 `ApplyToSource` / `ApplyAllToVariant`） |
 | Content Browser | `engine/Source/Editor/EditorUI/ContentBrowser/ContentBrowserAssetActions.{h,cpp}` | `CreateNewAsset`（Prefab / Material / …）+ **`CreatePrefabVariant`**（右键 `.prefab` → *Create Prefab Variant*） |
 
 ### 9.2 实施过程发现的 ZEngine 设施差距
@@ -512,6 +513,8 @@ public:
      - `PrefabUtilityEditor::ApplyAllToVariant(instance)` —— target 从实例对象换回 **base 图里的对象**，upsert 进 `m_variant_overrides`，`SaveVariantAsset` 成功后才 `ClearModifications()`（写盘失败返回 0 且保留 modifications）；`PrefabOverrideModel::ApplyField` / `ApplyAll` 按 `SourceIsVariant` 分派。
    - 测试：新增 L 组 10 项，checks 158 → 168 全绿。其中最关键的一条是 **L6：Apply 到 Variant 之后，源（base）对象本身的值没变**——共享模板没被污染。编辑器侧仍只有 `-fsyntax-only`。
    - ~~**Variant 结构性覆盖**~~ —— **已落地（2026-10-27）**。上面那轮只覆盖了"改值"，加/删组件仍只有 `PrefabInstance` 那一份（`m_added_components` / `m_removed_components`），Variant 的永远为空。难点在"加组件"：Variant 不拥有对象树，那个组件对象得有去处 —— 解法是让 Variant 文件携带它（header 在 fileID 1，新增组件在 2..N，`SaveVariantAsset` 一起写，header 用 `ImmediatePtr` 指向），于是 `SaveVariantAsset` 不再是恒写单对象。实例化时新增组件**必须克隆**（它和 base 模板一样是共享的，交出去就是 P14 的翻版），顺序是先删后加、且整体在 `PostLoadResource` 之前。测试 M 组 32 项（两轨各 12），其中 M11 / M12 钉的就是"拿到的不是模板对象本身"和"两次实例化拿到两个独立组件"。2 处变异各转红。
+   - ~~**结构性覆盖的 Revert / MergeFromSource / Inspector**~~ —— **已落地（A8，2026-10-27）**，见 §9.4.1 的 21–26。
+   - **尚未做**：① **结构性 Revert 没进撤销栈**（撤销记录只覆盖属性覆盖列表，不覆盖组件列表；Ctrl+Z 撤不回一次 Revert All 摘掉的组件）；② **普通 prefab 的结构性 Apply**——要给源图加新对象、分新 fileID，Inspector 对这类行只给 Revert；③ **结构性覆盖的 ZSlate 界面没上机看**，只过 `-fsyntax-only`；④ `CameraComponent` / `ParticleComponent` 里同型的 `GET_SYSTEM(RenderSystem)->` 空指针（§9.4.1 19）。
 
 5. ~~**Cook 阶段 flatten**~~ —— **已落地（2026-10-26）**。场景里的 GameObject 树本来就是实例化 + 覆盖后的实体（`PrefabSceneBinding` 保存的就是它），所以 flatten = 去掉簿记对象，不需要重新展开。`Editor/Build/SceneCook.{h,cpp}`：`CookSceneFile` 去掉所有 `kTypeIsEditorOnly` 类型的对象，并裁掉只被它们引用的外部引用（源 `.prefab`），其余对象里的外部引用索引随之重编号；指向被删对象的引用置空并计数。纯文本层（`ZYaml::StripObjectsFromGraph`），不 Produce 对象，编辑器里开着同一个场景时打包也不受影响。`AssetBundleBuilder` 对 `.scene` 在源文件比烘焙副本新时重烘焙到 `Intermediate/Cooked/<平台>/` 并打包烘焙副本。只处理 YAML 场景；二进制关卡原样拷贝并告警。
    - 顺带修：`REGISTER_CLASS_TRAITS(kTypeIsEditorOnly)` 以前是**死元数据**——`IMPLEMENT_REGISTER_CLASS` 只把 `kTypeIsAbstract` 传进运行时 `Type`。现在 `Type::isEditorOnly` / `IsEditorOnly()`（末位成员带默认值，既有的位置初始化列表不受影响）。
@@ -543,6 +546,12 @@ public:
 
 **运行方式**：`bash scripts/verify_prefab_e2e.sh`。无原生工具链时它用 `scripts/web_smoke_run.py`：借 build-web 里已配置的 smoke-test 目标的编译/链接命令，把测试和 `Editor/Prefab/*.cpp` 链到 web 版 `libZRuntime.a`（`--whole-archive`），补上 WebGL2 / emmalloc / NODERAWFS 链接参数后用 node 跑。原生构建可用 `-DZENGINE_BUILD_PREFAB_E2E_SMOKE_TEST=ON`。
 
+**原生验证（2026-10-27）**：没有 emcc 的机器（macOS 开发机）用 `bash scripts/verify_prefab_native.sh [all|e2e|runtime]`，把同一批测试当真正的原生进程跑。它依赖 `bin/libZRuntime.a`（上一次 cmake 构建的产物，往往已过期）+ `build/Generated/ZHT/ZRuntime/Src`（ZHeaderTool 输出），所以脚本里每个"自上次构建后改过/新增的源"都以 `--extra-source` 现编、同时 `--exclude-archive-member` 把归档里的旧成员踢掉（否则符号重复）。症状是"代码明明对、测试却看到旧行为"时，十有八九是漏了一个文件——两处都要加。
+
+**为什么 web 轨之外必须有原生轨**：wasm 的线性内存低地址是可寻址的，**空指针解引用不 trap**。web 轨一直是绿的，原生轨第一次跑就挖出两个"web 上永远不会红"的 bug（见下 19、20）。另外 `-undefined dynamic_lookup` 会让缺失的符号延迟到运行期——崩溃报告在 `~/Library/Logs/DiagnosticReports/*.ips`，用脚本解析崩溃线程栈（JSON，`usedImages` + `threads[triggered]`），比在沙箱里起 lldb 好用。
+
+已知"失败"：`P18/types: expected to round-trip the registered runtime types` —— 它要求 >20 个已注册运行时类型，而单个冒烟二进制只链进 ~9 个，是覆盖下限而非行为检查；脚本据此判定（`[FAIL]` 数 > 这一条的数量才算失败）。
+
 **这个测试第一次跑起来就暴露的真 bug（都已修，变异验证过测试能抓住）**：
 
 1. **磁盘上的 Prefab 根本无法实例化**：`InstantiateAsPrefab(path)` 和 `PrefabUtility::InstantiateFromPath`（二进制 `.zasset` 分支）都用 `AssetManager::ReadObject<PrefabAsset>`，它只读 fileID 1 这一个对象；头里的 `m_RootGameObject` 指向同文件的 fileID 2，单对象读永远不会产出它 ⇒ 根恒为 null。新增 `PrefabUtility::LoadPrefabAsset(path, out_gameobjects)` 读整张对象图（YAML / 二进制统一），两个入口都改走它。
@@ -570,7 +579,23 @@ public:
 
 15. **运行时实例化交出的是模板本身**：`PrefabUtility::Instantiate` 的约定是"每次返回独立的新树"，实现却是"在资产的图上跑一遍 post-load 然后返回它的根"，靠的是"每次都从磁盘重读"。二进制 `.zasset` 早就被缓存（路径派生 ID 不能重读），所以**两次实例化同一个二进制 Prefab 拿到的是同一组对象**；`d1a51a5e` 把 YAML 也改成缓存后，`.prefab` 也一样——**这一步是我上一提交引入的回归**（`GameObject::ExpandDefinition` 让所有引用同一 `m_DefinitionUrl` 的场景对象共享同一组组件实例）。修：结构克隆器从 `Editor/Prefab/EditorPrefabCloner` 挪到 `Runtime/Resource/Prefab/PrefabSubtreeCloner`（它只用 Runtime 类型；命名空间 `prefab_clone`），`Instantiate` 克隆缓存的模板后再跑 post-load，模板不动；`InstantiateFromPath` = `LoadPrefabAsset` + `Instantiate`。变异（恢复成交出模板）⇒ P14 六项红。
 
-**未验证**：编辑器里真的拖一个 Prefab 进场景、在 Inspector 上改值后 Apply、保存场景再打开（UI 链路本身是第 3 条，未接）。`Level::load(url)` 带物理场景的完整路径未在无头环境跑过（它与 `LoadObjectGraph` 的差别只在建物理场景）。
+**P19 / 原生轨暴露并修掉的问题（2026-10-27，11 处变异全红）**：
+
+19. **`BaseRenderer::SubmitRenderState` 解空指针**：`GET_SYSTEM(RenderSystem)->GetSwapContext()` 无保护，任何无渲染系统的进程（工具、测试、服务端）实例化一个带 MeshRenderer 的 Prefab 就 SIGSEGV（`0x10` = swap-data 偏移）。web 轨不 trap，P18 一直静默写 `0x10` 而通过。已加空检查直接返回。**同型未动**：`CameraComponent.cpp` ×5、`ParticleComponent.cpp` ×1（不在 Prefab 链路上，本机也无法验证相机/粒子路径）。
+20. **`AssetRegistry::IndexDependenciesLocked` 重新索引会抹掉别人对它的引用**：它先调 `RemoveDependencyEdgesLocked(self)`，后者除了删自己的**出边**，还 `m_ReferencerMap.erase(self)`——那是指向自己的**入边**，属于别的资产。结果取决于目录遍历顺序：APFS 先列 `keep.scene` 再列 `hero.zasset`，`keep.scene → hero.zasset` 这条反向边被后索引的 `hero.zasset` 抹掉，`GetDependencies` 有而 `GetReferencers` 没有。拆出 `RemoveOutgoingEdgesLocked` 给重索引用，`RemoveDependencyEdgesLocked` 只留给删除。web 轨目录序不同，P16 一直绿。
+
+**A8：Variant 结构性覆盖的 Revert / Merge / Apply / Inspector（P19）**。A7 让 Variant 能携带加/删组件，但编辑器侧 Revert 和 `MergeFromSource` 完全没看结构层（头文件注释从 Phase 3 起就写着"Detects added/removed components"，函数体从来没做）。要点：
+
+21. **`ReconcileStructure(instance)`**：按"源 + 链的净结构 + 实例自己的加/删"校正实例的组件结构——① 摘掉源已不再拥有的（链删除的 / 链已不再新增的），② 克隆链的新增（实例没有对应、也没自己 suppress 的），③ 重新引入没人再 suppress 的 base 组件。`InstantiateVariant` / `MergeFromSource` / `Revert` 三处都走它，所以对结果的认识一致。所有引入都经 `IntroduceComponentFromSource`：克隆后**叠上链在该组件上的属性 override**（以前 Unsuppress 克隆的是裸源值，Variant 对它的修改丢了），并进对应表。
+22. **链级解析**：`PrefabUtility::ResolveVariantStructure` 算整条链的净结构（后层可以删前层新增的组件）；`CollectVariantLayerOverrides` 取整条链的属性层。顺手修掉 A6 遗留的一个洞：`SnapshotEffectiveSource` 只取**叶子** Variant 的 override，所以 `base ← mid ← leaf` 上 mid 设置而 leaf 没动的字段，Revert 会回到 **base** 值而不是 mid 值。Runtime 的 `ApplyVariantStructuralChanges` 同时改为读写 `source_to_clone`：新增组件的"模板 → 克隆"也登记进去，这样**属性 override 能指向 Variant 新增的组件**（目标是 variant 文件里的模板对象，不在 base 图里）。
+23. **`ApplyAllToVariant(include_structure)`**：单字段 Apply 不再顺带提交实例的结构覆盖（A7 里应用一个字段会把整个实例的加/删组件一起写进 Variant）；删"自己这一层新增的组件"时撤销那条 addition（记一条 removal 没有效果——同一层内 removal 先于 addition 解析，组件会原样回来）；Apply 之后把实例里**活的**组件与新模板配对，否则下一次 Merge / Revert 会在宿主上再克隆**第二份**；写盘失败回滚 Variant 的三个列表（否则内存里的 Variant 与文件分叉，下一次 Merge 会泄漏到其它实例）。
+24. **`SaveVariantAsset` 保持 fileID 稳定**：A7 每次都按 1..N 重排，删掉一个 addition 后其后的模板全部前移一位，场景里对它们的 (文件, fileID) 引用静默指错。现在已有身份的对象沿用原 fileID，新对象接在最大值之后（同 `SaveSourcePrefab` 的规则）。
+25. **`SuppressSourceComponent` 摘掉后清对应表项**：以前"有对应"不再蕴含"在宿主上"，Unsuppress 又加一条，一个 suppress/unsuppress 来回留下两条配对。
+26. **Inspector**：`ListOverrides` 现在也列加/删组件行（以前只有结构覆盖时头部显示 "0 overrides" 且没有按钮）；`OverrideRow::can_apply` 决定是否显示 Apply（普通 prefab 没有结构性 Apply——要给源图加新对象、分新 fileID——所以只给 Revert）；组件行的 Revert 走 `RevertStructuralRow`；撤销记录只录属性行（RemovedComponent 行的 target 是共享的源模板，撤销绝不能往里写）。
+
+测试：P19 编辑器全链路 53 项（创建 Variant → 实例化 → suppress/add → 行模型 → 逐行 Revert / Revert All → Apply All → 新实例 / 旧实例 Merge → 实例自己的结构在 Merge 后保留 → 单字段 Apply 不泄漏 → 普通 prefab 只给 Revert → Variant 层在重新引入时不丢），`ScriptComponentPrefabTest` N 组 34 项（链级删除前层新增、override 指向新增组件，`.prefab` / `.zasset` 两轨）。**变异验证 11 处全红**：Revert/Merge 不 reconcile、ApplyField 提交结构、Suppress 留脏配对、Apply 不收养活组件、ListOverrides 丢组件行、重新引入丢 Variant 层、后层删除被忽略、模板不登记进映射、只算最后一层。其中**第一版 M7（重新引入丢 Variant 层）存活**——测试里我猜的属性路径根本解析不了，Variant 层从没被应用，"重新引入时是否带层"就没被测到；改用 `shared_materials` 整数组覆盖后才转红。**教训：变异存活 = 测试前提本身没成立，先断言前提（P19/layer 的 precondition）。**
+
+**未验证**：编辑器里真的拖一个 Prefab 进场景、在 Inspector 上改值后 Apply、保存场景再打开（UI 链路本身是第 3 条，未接）。`Level::load(url)` 带物理场景的完整路径未在无头环境跑过（它与 `LoadObjectGraph` 的差别只在建物理场景）。**Inspector 的 ZSlate 渲染**（结构行的按钮、can_apply 的显隐）只过了 `-fsyntax-only`，没有上机看。
 
 
 ---
