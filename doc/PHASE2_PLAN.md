@@ -46,7 +46,7 @@
 | C1 | **RenderGraph 接管流水线** | 帧图编译器：自动屏障、瞬态 RT 别名、剔除 | **✅ 已默认开·真机验证 PASS**（165 编译+92 执行断言；RP2 图路径 2026-10-26 翻默认开 `c0d1bcfc`，同帧 A/B 逐位等价 + soak 无异常，见 §2 落地记录·2.6） | 阶段一 RHI 注册表 | ★★★ 高价值/低风险 |
 | C2 | **RenderGraph → RP1**（`render_pass_refactor`） | RP1 三子pass 拆成 3 独立 pass，纳入图管理 | **✅ 已默认开·真机验证 PASS**（2.3 三分已在代码：3 独立 render pass/subpass 恒 0；2.4 compiler 200/200 + executor 121/121 已验。`DrawRP1WithGraph` 2026-10-26 翻默认开 `871878e3`，同帧 A/B `rp1.backup_odd` 逐位 IDENTICAL + soak 无异常，见 §2 落地记录·2.6） | **必须在 C1 之后** | ★★ 高价值/中风险 |
 | C3 | **Nanite 收尾** | 流送 → 几何压缩 → HiZ 遮挡 → 页池 | **大部分实现**（真 GPU dispatch 已有；几何压缩✅ + streaming✅ + **页池簿记层✅ 已落地 2026-10-26**（opt-in，`streaming_pool_budget_bytes>0`；显存上传待真机），见 §2 落地记录·2.5 页池；**HiZ CPU 侧✅ 已落地 2026-10-26**，见 §2 落地记录·2.5 HiZ；**HiZ GPU 侧✅ 已落地 2026-10-27**：切法一 compute 生成金字塔 14/14、切法二 GPU 遮挡剔除 16/16，见 `doc/PHASE2_STEP2.5_HIZ_GPU.md` §6/§7；**页池 GPU 路径✅ 逐像素一致 13/13**。剩切法三（device-local+真 mip 纹理，可选打磨）与顶点去重（回归面>收益，主动推迟）） | C1/C2 给其 RG 管理的目标 | ★★★ 高价值/中风险 |
-| C4 | **Virtual Texture 接线** | 分页纹理虚拟化，从"孤儿"到可用 | **已实现但零消费者**（6 文件无外部引用、无 CVar、3 处构建排除） | C1/C2 的 RG 资源注册 | ★★ 高价值/中高风险 |
+| C4 | **Virtual Texture 接线** | 分页纹理虚拟化，从"孤儿"到可用 | **CPU 侧✅ + GPU 侧✅ 2026-10-27**（页上传进物理页池 + 页表纹理上传，headless A/B 18/18 全绿、逐字节比对 0 失配，见 §2 落地记录·2.6 VirtualTexture GPU 侧）。**仍零渲染消费者**：页表纹理已可采样但**没有 shader 用它做间接寻址** —— 这是 VT 从"能传"到"能画"的最后一公里 | C1/C2 的 RG 资源注册 | ★★ 高价值/中高风险 |
 | C5 | ~~**Vulkan `MainCameraPass` 崩溃根因修复**~~ | 跨切面阻塞：解除 Vulkan 侧验证能力 | **✅ 已被 `7e5d2521` 修掉（2026-10-25 复核关闭）** | — | ★★★ 已关闭（见 §2 step 2.0） |
 | C6 | **Lumen 收尾（SSR → GPU 化）** | 动态 GI + 反射；取 SSR 一半 + 首个 Lumen shader | **✅ CPU 侧已完整**（GI/反射/接线/CVar/发布桥全落地 + 7 smoke test；2026-10-25 复核，见 §2 落地记录·2.7）。剩 SSR/HWRT/首个 shader 全 GPU 侧 | C2 的 GBuffer/depth 声明 | ★★ 中价值/高风险（CPU 侧无活，剩 GPU 放最后） |
 | C7 | **编辑器/内容管线填充**（低风险稳态轨） | 平台窗口化收尾 / Timeline 四片段 / Prefab §9.4 | 各为**部分实现·机械收尾**（**Timeline 四片段 2026-10-25 已落地**，见 `doc/timeline/TIMELINE_IMPLEMENTATION.md`“片段语义”；**Prefab §9.4 第 1 条落地、第 2 条对象图层已验**，见 `doc/PrefabSystem_Design.md` §9.4.1，顺带修 7 个真 bug；平台窗口化未动；**平台窗口化 2026-10-25 对代码核对**：Step 1-5 早已兑现（零 GLFW 引用），计划文档勾选已按代码更新；核对时修了 Win32 修饰键恒 0 / 拖放不派发 / Linux 原生 #error / Web 启动空指针等，见 `doc/platform_windowing_plan.md`；剩 Linux X11 窗口层与多显示器枚举） | — | ★★ 低风险填缝 |
@@ -69,7 +69,7 @@
 | **2.3** | C2 | `render_pass_refactor`：RP1 三分 | **必须在 2.1 之后**——此时屏障/别名机制已在真机验证过，单独做它是高风险。 |
 | **2.4** | C2 | RenderGraph 接管 RP1 | 2.3 的直接收益兑现；解锁 Nanite/Lumen/VT 的图管理资源。**编译器层已于 2026-10-25 兑现**（见下方落地记录·2.4）：step 2.3（RP1 三分）此前已落地在代码（3 个独立 render pass，subpass 恒 0），本步骤把 RP1 真实拓扑声明进图（`BuildRp1Wiring`），`RenderGraphSmokeTest` group 19/20 断言执行序 + 9 条屏障（4+5+0）+ transient 生命周期，headless WASM 200/200 全绿；`RENDER_GRAPH.md:117`"图只能表达整段"的旧论断被推翻并加更新注记。**executor 层二次复核**：撤回上一版的"两处语义缺口"（RP1 只在 DX12/Metal 跑，INPUT_ATTACHMENT 在那里就是 SRV；Forward 的 blend 是固定功能，本就是 RenderTarget），并修掉一个真 bug——导入的深度图拿到 COLOR aspect 屏障、D32 拿到 STENCIL aspect（executor group 13/14 回归，红绿验证）。`DrawRP1WithGraph` 已实现（DX12 only；生产声明 `MainCameraRp1GraphDecl.h` 与测试共用，compiler 239/239 + executor 130/130，DX12 TU clang-cl 类型检查通过）。**2026-10-26 翻默认开**（`871878e3`）：同帧 A/B 抓帧 `rp1.backup_odd` 逐位 IDENTICAL + soak 无异常，见落地记录·2.6。 |
 | **2.5** | C3 | Nanite：streaming → 几何压缩 → HiZ 遮挡 | 三个子项风险递增、各自独立可验（streaming/压缩是纯 CPU 数据、可 headless 验；HiZ 是 GPU 侧需真机）；已有真 GPU dispatch 作基线。**几何压缩已于 2026-10-25 落地**（见下方落地记录）：新增 `GeometryCodec::{Raw,Quantized}` 有界有损量化编码，WASM headless 验证 67/67 全绿，vertex_data 10368→5208B、index_data 3456→1728B。**streaming 已于 2026-10-25 落地**（见下方落地记录）：`UpdateStreaming` 从 TODO 兑现为基于距离的叶子驻留判据，WASM headless 验证 77/77 全绿（含 10 项新增 streaming 断言）。**HiZ GPU 侧 2026-10-27 已落地**（切法一 14/14 + 切法二 16/16，Vulkan headless，见 `doc/PHASE2_STEP2.5_HIZ_GPU.md`）。 |
-| **2.6** | C4 | VirtualTexture 接线（CVar 门控） | 孤岛子系统，不会回归现有路径；需要 2.4 的 RG 资源注册。**已于 2026-10-25 落地**（见下方落地记录）：9 处 TODO 里 6 处 CPU 侧填实（屏幕投影 mip/优先级重算/LRU 淘汰/统计/时间戳/世界足迹），3 处 GPU 侧（页上传/页表纹理）如实留作真机；加 `r.VirtualTexture.Enable` CVar 门控 + 帧循环 `UpdateVirtualTextureForFrame`（3 条 Tick 路径统一入口，默认关、Vulkan 编译门内、零回归）；headless WASM 验证 15/15 全绿。剩页上传/页表纹理（GPU 需真机）+ 2.4 的 RG 资源注册。 |
+| **2.6** | C4 | VirtualTexture 接线（CVar 门控） | 孤岛子系统，不会回归现有路径；需要 2.4 的 RG 资源注册。**已于 2026-10-25 落地**（见下方落地记录）：9 处 TODO 里 6 处 CPU 侧填实（屏幕投影 mip/优先级重算/LRU 淘汰/统计/时间戳/世界足迹），3 处 GPU 侧（页上传/页表纹理）如实留作真机；加 `r.VirtualTexture.Enable` CVar 门控 + 帧循环 `UpdateVirtualTextureForFrame`（3 条 Tick 路径统一入口，默认关、Vulkan 编译门内、零回归）；headless WASM 验证 15/15 全绿。**页上传/页表纹理（GPU）2026-10-27 已落地**（headless A/B 18/18，见 §2 落地记录·2.6 VirtualTexture GPU 侧）。剩 mip 链（现只传 mip 0）、path 方式注册的页无源像素（如实留白）、2.4 的 RG 资源注册、**以及 shader 侧按页表间接寻址采样（无消费者）**。 |
 | **2.7**（✅ CPU 侧已完整·无需动手） | C6 | Lumen：SSR + 首个 Lumen shader | 依赖 2.4 的 GBuffer/depth 声明；放最后，**只取 SSR 一半**。**HWRT/BLAS-TLAS 明确移出 Phase 2**（需独立专项）。**已于 2026-10-25 复核：Lumen 的整个 CPU 侧（GI + 反射 + 接线 + CVar + 发布桥）此前就已完整落地并有 7 个 smoke test**，见下方落地记录。剩 SSR/HWRT/首个 shader 全是 GPU 侧（需真机 + 2.4 的 GBuffer/depth），本步骤的 CPU 部分无活可干。 |
 | **穿插** | C7 | 平台窗口化收尾 / Timeline 四类片段 / Prefab §9.4 follow-ups | 渲染项卡在真机验证时用来保持节奏；每项都可独立编译演示，低风险。 |
 
@@ -517,6 +517,56 @@ Vulkan image，让流送策略在无设备上断言。**15/15 全绿**：注册/
 
 **诚实定位**：这是**接线第一步**——把休眠子系统变成控制台可开、帧循环可驱动、策略可断言。页上传/
 页表纹理（GPU）+ 2.4 的 RG 资源注册是明确的后续项。它不是"VT 完成了"，是"VT 从死代码变成可推进"。
+
+---
+
+### 落地记录 · 2.6 VirtualTexture GPU 侧（2026-10-27，Vulkan headless，18/18 全绿）
+
+commit `15f40a25`。把上节留的两处 GPU TODO 兑现：**页像素上传进物理页池** +
+**页表纹理上传**。此前状态是"簿记全对、显存里一个字节都没有"——槽位分配了、页表项写好了，
+但页池图是空的，`m_PageTableTexture` 连对象都没建出来（恒为 nullptr）。
+
+**做法**：新增 `UploadImageRegion`（Vulkan 直连一次性命令缓冲：barrier→TRANSFER_DST、
+`vkCmdCopyBufferToImage`（带 imageOffset）、barrier→SHADER_READ_ONLY）。不用现成的
+`VulkanUtil::CopyBufferToImage` 是因为它把 `imageOffset` 硬编码成 (0,0,0)，而页上传要写的是
+页池里**该槽位对应的那一小块**。三条容易踩反的：
+
+- `bufferRowLength` / `bufferImageHeight` 必须传 **0**：Vulkan 单位是 texel 不是字节，
+  传 `width*bpp` 会按倍数溢出（HiZ 切法一踩过同一条）。
+- **整页块上传**（`page_size×page_size`）而非真实宽高：源缓冲行距是 page_size（边缘页补了 0），
+  按真实宽高传会让残缺页从第二行起错位。
+- **discard_prior_content 闸**：只有"这张图从没传过"才允许 `oldLayout=UNDEFINED`，之后必须走
+  `SHADER_READ_ONLY→TRANSFER_DST`，否则会把已驻留的页**静默作废**。
+  `PhysicalTexturePool::hasContent()` 就是这条闸（`m_PageTableHasContent` 同理）。
+
+另：`VirtualTextureResource` 改为**保留源 TextureData**（此前只取 width/height/format 就把像素
+丢了，"从磁盘取页"根本没东西可读）。页表格式用 `R32G32_SFLOAT` 而非注释里写的 `R32G32_UINT`
+——本工程 `RHIFormat` 枚举没有 UINT 版，为一个页表动 4 个后端格式表不值当，槽位下标 f32 可精确表示。
+
+**修掉的两个真 bug**（都因 VT 零消费者而一直潜伏）：
+
+1. **`RHIImage*` 不能直接强转 `VkImage`（致命）**：`PhysicalTexturePool::Initialize` 把
+   `vmaCreateImage` 出来的裸句柄直接 `(RHIImage*)` 存了，而 RHI 侧所有接口都把 `RHIImage*` 当
+   `VulkanImage*` **对象**、用 `((VulkanImage*)image)->getResource()` 取句柄——拿不透明句柄数值当
+   对象指针解引用，`CreateImageView` 当场访问违例。改为包一层 `new VulkanImage()` + `setResource`，
+   `Shutdown` 对称 `delete`。页表纹理同样处理。
+   **这条对全工程适用**：凡是绕过 RHI 自己 `vmaCreateImage`，都必须包 `VulkanImage`。
+2. **`GetStats` 恒为默认零值**：`m_Stats` 从来没有任何写入者（LoadPage/UnloadPage 都不碰它），
+   页全加载了却报 `loaded=0、pool_total=0`。改为按需从资源与页池当前状态重算。
+
+**验证**：新增 `VirtualTextureGpuUploadABSmokeTest`（Vulkan headless，选项
+`ZENGINE_BUILD_VT_GPU_UPLOAD_AB_SMOKE_TEST`）。256×256 源纹理（4×4 页）→ 同步 `ForceLoadPages`
+全部 16 页 → 页池整图拷回 host 逐页与源区域**逐字节**比对 + 页表纹理逐 texel 比对。
+**18/18 全绿，零 validation error**：`loaded=16 pool_used=16/16`、页失配 **0 页 0 字节**、
+页表坏 texel **0**。判据覆盖：①每页落在自己槽位的像素块上（offset 算错当场红）；②逐页增量上传
+不冲掉先前驻留的页（discard 闸的回归保护）；③页表 texel == CPU `PageTableEntry`。
+
+Nanite + VT 全量回归 **10 套全绿**。
+
+**剩**：① mip 链（目前只传 mip 0 的页）；② 走 `RegisterVirtualTexture(path,...)` 注册的资源没有
+源像素，其页只做簿记、槽位留空（如实留白，不伪造）；③ 2.4 的 RG 资源注册（VT 图资源进 RenderGraph）；
+④ shader 侧真正按页表间接寻址采样（页表已可采样，但没有消费者 shader）——**这是 VT 从"能传"到
+"能画"的最后一公里**。
 
 ---
 
