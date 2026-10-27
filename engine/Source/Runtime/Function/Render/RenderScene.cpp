@@ -17,6 +17,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <limits>
 #include <unordered_set>
 
@@ -149,6 +150,18 @@ void RenderScene::SyncPointLightsFromLevel(Level* level)
         PointLight point_light {};
         point_light.m_Position = transform->GetPosition();
         point_light.m_Flux       = light_component->GetFlux();
+
+        // Spot payload: only populated for spot lights so point lights keep
+        // their exact previous behaviour (type stays 0 -> shader skips the
+        // cone branch entirely).
+        if (light_component->IsSpot())
+        {
+            point_light.m_IsSpot      = true;
+            point_light.m_Direction   = light_component->GetDirection().normalisedCopy();
+            point_light.m_InnerConeCos = cosf(light_component->GetInnerConeAngle());
+            point_light.m_OuterConeCos = cosf(light_component->GetOuterConeAngle());
+        }
+
         m_PointLightList.m_Lights.push_back(point_light);
     }
 }

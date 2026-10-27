@@ -32,12 +32,27 @@ struct DirectionalLight
     highp float _padding_color;
 };
 
+// 64-byte element (four vec4 pairs) — must match ScenePointLight in RenderCommon.h
+// bit-for-bit:
+//   vec4_0 = {position.xyz, radius}
+//   vec4_1 = {intensity.xyz, type}
+//   vec4_2 = {spot_direction.xyz, spot_inner_cos}
+//   vec4_3 = {spot_outer_cos, _padding_spot_0/1/2}
+// type: 0.0 = point, 1.0 = spot. The spot payload (direction + cone cosines) is
+// zero for point lights and only read inside the type > 0.5 branch in
+// mesh_lighting.inl.
 struct PointLight
 {
-    highp vec3 position;
+    highp vec3  position;
     highp float radius;
-    highp vec3 intensity;
-    highp float _padding_intensity;
+    highp vec3  intensity;
+    highp float type;
+    highp vec3  spot_direction;
+    highp float spot_inner_cos;
+    highp float spot_outer_cos;
+    highp float _padding_spot_0;
+    highp float _padding_spot_1;
+    highp float _padding_spot_2;
 };
 
 // Shadow-pass per-frame SSBO payloads (C++ mirror: PointLightShadowPerFrame / DirectionalLightShadowPerFrame).

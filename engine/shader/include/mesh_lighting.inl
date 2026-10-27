@@ -23,6 +23,23 @@ for (highp int light_index = 0; light_index < int(point_light_num) && light_inde
     highp float radius_attenuation   = 1.0 - ((distance * distance) / (point_light_radius * point_light_radius));
 
     highp float light_attenuation = radius_attenuation * distance_attenuation * NoL;
+
+    // Spot cone attenuation. For point lights (type == 0) spot_factor stays 1.0
+    // so behaviour is bit-identical to before. For spot lights we fade from the
+    // inner cone (full brightness) to the outer cone (zero) using smoothstep on
+    // the cosine of the angle between the light's forward direction and the
+    // direction to the shaded point. L points from surface -> light, so we dot
+    // against the negated spot direction.
+    highp float spot_factor = 1.0;
+    if (scene_point_lights[light_index].type > 0.5)
+    {
+        highp float cos_theta = dot(L, -scene_point_lights[light_index].spot_direction);
+        spot_factor = smoothstep(scene_point_lights[light_index].spot_outer_cos,
+                                 scene_point_lights[light_index].spot_inner_cos,
+                                 cos_theta);
+    }
+    light_attenuation *= spot_factor;
+
     if (light_attenuation > 0.0)
     {
         highp float shadow;

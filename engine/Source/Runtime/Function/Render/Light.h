@@ -11,6 +11,16 @@ struct PointLight
     // radiant flux in W
     Vector3 m_Flux;
 
+    // ---- Spot light fields (only meaningful when m_IsSpot) -------------------
+    // Kept here so the whole point-light path (scene collection -> per-frame
+    // upload -> UBO) carries the spot payload in one structure. Point lights
+    // leave these at their defaults; the shader keys the spot branch off
+    // ScenePointLight::type, which the upload sets from m_IsSpot.
+    bool    m_IsSpot {false};
+    Vector3 m_Direction {Vector3(0.0f, 0.0f, -1.0f)};  // unit vector
+    float   m_InnerConeCos {1.0f};   // cos(inner cone half-angle)
+    float   m_OuterConeCos {0.0f};   // cos(outer cone half-angle)
+
     // calculate an appropriate radius for light culling
     // a windowing function in the shader will perform a smooth transition to zero
     // this is not physically based and usually artist controlled

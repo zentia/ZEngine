@@ -2,12 +2,27 @@
 #ifndef Z_SCENE_LIGHTING_STRUCTS_HLSLI
 #define Z_SCENE_LIGHTING_STRUCTS_HLSLI
 
+// 64-byte element (four vec4 pairs) — must match ScenePointLight in RenderCommon.h
+// bit-for-bit:
+//   vec4_0 = {position.xyz, radius}
+//   vec4_1 = {intensity.xyz, type}
+//   vec4_2 = {spot_direction.xyz, spot_inner_cos}
+//   vec4_3 = {spot_outer_cos, _pad_spot_0/1/2}
+// type: 0.0 = point, 1.0 = spot. The spot payload (direction + cone cosines) is
+// zero for point lights and only read inside the type > 0.5 branch in
+// mesh_lighting.inl.
 struct PointLight
 {
     float3 position;
-    float radius;
+    float  radius;
     float3 intensity;
-    float _pad;
+    float  type;
+    float3 spot_direction;
+    float  spot_inner_cos;
+    float  spot_outer_cos;
+    float  _pad_spot_0;
+    float  _pad_spot_1;
+    float  _pad_spot_2;
 };
 
 struct DirectionalLight
