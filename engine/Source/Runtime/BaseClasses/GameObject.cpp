@@ -5,6 +5,8 @@
 #include "Runtime/BaseClasses/ObjectManager.h"
 #include "Runtime/Function/Framework/Component/Component.h"
 #include "Runtime/Function/Framework/Component/Transform/Transform.h"
+#include "Runtime/Function/Framework/Level/Level.h"
+#include "Runtime/Function/Framework/World/WorldManager.h"
 #include "Runtime/Resource/Asset/AssetManager.h"
 #include "Runtime/Resource/Prefab/PrefabUtility.h"
 
@@ -95,6 +97,120 @@ bool GameObject::HasComponent(const std::string& component_type_name) const
 Transform* GameObject::GetTransform() const
 {
     return Cast<Transform>(GetComponentByTypeName("Transform"));
+}
+
+namespace
+{
+    Level* GetActiveLevel(const char* caller)
+    {
+        WorldManager* world_manager = GET_SYSTEM(WorldManager);
+        if (world_manager == nullptr)
+        {
+            LOG_ERROR(ZObject, "{}: WorldManager unavailable", caller);
+            return nullptr;
+        }
+        Level* level = world_manager->getCurrentActiveLevel();
+        if (level == nullptr)
+        {
+            LOG_ERROR(ZObject, "{}: no active level", caller);
+            return nullptr;
+        }
+        return level;
+    }
+}  // namespace
+
+GameObject* GameObject::InstantiateFromPrefabPath(const std::filesystem::path& prefab_path)
+{
+    if (prefab_path.empty())
+    {
+        LOG_WARNING(ZObject, "GameObject.Instantiate: empty prefab path");
+        return nullptr;
+    }
+
+    Level* level = GetActiveLevel("GameObject.Instantiate");
+    if (level == nullptr)
+    {
+        return nullptr;
+    }
+
+    GameObject* root = PrefabUtility::InstantiateFromPath(prefab_path);
+    if (root == nullptr)
+    {
+        LOG_ERROR(ZObject,
+                  "GameObject.Instantiate: failed to instantiate '{}'",
+                  prefab_path.generic_string());
+        return nullptr;
+    }
+
+    // CloneSubtree 走的是**序列化往返**（TransferUtility::CloneObjectViaSerialization），
+    // m_Id 会跟着模板一起被拷出来 —— 两次 Instantiate 同一个 prefab 就得到两个
+    // ID 相同的 GameObject，第二个进运行时表时会被 RegisterRuntimeGObject 拒掉
+    // （它故意不覆盖已有条目，否则会丢掉前一个对象的唯一引用）。
+    // 所以整棵子树都重新发一个 GObjectID。
+    //
+    // 用显式栈而不是递归：clone 出来的子树深度由 prefab 决定，深 prefab 递归有
+    // 爆栈风险，而且这样也不用为递归 lambda 引入 <functional>。
+    std::vector<GameObject*> pending {root};
+    while (!pending.empty())
+    {
+        GameObject* go = pending.back();
+        pending.pop_back();
+        if (go == nullptr)
+        {
+            continue;
+        }
+
+        const GObjectID fresh_id = ObjectIDAllocator::Alloc();
+        if (fresh_id == k_invalid_gobject_id)
+        {
+            LOG_ERROR(ZObject, "GameObject.Instantiate: GObjectID allocator exhausted");
+            return nullptr;
+        }
+        // m_Id 是 protected —— 静态成员函数的函数体里可以通过对象访问。
+        go->m_Id = fresh_id;
+
+        if (Transform* transform = go->GetTransform())
+        {
+            for (const PPtr<Transform>& child : transform->GetChildren())
+            {
+                Transform* child_transform = child;
+                if (child_transform == nullptr)
+                {
+                    continue;
+                }
+                if (GameObject* child_object = child_transform->GetParentObject())
+                {
+                    pending.push_back(child_object);
+                }
+            }
+        }
+    }
+
+    if (!level->RegisterRuntimeGObject(root))
+    {
+        LOG_ERROR(ZObject,
+                  "GameObject.Instantiate: could not register '{}' ('{}')",
+                  root->GetName().c_str(),
+                  prefab_path.generic_string());
+        return nullptr;
+    }
+
+    return root;
+}
+
+GameObject* GameObject::FindByName(const eastl::string& name)
+{
+    if (name.empty())
+    {
+        return nullptr;
+    }
+
+    Level* level = GetActiveLevel("GameObject.Find");
+    if (level == nullptr)
+    {
+        return nullptr;
+    }
+    return level->FindGObjectByName(name);
 }
 
 Component* GameObject::AddComponentByTypeName(const std::string& component_type_name)

@@ -6,6 +6,7 @@
 #include "Runtime/Function/Framework/Component/Component.h"
 #include "Runtime/Function/Framework/Object/ObjectIdAllocator.h"
 
+#include <filesystem>
 #include <memory>
 #include <string>
 #include <unordered_set>
@@ -134,6 +135,27 @@ public:
     /// Transform.h includes GameObject.h (the dependency points the other way).
     ZFUNCTION()
     Transform* GetTransform() const;
+
+    /// TS 入口：`GameObject.Instantiate(path)`。
+    ///
+    /// 从 prefab 资产路径生成一份独立拷贝，登记进当前关卡的**运行时对象表**
+    /// （不写进 .level 文件），返回它的根 GameObject。
+    ///
+    /// 实现放在 .cpp：PrefabUtility.h 在 Runtime/Resource 下，而本文件在
+    /// BaseClasses，依赖方向不允许在这里 include（同 GetTransform 的理由）。
+    ///
+    /// 返回 nullptr 的情况：路径加载失败 / prefab 没有根对象 / 拿不到当前关卡 /
+    /// clone 没有拿到新的 GObjectID。
+    ZFUNCTION(Name="Instantiate")
+    static GameObject* InstantiateFromPrefabPath(const std::filesystem::path& prefab_path);
+
+    /// TS 入口：`GameObject.Find(name)`。
+    ///
+    /// 按名字在当前关卡里找对象：先查关卡对象表，再查运行时生成的对象表。
+    /// O(n)，与 Unity 的 GameObject.Find 同量级 —— 每帧 Update 里用它会拖垮帧率，
+    /// 应该缓存结果。
+    ZFUNCTION(Name="Find")
+    static GameObject* FindByName(const eastl::string& name);
 
     void addComponent(Component* component)
     {

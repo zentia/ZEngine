@@ -467,6 +467,20 @@ void Level::Tick(float delta_time)
             id_object_pair.second->Tick(delta_time);
         }
     }
+
+    // 运行时生成的对象（Instantiate 产物）不在主表里，单独 Tick。
+    //
+    // 这段遍历依赖 Destroy 是**延迟**的（帧末统一执行）：如果脚本在某个对象的
+    // Tick 里 Destroy 了这张表里的另一个对象、而销毁是立即的，这里正在持有的
+    // 迭代器会当场失效。GameObject::Destroy 走延迟队列正是为了保住这一点。
+    for (const auto& id_object_pair : m_RuntimeGObjects)
+    {
+        if (id_object_pair.second != nullptr)
+        {
+            id_object_pair.second->Tick(delta_time);
+        }
+    }
+
     if (m_CurrentActiveCharacter && g_isPlaying)
     {
         m_CurrentActiveCharacter->Tick(delta_time);
@@ -562,6 +576,75 @@ void Level::SetMainCamera(GObjectID go_id)
 
         camera_component->SetMainCamera(object_pair.first == go_id);
     }
+}
+
+bool Level::RegisterRuntimeGObject(GameObject* gobject)
+{
+    if (gobject == nullptr)
+    {
+        LOG_ERROR(ZLevel, "RegisterRuntimeGObject: null object");
+        return false;
+    }
+    if (gobject->GetID() == k_invalid_gobject_id)
+    {
+        LOG_ERROR(ZLevel, "RegisterRuntimeGObject: '{}' has no GObjectID", gobject->GetName().c_str());
+        return false;
+    }
+
+    const auto inserted = m_RuntimeGObjects.emplace(gobject->GetID(), gobject);
+    if (!inserted.second)
+    {
+        // 走到这里几乎一定是调用方忘了给 clone 重新分配 GObjectID：序列化往返
+        // 会把模板的 m_Id 一起拷过来，两次 Instantiate 同一个 prefab 就会撞 id。
+        // 撞了不强行覆盖 —— 覆盖会悄悄丢掉前一个对象的唯一引用（本表是非拥有的，
+        // 丢了就再也找不到它，也就永远无法 Destroy，等于泄漏 + 悬挂两个错误）。
+        LOG_ERROR(ZLevel,
+                  "RegisterRuntimeGObject: id {} ('{}') already registered to '{}' — "
+                  "the clone did not get a fresh GObjectID",
+                  gobject->GetID(),
+                  gobject->GetName().c_str(),
+                  inserted.first->second->GetName().c_str());
+        return false;
+    }
+    return true;
+}
+
+bool Level::UnregisterRuntimeGObject(GObjectID go_id)
+{
+    return m_RuntimeGObjects.erase(go_id) != 0;
+}
+
+GameObject* Level::FindRuntimeGObject(GObjectID go_id) const
+{
+    const auto iter = m_RuntimeGObjects.find(go_id);
+    return iter != m_RuntimeGObjects.end() ? iter->second : nullptr;
+}
+
+GameObject* Level::FindGObjectByName(const eastl::string& name) const
+{
+    if (name.empty())
+    {
+        return nullptr;
+    }
+
+    for (const auto& id_object_pair : m_Gobjects)
+    {
+        if (id_object_pair.second != nullptr && id_object_pair.second->GetName() == name)
+        {
+            return id_object_pair.second.get();
+        }
+    }
+
+    for (const auto& id_object_pair : m_RuntimeGObjects)
+    {
+        GameObject* gobject = id_object_pair.second;
+        if (gobject != nullptr && gobject->GetName() == name)
+        {
+            return gobject;
+        }
+    }
+
+    return nullptr;
 }
 
 void Level::DeleteGObjectByID(GObjectID go_id)
