@@ -173,6 +173,11 @@ private:
     void scanAssetsInternal(const std::filesystem::path& asset_folder, bool incremental);
     AssetIndexEntry ScanSingleAsset(const std::filesystem::path& asset_path);
 
+    /// Drop `relative_path`'s outgoing edges (what it references) and the matching
+    /// reverse entries. Leaves m_ReferencerMap[relative_path] — who references IT —
+    /// alone: that belongs to the other assets. Use when re-indexing.
+    void RemoveOutgoingEdgesLocked(const std::string& relative_path);
+    /// Outgoing edges AND the incoming index. Only for an asset that is going away.
     void RemoveDependencyEdgesLocked(const std::string& relative_path);
     void IndexDependenciesLocked(const std::string& relative_path, const std::filesystem::path& abs_path);
     void EnsureDependenciesIndexed(const std::string& relative_path) const;

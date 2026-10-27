@@ -1122,7 +1122,7 @@ void AssetRegistry::RebuildReferencerMapLocked()
     }
 }
 
-void AssetRegistry::RemoveDependencyEdgesLocked(const std::string& relative_path)
+void AssetRegistry::RemoveOutgoingEdgesLocked(const std::string& relative_path)
 {
     auto dep_it = m_DependencyMap.find(relative_path);
     if (dep_it != m_DependencyMap.end())
@@ -1138,12 +1138,28 @@ void AssetRegistry::RemoveDependencyEdgesLocked(const std::string& relative_path
         }
         m_DependencyMap.erase(dep_it);
     }
+}
+
+void AssetRegistry::RemoveDependencyEdgesLocked(const std::string& relative_path)
+{
+    // The asset is going away: drop what it references AND the index of who
+    // references it. Only for deletion — re-indexing an asset that still exists
+    // must go through RemoveOutgoingEdgesLocked (see IndexDependenciesLocked).
+    RemoveOutgoingEdgesLocked(relative_path);
     m_ReferencerMap.erase(relative_path);
 }
 
 void AssetRegistry::IndexDependenciesLocked(const std::string& relative_path, const std::filesystem::path& abs_path)
 {
-    RemoveDependencyEdgesLocked(relative_path);
+    // Outgoing edges only. This used to call RemoveDependencyEdgesLocked, which also
+    // erases m_ReferencerMap[relative_path] — the INCOMING edges, which belong to the
+    // other assets. Re-indexing X therefore wiped every "Y references X" recorded by
+    // a Y indexed before X, and the result depended on directory iteration order:
+    // the post-scan pass indexes in that order, APFS happens to list keep.scene before
+    // hero.zasset, so keep.scene -> hero.zasset vanished from GetReferencers (P16)
+    // while GetDependencies("keep.scene") still had it. The web smoke run lists the
+    // directory in another order and stayed green.
+    RemoveOutgoingEdgesLocked(relative_path);
 
     if (!std::filesystem::exists(abs_path))
     {
