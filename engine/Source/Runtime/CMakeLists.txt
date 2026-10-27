@@ -859,6 +859,14 @@ list(REMOVE_ITEM SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/UMG/Test/UMGTreeSmokeTest.cpp")
 list(REMOVE_ITEM REGULAR_SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/UMG/Test/UMGTreeSmokeTest.cpp")
+# UMG 动画冒烟测试的 main carve-out（同理由）。它验证 header-only 纯核心
+# UMGAnimation.h（ApplyEasing/AnimTrack::Evaluate/RenderTransform::ApplyToSlot 属性路径
+# 分派）+ 状态机 UWidgetAnimation.h（Play/Tick/loop/reverse，把插值写进 RenderTransform）。
+# Only built when ZENGINE_BUILD_UMG_ANIMATION_SMOKE_TEST=ON. Header-only，只链 include root。
+list(REMOVE_ITEM SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/UMG/Test/UMGAnimationSmokeTest.cpp")
+list(REMOVE_ITEM REGULAR_SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/UMG/Test/UMGAnimationSmokeTest.cpp")
 # 分配器配对冒烟测试的 main carve-out（同理由）。Only built when
 # ZENGINE_BUILD_MEMORY_PAIRING_SMOKE_TEST=ON (see Core/Memory/Test/CMakeLists.txt).
 list(REMOVE_ITEM SOURCE_FILES

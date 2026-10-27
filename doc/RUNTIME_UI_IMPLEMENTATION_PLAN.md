@@ -48,6 +48,43 @@ P0 的**可本地验证部分**全部落地并验证。真机/渲染绑定的接
 
 ---
 
+## ✅ P1 落地记录（2026-10-27，动画纯核心 + 渲染变换字段）
+
+P1 的**可本地验证部分**（动画的纯逻辑驱动 + 作用对象字段）全部落地并验证。把插值出的值真正
+画到屏幕（opacity 乘进 tint / transform 变几何）属 ZSlate submodule paint 链改造，留真机清单。
+
+**缺口 2（UMG 动画）——纯逻辑已落地**：
+- **`UMG/Animation/UMGAnimation.h`**（header-only，无引擎/ZSlate 依赖）：
+  - `anim_core::ApplyEasing(t, Easing)`：进度→缓动曲线（Linear/Quad/Cubic/Sine/Expo），越界夹紧。
+  - `anim_core::AnimTrack{StartValue,EndValue,Easing}`：`Evaluate(lerp)` 先缓动再线性插值。
+  - `anim_core::RenderTransform`：动画作用对象（UE `RenderOpacity`/`RenderTransform` 对应物），
+    六个槽（Opacity/TranslationX/Y/ScaleX/Y/Rotation），默认值中性（opacity=1、scale=1、其余 0）。
+    `ApplyToSlot(path,value)` 按属性路径名分派（短名 `render_opacity` 与 UE 全名
+    `RenderTransform.Translation.X` 都认），未识别路径返回 false。**只覆盖命中的槽**——一条只动
+    opacity 的动画不会把 scale 意外归零。
+- **`UMG/Animation/UWidgetAnimation.h`**（header-only）：命名轨道表（`AddTrack/RemoveTrack/Clear`）
+  + 自持的归一化进度状态机（`Play/PlayReverse/Pause/Resume/Stop`，支持 loop/reverse/瞬时）。
+  `Tick(dt, target)` 每帧把 lerp 喂给每条轨道、按 property_path 写进目标 `RenderTransform`，返回是否仍在播放。
+  **不依赖 ZSlate::FCurveSequence**——那颗头成员函数前向声明顺序在 MSVC 单独包含时报 C2027，且本层
+  只需"进度随时间线性推进 + 可循环/反向"这一小撮语义，自持更轻、可 headless 测。
+- **`UMG/Core/UWidget.h`**：加 `m_RenderTransform`（`GetRenderTransform()`）+ `m_Animations`
+  （`AddAnimation()` 返回稳定引用供配置轨道）。`Tick(dt)` 先推进本 widget 的所有动画写进
+  `m_RenderTransform`，再调 `NativeTick`（P0 的子类钩子保持不变）。
+- **验证**：`UMGAnimationSmokeTest` 43/43 绿（easing 端点+夹紧 / AnimTrack 线性+缓动+反向 /
+  ApplyToSlot 路径分派+未识别返回 false+未命中槽保默认+UE 全名 / UWidgetAnimation 单轨道淡入
+  逐帧推进+多轨道同播+未绑定槽保默认+loop 回绕+reverse 起点/中点+瞬时一次性写终点）。
+- ZRuntime 干净编译（`UWidget.h` 新字段/新方法类型检查通过）。
+
+**未落地（ZSlate paint 链改造，留真机清单）**：
+1. **RenderOpacity → paint**：`SWidget` 无 opacity 字段，`ISlateRenderer` draw 原语吃 `UIColor`(RGBA)。
+   要把 `m_RenderTransform.Opacity` 乘进 tint 需改 `FPaintContext` 透传 + 每个绘制原语应用。
+2. **RenderTransform → geometry**：平移/缩放/旋转要折进 layout/paint/hit-test 全链的几何变换
+   （`SWidget` 无 transform 字段），影响面横跨 ZSlate submodule，无法本地验证。
+3. **动画驱动点**：`UWidget::Tick` 已就位，但仍需 P0 记录里那条"UISystem 取帧 delta → 逐帧调
+   `TickTree`"的真机接线才能真正每帧跑起来。
+
+---
+
 > 所以本方案**不是从零建 UI**，而是**补齐现有 UMG 相对 Unity uGUI / UE UMG 的缺口**。
 
 ---
@@ -160,33 +197,18 @@ ZSlate 层有焦点概念，但 UMG 层没有暴露"哪个 widget 有焦点 / ta
 
 ## 3. P1 落地：动态表现
 
-### 3.1 缺口 2 — UMG 动画（接 ZSlate CurveSequence）
+### 3.1 缺口 2 — UMG 动画（✅ 纯逻辑已落地，见顶部 P1 记录）
 
-**现状**：ZSlate 有 `Animation/CurveSequence.h`（编辑器已用于面板动画），UMG 层未接。
+**现状**：已落地为 `UMG/Animation/UMGAnimation.h`（纯核心：easing + AnimTrack + RenderTransform
+属性路径分派）+ `UMG/Animation/UWidgetAnimation.h`（命名轨道 + 自持归一化进度状态机）。
+`UWidget` 持有 `m_RenderTransform` + `m_Animations`，`Tick(dt)` 逐帧推进。
 
-**方案**：
-```cpp
-// UMG/Animation/UWidgetAnimation.h
-class UWidgetAnimation {
-public:
-    void AddFloatTrack(const std::string& property_path, CurveSequence curve);
-    void Play(float play_rate = 1.0f);
-    void Stop();
-    bool IsPlaying() const;
-    // 每帧由 UUserWidget::TickTree 驱动
-    void Evaluate(float delta_time, UWidget* target);
-private:
-    float m_Time {0.0f};
-    std::vector<std::pair<std::string, CurveSequence>> m_Tracks;
-};
-```
-- `UUserWidget` 持有 `std::vector<UWidgetAnimation>`，`TickTree` 里 `Evaluate`。
-- property_path 用现成的 `UMGPropertyBag` 键名（`UWidget::SerializeProperties` 已用 bag）。
-- 典型动画：`RenderOpacity`(0→1)、`RenderTranslation`、`RenderScale`——需在 `UWidget` 加
-  这三个运行时变换字段，`RebuildWidget` 时应用到 ZSlate `SWidget` 的 transform。
+**与原方案的偏差**：原方案想复用 ZSlate `FCurveSequence`，但那颗头成员函数前向声明顺序在 MSVC
+单独包含时报 C2027，且本层只需"进度随时间线性推进 + 可循环/反向"这一小撮语义——改为自持一个
+极小的归一化进度状态机，反而更轻、可 headless 测（只链 include root，不拉 ZSlate）。
 
-**先决**：`UWidget` 加 `m_RenderOpacity/m_RenderTranslation/m_RenderScale`（Unity 的 CanvasGroup
-alpha + RectTransform 位置的最小集）。
+**仍待真机**：把 `m_RenderTransform` 应用到 ZSlate `SWidget` 的 paint（opacity 乘 tint /
+transform 折进几何），见顶部 P1 记录的"未落地"清单。
 
 ### 3.2 缺口 6 — 锚点/自适应（P1 末）
 

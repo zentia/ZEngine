@@ -89,3 +89,46 @@ endif()
 add_test(NAME UMGTreeSmokeTest COMMAND UMGTreeSmokeTest)
 
 message(STATUS "Configured UMG tree smoke-test target: UMGTreeSmokeTest")
+
+# =====================================================================
+# UMG animation smoke test (P1 animation + render transform).
+# ---------------------------------------------------------------------
+# Verifies the header-only pure core in Animation/UMGAnimation.h (ApplyEasing /
+# AnimTrack::Evaluate / RenderTransform::ApplyToSlot property-path dispatch) and
+# the stateful driver in Animation/UWidgetAnimation.h (Play/Tick/loop/reverse,
+# writing interpolated values into a RenderTransform). Both headers are fully
+# self-contained (std headers only — the time state machine is local, not
+# ZSlate::FCurveSequence), so the target links only the include root: no
+# ZRuntime, no ZSlate.
+#
+#   cmake -B build -DZENGINE_BUILD_UMG_ANIMATION_SMOKE_TEST=ON
+#   cmake --build build --target UMGAnimationSmokeTest
+# =====================================================================
+
+option(ZENGINE_BUILD_UMG_ANIMATION_SMOKE_TEST
+       "Build the UMG animation smoke-test executable"
+       OFF)
+
+if(NOT ZENGINE_BUILD_UMG_ANIMATION_SMOKE_TEST)
+    return()
+endif()
+
+add_executable(UMGAnimationSmokeTest UMGAnimationSmokeTest.cpp)
+
+set_target_properties(UMGAnimationSmokeTest PROPERTIES
+    CXX_STANDARD 20
+    FOLDER "Engine/Tests"
+)
+
+# Header-only include chain: only the engine/Source root is needed.
+target_include_directories(UMGAnimationSmokeTest PRIVATE
+    ${ENGINE_ROOT_DIR}/Source
+)
+
+if(MSVC)
+    target_compile_options(UMGAnimationSmokeTest PRIVATE /W4)
+endif()
+
+add_test(NAME UMGAnimationSmokeTest COMMAND UMGAnimationSmokeTest)
+
+message(STATUS "Configured UMG animation smoke-test target: UMGAnimationSmokeTest")

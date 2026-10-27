@@ -2,9 +2,12 @@
 
 #include "ZSlate/Widgets/SWidget.h"
 #include "Runtime/UMG/Core/UMGProperties.h"
+#include "Runtime/UMG/Animation/UMGAnimation.h"
+#include "Runtime/UMG/Animation/UWidgetAnimation.h"
 
 #include <memory>
 #include <string>
+#include <vector>
 
 // ZUMG: a UE-style UMG (Unreal Motion Graphics) widget object layer built on top
 // of the retained-mode ZSlate framework (engine/Source/Runtime/Slate). Each
@@ -54,11 +57,45 @@ public:
 
     // --- Per-frame tick (P1, wired now so P0 nav can rely on it) -------------
     // Called once per frame for every widget in an in-viewport tree, before the
-    // Slate paint. Default no-op; subclasses override for animated / live HUD
-    // widgets (progress bars, timers). delta_time is the frame delta in seconds.
-    // Panels should override to recurse into children (see UMGTick.h for the
-    // shared recursion that skips Collapsed subtrees).
+    // Slate paint. Advances any animations this widget owns (see AddAnimation),
+    // then calls NativeTick. delta_time is the frame delta in seconds.
+    // Panels should override NativeTick to recurse into children (see UMGTree.h
+    // for the shared recursion that skips Collapsed subtrees).
+    void Tick(float delta_time)
+    {
+        for (UWidgetAnimation& anim : m_Animations)
+        {
+            anim.Tick(delta_time, m_RenderTransform);
+        }
+        NativeTick(delta_time);
+    }
+
+    // Subclass hook, called after this widget's animations have advanced. Default
+    // no-op; override for animated / live HUD widgets (progress bars, timers).
     virtual void NativeTick(float delta_time) { (void)delta_time; }
+
+    // --- Render transform / opacity (P1) -------------------------------------
+    // The animation target this widget exposes to UWidgetAnimation. Opacity and
+    // translation/scale/rotation are the UE UWidget::RenderOpacity / RenderTransform
+    // analogues. Values start at their neutral defaults (opaque, no offset); a
+    // UWidgetAnimation only overwrites the slots its tracks name, so a fade never
+    // accidentally zeroes the scale. Applying these to the actual paint (opacity
+    // multiplied into the tint / transform folded into geometry) is the ZSlate
+    // paint-chain wiring on the real-machine list, not here.
+    anim_core::RenderTransform& GetRenderTransform() { return m_RenderTransform; }
+    const anim_core::RenderTransform& GetRenderTransform() const { return m_RenderTransform; }
+
+    // Own an animation that drives this widget's render transform each frame.
+    // Returns a reference into this widget's storage (stable for the widget's
+    // lifetime); callers configure tracks via AddTrack then Play. Playing is
+    // driven automatically by Tick().
+    UWidgetAnimation& AddAnimation()
+    {
+        m_Animations.emplace_back();
+        return m_Animations.back();
+    }
+    void ClearAnimations() { m_Animations.clear(); }
+    int GetAnimationCount() const { return static_cast<int>(m_Animations.size()); }
 
     // --- Keyboard focus / navigation (P0) ------------------------------------
     // Whether this widget can take keyboard focus (UE UWidget::IsFocusable
@@ -115,6 +152,8 @@ protected:
     ZSlate::EVisibility m_Visibility {ZSlate::EVisibility::Visible};
     bool m_Focusable {false};
     int m_TabOrder {0};
+    anim_core::RenderTransform m_RenderTransform;
+    std::vector<UWidgetAnimation> m_Animations;
     std::shared_ptr<ZSlate::SWidget> m_Widget;
 };
 }  // namespace ZUMG
