@@ -869,18 +869,24 @@ PrefabInstance* PrefabUtilityEditor::InstantiateVariant(PrefabAsset* variant)
         }
     }
 
-    const int applied = PrefabUtility::ApplyVariantOverrides(chain, source_to_clone);
+    // Structural changes come first, same as Runtime's Instantiate: a component the
+    // variant removes must be gone before the post-load pass walks the tree, and one
+    // it adds must already be attached to its host by then.
+    const int structural = PrefabUtility::ApplyVariantStructuralChanges(chain, source_to_clone);
+    const int applied = structural + PrefabUtility::ApplyVariantOverrides(chain, source_to_clone);
 
     // Re-point m_SourcePrefab at the variant we were called with so future
     // Apply pushes overrides into `variant`, not into `deepest`.
     instance->SetSourcePrefab(PPtr<PrefabAsset>(variant));
 
     LOG_INFO(ZPrefab,
-             "InstantiateVariant: instantiated '{}' (base='{}'); {} variant override(s) applied; "
+             "InstantiateVariant: instantiated '{}' (base='{}'); {} variant override(s) and "
+             "{} structural change(s) applied; "
              "source_prefab=variant, corresponding_source=base",
              variant->name.c_str(),
              deepest->name.c_str(),
-             applied);
+             applied - structural,
+             structural);
     return instance;
 }
 
@@ -949,6 +955,84 @@ int PrefabUtilityEditor::ApplyAllToVariant(PrefabInstance* instance)
         ++applied;
     }
 
+    // ---- Structural changes: components this instance added / suppressed --------
+    //
+    // Same translation as the property half: `m_added_components` names objects on
+    // the INSTANCE and `m_removed_components` already names the base's components,
+    // so both have to be re-expressed against the base graph before they can be
+    // stored on the variant — which is the graph every link of the chain targets.
+    auto& variant_added = variant->GetVariantAddedComponents();
+    for (const PPtr<Component>& entry : instance->GetAddedComponents())
+    {
+        Component* added = static_cast<Component*>(entry);
+        if (added == nullptr)
+        {
+            continue;
+        }
+        GameObject* host = added->GetParentObject();
+        if (host == nullptr)
+        {
+            LOG_WARNING(ZPrefab, "ApplyAllToVariant: an added component has no host GameObject — skipped");
+            continue;
+        }
+        PPtr<Object> base_host_object = instance->FindSourceForInstance(PPtr<Object>(host));
+        GameObject* base_host = (base_host_object.IsNull())
+            ? nullptr
+            : Cast<GameObject>(static_cast<Object*>(base_host_object));
+        if (base_host == nullptr)
+        {
+            LOG_WARNING(ZPrefab, "ApplyAllToVariant: no base counterpart for host '{}' — skipped",
+                        host->name.c_str());
+            continue;
+        }
+
+        // The variant FILE needs its own copy: this component belongs to the scene's
+        // SerializedFile and must not be referenced across files.
+        Object* clone_object = TransferUtility::CloneObjectViaSerialization(*added);
+        Component* clone_component = (clone_object != nullptr) ? Cast<Component>(clone_object) : nullptr;
+        if (clone_component == nullptr)
+        {
+            LOG_WARNING(ZPrefab, "ApplyAllToVariant: cloning the added component failed — skipped");
+            continue;
+        }
+        // It is about to become an object of the variant file, so it needs an
+        // identity of its own.
+        if (ObjectManager* object_manager = GET_SYSTEM(ObjectManager))
+        {
+            object_manager->AllocateAndAssignInstanceID(clone_component);
+        }
+
+        VariantComponentAddition addition;
+        addition.host      = PPtr<GameObject>(base_host);
+        addition.component = clone_component;
+        variant_added.push_back(addition);
+        ++applied;
+    }
+
+    auto& variant_removed = variant->GetVariantRemovedComponents();
+    for (const PPtr<Component>& entry : instance->GetRemovedComponents())
+    {
+        if (entry.IsNull())
+        {
+            continue;
+        }
+        const int32_t id = entry.GetInstanceID();
+        bool already = false;
+        for (const PPtr<Component>& existing : variant_removed)
+        {
+            if (existing.GetInstanceID() == id)
+            {
+                already = true;
+                break;
+            }
+        }
+        if (!already)
+        {
+            variant_removed.push_back(entry);
+            ++applied;
+        }
+    }
+
     if (applied == 0)
     {
         return 0;
@@ -974,11 +1058,17 @@ int PrefabUtilityEditor::ApplyAllToVariant(PrefabInstance* instance)
     }
 
     // Unity: after Apply the instance no longer overrides anything — the variant now
-    // carries that value itself.
+    // carries those values and that structure itself.
     instance->ClearModifications();
+    instance->GetAddedComponents().clear();
+    instance->GetRemovedComponents().clear();
 
-    LOG_INFO(ZPrefab, "ApplyAllToVariant: {} override(s) recorded on '{}'",
-             applied, path.generic_string());
+    LOG_INFO(ZPrefab, "ApplyAllToVariant: {} change(s) recorded on '{}' "
+                      "({} override(s), {} added / {} removed component(s))",
+             applied, path.generic_string(),
+             static_cast<int>(variant->GetVariantOverrides().size()),
+             static_cast<int>(variant->GetVariantAddedComponents().size()),
+             static_cast<int>(variant->GetVariantRemovedComponents().size()));
     return applied;
 }
 

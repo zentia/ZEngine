@@ -109,6 +109,24 @@ public:
     static int ApplyVariantOverrides(const std::vector<PrefabAsset*>&        chain,
                                      const std::unordered_map<Object*, Object*>& source_to_clone);
 
+    /// Apply every link's STRUCTURAL changes (added / removed components) onto an
+    /// already-built clone. Call this before ApplyVariantOverrides: a component the
+    /// variant removes must not survive into the post-load pass, and one it adds
+    /// must be hanging off its host before PostLoadResource runs.
+    ///
+    ///   * removed — the base-side Component named by the PPtr is looked up in
+    ///     `source_to_clone` and detached from its host GameObject.
+    ///   * added   — the Component stored in the variant FILE is a template and is
+    ///     never handed out (a prefab's graph is cached and shared: handing out its
+    ///     objects is what made two drops of one prefab share one Transform). It is
+    ///     cloned via TransferUtility::CloneObjectViaSerialization and attached to
+    ///     the clone of its host.
+    ///
+    /// Same translation rule as ApplyVariantOverrides: every entry names an object
+    /// in the deepest base's graph. Returns how many changes were applied.
+    static int ApplyVariantStructuralChanges(const std::vector<PrefabAsset*>&        chain,
+                                             const std::unordered_map<Object*, Object*>& source_to_clone);
+
     /// Create an in-memory Variant of `base`: a PrefabAsset with NO object tree of
     /// its own, carrying only `m_variant_base`. The caller owns the result and is
     /// expected to fill `GetVariantOverrides()` before persisting it with
@@ -121,9 +139,10 @@ public:
     /// Returns nullptr if `base` is null or the header cannot be allocated.
     static PrefabAsset* CreateVariantAsset(PrefabAsset* base, const eastl::string& variant_name);
 
-    /// Write `variant` to `variant_path`. The file contains exactly one object —
-    /// the PrefabAsset header — because a Variant owns no tree; the base reference
-    /// is a cross-file PPtr and the overrides ride along in `m_variant_overrides`.
+    /// Write `variant` to `variant_path`. A Variant owns no tree, so the file is
+    /// the PrefabAsset header at fileID 1 — plus one object per added component
+    /// (those the Variant does own). The base reference is a cross-file PPtr and
+    /// the overrides ride along in `m_variant_overrides`.
     ///
     /// `variant_path` must end in .prefab (YAML) or .zasset (binary SerializedFile),
     /// matching SaveAsPrefabAsset's split.

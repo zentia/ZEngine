@@ -9,6 +9,41 @@
 #include "PrefabAsset.generated.h"
 
 // =====================================================================================
+// VariantComponentAddition — one Component a Variant ADDS on top of its base.
+// -------------------------------------------------------------------------------------
+// `m_variant_overrides` (below) can only change VALUES on objects the base already
+// has. Adding or removing a component is structural and needs its own record:
+//
+//   * Removed — just a PPtr<Component> into the base's graph; nothing to store, the
+//     base still owns the object.
+//   * Added   — an actual Component object. A Variant otherwise owns no object tree,
+//     so this component has to be serialised as a separate object IN THE VARIANT
+//     FILE (SaveVariantAsset collects them), plus the base GameObject it hangs on.
+//
+// Mirrors Unity, where a Variant's added components live in the variant file itself.
+// =====================================================================================
+struct VariantComponentAddition
+{
+    DECLARE_SERIALIZE(VariantComponentAddition)
+
+    /// The component object, serialised as its own object in the variant file.
+    /// ImmediatePtr (file-local fileID) rather than PPtr — same convention a plain
+    /// prefab uses for the components hanging off its root GameObject.
+    ImmediatePtr<Component> component;
+
+    /// Which GameObject of the BASE's graph this component attaches to. Cross-file
+    /// PPtr, because that GameObject lives in the base's file.
+    PPtr<GameObject> host;
+};
+
+template<class TransferFunction>
+inline void VariantComponentAddition::Transfer(TransferFunction& transfer)
+{
+    transfer.Transfer(component, "component");
+    transfer.Transfer(host, "host");
+}
+
+// =====================================================================================
 // PrefabAsset
 // -------------------------------------------------------------------------------------
 // Runtime-side, persistent on-disk representation of a prefab. Produced by saving an
@@ -74,13 +109,46 @@ public:
     void AddVariantOverride(const PropertyModification& mod) { m_VariantOverrides.push_back(mod); }
     void ClearVariantOverrides() { m_VariantOverrides.clear(); }
 
+    // ---- Variant structural changes (model A, 2026-10-27) ----
+    //
+    // Components this Variant adds / removes relative to its base chain. These are
+    // the structural counterpart of `m_variant_overrides`, and they live here for
+    // the same reason: PrefabInstance is kTypeIsEditorOnly, so a Variant whose
+    // added/removed components only existed there would lose them all in a player
+    // build — the device would instantiate a plain copy of the base.
+    //
+    // Every entry in BOTH lists names an object in the DEEPEST BASE's graph (the
+    // removed component itself; the host of an added one), which is exactly what
+    // the clone's ptr_map / corresponding_source is keyed by — so, like property
+    // overrides, a chain of any length lands on one cloned base tree.
+    std::vector<PPtr<Component>>& GetVariantRemovedComponents() { return m_VariantRemovedComponents; }
+    const std::vector<PPtr<Component>>& GetVariantRemovedComponents() const { return m_VariantRemovedComponents; }
+
+    std::vector<VariantComponentAddition>& GetVariantAddedComponents() { return m_VariantAddedComponents; }
+    const std::vector<VariantComponentAddition>& GetVariantAddedComponents() const { return m_VariantAddedComponents; }
+
+    /// Every Component object this Variant file must carry, i.e. the `component`
+    /// half of each addition. SaveVariantAsset writes these alongside the header.
+    void CollectAddedComponentObjects(std::vector<Object*>& out_objects) const
+    {
+        for (const VariantComponentAddition& addition : m_VariantAddedComponents)
+        {
+            Component* component = addition.component;  // ImmediatePtr::operator T*
+            if (component != nullptr)
+            {
+                out_objects.push_back(component);
+            }
+        }
+    }
+
     // ---- Schema versioning (so future format breaks are detectable) ----
     uint32_t GetSchemaVersion() const { return m_SchemaVersion; }
 
-    /// Bumped 1 -> 2 when `m_variant_overrides` was appended. Older files keep
-    /// reporting 1; the field is appended last so readers that don't know it
-    /// still resolve every earlier field by name.
-    static constexpr uint32_t kCurrentSchemaVersion = 2u;
+    /// Bumped 1 -> 2 when `m_variant_overrides` was appended, 2 -> 3 when the two
+    /// structural lists were appended. Older files keep reporting their old number;
+    /// the fields are appended last so readers that don't know them still resolve
+    /// every earlier field by name.
+    static constexpr uint32_t kCurrentSchemaVersion = 3u;
 
 protected:
     // Serialized order: m_schema_version, m_root_game_object, m_variant_base,
@@ -114,4 +182,12 @@ protected:
     /// prefab. See the accessors above for the model.
     ZPROPERTY(Name="m_variant_overrides")
     std::vector<PropertyModification> m_VariantOverrides;
+
+    /// Base-side Components this Variant suppresses.
+    ZPROPERTY(Name="m_variant_removed_components")
+    std::vector<PPtr<Component>> m_VariantRemovedComponents;
+
+    /// Components this Variant adds, stored as objects in the variant file.
+    ZPROPERTY(Name="m_variant_added_components")
+    std::vector<VariantComponentAddition> m_VariantAddedComponents;
 };
