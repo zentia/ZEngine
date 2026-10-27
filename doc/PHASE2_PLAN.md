@@ -359,6 +359,47 @@ ZRuntime、Vulkan SDK 已装 —— Vulkan 原生吃 SPIR-V，**不需要**交�
 目标**上跑（游戏/编辑器运行时，或 Mac 上走 Metal——Nanite 的 GPU 路径目前只有 Metal 端到端测过）。已如实
 记录，不假装跑过。
 
+### 落地记录 · 2.5 页池真机 A/B 对比（2026-10-27，Vulkan headless，本机 RTX 5080）
+
+上一节结论"两个后端都卡在 headless 初始化"已被**本轮兑现**——Vulkan 侧的 headless 初始化路径补齐了，
+那条"只能真机抓帧比对"的链路现在**在本机无窗口就能端到端跑**。
+
+**Vulkan headless 初始化路径（commit `9903e004` + 本轮 `cba3f9b5`）**：
+- `m_Headless`（`WindowSystem::GetMainWindow() == nullptr` 时置真）：跳过 `CreateWindowSurface` /
+  `CreateSwapchain` / `CreateSwapchainImageViews` / present queue；离屏 extent 用 WindowSystem 回退尺寸
+  （1280×720）铺底，颜色格式取 `R8G8B8A8_UNORM`。
+- `QueueFamilyIndices::IsComplete(require_present=true)`：无头时 `present_family` 恒空，用
+  `IsComplete(false)` 只要求 graphics + compute（默认 true 保持既有行为）。
+- `IsDeviceSuitable` 无头时跳过 `QuerySwapChainSupport`（null surface 会触发 validation 报错且返回空，
+  导致每个设备都被判不适合 → "failed to find suitable physical device" → 拿 null 物理设备直接崩），并把
+  `VK_KHR_swapchain` 从必需扩展集合临时拿掉再判扩展支持。
+- `GetCurrentCommandBuffer` 无头时返回 `nullptr`：`m_CurrentCommandBuffer` 默认是 `new` 出来的空壳，
+  `getResource()` 是未初始化句柄，拿它当当前帧缓冲会让 Nanite 误以为自己在 pass 里、把命令录进垃圾句柄，
+  `vkCmdBindPipeline` 直接 access violation。返回 null 让 dispatch 退到 `BeginSingleTimeCommands`。
+- `SubmitRendering` 无头时 `waitSemaphoreCount = 0`（`m_ImageAvailableForRenderSemaphores` 从不被 signal，
+  非 0 会 `vkQueueSubmit` 死锁），present 块整体 `if (!m_Headless)` 跳过，仍推进 `m_CurrentFrameIndex`。
+
+**真机 A/B 对比测试 `Nanite/Test/NanitePagePoolABSmokeTest.cpp`**：注册无窗口 `WindowSystem` → 建 headless
+`VulkanRHI` → 12×12 网格（288 三角形，两层集群，多叶子页）→ 两个实例共享 `mesh_id=1` → 同一相机跑两遍
+（pool budget 0 vs 足量）→ 读回离屏 GBufferA 逐像素比对。判据：**驻留方式变了、画面不能变**。
+
+**过程中修掉的真 bug**：`ExecuteStreamingUploads` 里 `m_PageSlots` 是构造时的占位容量 `(1,1)`，不重设的话
+`Admit` 全部失败（`failed=8`，页池一个页都驻留不进 → 什么都不画）。新增 `ResetWithCapacity`，按本帧可驻留
+页的顶点/索引总数上界铺满槽位表。修后 `uploads=8 failed=0`，页池真正画出像素。
+
+**测试现状（诚实）**：12/13 通过。唯一失败是**核心判据本身**——`covered_dense=2136` vs `covered_pool=1545`，
+`differing=591`，`max_channel_delta=127`。清掉全部临时 printf 后，诊断线索收敛到一处：页池路径多条 draw
+命令的 `firstIndex` 从 `756` **回绕到 `0`**（两个实例共享 `mesh_id=1`，`PatchClustersForPagePool` 按
+`(mesh_id, cluster_index)` 取槽位基址 → 两实例的集群别名到同一批 8 个槽位），而稠密路径索引全局唯一
+（`0..1620`）。CPU 侧簿记已逐项核对一致（几何/索引/非空命令数都是 16/槽位分配 patched=16 zeroed=0），
+分歧在 GPU 光栅——**这是页池"按网格去重、多实例共享页"设计与"逐实例变换"的交互问题**：共享页里的顶点是
+local-space 还是 world-space、shader 是否用 `gl_InstanceIndex`/`firstInstance` 反查实例变换，决定了共享是
+对是错。需要单独一轮（大概率 RenderDoc GPU 抓帧看 vertex fetch）定位。测试本身正确地把这个分歧隔离了出来。
+
+**定位**：页池 GPU 路径的**画面正确性**仍未闭环（591 像素分歧待解），但"能否在本机无窗口跑 GPU 对比"这个
+前置能力问题已解决，且过程中修掉一个让页池完全画不出的真 bug（槽位表容量）。剩余分歧是页池去重语义问题，
+不是 headless 基建问题。
+
 ---
 
 ### 落地记录 · 2.5 HiZ（2026-10-26，CPU 侧；GPU 侧待真机）
