@@ -30,6 +30,7 @@ VirtualTextureManager& VirtualTextureManager::Get()
 
 void VirtualTextureManager::Initialize(RHI* rhi, RenderResourceBase* render_resource)
 {
+    m_OwnerThread = std::this_thread::get_id();
     m_Rhi = rhi;
     m_RenderResource = render_resource;
 
@@ -53,6 +54,7 @@ void VirtualTextureManager::InitializeLogical(uint32_t pool_width_pages,
                                               uint32_t pool_height_pages,
                                               uint32_t page_size)
 {
+    m_OwnerThread = std::this_thread::get_id();
     m_Rhi = nullptr;
     m_RenderResource = nullptr;
 
@@ -279,6 +281,10 @@ void VirtualTextureManager::RequestPages(VirtualTextureHandle handle,
             }
         }
     }
+
+    // 旧代码从不 notify（全文件唯一一处 notify 是关停），所以只要 cv.wait 的谓词没被
+    // 虚假唤醒碰上，后台线程就一直睡着、实际上从没处理过任何请求。
+    m_PageLoadingCv.notify_all();
 }
 
 void VirtualTextureManager::Update(const Vector3& camera_position,
@@ -495,6 +501,7 @@ void VirtualTextureManager::FlushPageTables()
     {
         return;  // logical (headless WASM) pool: 没有 GPU 页表可传
     }
+    CheckOwnerThread();
 
     // 锁内只拷 shared_ptr，锁外做 GPU 提交（提交要 vkQueueWaitIdle，不该持容器锁）。
     std::vector<std::shared_ptr<VirtualTextureResource>> resources;
@@ -600,56 +607,133 @@ void VirtualTextureManager::ShutdownPageLoadingThread()
 {
     if (m_PageLoadingThread.joinable())
     {
-        m_ShouldStop = true;
+        {
+            // 置停止标志必须持有 cv 所用的那把锁：否则 worker 刚判完谓词（假）、还没
+            // 进入 wait 时我们 notify，这次唤醒就丢了，join 永远等下去。
+            std::lock_guard<std::mutex> lock(m_PageLoadQueueMutex);
+            m_ShouldStop = true;
+        }
         m_PageLoadingCv.notify_all();
         m_PageLoadingThread.join();
+    }
+
+    // 丢弃没来得及提交的预备页（它们只是 CPU 缓冲，没有 GPU 对象要释放）。
+    std::lock_guard<std::mutex> lock(m_PageLoadQueueMutex);
+    while (!m_PreparedQueue.empty())
+    {
+        m_PreparedQueue.pop();
     }
 }
 
 void VirtualTextureManager::PageLoadingThreadFunction()
 {
-    while (!m_ShouldStop)
+    // Worker 线程**只做 CPU 活**：从保留的源像素里把页抠出来（ExtractPagePixels），
+    // 交给 owner 线程提交。它从不碰 RHI、不改页状态、不动页池 —— 上一版直接在这里调
+    // LoadPage，而 LoadPage 会分配槽位、提交 GPU 命令缓冲，和渲染线程并发就是数据竞争
+    // + 并发 queue submit（只是因为从没 notify 过，这条路径从未真的跑起来）。
+    //
+    // 背压：已准备好但还没提交的页最多 2*max_concurrent_loads 个。每个预备页是一块
+    // page_size^2*4 字节的 CPU 缓冲，不设上限的话 worker 会把整张大纹理的所有页都抠
+    // 出来堆在内存里，而 owner 线程每帧只提交 max_concurrent_loads 个。
+    const size_t backlog_cap = static_cast<size_t>(std::max<uint32_t>(1u, m_Config.max_concurrent_loads)) * 2u;
+
+    for (;;)
     {
-        std::unique_lock<std::mutex> lock(m_PageLoadingMutex);
-        m_PageLoadingCv.wait(lock, [this] { return !m_PageLoadQueue.empty() || m_ShouldStop; });
-
-        if (m_ShouldStop)
+        PageLoadTask task;
         {
-            break;
-        }
-
-        // Process a limited number of pages per frame
-        uint32_t processed = 0;
-        const uint32_t max_pages_per_frame = m_Config.max_concurrent_loads;
-
-        while (processed < max_pages_per_frame && !m_PageLoadQueue.empty())
-        {
-            PageLoadTask task;
+            std::unique_lock<std::mutex> lock(m_PageLoadQueueMutex);
+            m_PageLoadingCv.wait(lock, [&] {
+                return m_ShouldStop || (!m_PageLoadQueue.empty() && m_PreparedQueue.size() < backlog_cap);
+            });
+            if (m_ShouldStop)
             {
-                std::lock_guard<std::mutex> queue_lock(m_PageLoadQueueMutex);
-                if (m_PageLoadQueue.empty())
-                {
-                    break;
-                }
-                task = m_PageLoadQueue.top();
-                m_PageLoadQueue.pop();
+                return;
             }
-
-            // Load page
-            LoadPage(task.page_id, task.virtual_texture_handle);
-
-            ++processed;
+            task = m_PageLoadQueue.top();
+            m_PageLoadQueue.pop();
+            ++m_WorkerInFlight;  // 取走到入预备队列之间不能"凭空消失"，见头文件注释
         }
+        auto finish_without_page = [this] {
+            std::lock_guard<std::mutex> lock(m_PageLoadQueueMutex);
+            --m_WorkerInFlight;
+        };
+
+        auto resource = GetVirtualTexture(task.virtual_texture_handle);
+        if (!resource)
+        {
+            finish_without_page();
+            continue;  // 已注销
+        }
+
+        // RequestPages 每次都把整个 mip 的所有页重新入队，已驻留的页不必再抠一遍。
+        // （读页表项带锁；与 owner 线程的竞争只会多抠一页，提交侧还会再按状态过滤。）
+        if (resource->GetPageTableEntry(task.page_id.mip_level, task.page_id.page_x, task.page_id.page_y).is_valid)
+        {
+            finish_without_page();
+            continue;
+        }
+
+        PreparedPage prepared;
+        prepared.page_id = task.page_id;
+        prepared.handle = task.virtual_texture_handle;
+        prepared.has_pixels = resource->ExtractPagePixels(
+            task.page_id.page_x, task.page_id.page_y, prepared.pixels, prepared.width, prepared.height);
+
+        {
+            std::lock_guard<std::mutex> lock(m_PageLoadQueueMutex);
+            m_PreparedQueue.push(std::move(prepared));
+            --m_WorkerInFlight;  // 与入队同一把锁：任何时刻页都恰好在一个地方
+            const uint32_t depth = static_cast<uint32_t>(m_PreparedQueue.size());
+            uint32_t peak = m_PreparedBacklogPeak.load();
+            while (depth > peak && !m_PreparedBacklogPeak.compare_exchange_weak(peak, depth))
+            {
+            }
+        }
+        ++m_AsyncPreparedCount;
     }
 }
 
 void VirtualTextureManager::ProcessPageLoadRequests(float delta_time)
 {
-    // This is called on the main thread
-    // Process a limited number of requests per frame
+    // owner 线程调用。每帧最多提交 max_concurrent_loads 页。
     uint32_t processed = 0;
     const uint32_t max_pages_per_frame = m_Config.max_concurrent_loads;
 
+    // 异步模式：worker 已经把像素抠好放进 m_PreparedQueue，这里只做提交
+    // （槽位分配 + GPU 上传 + 页表簿记），全部在 owner 线程。
+    if (m_PageLoadingThread.joinable())
+    {
+        while (processed < max_pages_per_frame)
+        {
+            PreparedPage prepared;
+            {
+                std::lock_guard<std::mutex> lock(m_PageLoadQueueMutex);
+                if (m_PreparedQueue.empty())
+                {
+                    break;
+                }
+                prepared = std::move(m_PreparedQueue.front());
+                m_PreparedQueue.pop();
+            }
+
+            auto resource = GetVirtualTexture(prepared.handle);
+            if (resource)
+            {
+                VirtualTexturePage* page =
+                    resource->GetPage(prepared.page_id.mip_level, prepared.page_id.page_x, prepared.page_id.page_y);
+                if (page && page->state == VirtualTexturePageState::Unloaded)
+                {
+                    LoadPage(prepared.page_id, prepared.handle, &prepared);
+                }
+            }
+            ++processed;
+        }
+        // 预备队列腾出了位置，worker 可能正卡在背压上。
+        m_PageLoadingCv.notify_all();
+        return;
+    }
+
+    // 同步模式（没有 worker）：原样从请求队列取，行内抠像素 + 提交。
     while (processed < max_pages_per_frame)
     {
         PageLoadTask task;
@@ -680,7 +764,30 @@ void VirtualTextureManager::ProcessPageLoadRequests(float delta_time)
     }
 }
 
-bool VirtualTextureManager::LoadPage(const VirtualTexturePageID& page_id, VirtualTextureHandle handle)
+void VirtualTextureManager::CheckOwnerThread()
+{
+    // 只在真有 GPU 的管理器上有意义；逻辑池（InitializeLogical）没有 GPU 工作可违规。
+    if (m_Rhi != nullptr && std::this_thread::get_id() != m_OwnerThread)
+    {
+        ++m_GpuThreadViolations;
+    }
+}
+
+uint32_t VirtualTextureManager::getPendingLoadCount() const
+{
+    std::lock_guard<std::mutex> lock(m_PageLoadQueueMutex);
+    return static_cast<uint32_t>(m_PageLoadQueue.size() + m_PreparedQueue.size()) + m_WorkerInFlight;
+}
+
+void VirtualTextureManager::PumpLoads()
+{
+    ProcessPageLoadRequests(0.0f);
+    FlushPageTables();
+}
+
+bool VirtualTextureManager::LoadPage(const VirtualTexturePageID& page_id,
+                                     VirtualTextureHandle handle,
+                                     const PreparedPage* prepared)
 {
     auto resource = GetVirtualTexture(handle);
     if (!resource)
@@ -747,26 +854,37 @@ bool VirtualTextureManager::LoadPage(const VirtualTexturePageID& page_id, Virtua
     // ---- 把页像素真正传进物理页池（GPU 侧）----
     // 有源像素才传；没有（path 方式注册的资源）就只做簿记，槽位留空 —— 如实留白，
     // 不伪造一份"看起来传过了"的数据。
-    std::vector<uint8_t> page_pixels;
-    uint32_t page_pixel_width = 0;
-    uint32_t page_pixel_height = 0;
-    if (resource->ExtractPagePixels(page_id.page_x, page_id.page_y, page_pixels, page_pixel_width, page_pixel_height))
+    if (prepared != nullptr)
     {
-        UploadPageToPhysicalPool(page_id, handle, page_pixels.data(), page_pixel_width, page_pixel_height);
+        // 异步路径：像素已由 worker 抠好，这里（owner 线程）只负责上传。
+        if (prepared->has_pixels)
+        {
+            UploadPageToPhysicalPool(
+                page_id, handle, prepared->pixels.data(), prepared->width, prepared->height);
+        }
+    }
+    else
+    {
+        std::vector<uint8_t> page_pixels;
+        uint32_t page_pixel_width = 0;
+        uint32_t page_pixel_height = 0;
+        if (resource->ExtractPagePixels(
+                page_id.page_x, page_id.page_y, page_pixels, page_pixel_width, page_pixel_height))
+        {
+            UploadPageToPhysicalPool(page_id, handle, page_pixels.data(), page_pixel_width, page_pixel_height);
+        }
     }
 
     // 页表不在这里逐页上传：SetPageTableEntry 已标脏，由批入口（ForceLoadPages /
-    // UnloadPages / Update）末尾的 FlushPageTables 每个脏表传一次。这也把页表提交
-    // 从后台加载线程挪回了调用 Flush 的线程。
-    // ⚠️ 页像素上传（UploadPageToPhysicalPool）仍在 LoadPage 内，会从
-    // m_PageLoadingThread 提交一次性命令缓冲；真机异步加载打开前要收敛到渲染线程。
+    // UnloadPages / Update / PumpLoads）末尾的 FlushPageTables 每个脏表传一次。
+    // LoadPage 本身只在 owner 线程跑：异步模式下 worker 只抠像素（见 PumpLoads 的线程契约）。
 
     return true;
 }
 
 void VirtualTextureManager::UploadPageToPhysicalPool(const VirtualTexturePageID& page_id,
                                                      VirtualTextureHandle handle,
-                                                     void* page_data,
+                                                     const void* page_data,
                                                      uint32_t page_width,
                                                      uint32_t page_height)
 {
@@ -780,6 +898,7 @@ void VirtualTextureManager::UploadPageToPhysicalPool(const VirtualTexturePageID&
     {
         return;  // logical-only pool (InitializeLogical): 纯 CPU 簿记，没有 GPU 图可传
     }
+    CheckOwnerThread();
 
     auto resource = GetVirtualTexture(handle);
     if (!resource)

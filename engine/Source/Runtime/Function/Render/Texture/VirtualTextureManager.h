@@ -121,7 +121,49 @@ public:
     // this walks ALL registered textures, not just the one being loaded.
     void FlushPageTables();
 
+    // The part of Update() that COMMITS pending page loads: drains up to
+    // max_concurrent_loads prepared/queued pages (slot allocation, GPU upload,
+    // page-table bookkeeping), then flushes dirty page tables. Update() does the
+    // same plus priority recompute and budget eviction; this entry point exists so
+    // a caller (and the async-loading test) can pump loads without a camera.
+    //
+    // THREADING CONTRACT -- the whole point of the async design: the page-loading
+    // worker thread only ever does CPU work (extracting page pixels from the
+    // retained source). Everything that touches the GPU or mutates residency state
+    // (LoadPage, UnloadPage, UploadPageToPhysicalPool, FlushPageTables, Shutdown's
+    // resource release) runs on the OWNER thread: the thread that called
+    // Initialize(). Update(), PumpLoads(), ForceLoadPages() and UnloadPages() must
+    // be called from it.
+    void PumpLoads();
+
+    // Diagnostics for the threading contract (tests assert on these).
+    //   getGpuThreadViolationCount: GPU work observed off the owner thread. Must be 0.
+    //   getAsyncPreparedCount:      pages whose pixels the worker thread prepared
+    //                               (proves the async path really ran).
+    //   getPreparedBacklogPeak:     max pages ever waiting between worker and commit
+    //                               (back-pressure keeps it bounded).
+    uint32_t getGpuThreadViolationCount() const { return m_GpuThreadViolations.load(); }
+    uint32_t getAsyncPreparedCount() const { return m_AsyncPreparedCount.load(); }
+    uint32_t getPreparedBacklogPeak() const { return m_PreparedBacklogPeak.load(); }
+
+    // Requests still queued for the worker + pages the worker is preparing + pages
+    // prepared but not yet committed. 0 means every request so far has been fully
+    // processed.
+    uint32_t getPendingLoadCount() const;
+
 private:
+    // Pixels the worker thread prepared for one page, handed to the owner thread to
+    // commit. Carries no GPU object, so the worker never needs the RHI.
+    struct PreparedPage
+    {
+        VirtualTexturePageID page_id {};
+        VirtualTextureHandle handle {0};
+        bool has_pixels {false};  // false: source has no pixels (path-registered VT) -> bookkeeping only
+        std::vector<uint8_t> pixels;
+        uint32_t width {0};   // real (unpadded) extent; pixels is always page_size^2
+        uint32_t height {0};
+    };
+
     // Page loading task
     struct PageLoadTask
     {
@@ -164,13 +206,19 @@ private:
     // Process page load requests
     void ProcessPageLoadRequests(float delta_time);
 
-    // Load a page
-    bool LoadPage(const VirtualTexturePageID& page_id, VirtualTextureHandle handle);
+    // Load a page (owner thread only). `prepared` carries pixels already extracted by
+    // the worker; null means "extract them inline" (the synchronous path).
+    bool LoadPage(const VirtualTexturePageID& page_id,
+                  VirtualTextureHandle handle,
+                  const PreparedPage* prepared = nullptr);
+
+    // Records a violation if called off the owner thread (see PumpLoads' contract).
+    void CheckOwnerThread();
 
     // Upload page to physical pool
     void UploadPageToPhysicalPool(const VirtualTexturePageID& page_id,
                                   VirtualTextureHandle handle,
-                                  void* page_data,
+                                  const void* page_data,
                                   uint32_t page_width,
                                   uint32_t page_height);
 
@@ -222,15 +270,28 @@ private:
     std::unordered_map<VirtualTextureHandle, VirtualTextureEntry> m_VirtualTextures;
     mutable std::mutex m_VirtualTexturesMutex;
 
-    // Page load requests
+    // Page load requests (worker input) and prepared pages (worker output). ONE mutex
+    // guards both queues AND is the one the condition variable waits on -- the old
+    // code waited on a different mutex than the queue's, so the wait predicate read
+    // the queue unsynchronized and a push could never wake the worker.
     std::priority_queue<PageLoadTask> m_PageLoadQueue;
-    std::mutex m_PageLoadQueueMutex;
+    std::queue<PreparedPage> m_PreparedQueue;
+    mutable std::mutex m_PageLoadQueueMutex;
 
     // Page loading thread
     std::thread m_PageLoadingThread;
     std::atomic<bool> m_ShouldStop;
     std::condition_variable m_PageLoadingCv;
-    std::mutex m_PageLoadingMutex;
+
+    // Owner thread = the thread that called Initialize()/InitializeLogical().
+    std::thread::id m_OwnerThread;
+    std::atomic<uint32_t> m_GpuThreadViolations {0};
+    std::atomic<uint32_t> m_AsyncPreparedCount {0};
+    std::atomic<uint32_t> m_PreparedBacklogPeak {0};
+    // Pages the worker has popped from the request queue but not yet pushed to the
+    // prepared queue. Without it there is a window where a page is in neither queue,
+    // so "pending == 0" would wrongly mean idle. Modified only under m_PageLoadQueueMutex.
+    uint32_t m_WorkerInFlight {0};
 
     // Statistics
     mutable std::mutex m_StatsMutex;

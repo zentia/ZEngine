@@ -129,3 +129,42 @@ if(ZENGINE_BUILD_VT_RESOLVE_AB_SMOKE_TEST)
         message(STATUS "Configured VT resolve A/B smoke test: VirtualTextureResolveABSmokeTest")
     endif()
 endif()
+
+# =============================================================================
+# VirtualTextureAsyncLoadABSmokeTest — 异步加载线程安全 A/B（Vulkan headless）
+# -----------------------------------------------------------------------------
+# enable_async_loading 默认 true，但后台加载线程此前从未真正跑起来（RequestPages 不唤醒它），
+# 一旦跑起来又会在 worker 线程里直接 LoadPage（分配槽位 + 提交 GPU 命令）。本测试在真实多线程下
+# 钉死"worker 只做 CPU、GPU 活只在 owner 线程"：4 个线程并发 RequestPages、owner 同时 Pump，
+# 36 页纹理压 16 槽位的池，真 shader 读回逐 texel 比对；并验证背压有界、带队列关停不死锁。
+#
+#   cmake -B build -DZENGINE_BUILD_VT_ASYNC_LOAD_AB_SMOKE_TEST=ON
+#   cmake --build build --target VirtualTextureAsyncLoadABSmokeTest
+# =============================================================================
+option(ZENGINE_BUILD_VT_ASYNC_LOAD_AB_SMOKE_TEST
+       "Build the VirtualTexture async-load thread-safety A/B (Vulkan headless) smoke-test executable"
+       OFF)
+
+if(ZENGINE_BUILD_VT_ASYNC_LOAD_AB_SMOKE_TEST)
+    if(NOT WIN32 AND NOT (UNIX AND NOT APPLE))
+        message(STATUS "VT async-load A/B smoke test needs the Vulkan backend (Windows/Linux); skipping")
+    else()
+        add_executable(VirtualTextureAsyncLoadABSmokeTest VirtualTextureAsyncLoadABSmokeTest.cpp)
+        set_target_properties(VirtualTextureAsyncLoadABSmokeTest PROPERTIES
+            CXX_STANDARD 23
+            FOLDER "Engine/Tests"
+        )
+        target_link_libraries(VirtualTextureAsyncLoadABSmokeTest PRIVATE ZRuntime)
+        if(TARGET ZEnginePCH)
+            target_link_libraries(VirtualTextureAsyncLoadABSmokeTest PRIVATE ZEnginePCH)
+            target_include_directories(VirtualTextureAsyncLoadABSmokeTest PRIVATE ${ENGINE_ROOT_DIR}/Source/CommonPCH)
+            add_dependencies(VirtualTextureAsyncLoadABSmokeTest ZEnginePCH)
+            target_precompile_headers(VirtualTextureAsyncLoadABSmokeTest REUSE_FROM ZEnginePCH)
+        endif()
+        if(MSVC)
+            target_compile_options(VirtualTextureAsyncLoadABSmokeTest PRIVATE /W4)
+        endif()
+        add_test(NAME VirtualTextureAsyncLoadABSmokeTest COMMAND VirtualTextureAsyncLoadABSmokeTest)
+        message(STATUS "Configured VT async-load A/B smoke test: VirtualTextureAsyncLoadABSmokeTest")
+    endif()
+endif()

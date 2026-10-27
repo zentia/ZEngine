@@ -186,7 +186,9 @@ private:
     uint32_t m_MipLevels;           // Number of mip levels
     RHIFormat m_Format;             // Texture format
     bool m_IsSrgb;                  // Is sRGB texture
-    bool m_IsInitialized;           // Is initialized
+    // Atomic: ExtractPagePixels is called from the page-loading worker thread while
+    // the owner thread may Shutdown() the resource.
+    std::atomic<bool> m_IsInitialized;  // Is initialized
 
     // Page storage
     std::unordered_map<VirtualTexturePageID, VirtualTexturePage, VirtualTexturePageIDHash> m_Pages;
