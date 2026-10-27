@@ -415,6 +415,11 @@ public:
     VkDevice m_Device {nullptr};
     VkQueue m_PresentQueue {nullptr};
 
+    // 无头模式：WindowSystem 没有主窗口时为 true。此时跳过 surface / swapchain / present
+    // queue（Nanite 离屏渲染只跑 compute + offscreen raster，不需要 present）。device 扩展
+    // 也不带 VK_KHR_swapchain。present_family 在无头时留空——所有 present 路径必须先判本标志。
+    bool m_Headless {false};
+
     /// Probed once in CreateLogicalDevice and cached: multiDrawIndirect is
     /// optional in Vulkan 1.0, and the draw path needs to know without calling
     /// vkGetPhysicalDeviceFeatures per command. When false, CmdDraw*Indirect

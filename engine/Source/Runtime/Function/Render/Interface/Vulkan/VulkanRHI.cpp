@@ -231,6 +231,14 @@ bool VulkanRHI::Initialize()
     }
 
     std::array<int, 2> window_size = GET_SYSTEM(WindowSystem)->GetWindowSize();
+    // 无头判定：WindowSystem 没有主窗口（headless 测试 / 无窗口宿主）时走离屏路径——
+    // 跳过 surface / swapchain / present queue。必须在 CreateInstance 之前定，因为
+    // instance 扩展（surface）和 device 扩展（swapchain）都按它取舍。
+    m_Headless = (GET_SYSTEM(WindowSystem)->GetMainWindow() == nullptr);
+    if (m_Headless)
+    {
+        LOG_INFO(ZVulkan, "headless mode: no main window, skipping surface/swapchain/present queue");
+    }
     for (int i = 0; i < std::size(m_Viewports); i++)
     {
         m_Viewports[i] = {0.0f, 0.0f, (float)window_size[0], (float)window_size[1], 0.0f, 1.0f};
@@ -294,7 +302,11 @@ bool VulkanRHI::Initialize()
 
     InitializeDebugMessenger();
 
-    CreateWindowSurface();
+    // 无头模式：不建 surface（FindQueueFamilies 的 present 查询会跳过），也不建 swapchain。
+    if (!m_Headless)
+    {
+        CreateWindowSurface();
+    }
 
     InitializePhysicalDevice();
 
@@ -308,9 +320,23 @@ bool VulkanRHI::Initialize()
 
     CreateSyncPrimitives();
 
-    CreateSwapchain();
+    if (!m_Headless)
+    {
+        CreateSwapchain();
 
-    CreateSwapchainImageViews();
+        CreateSwapchainImageViews();
+    }
+    else
+    {
+        // 无头模式：CreateSwapchain 被跳过，m_SwapchainExtent / m_SwapchainImageFormat 保持
+        // 默认（{0,0} / UNDEFINED）。但 CreateFramebufferImageAndView 用 m_SwapchainExtent
+        // 决定 depth/GBuffer 目标尺寸，GetSwapchainInfo 用 m_SwapchainImageFormat。这里用
+        // WindowSystem 的窗口回退尺寸（无窗口时 1280x720）铺一个离屏渲染分辨率，保证离屏
+        // depth/GBuffer 目标非退化。颜色格式取一个普遍支持的 UNORM 格式。
+        m_SwapchainExtent.width = static_cast<uint32_t>(window_size[0]);
+        m_SwapchainExtent.height = static_cast<uint32_t>(window_size[1]);
+        m_SwapchainImageFormat = RHI_FORMAT_R8G8B8A8_UNORM;
+    }
 
     CreateFramebufferImageAndView();
 
@@ -640,6 +666,13 @@ void VulkanRHI::ResetCommandPool()
 
 bool VulkanRHI::PrepareBeforePass(std::function<void()> passUpdateAfterRecreateSwapchain)
 {
+    // 无头模式没有 swapchain，无从 acquire 交换链图。离屏路径（Nanite）不走这里，
+    // 走 BeginSingleTimeCommands。直接返回成功，让调用方继续（它自己管理离屏 target）。
+    if (m_Headless)
+    {
+        return RHI_SUCCESS;
+    }
+
     VkResult acquire_image_result =
         vkAcquireNextImageKHR(m_Device,
                               m_Swapchain,
@@ -731,10 +764,12 @@ void VulkanRHI::SubmitRendering(std::function<void()> passUpdateAfterRecreateSwa
         m_ImageFinishedForPresentationSemaphores[m_CurrentFrameIndex]};
 
     // submit command buffer
+    // 无头模式没有 swapchain acquire，m_ImageAvailableForRenderSemaphores 从未被 signal，
+    // 若仍 wait 会永久阻塞。此时 waitSemaphoreCount 置 0，直接提交。
     VkPipelineStageFlags wait_stages[] = {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
     VkSubmitInfo submit_info = {};
     submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-    submit_info.waitSemaphoreCount = 1;
+    submit_info.waitSemaphoreCount = m_Headless ? 0 : 1;
     submit_info.pWaitSemaphores = &m_ImageAvailableForRenderSemaphores[m_CurrentFrameIndex];
     submit_info.pWaitDstStageMask = wait_stages;
     submit_info.commandBufferCount = 1;
@@ -760,27 +795,30 @@ void VulkanRHI::SubmitRendering(std::function<void()> passUpdateAfterRecreateSwa
         return;
     }
 
-    // present swapchain
-    VkPresentInfoKHR present_info = {};
-    present_info.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
-    present_info.waitSemaphoreCount = 1;
-    present_info.pWaitSemaphores = &m_ImageFinishedForPresentationSemaphores[m_CurrentFrameIndex];
-    present_info.swapchainCount = 1;
-    present_info.pSwapchains = &m_Swapchain;
-    present_info.pImageIndices = &m_CurrentSwapchainImageIndex;
+    // present swapchain（无头模式无 swapchain / present queue，直接跳过，只推进帧索引）
+    if (!m_Headless)
+    {
+        VkPresentInfoKHR present_info = {};
+        present_info.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+        present_info.waitSemaphoreCount = 1;
+        present_info.pWaitSemaphores = &m_ImageFinishedForPresentationSemaphores[m_CurrentFrameIndex];
+        present_info.swapchainCount = 1;
+        present_info.pSwapchains = &m_Swapchain;
+        present_info.pImageIndices = &m_CurrentSwapchainImageIndex;
 
-    VkResult present_result = vkQueuePresentKHR(m_PresentQueue, &present_info);
-    if (VK_ERROR_OUT_OF_DATE_KHR == present_result || VK_SUBOPTIMAL_KHR == present_result)
-    {
-        RecreateSwapchain();
-        passUpdateAfterRecreateSwapchain();
-    }
-    else
-    {
-        if (VK_SUCCESS != present_result)
+        VkResult present_result = vkQueuePresentKHR(m_PresentQueue, &present_info);
+        if (VK_ERROR_OUT_OF_DATE_KHR == present_result || VK_SUBOPTIMAL_KHR == present_result)
         {
-            LOG_ERROR(ZVulkan, "vkQueuePresentKHR failed!");
-            return;
+            RecreateSwapchain();
+            passUpdateAfterRecreateSwapchain();
+        }
+        else
+        {
+            if (VK_SUCCESS != present_result)
+            {
+                LOG_ERROR(ZVulkan, "vkQueuePresentKHR failed!");
+                return;
+            }
         }
     }
 
@@ -859,6 +897,19 @@ bool VulkanRHI::CheckValidationLayerSupport()
 
 std::vector<const char*> VulkanRHI::GetRequiredExtensions()
 {
+    // 无头模式：不建 surface，也就不需要任何 surface 扩展（VK_KHR_surface + 平台 surface）。
+    // 保留 debug_utils / get_physical_device_properties2——它们与窗口无关。
+    if (m_Headless)
+    {
+        std::vector<const char*> extensions;
+        if (m_EnableValidationLayers || m_EnableDebugUtilsLabel)
+        {
+            extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+        }
+        extensions.push_back(VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME);
+        return extensions;
+    }
+
     // 使用平台抽象的扩展列表（不再依赖 GLFW）
     std::vector<const char*> extensions = GetPlatformRequiredExtensions();
 
@@ -1307,9 +1358,14 @@ void VulkanRHI::CreateLogicalDevice()
     m_QueueIndices = FindQueueFamilies(m_PhysicalDevice);
 
     std::vector<VkDeviceQueueCreateInfo> queue_create_infos;  // all queues that need to be created
+    // 无头模式没有 present_family（留空），不能对空 optional 调 .value()。graphics + compute 足够
+    // 跑 Nanite 离屏路径；present queue 只在非无头时创建。
     std::set<uint32_t> queue_families = {m_QueueIndices.graphics_family.value(),
-                                         m_QueueIndices.present_family.value(),
                                          m_QueueIndices.m_ComputeFamily.value()};
+    if (!m_Headless)
+    {
+        queue_families.insert(m_QueueIndices.present_family.value());
+    }
 
     float queue_priority = 1.0f;
     for (uint32_t queue_family : queue_families)  // for every queue family
@@ -1383,6 +1439,13 @@ void VulkanRHI::CreateLogicalDevice()
     // This keeps the engine working on legacy drivers where the
     // extension is missing or partially implemented.
     // -----------------------------------------------------------------
+    // 无头模式：不建 swapchain，就不需要 VK_KHR_swapchain 设备扩展。m_DeviceExtensions
+    // 默认带它（见头文件），这里先清掉，后面按需再 push bindless 相关扩展。
+    if (m_Headless)
+    {
+        m_DeviceExtensions.clear();
+    }
+
     {
         uint32_t ext_count = 0;
         vkEnumerateDeviceExtensionProperties(m_PhysicalDevice, nullptr, &ext_count, nullptr);
@@ -1534,7 +1597,11 @@ void VulkanRHI::CreateLogicalDevice()
     m_GraphicsQueue = new VulkanQueue();
     ((VulkanQueue*)m_GraphicsQueue)->setResource(vk_graphics_queue);
 
-    vkGetDeviceQueue(m_Device, m_QueueIndices.present_family.value(), 0, &m_PresentQueue);
+    // 无头模式没有 present queue（present_family 留空），跳过。present 路径必须先判 m_Headless。
+    if (!m_Headless)
+    {
+        vkGetDeviceQueue(m_Device, m_QueueIndices.present_family.value(), 0, &m_PresentQueue);
+    }
 
     VkQueue vk_compute_queue;
     vkGetDeviceQueue(m_Device, m_QueueIndices.m_ComputeFamily.value(), 0, &vk_compute_queue);
@@ -5050,14 +5117,20 @@ QueueFamilyIndices VulkanRHI::FindQueueFamilies(VkPhysicalDevice physicalm_devic
             indices.m_ComputeFamily = i;
         }
 
-        VkBool32 is_present_support = false;
-        vkGetPhysicalDeviceSurfaceSupportKHR(physicalm_device,
-                                             i,
-                                             m_Surface,
-                                             &is_present_support);  // if support surface presentation
-        if (is_present_support)
+        // 无头模式：没有 surface，跳过 present 查询（传 null surface 给
+        // vkGetPhysicalDeviceSurfaceSupportKHR 是非法用法）。present_family 留空，
+        // 调用方（CreateLogicalDevice / present 路径）按 m_Headless 处理。
+        if (!m_Headless && m_Surface != nullptr)
         {
-            indices.present_family = i;
+            VkBool32 is_present_support = false;
+            vkGetPhysicalDeviceSurfaceSupportKHR(physicalm_device,
+                                                 i,
+                                                 m_Surface,
+                                                 &is_present_support);  // if support surface presentation
+            if (is_present_support)
+            {
+                indices.present_family = i;
+            }
         }
 
         if (indices.IsComplete())
