@@ -3,6 +3,7 @@
 #include "Runtime/Utility/Align.h"
 
 #include <cstring>
+#include <string>
 
 namespace prefab
 {
@@ -251,6 +252,72 @@ namespace prefab
         if (!TokenizePropertyPath(path, tokens))
             return false;
         return LocatePropertyInStream(type_tree, bytes, tokens, out);
+    }
+
+    eastl::string ExplainPathFailure(const TypeTree& type_tree, const std::vector<PathToken>& tokens)
+    {
+        TypeTreeIterator node = type_tree.Root();
+        if (node.IsNull())
+            return "the type tree is empty";
+        if (tokens.empty())
+            return "empty path";
+
+        eastl::string walked;  // "a.b[2]" so far, for messages
+        auto where = [&walked]() -> eastl::string { return walked.empty() ? eastl::string("<root>") : walked; };
+
+        for (size_t i = 0; i < tokens.size(); ++i)
+        {
+            const PathToken& tok = tokens[i];
+            if (tok.kind == PathToken::Kind::Index)
+            {
+                if (!node->IsArray())
+                    return "cannot index into '" + where() + "': it is not an array (type " + node.Type().c_str() + ")";
+                TypeTreeIterator size_child = node.Children();
+                TypeTreeIterator data_child = size_child.IsNull() ? size_child : size_child.Next();
+                if (data_child.IsNull())
+                    return "array '" + where() + "' has no element node in the type tree";
+                node = data_child;
+                walked += "[" + eastl::string(std::to_string(tok.array_index).c_str()) + "]";
+                continue;
+            }
+
+            // Field token.
+            if (node->IsArray())
+                return "'" + where() + "' is an array: expected [index], got field '" + tok.field + "'";
+            TypeTreeIterator match;
+            eastl::string available;
+            for (TypeTreeIterator c = node.Children(); !c.IsNull(); c = c.Next())
+            {
+                if (c.Name() == tok.field.c_str())
+                {
+                    match = c;
+                    break;
+                }
+                if (!available.empty())
+                    available += ", ";
+                available += c.Name().c_str();
+            }
+            if (match.IsNull())
+            {
+                // `available` only lists the siblings BEFORE the miss when we broke out
+                // early; here there was no match, so it is the full list.
+                return "no field '" + tok.field + "' under '" + where() + "' (available: " +
+                       (available.empty() ? eastl::string("<none: a leaf>") : available) + ")";
+            }
+            node = match;
+            if (!walked.empty())
+                walked += ".";
+            walked += tok.field;
+        }
+        return "resolves";
+    }
+
+    eastl::string ExplainPathFailure(const TypeTree& type_tree, const eastl::string& path)
+    {
+        std::vector<PathToken> tokens;
+        if (!TokenizePropertyPath(path, tokens))
+            return "malformed path '" + path + "' (expected a.b or a[2].b)";
+        return ExplainPathFailure(type_tree, tokens);
     }
 
     bool OverwriteScalarBytes(

@@ -595,6 +595,8 @@ public:
 
 测试：P19 编辑器全链路 53 项（创建 Variant → 实例化 → suppress/add → 行模型 → 逐行 Revert / Revert All → Apply All → 新实例 / 旧实例 Merge → 实例自己的结构在 Merge 后保留 → 单字段 Apply 不泄漏 → 普通 prefab 只给 Revert → Variant 层在重新引入时不丢），`ScriptComponentPrefabTest` N 组 34 项（链级删除前层新增、override 指向新增组件，`.prefab` / `.zasset` 两轨）。**变异验证 11 处全红**：Revert/Merge 不 reconcile、ApplyField 提交结构、Suppress 留脏配对、Apply 不收养活组件、ListOverrides 丢组件行、重新引入丢 Variant 层、后层删除被忽略、模板不登记进映射、只算最后一层。其中**第一版 M7（重新引入丢 Variant 层）存活**——测试里我猜的属性路径根本解析不了，Variant 层从没被应用，"重新引入时是否带层"就没被测到；改用 `shared_materials` 整数组覆盖后才转红。**教训：变异存活 = 测试前提本身没成立，先断言前提（P19/layer 的 precondition）。**
 
+27. **路径失败自带原因（`prefab::ExplainPathFailure`）**：`override splice` / `SpliceFieldValueInto` / `RecordPropertyOverride` / `RecordCurrentValueAsOverride` 的失败日志原先只有 "path not found"，A8 连续三次因此猜错（`m_ScriptGuid` 实为 `m_script_guid`、`m_Scale` 实为 `m_scale`、`shared_materials[0]` 定位器根本不支持）。现在日志里带原因，例如 `no field 'm_DoesNotExist' under '<root>' (available: enabled, m_LocalRotation, ...)`；对非数组用 `[n]`、畸形路径、数组处给了字段名也各有说法。它只看 TypeTree、不需要流字节，所以流本身坏掉时也能用。**注意**：它报 "resolves" 时真正的 locator 仍可能失败——locator 跨不过变长元素数组的下标，那种情况只能整数组覆盖。测试 N-diag 1–4 钉住这几种输出，3 处变异全红。
+
 **未验证**：编辑器里真的拖一个 Prefab 进场景、在 Inspector 上改值后 Apply、保存场景再打开（UI 链路本身是第 3 条，未接）。`Level::load(url)` 带物理场景的完整路径未在无头环境跑过（它与 `LoadObjectGraph` 的差别只在建物理场景）。**Inspector 的 ZSlate 渲染**（结构行的按钮、can_apply 的显隐）只过了 `-fsyntax-only`，没有上机看。
 
 

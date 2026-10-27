@@ -71,6 +71,24 @@ namespace prefab
         const eastl::string& path,
         PropertyLocation& out);
 
+    /// Explain WHY `path` does not resolve against `type_tree` — for logs and test
+    /// failures. Pure diagnosis over the TypeTree (no stream bytes needed, so it also
+    /// works when the stream itself is what is broken). Returns a one-line message:
+    ///
+    ///   * "resolves" — every segment exists in the type tree (a failure of the real
+    ///     locator then means the STREAM is malformed or an array index is out of range);
+    ///   * "no field 'x' under 'a.b' (available: m_p, m_q, ...)" — the misspelt-name case,
+    ///     which is by far the commonest: serialized names are NOT the C++ member names
+    ///     (m_ScriptGuid is serialized as "m_script_guid");
+    ///   * "'a.b' is an array: ... " — an index was expected / a field was given;
+    ///   * "cannot index into 'a.b'" — "[n]" on something that is not an array.
+    ///
+    /// Note the locator can fail on a path this reports as "resolves": it cannot step
+    /// over a variable-size array element ("shared_materials[0]"), because it must walk
+    /// the elements before it. Override the whole array instead.
+    eastl::string ExplainPathFailure(const TypeTree& type_tree, const std::vector<PathToken>& tokens);
+    eastl::string ExplainPathFailure(const TypeTree& type_tree, const eastl::string& path);
+
     /// Overwrite `out_bytes[loc.byte_offset .. loc.byte_offset + loc.byte_size)` with
     /// `new_value` (which must already be in the correct StreamedBinary
     /// little-endian-or-platform-native layout for the leaf's type). Caller is
