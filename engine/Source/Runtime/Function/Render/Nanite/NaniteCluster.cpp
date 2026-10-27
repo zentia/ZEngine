@@ -822,6 +822,7 @@ NaniteClusterManager::CollectResidentPageGeometry() const
             if (!m_PagePool.IsResident(page_ids[ci]))
                 continue;
             nanite_pages::PageGeometryDesc desc;
+            desc.mesh_id = entry.first;
             desc.vertex_offset = c.vertex_offset;
             desc.vertex_count = c.vertex_count;
             desc.index_offset = c.index_offset;

@@ -31,8 +31,10 @@ namespace nanite_pages
 {
     // 一页的几何描述符（source，在 mesh 的 vertex/index 流里）。由 manager 从
     // NaniteMeshResource + NaniteCluster 填好喂进来，本层不认识这些类型。
+    // mesh_id 带上：渲染器要用它取 mesh resource 作为拷贝源。
     struct PageGeometryDesc
     {
+        uint64_t mesh_id {0};
         uint32_t vertex_offset {0};  // 该页顶点在 mesh vertex 流里的起始元素下标
         uint32_t vertex_count {0};
         uint32_t index_offset {0};   // 该页索引在 mesh index 流里的起始元素下标
@@ -43,6 +45,7 @@ namespace nanite_pages
     struct PageUploadCmd
     {
         uint32_t page_id {0};
+        uint64_t mesh_id {0};  // 拷贝源 mesh（渲染器用它取 NaniteMeshResource）
         uint32_t src_vertex_offset {0};
         uint32_t dst_vertex_slot_base {0};
         uint32_t vertex_count {0};
@@ -121,6 +124,7 @@ namespace nanite_pages
 
             PageUploadCmd up;
             up.page_id = page_id;
+            up.mesh_id = desc.mesh_id;
             up.src_vertex_offset = desc.vertex_offset;
             up.dst_vertex_slot_base = slot.vertex_slot_base;
             up.vertex_count = desc.vertex_count;

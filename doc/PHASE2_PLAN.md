@@ -259,6 +259,36 @@ cluster geometry 改经页表间接寻址（现行稠密 `vertex_base` → `page
 
 ---
 
+### 落地记录 · 2.5 渲染器执行增量上传（2026-10-27，编译通过；GPU 行为待真机）
+
+**做了什么**：兑现增量上传计划器落地记录"剩下"的前两项——渲染器**执行**计划：新增持久页缓冲 +
+`NaniteRenderer::ExecuteStreamingUploads()`，把 `uploads` 逐条拷进持久页缓冲的槽位子段、`releases` 槽位
+归还。
+
+**接线**：
+- `NaniteGPUResources` 新增 `page_positions`/`page_indices` 持久页缓冲（容量 = 页池预算换算元素数，与
+  稠密整场景 `positions`/`indices` **并存**）；`clear()` 释放 + `m_PageSlots.Reset()`。
+- `NaniteRenderer` 拥有 `nanite_pages::PageSlotTable m_PageSlots`。
+- `Render` 帧循环：`UpdateStreaming`（产出 `m_LastPoolUpdate`）→ `ExecuteStreamingUploads`。
+- `ExecuteStreamingUploads`：页池未启用 no-op；否则 `PlanStreamingUploads` 产出计划 → 保证持久页缓冲容量
+  → 逐条 `UploadPageSlice`（Map 到槽位子段 + memcpy）。
+- `UploadPageSlice`（匿名命名空间）：vertex Vector3→Vector4 展开（与稠密路径一致）、index 加
+  `dst_vertex_slot_base` 变页缓冲全局下标；**量化格式**走 24B 头解码（quant_min/quant_scale）+ uint16
+  索引，与 `GeometryCodec::Quantized` 一致。每页各自 Map 子段，避免整缓冲重传。
+- `PageGeometryDesc` / `PageUploadCmd` 增加 `mesh_id`（渲染器用它取拷贝源 mesh resource）。
+
+**验证（Windows headless）**：`ZRuntime` 链接干净（强制重编 `NaniteRenderer.cpp` 通过）；全 Nanite 回归
+**全绿**——`NaniteClusterBuilderSmokeTest` 77/77、`NanitePagePoolSmokeTest`、`NanitePageSlotTableSmokeTest`、
+`NanitePageUploadPlannerSmokeTest` 全过。
+
+**诚实定位（真机项）**：这条拷贝路径**只编译通过，GPU 行为本机无法验证**（页池默认关闭，且需要真实 RHI
+device + 帧循环）。而且 **draw 路径目前仍读稠密 `positions`/`indices`**——持久页缓冲现在是"几何已物理
+驻留、但还没被 draw 消费"的桥接状态。要让 draw 真正用上页缓冲，还需 shader cluster geometry 改经页表
+间接寻址（稠密 `vertex_base` → `page_table[slot]`），那是下一步（改 `NaniteBuildSceneGPUData` 的
+`geometry.x/y` 语义 + cull/raster shader 读法）。
+
+---
+
 ### 落地记录 · 2.5 HiZ（2026-10-26，CPU 侧；GPU 侧待真机）
 
 **做了什么**：把 `NaniteHierarchicalZBuffer` 那组纯 TODO 桩（`UpdateDepthBuffer` / `BuildHierarchy` /

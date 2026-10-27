@@ -3,6 +3,7 @@
 #include "NaniteCluster.h"
 #include "NaniteCulling.h"
 #include "NaniteGPUData.h"
+#include "NanitePageSlotTable.h"
 #include "NaniteTypes.h"
 #include "Runtime/Function/Render/RenderPassBase.h"
 
@@ -68,6 +69,18 @@ struct NaniteGPUResources
     uint32_t instance_capacity {0};
     uint32_t position_capacity {0};
     uint32_t index_capacity {0};
+
+    // ---- 持久页缓冲（页池启用时用）----------------------------------------
+    // 与上面的稠密整场景 positions/indices **并存**：页池路径把 admitted 页的几何按
+    // 槽位偏移驻留进这里、evicted 页的槽位归还。容量 = 页池预算换算的元素数（不是整
+    // 场景）。注意：draw 路径目前仍读稠密 positions/indices（shader 页表间接寻址是下一
+    // 步），所以这两个缓冲现在是"几何已物理驻留、但还没被 draw 消费"的桥接状态。
+    RHIBuffer* page_positions {nullptr};
+    RHIDeviceMemory* page_positions_memory {nullptr};
+    uint32_t page_position_capacity {0};
+    RHIBuffer* page_indices {nullptr};
+    RHIDeviceMemory* page_indices_memory {nullptr};
+    uint32_t page_index_capacity {0};
 
     // 光栅阶段：管线照着 raster_render_pass 的附件格式建。
     //   * raster_framebuffer 非空 ⇒ 这个 pass 由 Nanite 自己开/关（离屏 target）；
@@ -260,6 +273,11 @@ private:
     NaniteClusterManager m_ClusterManager;
     NaniteCullingSystem m_CullingSystem;
 
+    // 页池启用时的持久页槽位表（page_id → GPU 槽位）。容量按页池预算换算的元素数建。
+    // UpdateStreaming 之后由 ExecuteStreamingUploads 驱动：admitted 认领槽位并拷几何、
+    // evicted 归还槽位。未启用页池时它闲置（draw 仍走稠密 positions/indices）。
+    nanite_pages::PageSlotTable m_PageSlots{1, 1};
+
     // 实例管理
     std::vector<NaniteInstance> m_Instances;
     std::unordered_map<uint64_t, uint32_t> m_InstanceIdToIndex;
@@ -320,6 +338,11 @@ private:
 
     // 更新GPU缓冲区：容量不够就重建，够就直接上传。
     void UpdateGPUBuffers();
+
+    // 执行本帧的页池增量上传计划：admitted 页按 dst slot_base 把几何切片拷进持久页缓冲、
+    // evicted 页归还槽位。页池未启用时是 no-op。真正把几何拷进 GPU 是渲染绑定（MapMemory
+    // 到槽位子段 + memcpy），本地只能编译 + 静态检查，无法 headless 验证。
+    void ExecuteStreamingUploads();
 
     // 执行GPU裁剪
     NaniteVisibilityResult PerformGPUCulling(const std::shared_ptr<RenderCamera>& camera, const NaniteConfig& config);

@@ -294,6 +294,10 @@ void NaniteRenderer::Render(RHI* rhi,
     // streaming 实际处于休眠；这里接管调用后它才真正生效。
     m_ClusterManager.UpdateStreaming(camera->position(), static_cast<float>(config.max_streaming_distance));
 
+    // 页池启用时执行本帧增量上传：admitted 页几何拷进持久页缓冲、evicted 页归还槽位。
+    // 必须在 UpdateStreaming 之后（要用它产出的 m_LastPoolUpdate）。
+    ExecuteStreamingUploads();
+
     // 逐集群裁剪
     PrepareRenderData(camera, visibility_result, config);
 
@@ -562,12 +566,19 @@ void NaniteRenderer::DestroyGPUResources()
     release(m_GPU.draw_commands, m_GPU.draw_commands_memory);
     release(m_GPU.cull_counter, m_GPU.cull_counter_memory);
     release(m_GPU.cull_constants, m_GPU.cull_constants_memory);
+    release(m_GPU.page_positions, m_GPU.page_positions_memory);
+    release(m_GPU.page_indices, m_GPU.page_indices_memory);
 
     m_GPU.cluster_capacity = 0;
     m_GPU.instance_capacity = 0;
     m_GPU.position_capacity = 0;
     m_GPU.index_capacity = 0;
+    m_GPU.page_position_capacity = 0;
+    m_GPU.page_index_capacity = 0;
     m_GPU.compute_ready = false;
+
+    // 页槽位表一并清空，避免残留登记在下次 Initialize 后仍占预算。
+    m_PageSlots.Reset();
 
     // 离屏光栅目标跟着重建（改尺寸、clear 都会走到这里）。
     DestroyRasterTarget();
@@ -601,6 +612,184 @@ bool NaniteRenderer::UploadBytes(RHIBuffer* buffer, RHIDeviceMemory* memory, con
     std::memcpy(mapped, data, bytes);
     m_Rhi->UnmapMemory(memory);
     return true;
+}
+
+// 把 mesh 几何流里 [src_offset, +count) 的元素拷进持久页缓冲的 [dst_slot_base, +count)。
+// vertex 是 Vector3(12B) → 展开成 Vector4(16B)（与稠密路径 NaniteBuildSceneGPUData 一致）；
+// index 是 uint32(4B)，值加 vertex_base 变全局下标（页缓冲里每页独立，base = dst_vertex_slot_base）。
+// 每页各自 Map 到自己的槽位子段，避免整缓冲重传。
+static bool UploadPageSlice(RHI* rhi,
+                            RHIDeviceMemory* dst_vertex_memory,
+                            uint32_t dst_vertex_slot_base,
+                            uint32_t dst_vertex_capacity_elems,
+                            RHIDeviceMemory* dst_index_memory,
+                            uint32_t dst_index_slot_base,
+                            uint32_t dst_index_capacity_elems,
+                            const NaniteMeshResource& mesh,
+                            uint32_t src_vertex_offset,
+                            uint32_t src_index_offset,
+                            uint32_t vertex_count,
+                            uint32_t index_count,
+                            bool is_quantized)
+{
+    if (rhi == nullptr)
+        return false;
+
+    // ---- 顶点：Vector3 → Vector4，写进 [dst_vertex_slot_base, +vertex_count) ----
+    if (vertex_count > 0 && dst_vertex_memory != nullptr)
+    {
+        if (dst_vertex_slot_base + vertex_count > dst_vertex_capacity_elems)
+            return false;  // 槽位越界（簿记 bug），保守拒绝
+
+        const RHIDeviceSize dst_byte_off =
+            static_cast<RHIDeviceSize>(dst_vertex_slot_base) * static_cast<RHIDeviceSize>(sizeof(Vector4));
+        const RHIDeviceSize dst_bytes =
+            static_cast<RHIDeviceSize>(vertex_count) * static_cast<RHIDeviceSize>(sizeof(Vector4));
+
+        void* mapped = nullptr;
+        if (!rhi->MapMemory(dst_vertex_memory, dst_byte_off, dst_bytes, 0, &mapped) || mapped == nullptr)
+            return false;
+
+        Vector4* out = static_cast<Vector4*>(mapped);
+        if (is_quantized)
+        {
+            // 量化格式：vertex_data 前面有 24B 头（quant_min + quant_scale），后面是 int16 位置。
+            constexpr uint32_t kHeaderBytes = sizeof(Vector3) * 2;  // quant_min + quant_scale
+            const int16_t* src =
+                reinterpret_cast<const int16_t*>(mesh.vertex_data.data() + kHeaderBytes);
+            const Vector3 qmin = mesh.quant_min;
+            const Vector3 qscale = mesh.quant_scale;
+            for (uint32_t v = 0; v < vertex_count; ++v)
+            {
+                const int16_t* q = src + (static_cast<size_t>(src_vertex_offset) + v) * 3;
+                out[v] = Vector4(qmin.x + static_cast<float>(q[0]) * qscale.x,
+                                 qmin.y + static_cast<float>(q[1]) * qscale.y,
+                                 qmin.z + static_cast<float>(q[2]) * qscale.z,
+                                 1.0f);
+            }
+        }
+        else
+        {
+            const Vector3* src = reinterpret_cast<const Vector3*>(mesh.vertex_data.data());
+            for (uint32_t v = 0; v < vertex_count; ++v)
+            {
+                const Vector3& p = src[src_vertex_offset + v];
+                out[v] = Vector4(p.x, p.y, p.z, 1.0f);
+            }
+        }
+        rhi->UnmapMemory(dst_vertex_memory);
+    }
+
+    // ---- 索引：uint32，值加 dst_vertex_slot_base 变页缓冲全局下标 ----
+    if (index_count > 0 && dst_index_memory != nullptr)
+    {
+        if (dst_index_slot_base + index_count > dst_index_capacity_elems)
+            return false;
+
+        const RHIDeviceSize dst_byte_off =
+            static_cast<RHIDeviceSize>(dst_index_slot_base) * static_cast<RHIDeviceSize>(sizeof(uint32_t));
+        const RHIDeviceSize dst_bytes =
+            static_cast<RHIDeviceSize>(index_count) * static_cast<RHIDeviceSize>(sizeof(uint32_t));
+
+        void* mapped = nullptr;
+        if (!rhi->MapMemory(dst_index_memory, dst_byte_off, dst_bytes, 0, &mapped) || mapped == nullptr)
+            return false;
+
+        uint32_t* out = static_cast<uint32_t*>(mapped);
+        if (is_quantized)
+        {
+            const uint16_t* src = reinterpret_cast<const uint16_t*>(mesh.index_data.data());
+            for (uint32_t i = 0; i < index_count; ++i)
+                out[i] = static_cast<uint32_t>(src[src_index_offset + i]) + dst_vertex_slot_base;
+        }
+        else
+        {
+            const uint32_t* src = reinterpret_cast<const uint32_t*>(mesh.index_data.data());
+            for (uint32_t i = 0; i < index_count; ++i)
+                out[i] = src[src_index_offset + i] + dst_vertex_slot_base;
+        }
+        rhi->UnmapMemory(dst_index_memory);
+    }
+
+    return true;
+}
+
+void NaniteRenderer::ExecuteStreamingUploads()
+{
+    // 页池未启用：no-op（draw 仍走稠密 positions/indices）。
+    if (!m_ClusterManager.IsPagePoolEnabled() || m_Rhi == nullptr)
+        return;
+
+    // 1) 计划：pool 增量队列 + 每页几何描述符 → 具体到字节段的 uploads/releases。
+    const nanite_pages::PoolUpdate& pool = m_ClusterManager.GetLastPoolUpdate();
+    std::unordered_map<uint32_t, nanite_pages::PageGeometryDesc> geometry =
+        m_ClusterManager.CollectResidentPageGeometry();
+    nanite_pages::StreamingUploadPlan plan =
+        nanite_pages::PlanStreamingUploads(pool, geometry, m_PageSlots);
+
+    // 2) 保证持久页缓冲容量够（按页池预算换算的元素数；与槽位表容量一致）。
+    //    页池预算是字节，换算成元素数需要每页平均元素大小 —— 这里直接用槽位表容量
+    //    （它就是按预算建的元素容量）作为缓冲容量上界。
+    const uint32_t want_vertex_cap = static_cast<uint32_t>(m_PageSlots.GetVertexCapacity());
+    const uint32_t want_index_cap = static_cast<uint32_t>(m_PageSlots.GetIndexCapacity());
+
+    auto ensure_page_buffer = [this](RHIBuffer*& buffer,
+                                     RHIDeviceMemory*& memory,
+                                     uint32_t& capacity,
+                                     uint32_t needed,
+                                     uint32_t element_size,
+                                     RHIBufferUsageFlags usage) {
+        if (buffer != nullptr && memory != nullptr && capacity >= needed)
+            return true;
+        if (memory != nullptr)
+            m_Rhi->FreeMemory(memory);
+        if (buffer != nullptr)
+            m_Rhi->DestroyBuffer(buffer);
+        capacity = NaniteGrowCapacity(needed > 1 ? needed : 1);
+        m_Rhi->CreateBuffer(static_cast<RHIDeviceSize>(capacity) * static_cast<RHIDeviceSize>(element_size),
+                            usage,
+                            kNaniteHostMemory,
+                            buffer,
+                            memory);
+        return buffer != nullptr && memory != nullptr;
+    };
+
+    const bool ok_pos = ensure_page_buffer(m_GPU.page_positions, m_GPU.page_positions_memory,
+                                            m_GPU.page_position_capacity, want_vertex_cap,
+                                            static_cast<uint32_t>(sizeof(Vector4)),
+                                            RHI_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                                RHI_BUFFER_USAGE_TRANSFER_DST_BIT);
+    const bool ok_idx = ensure_page_buffer(m_GPU.page_indices, m_GPU.page_indices_memory,
+                                            m_GPU.page_index_capacity, want_index_cap,
+                                            static_cast<uint32_t>(sizeof(uint32_t)),
+                                            RHI_BUFFER_USAGE_INDEX_BUFFER_BIT |
+                                                RHI_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                                RHI_BUFFER_USAGE_TRANSFER_DST_BIT);
+    if (!ok_pos || !ok_idx)
+        return;  // 缓冲建不出：本帧不拷（保守，draw 仍走稠密路径）
+
+    // 3) 执行 uploads：admitted 页几何切片拷进认领的槽位。
+    //    releases 的槽位归还已在 PlanStreamingUploads 内部完成（m_PageSlots 已更新）——
+    //    GPU 段不必清零，下次 admit 会整段覆盖。
+    for (const nanite_pages::PageUploadCmd& up : plan.uploads)
+    {
+        const NaniteMeshResource* mesh = m_ClusterManager.GetMeshResource(up.mesh_id);
+        if (mesh == nullptr)
+            continue;  // mesh 已注销（本帧竞态）：跳过，槽位留着下次覆盖
+        UploadPageSlice(m_Rhi,
+                        m_GPU.page_positions_memory,
+                        up.dst_vertex_slot_base,
+                        m_GPU.page_position_capacity,
+                        m_GPU.page_indices_memory,
+                        up.dst_index_slot_base,
+                        m_GPU.page_index_capacity,
+                        *mesh,
+                        up.src_vertex_offset,
+                        up.src_index_offset,
+                        up.vertex_count,
+                        up.index_count,
+                        mesh->geometry_codec == GeometryCodec::Quantized);
+    }
 }
 
 bool NaniteRenderer::EnsureGPUResources(uint32_t cluster_count,
