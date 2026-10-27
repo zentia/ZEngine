@@ -376,9 +376,10 @@ namespace
         return out;
     }
 
-    /// Apply ONE PropertyModification to a live object: snapshot -> locate -> splice
-    /// -> read back. The override value comes from `object_reference` (PPtr field) if
-    /// set, otherwise from `value_bytes` (raw StreamedBinary bytes).
+    /// Apply ONE PropertyModification to a live object: snapshot -> splice -> read back.
+    /// The byte-level splice itself is `PrefabUtility::SpliceModificationIntoBytes`
+    /// (public, so the editor can reuse it on bytes it snapshotted from a shared
+    /// source object).
     bool ApplyModification(Object* recipient, const PropertyModification& mod)
     {
         if (recipient == nullptr)
@@ -394,41 +395,7 @@ namespace
             return false;
         }
 
-        std::vector<prefab::PathToken> tokens;
-        if (!prefab::TokenizePropertyPath(mod.property_path, tokens))
-        {
-            LOG_WARNING(ZPrefab, "variant override: malformed property_path '{}'", mod.property_path.c_str());
-            return false;
-        }
-
-        prefab::PropertyLocation loc;
-        if (!prefab::LocatePropertyInStream(tree.type_tree, bytes, tokens, loc) || !loc.valid())
-        {
-            LOG_WARNING(ZPrefab, "variant override: path '{}' not found on '{}'",
-                        mod.property_path.c_str(), recipient->name.c_str());
-            return false;
-        }
-
-        std::vector<uint8_t> value;
-        if (!mod.object_reference.IsNull())
-        {
-            value = EncodePPtrAsBytes(mod.object_reference);
-        }
-        else
-        {
-            value = mod.value_bytes;
-        }
-
-        if (value.size() != static_cast<size_t>(loc.byte_size))
-        {
-            LOG_WARNING(ZPrefab,
-                        "variant override: value size {} != field size {} for '{}' on '{}'",
-                        static_cast<int>(value.size()), static_cast<int>(loc.byte_size),
-                        mod.property_path.c_str(), recipient->name.c_str());
-            return false;
-        }
-
-        if (!prefab::OverwriteScalarBytes(bytes, loc, value.data(), value.size()))
+        if (!PrefabUtility::SpliceModificationIntoBytes(bytes, tree, mod))
         {
             return false;
         }
@@ -464,6 +431,67 @@ bool PrefabUtility::ResolveVariantChain(PrefabAsset* asset, std::vector<PrefabAs
         node = base;
     }
     std::reverse(out_chain.begin(), out_chain.end());  // deepest first
+    return true;
+}
+
+bool PrefabUtility::SpliceModificationIntoBytes(std::vector<uint8_t>&            bytes,
+                                                const prefab::SerialisedObject&  tree,
+                                                const PropertyModification&      mod)
+{
+    std::vector<prefab::PathToken> tokens;
+    if (!prefab::TokenizePropertyPath(mod.property_path, tokens))
+    {
+        LOG_WARNING(ZPrefab, "override splice: malformed property_path '{}'", mod.property_path.c_str());
+        return false;
+    }
+
+    prefab::PropertyLocation loc;
+    if (!prefab::LocatePropertyInStream(tree.type_tree, bytes, tokens, loc) || !loc.valid())
+    {
+        LOG_WARNING(ZPrefab, "override splice: path '{}' not found in the stream", mod.property_path.c_str());
+        return false;
+    }
+
+    // A PPtr leaf occupies one int32 slot holding the target's InstanceID — the same
+    // convention SafeBinaryRead uses to walk past PPtr leaves.
+    std::vector<uint8_t> value = mod.object_reference.IsNull()
+        ? mod.value_bytes
+        : EncodePPtrAsBytes(mod.object_reference);
+
+    if (value.size() != static_cast<size_t>(loc.byte_size))
+    {
+        LOG_WARNING(ZPrefab,
+                    "override splice: value size {} != field size {} for '{}'",
+                    static_cast<int>(value.size()), static_cast<int>(loc.byte_size),
+                    mod.property_path.c_str());
+        return false;
+    }
+
+    return prefab::OverwriteScalarBytes(bytes, loc, value.data(), value.size());
+}
+
+bool PrefabUtility::SnapshotWithOverrides(Object&                                 source,
+                                          const std::vector<PropertyModification>& mods,
+                                          prefab::SerialisedObject&                out_tree,
+                                          std::vector<uint8_t>&                    out_bytes)
+{
+    if (!prefab::SerialiseObject(&source, out_tree))
+    {
+        LOG_WARNING(ZPrefab, "SnapshotWithOverrides: cannot serialise '{}'", source.name.c_str());
+        return false;
+    }
+    out_bytes.clear();
+    TransferUtility::WriteObjectToVector(source, out_bytes);
+
+    const int32_t source_id = source.GetInstanceID();
+    for (const PropertyModification& mod : mods)
+    {
+        if (mod.target.GetInstanceID() != source_id)
+        {
+            continue;
+        }
+        SpliceModificationIntoBytes(out_bytes, out_tree, mod);
+    }
     return true;
 }
 

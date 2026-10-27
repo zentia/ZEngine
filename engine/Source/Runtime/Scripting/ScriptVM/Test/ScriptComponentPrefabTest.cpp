@@ -88,6 +88,7 @@
 #include "Runtime/BaseClasses/ObjectManager.h"
 #include "Runtime/BaseClasses/TypeManager.h"
 #include "Runtime/Core/Base/SystemRegistry.h"
+#include "Runtime/Core/Serialize/TransferUtility.h"
 #include "Runtime/Function/Command/CommandSystem.h"
 #include "Runtime/Function/Framework/Component/Script/TypeScriptComponent.h"
 #include "Runtime/Function/Framework/Component/Transform/Transform.h"
@@ -946,6 +947,65 @@ int main(int argc, char** argv)
                 // 关于 mimalloc / mi_usable_size 的说明。
                 object_manager->Destroy(k_var);
             }
+        }
+    }
+
+    // ---- L. 字节层拼接：override 只进字节，不碰共享的源对象 --------------------
+    // Editor 的 Revert / MergeFromSource 要算"一个 Variant 实例该回退到什么值" =
+    // base 模板的字节 + variant 自己的 override。base 模板是**所有该 base 的实例
+    // 共享**的对象，直接往它身上 splice 会污染每一个实例，所以必须只改字节。
+    // 这一组钉三点：
+    //   1. 字节里 override 生效了；
+    //   2. **源对象本身没被改**（最关键的一条）；
+    //   3. 路径不存在 / 值尺寸不匹配时是失败，不是静默写坏字节。
+    std::printf("\n--- L. 字节层拼接（override 只进字节，不碰共享的源对象）---\n");
+
+    GameObject* l_go = MakeGameObject(object_manager, "LSrc");
+    CheckTrue("L1", "造出了 L 组的 GameObject", l_go != nullptr);
+    if (l_go != nullptr)
+    {
+        CheckTrue("L2", "挂上了 Transform",
+                  l_go->AddComponentByTypeName("Transform") != nullptr);
+        l_go->SyncSerializedComponents();
+
+        Transform* l_tf = l_go->GetTransform();
+        CheckTrue("L3", "拿得到 Transform", l_tf != nullptr);
+
+        if (l_tf != nullptr)
+        {
+            CheckEq("L4", "起始 x 是 0",
+                    std::to_string(l_tf->GetLocalPositionD().x), std::to_string(0.0));
+
+            PropertyModification l_mod;
+            l_mod.target = PPtr<Object>(l_tf);
+            l_mod.property_path = eastl::string("m_LocalPositionD.x");
+            l_mod.value_bytes = DoubleBytes(42.0);
+
+            prefab::SerialisedObject l_tree;
+            std::vector<uint8_t> l_bytes;
+            CheckTrue("L5", "SnapshotWithOverrides 成功",
+                      PrefabUtility::SnapshotWithOverrides(*l_tf, {l_mod}, l_tree, l_bytes));
+
+            // 最关键的一条：源对象没被污染
+            CheckEq("L6", "源对象本身没被改（共享模板安全）",
+                    std::to_string(l_tf->GetLocalPositionD().x), std::to_string(0.0));
+            CheckTrue("L7", "快照字节非空", !l_bytes.empty());
+
+            // 字节里确实带着 override —— 读回同一个对象验证
+            const bool read_back = TransferUtility::ReadObjectFromVector(*l_tf, l_bytes);
+            CheckTrue("L8", "字节里 override 生效了（读回后 x=42）",
+                      read_back && l_tf->GetLocalPositionD().x == 42.0);
+
+            // 负向：路径不存在 / 尺寸不匹配，都应该是失败而不是乱写
+            PropertyModification l_bad = l_mod;
+            l_bad.property_path = eastl::string("m_DoesNotExist.x");
+            CheckTrue("L9", "路径不存在时拼接失败（不静默写坏字节）",
+                      !PrefabUtility::SpliceModificationIntoBytes(l_bytes, l_tree, l_bad));
+
+            PropertyModification l_short = l_mod;
+            l_short.value_bytes = std::vector<uint8_t>(4, 0);  // double 字段只给 4 字节
+            CheckTrue("L10", "值尺寸不匹配时拼接失败",
+                      !PrefabUtility::SpliceModificationIntoBytes(l_bytes, l_tree, l_short));
         }
     }
 

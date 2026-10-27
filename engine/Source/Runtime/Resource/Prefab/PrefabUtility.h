@@ -1,6 +1,8 @@
 #pragma once
 
 #include "Runtime/BaseClasses/GameObject.h"
+#include "Runtime/Resource/Prefab/PropertyModification.h"
+#include "Runtime/Resource/Prefab/PropertyPathResolver.h"
 
 #include <filesystem>
 #include <unordered_map>
@@ -126,6 +128,33 @@ public:
     /// `variant_path` must end in .prefab (YAML) or .zasset (binary SerializedFile),
     /// matching SaveAsPrefabAsset's split.
     static bool SaveVariantAsset(PrefabAsset* variant, const std::filesystem::path& variant_path);
+
+    // ---- Byte-level splicing (shared by the apply pipeline and the editor) ----
+    //
+    // These never touch a live Object. That matters whenever the bytes came from a
+    // SHARED object — a prefab base's template, which every instance of that base
+    // reads — where splicing into the object itself would corrupt all of them.
+
+    /// Splice `mod`'s value into `bytes` at `mod.property_path`. `tree` must be the
+    /// type tree of the object `bytes` was snapshotted from.
+    ///
+    /// Returns false (with a warning) when the path does not resolve, or the value's
+    /// byte size does not match the field's.
+    static bool SpliceModificationIntoBytes(std::vector<uint8_t>&            bytes,
+                                            const prefab::SerialisedObject&  tree,
+                                            const PropertyModification&      mod);
+
+    /// Snapshot `source` (type tree + StreamedBinary bytes) and layer `mods` onto the
+    /// **bytes** — `source` itself is NOT modified (serialisation only reads it).
+    ///
+    /// This is how the editor computes the value an instance of a Variant should
+    /// revert / merge to: the base template's bytes plus the Variant's own overrides.
+    /// Splicing into the base object instead would corrupt every other instance of
+    /// that base.
+    static bool SnapshotWithOverrides(Object&                                 source,
+                                      const std::vector<PropertyModification>& mods,
+                                      prefab::SerialisedObject&                out_tree,
+                                      std::vector<uint8_t>&                    out_bytes);
 
     /// Re-parent the freshly instantiated root under `parent` (Transform-based).
     /// `worldPositionStays` follows Unity semantics (see Transform::SetParent).

@@ -183,6 +183,26 @@ public:
     /// unnoticed.
     static PrefabInstance* InstantiateVariant(PrefabAsset* variant);
 
+    /// "Apply" for an instance whose source prefab is a **Variant**.
+    ///
+    /// The plain `ApplyAll` splices each override into the SOURCE object. For a
+    /// Variant that is wrong twice over: the source objects are the base's objects
+    /// (InstantiateVariant seeds corresponding_source against the deepest base), they
+    /// are shared by every instance of that base, and they do not live in the
+    /// Variant's file at all — so the splice corrupts the base template in memory and
+    /// `SaveSourcePrefab` then refuses to write anything.
+    ///
+    /// The Unity semantics are different: the value becomes the Variant's own
+    /// override. So this records each modification into
+    /// `PrefabAsset::m_variant_overrides` (target = the base object, which is what the
+    /// chain's ptr_map / corresponding_source is keyed by) and rewrites the Variant
+    /// file — a one-object file, base untouched.
+    ///
+    /// Returns how many overrides were recorded and saved (0 when nothing was
+    /// applied, or when the file could not be written — in which case the instance's
+    /// modifications are left alone so nothing is lost).
+    static int ApplyAllToVariant(PrefabInstance* instance);
+
     /// Create a Variant of `base` and write it to `variant_path`.
     ///
     /// This is "Create > Prefab Variant" in the editor UI: the new asset starts

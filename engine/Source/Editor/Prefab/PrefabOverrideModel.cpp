@@ -105,13 +105,39 @@ namespace
         return n;
     }
 
-    PrefabOverrideModel::ApplyReport FinishApply(const Level* level, PrefabInstance* instance, int applied)
+    /// True when the instance's source prefab is a Variant. Apply then has to record
+    /// into the Variant asset (and saves it itself) rather than splice into the
+    /// base's shared objects.
+    bool SourceIsVariant(const PrefabInstance* instance)
+    {
+        if (instance == nullptr)
+            return false;
+        const PrefabAsset* source = static_cast<const PrefabAsset*>(instance->GetSourcePrefab());
+        return source != nullptr && source->IsVariant();
+    }
+
+    /// Push the instance's current modification list into the source. Variant sources
+    /// go through ApplyAllToVariant, which also writes the file; plain prefabs splice
+    /// into the source objects and FinishApply writes the file afterwards.
+    int ApplyToSource(PrefabInstance* instance, bool& out_already_saved)
+    {
+        out_already_saved = false;
+        if (SourceIsVariant(instance))
+        {
+            out_already_saved = true;
+            return PrefabUtilityEditor::ApplyAllToVariant(instance);
+        }
+        return PrefabUtilityEditor::ApplyAll(instance);
+    }
+
+    PrefabOverrideModel::ApplyReport FinishApply(const Level* level, PrefabInstance* instance, int applied,
+                                                 bool already_saved = false)
     {
         PrefabOverrideModel::ApplyReport report;
         report.applied = applied;
         if (applied <= 0)
             return report;
-        report.saved = PrefabOverrideModel::SaveSourcePrefab(instance);
+        report.saved = already_saved ? true : PrefabOverrideModel::SaveSourcePrefab(instance);
         if (level != nullptr)
         {
             const int32_t source_id = instance->GetSourcePrefab().GetInstanceID();
@@ -258,7 +284,8 @@ namespace PrefabOverrideModel
         instance->ClearModifications();
         for (const PropertyModification& m : selected)
             instance->AddModification(m);
-        const int applied = PrefabUtilityEditor::ApplyAll(instance);
+        bool already_saved = false;
+        const int applied = ApplyToSource(instance, already_saved);
         if (applied <= 0)
         {
             instance->ClearModifications();
@@ -267,14 +294,16 @@ namespace PrefabOverrideModel
         }
         for (const PropertyModification& m : rest)
             instance->AddModification(m);
-        return FinishApply(level, instance, applied);
+        return FinishApply(level, instance, applied, already_saved);
     }
 
     ApplyReport ApplyAll(const Level* level, PrefabInstance* instance)
     {
         if (instance == nullptr || instance->GetModifications().empty())
             return {};
-        return FinishApply(level, instance, PrefabUtilityEditor::ApplyAll(instance));
+        bool already_saved = false;
+        const int applied = ApplyToSource(instance, already_saved);
+        return FinishApply(level, instance, applied, already_saved);
     }
 
     namespace
