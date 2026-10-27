@@ -168,3 +168,43 @@ if(ZENGINE_BUILD_VT_ASYNC_LOAD_AB_SMOKE_TEST)
         message(STATUS "Configured VT async-load A/B smoke test: VirtualTextureAsyncLoadABSmokeTest")
     endif()
 endif()
+
+# =============================================================================
+# VirtualTextureBlitABSmokeTest — 片元阶段页表消费者 A/B（Vulkan headless，离屏）
+# -----------------------------------------------------------------------------
+# vt_resolve.comp 在 compute 里逐整数 texel 查页表；真实材质是在 fragment shader 里用光栅化
+# 插值出来的 UV 去采样。本测试用全屏三角形把虚拟纹理画到自己的离屏目标上（vt_blit.vert/frag，
+# 后者 #include vt_common.h），读回逐像素与 CPU 按同一套 UV->texel 公式算出的期望比对：
+# 1:1 输出、放大/缩小、图像方向、池满驱逐后被驱逐页为 fallback。不碰任何相机 pass。
+# 依赖 ZShaderCompile 生成 vt_blit_vert.h / vt_blit_frag.h。
+#
+#   cmake -B build -DZENGINE_BUILD_VT_BLIT_AB_SMOKE_TEST=ON
+#   cmake --build build --target VirtualTextureBlitABSmokeTest
+# =============================================================================
+option(ZENGINE_BUILD_VT_BLIT_AB_SMOKE_TEST
+       "Build the VirtualTexture fragment-stage page-table consumer A/B (Vulkan headless) smoke-test executable"
+       OFF)
+
+if(ZENGINE_BUILD_VT_BLIT_AB_SMOKE_TEST)
+    if(NOT WIN32 AND NOT (UNIX AND NOT APPLE))
+        message(STATUS "VT blit A/B smoke test needs the Vulkan backend (Windows/Linux); skipping")
+    else()
+        add_executable(VirtualTextureBlitABSmokeTest VirtualTextureBlitABSmokeTest.cpp)
+        set_target_properties(VirtualTextureBlitABSmokeTest PROPERTIES
+            CXX_STANDARD 23
+            FOLDER "Engine/Tests"
+        )
+        target_link_libraries(VirtualTextureBlitABSmokeTest PRIVATE ZRuntime)
+        if(TARGET ZEnginePCH)
+            target_link_libraries(VirtualTextureBlitABSmokeTest PRIVATE ZEnginePCH)
+            target_include_directories(VirtualTextureBlitABSmokeTest PRIVATE ${ENGINE_ROOT_DIR}/Source/CommonPCH)
+            add_dependencies(VirtualTextureBlitABSmokeTest ZEnginePCH)
+            target_precompile_headers(VirtualTextureBlitABSmokeTest REUSE_FROM ZEnginePCH)
+        endif()
+        if(MSVC)
+            target_compile_options(VirtualTextureBlitABSmokeTest PRIVATE /W4)
+        endif()
+        add_test(NAME VirtualTextureBlitABSmokeTest COMMAND VirtualTextureBlitABSmokeTest)
+        message(STATUS "Configured VT blit A/B smoke test: VirtualTextureBlitABSmokeTest")
+    endif()
+endif()
