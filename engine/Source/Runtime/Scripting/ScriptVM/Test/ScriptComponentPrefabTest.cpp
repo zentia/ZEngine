@@ -629,6 +629,222 @@ int main(int argc, char** argv)
     DeepVerify("H-prefab", deep_prefab);
     DeepVerify("H-zasset", deep_zasset);
 
+    // ---- I. Prefab Variant（模型 A：真继承）--------------------------------
+    // Variant **不拥有对象树**，只有 base 指针 + 自己这一层的 overrides。实例化
+    // 它 = 最深 base 的对象树 + 逐层 overrides。这一组钉三件事：
+    //   1. 链能解开，克隆出来的是 base 的那棵树；
+    //   2. variant 的 override 真的落到了克隆体上（不是 base 的值）；
+    //   3. 反过来直接实例化 base，override 不该出现（对照组，防"改了 base"）。
+    //
+    // override 打在 Transform 的 local position x 上：字段名是 m_LocalPositionD
+    // （Transform 走手写 Transfer，m_LocalPosition 是 Vector3d，所以是 double）。
+    std::printf("\n--- I. Prefab Variant（base 的对象树 + variant 的 overrides）---\n");
+
+    GameObject* base_go = MakeGameObject(object_manager, "VariantBase");
+    CheckTrue("I1", "造出了 base GameObject", base_go != nullptr);
+    if (base_go == nullptr)
+    {
+        std::printf("  (skip: Produce(GameObject) 失败)\n");
+    }
+    else
+    {
+        CheckTrue("I2", "base 挂上了 Transform",
+                  base_go->AddComponentByTypeName("Transform") != nullptr);
+        base_go->SyncSerializedComponents();
+
+        const std::filesystem::path base_path = scratch / "VBase.prefab";
+        CheckTrue("I3", "base prefab 写盘成功", PrefabUtility::SaveAsPrefabAsset(base_go, base_path));
+
+        std::vector<GameObject*> base_gos;
+        PrefabAsset* base_asset = PrefabUtility::LoadPrefabAsset(base_path, &base_gos);
+        CheckTrue("I4", "base prefab 读回来了", base_asset != nullptr);
+
+        GameObject* base_root = (base_asset != nullptr) ? base_asset->GetRootGameObject() : nullptr;
+        CheckTrue("I5", "base 有根 GameObject", base_root != nullptr);
+        Transform* src_tf = (base_root != nullptr) ? base_root->GetTransform() : nullptr;
+        CheckTrue("I6", "拿得到 base 的 Transform（override 的 target 就是它）", src_tf != nullptr);
+
+        PrefabAsset* variant = nullptr;
+        if (base_asset != nullptr && src_tf != nullptr)
+        {
+            Object* raw_variant = object_manager->Produce(TypeOf<PrefabAsset>(), 0);
+            if (raw_variant != nullptr)
+            {
+                object_manager->AllocateAndAssignInstanceID(raw_variant);
+                variant = static_cast<PrefabAsset*>(raw_variant);
+                variant->SetVariantBase(base_asset);
+            }
+        }
+        CheckTrue("I7", "造出了 variant 资产", variant != nullptr);
+
+        if (variant != nullptr && src_tf != nullptr)
+        {
+            CheckTrue("I8", "variant 认自己是 variant（base 指针非空）", variant->IsVariant());
+
+            PropertyModification mod;
+            mod.target = PPtr<Object>(src_tf);
+            mod.property_path = eastl::string("m_LocalPositionD.x");
+            const double kOverrideX = 42.0;
+            eastl::string payload;
+            payload.resize(sizeof(double));
+            std::memcpy(payload.data(), &kOverrideX, sizeof(double));
+            mod.value_bytes = payload;
+            variant->AddVariantOverride(mod);
+            CheckEq("I9", "variant 记下了 1 条 override",
+                    std::to_string(variant->GetVariantOverrides().size()), "1");
+
+            // 实例化 variant：应该拿到 base 的树，且 x 被 override 成 42
+            GameObject* v_clone = PrefabUtility::Instantiate(variant, /*invoke_post_load=*/true);
+            CheckTrue("I10", "variant 实例化出了根", v_clone != nullptr);
+            if (v_clone != nullptr)
+            {
+                CheckEq("I11", "克隆出来的是 base 的对象树",
+                        std::string(v_clone->GetName().c_str()), "VariantBase");
+                CheckTrue("I12", "克隆是新对象，不是 base 的模板本身", v_clone != base_root);
+                Transform* v_tf = v_clone->GetTransform();
+                CheckTrue("I13", "克隆上有 Transform", v_tf != nullptr);
+                if (v_tf != nullptr)
+                {
+                    CheckEq("I14", "variant 的 override 生效了（x=42）",
+                            std::to_string(v_tf->GetLocalPositionD().x), std::to_string(42.0));
+                }
+            }
+
+            // 对照组：直接实例化 base，override 不应该出现
+            GameObject* b_clone = PrefabUtility::Instantiate(base_asset, /*invoke_post_load=*/true);
+            CheckTrue("I15", "base 也实例化出了根", b_clone != nullptr);
+            if (b_clone != nullptr)
+            {
+                Transform* b_tf = b_clone->GetTransform();
+                CheckTrue("I16", "base 克隆上有 Transform", b_tf != nullptr);
+                if (b_tf != nullptr)
+                {
+                    CheckEq("I17", "直接实例化 base 时 x 仍是 0（证明 42 确实来自 variant 那层）",
+                            std::to_string(b_tf->GetLocalPositionD().x), std::to_string(0.0));
+                }
+            }
+        }
+    }
+
+    // ---- J. 多层 Variant 链：每层 override 都生效，近的赢 ----------------------
+    // I 组只证明了"单层 variant 能解开"。模型 A 真正卖的是**任意长度链**：链上
+    // 每一环的 override.target 都指向最深 base 图里的同一个对象，靠
+    // CloneResult::ptr_map 翻译，所以 base <- mid <- leaf 这种三层链也该套到
+    // 同一份克隆树上。这一组钉三件事：
+    //   1. 三层链能解开（不是只解一层就停）；
+    //   2. 不同层改不同字段时，各层的值都在；
+    //   3. 同一字段被两层都改时，近的那层赢。
+    std::printf("\n--- J. 多层 Variant 链（近的覆盖远的）---\n");
+
+    auto PosStr = [](Transform* tf) -> std::string
+    {
+        if (tf == nullptr)
+        {
+            return std::string("<null>");
+        }
+        const auto p = tf->GetLocalPositionD();
+        char buf[128];
+        std::snprintf(buf, sizeof(buf), "%.1f/%.1f/%.1f", p.x, p.y, p.z);
+        return std::string(buf);
+    };
+
+    GameObject* j_base_go = MakeGameObject(object_manager, "JBase");
+    CheckTrue("J1", "造出了 J 组的 base GameObject", j_base_go != nullptr);
+    if (j_base_go != nullptr)
+    {
+        CheckTrue("J2", "J base 挂上了 Transform",
+                  j_base_go->AddComponentByTypeName("Transform") != nullptr);
+        j_base_go->SyncSerializedComponents();
+
+        const std::filesystem::path j_base_path = scratch / "JBase.prefab";
+        CheckTrue("J3", "J base prefab 写盘成功",
+                  PrefabUtility::SaveAsPrefabAsset(j_base_go, j_base_path));
+
+        std::vector<GameObject*> j_base_gos;
+        PrefabAsset* j_base = PrefabUtility::LoadPrefabAsset(j_base_path, &j_base_gos);
+        CheckTrue("J4", "J base prefab 读回来了", j_base != nullptr);
+
+        GameObject* j_base_root = (j_base != nullptr) ? j_base->GetRootGameObject() : nullptr;
+        Transform* j_src_tf = (j_base_root != nullptr) ? j_base_root->GetTransform() : nullptr;
+        CheckTrue("J5", "拿得到 J base 的 Transform（链上每层的 target 都指向它）",
+                  j_src_tf != nullptr);
+
+        if (j_base != nullptr && j_src_tf != nullptr)
+        {
+            // 造一层 variant：base 指针 + 若干 override（都打在同一个 base 对象上）
+            auto MakeVariant = [&](PrefabAsset* base,
+                                   std::initializer_list<std::pair<const char*, double>> overrides) -> PrefabAsset*
+            {
+                Object* raw = object_manager->Produce(TypeOf<PrefabAsset>(), 0);
+                if (raw == nullptr)
+                {
+                    return nullptr;
+                }
+                object_manager->AllocateAndAssignInstanceID(raw);
+                PrefabAsset* v = static_cast<PrefabAsset*>(raw);
+                v->SetVariantBase(base);
+                for (const auto& kv : overrides)
+                {
+                    PropertyModification mod;
+                    mod.target = PPtr<Object>(j_src_tf);
+                    mod.property_path = eastl::string(kv.first);
+                    const double d = kv.second;
+                    eastl::string payload;
+                    payload.resize(sizeof(double));
+                    std::memcpy(payload.data(), &d, sizeof(double));
+                    mod.value_bytes = payload;
+                    v->AddVariantOverride(mod);
+                }
+                return v;
+            };
+
+            // base <- mid(x=10, z=3) <- leaf(x=99, y=7)
+            PrefabAsset* j_mid = MakeVariant(j_base, {{"m_LocalPositionD.x", 10.0},
+                                                      {"m_LocalPositionD.z", 3.0}});
+            PrefabAsset* j_leaf = MakeVariant(j_mid, {{"m_LocalPositionD.x", 99.0},
+                                                      {"m_LocalPositionD.y", 7.0}});
+            CheckTrue("J6", "造出了三层链（base <- mid <- leaf）",
+                      j_mid != nullptr && j_leaf != nullptr);
+
+            if (j_mid != nullptr && j_leaf != nullptr)
+            {
+                CheckEq("J7", "leaf 认 base 是三层深（IsVariant 一路为真）",
+                        std::to_string(j_leaf->IsVariant() && j_mid->IsVariant() && !j_base->IsVariant()),
+                        std::to_string(true));
+
+                // leaf：x 两层都改了，取近的 99；y 只有 leaf 改了；z 只有 mid 改了
+                // 且 leaf 没动它 —— 三个值分别来自链上的不同层。
+                GameObject* j_leaf_clone = PrefabUtility::Instantiate(j_leaf, /*invoke_post_load=*/true);
+                CheckTrue("J8", "leaf 实例化出了根", j_leaf_clone != nullptr);
+                if (j_leaf_clone != nullptr)
+                {
+                    CheckEq("J9", "leaf 克隆的仍是 base 的那棵树",
+                            std::string(j_leaf_clone->GetName().c_str()), "JBase");
+                    CheckEq("J10", "三层链：x 取近的 leaf(99)、y 取 leaf(7)、z 取远的 mid(3)",
+                            PosStr(j_leaf_clone->GetTransform()), "99.0/7.0/3.0");
+                }
+
+                // mid：只有两层，x=10 / z=3，y 没人动过
+                GameObject* j_mid_clone = PrefabUtility::Instantiate(j_mid, /*invoke_post_load=*/true);
+                CheckTrue("J11", "mid 也实例化出了根", j_mid_clone != nullptr);
+                if (j_mid_clone != nullptr)
+                {
+                    CheckEq("J12", "两层链：x=10 / y=0（没人改） / z=3",
+                            PosStr(j_mid_clone->GetTransform()), "10.0/0.0/3.0");
+                }
+
+                // 对照：base 自己没有被链上任何一层污染
+                GameObject* j_base_clone = PrefabUtility::Instantiate(j_base, /*invoke_post_load=*/true);
+                CheckTrue("J13", "base 也实例化出了根", j_base_clone != nullptr);
+                if (j_base_clone != nullptr)
+                {
+                    CheckEq("J14", "base 仍是 0/0/0（证明这些值确实来自 variant 各层）",
+                            PosStr(j_base_clone->GetTransform()), "0.0/0.0/0.0");
+                }
+            }
+        }
+    }
+
     std::printf("\n---------------------------------------------\n");
     std::printf("checks=%d failed=%d\n", g_Checks, g_Failed);
     if (g_Failed > 0)

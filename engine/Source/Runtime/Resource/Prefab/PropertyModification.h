@@ -9,18 +9,29 @@
 #include <vector>
 
 // =====================================================================================
-// PropertyModification — Editor-only override record for the Prefab system.
+// PropertyModification — one override record for the Prefab system.
 // -------------------------------------------------------------------------------------
-// One PropertyModification represents a single override applied by a PrefabInstance to
-// a particular property of a particular target object (a GameObject or Component that
-// was cloned from the source PrefabAsset).
+// 2026-10-27: moved from Editor/Prefab/ down to Runtime/Resource/Prefab/ (namespace
+// `prefab_editor` -> `prefab`). It is NOT editor-only any more: Prefab Variants
+// (model A) need their overrides to survive into the player, and anything stored on
+// PrefabInstance — which is kTypeIsEditorOnly — never gets there.
+//
+// One PropertyModification represents a single override applied to a particular
+// property of a particular target object (a GameObject or Component that was cloned
+// from the source PrefabAsset).
 //
 // Mirrors Unity's `Editor/Src/Prefabs/PropertyModification.h` 1:1 in layout:
 //
-//     target          PPtr<Object>   The instance object the override applies to.
-//                                    (NOT the source object — apply pipeline uses the
-//                                     PrefabInstance.corresponding_source map to look
-//                                     up the matching source object.)
+//     target          PPtr<Object>   The object the override applies to. Which graph
+//                                    it belongs to depends on who owns the record:
+//                                    * on a PrefabInstance  -> the INSTANCE object;
+//                                      the apply pipeline walks
+//                                      corresponding_source back to the source object.
+//                                    * on a Prefab Variant  -> the object in the
+//                                      DEEPEST BASE's graph. That is deliberate: every
+//                                      link of the variant chain then names the same
+//                                      object, so one clone of the base tree can take
+//                                      the whole chain's overrides via ptr_map.
 //     property_path   eastl::string  Dot-and-bracket path inside the object, e.g.
 //                                    "m_LocalPosition.x", "m_Components[2]", or
 //                                    just "m_Name".
@@ -30,8 +41,13 @@
 //     object_reference PPtr<Object>  Used instead of `value` when the target field is
 //                                    itself a PPtr<>/ObjectReference.
 //
-// PropertyModifications are stored on PrefabInstance and applied by `MergePrefabInto`
-// (Phase 2b) after each per-object Transfer-from-source completes.
+// PropertyModifications are stored in two places:
+//   * PrefabInstance::m_modifications — instance-level overrides, applied by
+//     `MergePrefabInto` (Phase 2b) after each per-object Transfer-from-source
+//     completes. Editor only.
+//   * PrefabAsset::m_variant_overrides — a Variant's own layer of changes, applied by
+//     `PrefabUtility::ApplyVariantOverrides` when the variant is instantiated. This
+//     one is Runtime, so overrides reach the player.
 //
 // IMPORTANT: keep this struct trivially-Transferable. Adding fields here means every
 // existing .zasset on disk needs its schema_version bumped — coordinate with

@@ -112,6 +112,10 @@ SCRIPT_PREFAB_EXTRA_SOURCES = SCRIPT_COMPONENT_EXTRA_SOURCES + [
     "build/Generated/ZHT/ZRuntime/Src/PrefabAsset.gen.cpp",
     "build/Generated/ZHT/ZRuntime/Src/PrefabRefComponent.gen.cpp",
     "build/Generated/ZHT/ZRuntime/Src/RigidbodyComponent.gen.cpp",
+    # 2026-10-27 从 Editor/Prefab/ 下沉过来的 override 管线，.a 里没有：
+    "engine/Source/Runtime/Resource/Prefab/PropertyModification.cpp",
+    "engine/Source/Runtime/Resource/Prefab/PropertyPathResolver.cpp",
+    "engine/Source/Runtime/Resource/Prefab/PropertyValueLocator.cpp",
 ]
 
 # 上面这五份 .cpp 在 .a 里都有同名成员，且会因为别处引用了它们独有的旧符号

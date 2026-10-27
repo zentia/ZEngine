@@ -4,6 +4,7 @@
 #include "Runtime/BaseClasses/ObjectManager.h"
 #include "Runtime/Core/Base/Macro.h"
 #include "Runtime/Core/Memory/MemoryManager.h"
+#include "Runtime/Core/Serialize/TransferUtility.h"
 #include "Runtime/Function/Framework/Component/Component.h"
 #include "Runtime/Function/Framework/Component/PrefabRefComponent.h"
 #include "Runtime/Function/Framework/Component/Rigidbody/RigidbodyComponent.h"
@@ -11,7 +12,12 @@
 #include "Runtime/Resource/Asset/AssetManager.h"
 #include "Runtime/Resource/Prefab/PrefabAsset.h"
 #include "Runtime/Resource/Prefab/PrefabSubtreeCloner.h"
+#include "Runtime/Resource/Prefab/PropertyModification.h"
+#include "Runtime/Resource/Prefab/PropertyPathResolver.h"
+#include "Runtime/Resource/Prefab/PropertyValueLocator.h"
 
+#include <algorithm>
+#include <cstring>
 #include <filesystem>
 #include <unordered_map>
 #include <unordered_set>
@@ -313,6 +319,189 @@ namespace
     };
 }  // namespace
 
+// =====================================================================================
+// Prefab Variant — model A (true inheritance)
+// -------------------------------------------------------------------------------------
+// A Variant owns NO object tree: it is `m_variant_base` (a PPtr to its base) plus
+// `m_variant_overrides` (what this link changes). Instantiating one therefore means:
+//
+//   1. walk the base chain down to the deepest NON-variant PrefabAsset — that is the
+//      only asset in the chain that actually carries GameObjects;
+//   2. clone THAT subtree (one clone, shared by the whole chain);
+//   3. apply every link's overrides top-down (base -> ... -> variant) onto the clone,
+//      so a nearer link wins over a farther one on the same field;
+//   4. post-load the clone as usual.
+//
+// Step 3 needs each override's `target` (an object in the BASE's graph) translated to
+// its counterpart in the clone — that is exactly `CloneResult::ptr_map`.
+// =====================================================================================
+namespace
+{
+    /// Snapshot `obj` into (type tree, StreamedBinary bytes) — the pair the locator
+    /// needs to find a field and overwrite it.
+    bool SnapshotObject(Object& obj, prefab::SerialisedObject& out_tree, std::vector<uint8_t>& out_bytes)
+    {
+        if (!prefab::SerialiseObject(&obj, out_tree))
+        {
+            return false;
+        }
+        out_bytes.clear();
+        TransferUtility::WriteObjectToVector(obj, out_bytes);
+        return true;
+    }
+
+    /// Push modified bytes back into the live object. Components get their
+    /// OnSerializedFieldsUpdated hook so derived state (e.g. cached matrices) follows.
+    // NOTE: non-const ref on purpose — ReadObjectFromVector takes a mutable buffer.
+    bool ReadBackInto(Object& obj, std::vector<uint8_t>& bytes)
+    {
+        if (!TransferUtility::ReadObjectFromVector(obj, bytes))
+        {
+            return false;
+        }
+        if (auto* component = Cast<Component>(&obj))
+        {
+            component->OnSerializedFieldsUpdated();
+        }
+        return true;
+    }
+
+    /// A PPtr leaf occupies one int32 slot holding the target's InstanceID — the same
+    /// convention SafeBinaryRead uses to walk past PPtr leaves.
+    std::vector<uint8_t> EncodePPtrAsBytes(PPtr<Object> ref)
+    {
+        int32_t id = ref.GetInstanceID();
+        std::vector<uint8_t> out(sizeof(int32_t));
+        std::memcpy(out.data(), &id, sizeof(int32_t));
+        return out;
+    }
+
+    /// Apply ONE PropertyModification to a live object: snapshot -> locate -> splice
+    /// -> read back. The override value comes from `object_reference` (PPtr field) if
+    /// set, otherwise from `value_bytes` (raw StreamedBinary bytes).
+    bool ApplyModification(Object* recipient, const PropertyModification& mod)
+    {
+        if (recipient == nullptr)
+        {
+            return false;
+        }
+
+        prefab::SerialisedObject tree;
+        std::vector<uint8_t> bytes;
+        if (!SnapshotObject(*recipient, tree, bytes))
+        {
+            LOG_WARNING(ZPrefab, "variant override: snapshot failed on '{}'", recipient->name.c_str());
+            return false;
+        }
+
+        std::vector<prefab::PathToken> tokens;
+        if (!prefab::TokenizePropertyPath(mod.property_path, tokens))
+        {
+            LOG_WARNING(ZPrefab, "variant override: malformed property_path '{}'", mod.property_path.c_str());
+            return false;
+        }
+
+        prefab::PropertyLocation loc;
+        if (!prefab::LocatePropertyInStream(tree.type_tree, bytes, tokens, loc) || !loc.valid())
+        {
+            LOG_WARNING(ZPrefab, "variant override: path '{}' not found on '{}'",
+                        mod.property_path.c_str(), recipient->name.c_str());
+            return false;
+        }
+
+        std::vector<uint8_t> value;
+        if (!mod.object_reference.IsNull())
+        {
+            value = EncodePPtrAsBytes(mod.object_reference);
+        }
+        else
+        {
+            value.assign(mod.value_bytes.begin(), mod.value_bytes.end());
+        }
+
+        if (value.size() != static_cast<size_t>(loc.byte_size))
+        {
+            LOG_WARNING(ZPrefab,
+                        "variant override: value size {} != field size {} for '{}' on '{}'",
+                        static_cast<int>(value.size()), static_cast<int>(loc.byte_size),
+                        mod.property_path.c_str(), recipient->name.c_str());
+            return false;
+        }
+
+        if (!prefab::OverwriteScalarBytes(bytes, loc, value.data(), value.size()))
+        {
+            return false;
+        }
+        return ReadBackInto(*recipient, bytes);
+    }
+
+    /// Walk `asset`'s base chain. On success `out_chain` is ordered deepest-base-first
+    /// and ends with `asset` itself. Returns false on a broken or cyclic chain.
+    bool ResolveVariantChain(PrefabAsset* asset, std::vector<PrefabAsset*>& out_chain)
+    {
+        out_chain.clear();
+        PrefabAsset* node = asset;
+        constexpr int kMaxDepth = 64;
+        while (node != nullptr)
+        {
+            if (static_cast<int>(out_chain.size()) >= kMaxDepth)
+            {
+                LOG_ERROR(ZPrefab, "variant chain longer than {} links — cycle?", kMaxDepth);
+                return false;
+            }
+            out_chain.push_back(node);
+            if (!node->IsVariant())
+            {
+                break;
+            }
+            PrefabAsset* base = static_cast<PrefabAsset*>(node->GetVariantBase());
+            if (base == nullptr)
+            {
+                LOG_ERROR(ZPrefab, "variant chain broken — '{}' is marked variant but its base PPtr is null",
+                          node->name.c_str());
+                return false;
+            }
+            node = base;
+        }
+        std::reverse(out_chain.begin(), out_chain.end());  // deepest first
+        return true;
+    }
+
+    /// Apply every link's overrides onto the clone, top-down. `source_to_clone` maps
+    /// base-graph object -> cloned object. Returns how many were applied.
+    int ApplyVariantOverrides(const std::vector<PrefabAsset*>& chain,
+                              const std::unordered_map<Object*, Object*>& source_to_clone)
+    {
+        int applied = 0;
+        for (PrefabAsset* layer : chain)
+        {
+            for (const PropertyModification& mod : layer->GetVariantOverrides())
+            {
+                Object* source = static_cast<Object*>(mod.target);
+                if (source == nullptr)
+                {
+                    continue;
+                }
+                auto it = source_to_clone.find(source);
+                if (it == source_to_clone.end() || it->second == nullptr)
+                {
+                    // The override names an object the base no longer has (base was
+                    // edited since). Not fatal — skip it rather than fail the whole
+                    // instantiation.
+                    LOG_WARNING(ZPrefab, "variant override on '{}': target object is not in the base subtree — skipped",
+                                layer->name.c_str());
+                    continue;
+                }
+                if (ApplyModification(it->second, mod))
+                {
+                    ++applied;
+                }
+            }
+        }
+        return applied;
+    }
+}  // namespace
+
 GameObject* PrefabUtility::Instantiate(PrefabAsset* asset, bool invoke_post_load)
 {
     if (asset == nullptr)
@@ -321,10 +510,21 @@ GameObject* PrefabUtility::Instantiate(PrefabAsset* asset, bool invoke_post_load
         return nullptr;
     }
 
-    GameObject* root = asset->GetRootGameObject();
+    // A Variant carries no object tree of its own — resolve the chain and clone the
+    // deepest non-variant base instead. For a plain prefab the chain is one element
+    // long and this is exactly the old behaviour.
+    std::vector<PrefabAsset*> chain;
+    if (!ResolveVariantChain(asset, chain))
+    {
+        return nullptr;
+    }
+
+    PrefabAsset* base_asset = chain.front();
+    GameObject* root = base_asset->GetRootGameObject();
     if (root == nullptr)
     {
-        LOG_ERROR(ZPrefab, "PrefabAsset has no root GameObject");
+        LOG_ERROR(ZPrefab, "PrefabAsset '{}' (base of the variant chain) has no root GameObject",
+                  base_asset->name.c_str());
         return nullptr;
     }
 
@@ -362,6 +562,16 @@ GameObject* PrefabUtility::Instantiate(PrefabAsset* asset, bool invoke_post_load
                 }
             }
         }
+    }
+
+    // Variant overrides go on BEFORE the post-load pass: PostLoadResource is what
+    // binds TypeScriptComponents and seeds Transform's double buffer, and it must
+    // see the overridden values, not the base's.
+    const int applied = chain.size() > 1 ? ApplyVariantOverrides(chain, clone.ptr_map) : 0;
+    if (applied > 0)
+    {
+        LOG_INFO(ZPrefab, "Instantiate: applied {} variant override(s) from a {}-link chain onto '{}'",
+                 applied, static_cast<int>(chain.size()), root->GetName().c_str());
     }
 
     PrefabPostLoadDriver driver;
