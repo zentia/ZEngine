@@ -344,6 +344,12 @@ private:
     // 到槽位子段 + memcpy），本地只能编译 + 静态检查，无法 headless 验证。
     void ExecuteStreamingUploads();
 
+    // 页池启用时，把 m_SceneGPUData 里每个**已驻留**集群的 geometry.x/y 从稠密基址改写成
+    // 它在持久页缓冲里的槽位基址，未驻留的集群 geometry.z（index_count）清零（本帧不画）。
+    // 这样现有 shader（positions[gl_VertexIndex] / command.firstIndex = geometry.y）无需改动
+    // 就能从页缓冲取几何。页池未启用时 no-op。
+    void PatchClustersForPagePool();
+
     // 执行GPU裁剪
     NaniteVisibilityResult PerformGPUCulling(const std::shared_ptr<RenderCamera>& camera, const NaniteConfig& config);
 

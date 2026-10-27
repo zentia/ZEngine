@@ -289,6 +289,38 @@ device + 帧循环）。而且 **draw 路径目前仍读稠密 `positions`/`indi
 
 ---
 
+### 落地记录 · 2.5 shader 页表间接寻址（2026-10-27，编译通过；GPU 行为待真机）
+
+**做了什么**：兑现渲染器执行落地记录"剩下"的最后一项——draw 路径从稠密 `positions`/`indices` 改成消费
+持久页缓冲。**关键设计：不改 shader**。
+
+**为什么能不改 shader**：现有契约是 `positions[gl_VertexIndex]`（vert）+ `command.firstIndex = geometry.y`
+（cull.comp），索引值本身已含基址、`vertexOffset` 恒 0。所以只要把每个**已驻留**集群的 `geometry.x/y`
+从稠密基址改写成它在持久页缓冲里的**槽位基址**，shader 端 `positions[slot_base + local]` /
+`firstIndex = index_slot_base` 自然落到页缓冲的正确窗口——语义零改动。
+
+**接线**：
+- `NaniteClusterManager::GetClusterPageId(mesh_id, cluster_index)`：取集群的页 id。
+- `NaniteRenderer::PatchClustersForPagePool()`：`PrepareGPUData` 里 `NaniteBuildSceneGPUData` 之后、集群
+  上传之前调用。遍历 `m_SceneGPUData.clusters`，用 `geometry.w`（instance_index）反查 mesh_id、用
+  `scene_index - instance.meta.z` 得 mesh 内 cluster_index，再查页槽位：驻留 → `geometry.x/y = slot_base`；
+  未驻留 → `geometry.z = 0`（kernel 产出空命令，本帧不画）。结构页（`flags.x==0`）跳过。
+- **集群每帧重传**：页随相机 churn，槽位基址每帧都可能变，所以页池启用时集群缓冲每帧重传
+  （`clusters_dirty = buffers_recreated || !compute_ready || IsPagePoolEnabled()`），不再只在缓冲重建时传。
+- **draw 绑定切换**：`RecordClusterDraw` 的 `CmdBindIndexBuffer` 与 `UpdateDescriptorWrites` 的 positions
+  描述符，页池启用时指向 `page_indices`/`page_positions`，否则指向稠密缓冲。
+
+**验证（Windows headless）**：`ZRuntime` 链接干净（强制重编 `NaniteRenderer.cpp` + `NaniteCluster.cpp`
+通过）；全 Nanite 回归**全绿**——`NaniteClusterBuilderSmokeTest` 77/77、`NanitePagePoolSmokeTest`、
+`NanitePageSlotTableSmokeTest`、`NanitePageUploadPlannerSmokeTest` 全过。
+
+**诚实定位（真机项）**：整条链（页池 → 槽位 → 计划 → 拷进页缓冲 → geometry 改写 → draw 读页缓冲）现在
+**编译通过、簿记全绿**，但 GPU 上的最终画面本机无法验证——页池默认关闭，且需要真实 RHI device + 帧循环 +
+SPIRV-Cross 重编 shader。真机上要验证三件事：①页池启用时画面与稠密路径一致（几何没丢/没错位）；②未驻留
+集群确实不画（无空洞）；③页 churn 时槽位复用不串页。这三件只能真机抓帧比对。
+
+---
+
 ### 落地记录 · 2.5 HiZ（2026-10-26，CPU 侧；GPU 侧待真机）
 
 **做了什么**：把 `NaniteHierarchicalZBuffer` 那组纯 TODO 桩（`UpdateDepthBuffer` / `BuildHierarchy` /

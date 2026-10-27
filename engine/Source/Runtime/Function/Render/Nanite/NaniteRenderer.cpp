@@ -792,6 +792,47 @@ void NaniteRenderer::ExecuteStreamingUploads()
     }
 }
 
+void NaniteRenderer::PatchClustersForPagePool()
+{
+    // 页池未启用：no-op（clusters 的 geometry.x/y 保持稠密基址，draw 读稠密 positions/indices）。
+    if (!m_ClusterManager.IsPagePoolEnabled())
+        return;
+
+    // 把每个集群的 geometry.x/y 从稠密基址改写成持久页缓冲里的槽位基址：
+    //   geometry.x = 该集群顶点在 page_positions 里的 slot_base（shader positions[gl_VertexIndex]）。
+    //   geometry.y = 该集群索引在 page_indices 里的 slot_base（command.firstIndex）。
+    // 未驻留的叶子集群 geometry.z（index_count）清零 —— kernel 产出 indexCount==0 的空命令，本帧不画。
+    // 结构页（internal）本就不进 draw（is_leaf==0），不动它。
+    //
+    // 集群在 m_SceneGPUData.clusters 里按实例顺序、实例内按 mesh->clusters 顺序排布；
+    // geometry.w = instance_index，instance.meta.z = 该实例集群段的起点，二者相减即 mesh 内 cluster_index。
+    for (NaniteGPUCluster& gc : m_SceneGPUData.clusters)
+    {
+        if (gc.flags.x == 0u)
+            continue;  // 结构页，不进 draw
+
+        const uint32_t instance_index = gc.geometry.w;
+        if (instance_index >= m_SceneGPUData.instances.size())
+            continue;
+        const NaniteGPUInstance& inst = m_SceneGPUData.instances[instance_index];
+        const uint64_t mesh_id =
+            (static_cast<uint64_t>(inst.meta.y) << 32) | static_cast<uint64_t>(inst.meta.x);
+        const uint32_t cluster_index = static_cast<uint32_t>(
+            (&gc - m_SceneGPUData.clusters.data()) - inst.meta.z);
+
+        const uint32_t page_id = m_ClusterManager.GetClusterPageId(mesh_id, cluster_index);
+        const nanite_pages::PageSlot* slot = m_PageSlots.FindSlot(page_id);
+        if (slot == nullptr)
+        {
+            // 未驻留（被预算闸拒/驱逐）：本帧不画。
+            gc.geometry.z = 0u;
+            continue;
+        }
+        gc.geometry.x = slot->vertex_slot_base;
+        gc.geometry.y = slot->index_slot_base;
+    }
+}
+
 bool NaniteRenderer::EnsureGPUResources(uint32_t cluster_count,
                                         uint32_t instance_count,
                                         uint32_t position_count,
@@ -924,8 +965,13 @@ void NaniteRenderer::UpdateDescriptorWrites()
 
     RHIDescriptorBufferInfo positions_info {};
     positions_info.offset = 0;
-    positions_info.range = static_cast<RHIDeviceSize>(m_GPU.position_capacity) * sizeof(Vector4);
-    positions_info.buffer = m_GPU.positions;
+    // 页池启用时顶点在持久页缓冲里（geometry.x 已改成槽位基址），描述符指向页缓冲；
+    // 否则指向稠密整场景缓冲。
+    const bool use_page_pos = m_ClusterManager.IsPagePoolEnabled() && m_GPU.page_positions != nullptr;
+    positions_info.range =
+        static_cast<RHIDeviceSize>(use_page_pos ? m_GPU.page_position_capacity : m_GPU.position_capacity) *
+        sizeof(Vector4);
+    positions_info.buffer = use_page_pos ? m_GPU.page_positions : m_GPU.positions;
 
     RHIWriteDescriptorSet writes[] = {
         make_write(m_GPU.descriptor_set, NaniteGPUBinding::kCullConstants),
@@ -1292,14 +1338,25 @@ bool NaniteRenderer::PrepareGPUData(const std::shared_ptr<RenderCamera>& camera,
         return false;
     }
 
+    // 页池启用时，把集群 geometry.x/y 从稠密基址改写成持久页缓冲的槽位基址（未驻留的
+    // 叶子 index_count 清零，本帧不画）。必须在集群上传之前 —— 改的是要上传的 m_SceneGPUData。
+    PatchClustersForPagePool();
+
     // 几何和集群只在容量变化（也就是缓冲被重建）时才需要重传；但实例变换每帧都可能
     // 变，所以它每帧都传。这样"相机不动、物体动"这种最常见的情况不会被跳过。
     const bool buffers_recreated = m_GPU.cluster_capacity != old_cluster_capacity;
 
-    if (buffers_recreated || !m_GPU.compute_ready)
+    // 页池启用时集群的 geometry.x/y 每帧都可能变（页随相机 churn，槽位基址跟着变），
+    // 所以集群必须每帧重传，不能只在缓冲重建时传。
+    const bool clusters_dirty = buffers_recreated || !m_GPU.compute_ready || m_ClusterManager.IsPagePoolEnabled();
+
+    if (clusters_dirty)
     {
         UploadBytes(m_GPU.clusters, m_GPU.clusters_memory, m_SceneGPUData.clusters.data(),
                     m_SceneGPUData.clusters.size() * sizeof(NaniteGPUCluster));
+    }
+    if (buffers_recreated || !m_GPU.compute_ready)
+    {
         UploadBytes(m_GPU.positions, m_GPU.positions_memory, m_SceneGPUData.positions.data(),
                     m_SceneGPUData.positions.size() * sizeof(Vector4));
         UploadBytes(m_GPU.indices, m_GPU.indices_memory, m_SceneGPUData.indices.data(),
@@ -1605,7 +1662,10 @@ void NaniteRenderer::RecordClusterDraw(RHICommandBuffer* command_buffer)
                                     &m_GPU.descriptor_set,
                                     0,
                                     nullptr);
-    m_Rhi->CmdBindIndexBufferPFN(command_buffer, m_GPU.indices, 0, RHI_INDEX_TYPE_UINT32);
+    // 页池启用时几何在持久页缓冲里（geometry.x/y 已改成槽位基址），绑页索引缓冲；
+    // 否则绑稠密索引缓冲。
+    RHIBuffer* index_buffer = m_ClusterManager.IsPagePoolEnabled() ? m_GPU.page_indices : m_GPU.indices;
+    m_Rhi->CmdBindIndexBufferPFN(command_buffer, index_buffer, 0, RHI_INDEX_TYPE_UINT32);
 
     // drawCount 是**上界**（集群总数）。被剔除的集群贡献 indexCount == 0 的空命令，
     // GPU 处理它们几乎不花钱，CPU 因此不必把计数读回来。

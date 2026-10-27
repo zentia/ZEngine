@@ -832,3 +832,11 @@ NaniteClusterManager::CollectResidentPageGeometry() const
     }
     return result;
 }
+
+uint32_t NaniteClusterManager::GetClusterPageId(uint64_t mesh_id, uint32_t cluster_index) const
+{
+    auto it = m_ClusterPageIds.find(mesh_id);
+    if (it == m_ClusterPageIds.end() || cluster_index >= it->second.size())
+        return 0;
+    return it->second[cluster_index];
+}

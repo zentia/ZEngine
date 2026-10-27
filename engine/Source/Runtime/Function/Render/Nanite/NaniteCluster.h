@@ -126,6 +126,9 @@ public:
     // 供 PlanStreamingUploads 计算拷贝源。返回 page_id → desc 的映射。
     std::unordered_map<uint32_t, nanite_pages::PageGeometryDesc> CollectResidentPageGeometry() const;
 
+    // 取某 (mesh_id, cluster_index) 的页 id（RegisterMeshResource 时分配）。越界返回 0。
+    uint32_t GetClusterPageId(uint64_t mesh_id, uint32_t cluster_index) const;
+
 private:
     struct MeshResourceEntry
     {
