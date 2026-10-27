@@ -88,6 +88,7 @@
 #include "Runtime/BaseClasses/ObjectManager.h"
 #include "Runtime/BaseClasses/TypeManager.h"
 #include "Runtime/Core/Base/SystemRegistry.h"
+#include "Runtime/Core/Serialize/TransferUtility.h"
 #include "Runtime/Function/Command/CommandSystem.h"
 #include "Runtime/Function/Framework/Component/Script/TypeScriptComponent.h"
 #include "Runtime/Function/Framework/Component/Transform/Transform.h"
@@ -628,6 +629,385 @@ int main(int argc, char** argv)
 
     DeepVerify("H-prefab", deep_prefab);
     DeepVerify("H-zasset", deep_zasset);
+
+    // ---- I. Prefab Variant（模型 A：真继承）--------------------------------
+    // Variant **不拥有对象树**，只有 base 指针 + 自己这一层的 overrides。实例化
+    // 它 = 最深 base 的对象树 + 逐层 overrides。这一组钉三件事：
+    //   1. 链能解开，克隆出来的是 base 的那棵树；
+    //   2. variant 的 override 真的落到了克隆体上（不是 base 的值）；
+    //   3. 反过来直接实例化 base，override 不该出现（对照组，防"改了 base"）。
+    //
+    // override 打在 Transform 的 local position x 上：字段名是 m_LocalPositionD
+    // （Transform 走手写 Transfer，m_LocalPosition 是 Vector3d，所以是 double）。
+    //
+    // value_bytes 是裸字节（host-endian），和 OverwriteScalarBytes 期待的布局一致。
+    // 注意 42.0 的小端字节以 6 个 0x00 开头 —— 这正是以前用 eastl::string 当字节袋
+    // 时被 YAML 截成空串的形状，K 组专测这个往返。
+    auto DoubleBytes = [](double v) {
+        std::vector<uint8_t> out(sizeof(double));
+        std::memcpy(out.data(), &v, sizeof(double));
+        return out;
+    };
+
+    std::printf("\n--- I. Prefab Variant（base 的对象树 + variant 的 overrides）---\n");
+
+    GameObject* base_go = MakeGameObject(object_manager, "VariantBase");
+    CheckTrue("I1", "造出了 base GameObject", base_go != nullptr);
+    if (base_go == nullptr)
+    {
+        std::printf("  (skip: Produce(GameObject) 失败)\n");
+    }
+    else
+    {
+        CheckTrue("I2", "base 挂上了 Transform",
+                  base_go->AddComponentByTypeName("Transform") != nullptr);
+        base_go->SyncSerializedComponents();
+
+        const std::filesystem::path base_path = scratch / "VBase.prefab";
+        CheckTrue("I3", "base prefab 写盘成功", PrefabUtility::SaveAsPrefabAsset(base_go, base_path));
+
+        std::vector<GameObject*> base_gos;
+        PrefabAsset* base_asset = PrefabUtility::LoadPrefabAsset(base_path, &base_gos);
+        CheckTrue("I4", "base prefab 读回来了", base_asset != nullptr);
+
+        GameObject* base_root = (base_asset != nullptr) ? base_asset->GetRootGameObject() : nullptr;
+        CheckTrue("I5", "base 有根 GameObject", base_root != nullptr);
+        Transform* src_tf = (base_root != nullptr) ? base_root->GetTransform() : nullptr;
+        CheckTrue("I6", "拿得到 base 的 Transform（override 的 target 就是它）", src_tf != nullptr);
+
+        PrefabAsset* variant = nullptr;
+        if (base_asset != nullptr && src_tf != nullptr)
+        {
+            Object* raw_variant = object_manager->Produce(TypeOf<PrefabAsset>(), 0);
+            if (raw_variant != nullptr)
+            {
+                object_manager->AllocateAndAssignInstanceID(raw_variant);
+                variant = static_cast<PrefabAsset*>(raw_variant);
+                variant->SetVariantBase(base_asset);
+            }
+        }
+        CheckTrue("I7", "造出了 variant 资产", variant != nullptr);
+
+        if (variant != nullptr && src_tf != nullptr)
+        {
+            CheckTrue("I8", "variant 认自己是 variant（base 指针非空）", variant->IsVariant());
+
+            PropertyModification mod;
+            mod.target = PPtr<Object>(src_tf);
+            mod.property_path = eastl::string("m_LocalPositionD.x");
+            const double kOverrideX = 42.0;
+            mod.value_bytes = DoubleBytes(kOverrideX);
+            variant->AddVariantOverride(mod);
+            CheckEq("I9", "variant 记下了 1 条 override",
+                    std::to_string(variant->GetVariantOverrides().size()), "1");
+
+            // 实例化 variant：应该拿到 base 的树，且 x 被 override 成 42
+            GameObject* v_clone = PrefabUtility::Instantiate(variant, /*invoke_post_load=*/true);
+            CheckTrue("I10", "variant 实例化出了根", v_clone != nullptr);
+            if (v_clone != nullptr)
+            {
+                CheckEq("I11", "克隆出来的是 base 的对象树",
+                        std::string(v_clone->GetName().c_str()), "VariantBase");
+                CheckTrue("I12", "克隆是新对象，不是 base 的模板本身", v_clone != base_root);
+                Transform* v_tf = v_clone->GetTransform();
+                CheckTrue("I13", "克隆上有 Transform", v_tf != nullptr);
+                if (v_tf != nullptr)
+                {
+                    CheckEq("I14", "variant 的 override 生效了（x=42）",
+                            std::to_string(v_tf->GetLocalPositionD().x), std::to_string(42.0));
+                }
+            }
+
+            // 对照组：直接实例化 base，override 不应该出现
+            GameObject* b_clone = PrefabUtility::Instantiate(base_asset, /*invoke_post_load=*/true);
+            CheckTrue("I15", "base 也实例化出了根", b_clone != nullptr);
+            if (b_clone != nullptr)
+            {
+                Transform* b_tf = b_clone->GetTransform();
+                CheckTrue("I16", "base 克隆上有 Transform", b_tf != nullptr);
+                if (b_tf != nullptr)
+                {
+                    CheckEq("I17", "直接实例化 base 时 x 仍是 0（证明 42 确实来自 variant 那层）",
+                            std::to_string(b_tf->GetLocalPositionD().x), std::to_string(0.0));
+                }
+            }
+        }
+    }
+
+    // ---- J. 多层 Variant 链：每层 override 都生效，近的赢 ----------------------
+    // I 组只证明了"单层 variant 能解开"。模型 A 真正卖的是**任意长度链**：链上
+    // 每一环的 override.target 都指向最深 base 图里的同一个对象，靠
+    // CloneResult::ptr_map 翻译，所以 base <- mid <- leaf 这种三层链也该套到
+    // 同一份克隆树上。这一组钉三件事：
+    //   1. 三层链能解开（不是只解一层就停）；
+    //   2. 不同层改不同字段时，各层的值都在；
+    //   3. 同一字段被两层都改时，近的那层赢。
+    std::printf("\n--- J. 多层 Variant 链（近的覆盖远的）---\n");
+
+    auto PosStr = [](Transform* tf) -> std::string
+    {
+        if (tf == nullptr)
+        {
+            return std::string("<null>");
+        }
+        const auto p = tf->GetLocalPositionD();
+        char buf[128];
+        std::snprintf(buf, sizeof(buf), "%.1f/%.1f/%.1f", p.x, p.y, p.z);
+        return std::string(buf);
+    };
+
+    GameObject* j_base_go = MakeGameObject(object_manager, "JBase");
+    CheckTrue("J1", "造出了 J 组的 base GameObject", j_base_go != nullptr);
+    if (j_base_go != nullptr)
+    {
+        CheckTrue("J2", "J base 挂上了 Transform",
+                  j_base_go->AddComponentByTypeName("Transform") != nullptr);
+        j_base_go->SyncSerializedComponents();
+
+        const std::filesystem::path j_base_path = scratch / "JBase.prefab";
+        CheckTrue("J3", "J base prefab 写盘成功",
+                  PrefabUtility::SaveAsPrefabAsset(j_base_go, j_base_path));
+
+        std::vector<GameObject*> j_base_gos;
+        PrefabAsset* j_base = PrefabUtility::LoadPrefabAsset(j_base_path, &j_base_gos);
+        CheckTrue("J4", "J base prefab 读回来了", j_base != nullptr);
+
+        GameObject* j_base_root = (j_base != nullptr) ? j_base->GetRootGameObject() : nullptr;
+        Transform* j_src_tf = (j_base_root != nullptr) ? j_base_root->GetTransform() : nullptr;
+        CheckTrue("J5", "拿得到 J base 的 Transform（链上每层的 target 都指向它）",
+                  j_src_tf != nullptr);
+
+        if (j_base != nullptr && j_src_tf != nullptr)
+        {
+            // 造一层 variant：base 指针 + 若干 override（都打在同一个 base 对象上）
+            auto MakeVariant = [&](PrefabAsset* base,
+                                   std::initializer_list<std::pair<const char*, double>> overrides) -> PrefabAsset*
+            {
+                Object* raw = object_manager->Produce(TypeOf<PrefabAsset>(), 0);
+                if (raw == nullptr)
+                {
+                    return nullptr;
+                }
+                object_manager->AllocateAndAssignInstanceID(raw);
+                PrefabAsset* v = static_cast<PrefabAsset*>(raw);
+                v->SetVariantBase(base);
+                for (const auto& kv : overrides)
+                {
+                    PropertyModification mod;
+                    mod.target = PPtr<Object>(j_src_tf);
+                    mod.property_path = eastl::string(kv.first);
+                    const double d = kv.second;
+                    mod.value_bytes = DoubleBytes(d);
+                    v->AddVariantOverride(mod);
+                }
+                return v;
+            };
+
+            // base <- mid(x=10, z=3) <- leaf(x=99, y=7)
+            PrefabAsset* j_mid = MakeVariant(j_base, {{"m_LocalPositionD.x", 10.0},
+                                                      {"m_LocalPositionD.z", 3.0}});
+            PrefabAsset* j_leaf = MakeVariant(j_mid, {{"m_LocalPositionD.x", 99.0},
+                                                      {"m_LocalPositionD.y", 7.0}});
+            CheckTrue("J6", "造出了三层链（base <- mid <- leaf）",
+                      j_mid != nullptr && j_leaf != nullptr);
+
+            if (j_mid != nullptr && j_leaf != nullptr)
+            {
+                CheckEq("J7", "leaf 认 base 是三层深（IsVariant 一路为真）",
+                        std::to_string(j_leaf->IsVariant() && j_mid->IsVariant() && !j_base->IsVariant()),
+                        std::to_string(true));
+
+                // leaf：x 两层都改了，取近的 99；y 只有 leaf 改了；z 只有 mid 改了
+                // 且 leaf 没动它 —— 三个值分别来自链上的不同层。
+                GameObject* j_leaf_clone = PrefabUtility::Instantiate(j_leaf, /*invoke_post_load=*/true);
+                CheckTrue("J8", "leaf 实例化出了根", j_leaf_clone != nullptr);
+                if (j_leaf_clone != nullptr)
+                {
+                    CheckEq("J9", "leaf 克隆的仍是 base 的那棵树",
+                            std::string(j_leaf_clone->GetName().c_str()), "JBase");
+                    CheckEq("J10", "三层链：x 取近的 leaf(99)、y 取 leaf(7)、z 取远的 mid(3)",
+                            PosStr(j_leaf_clone->GetTransform()), "99.0/7.0/3.0");
+                }
+
+                // mid：只有两层，x=10 / z=3，y 没人动过
+                GameObject* j_mid_clone = PrefabUtility::Instantiate(j_mid, /*invoke_post_load=*/true);
+                CheckTrue("J11", "mid 也实例化出了根", j_mid_clone != nullptr);
+                if (j_mid_clone != nullptr)
+                {
+                    CheckEq("J12", "两层链：x=10 / y=0（没人改） / z=3",
+                            PosStr(j_mid_clone->GetTransform()), "10.0/0.0/3.0");
+                }
+
+                // 对照：base 自己没有被链上任何一层污染
+                GameObject* j_base_clone = PrefabUtility::Instantiate(j_base, /*invoke_post_load=*/true);
+                CheckTrue("J13", "base 也实例化出了根", j_base_clone != nullptr);
+                if (j_base_clone != nullptr)
+                {
+                    CheckEq("J14", "base 仍是 0/0/0（证明这些值确实来自 variant 各层）",
+                            PosStr(j_base_clone->GetTransform()), "0.0/0.0/0.0");
+                }
+            }
+        }
+    }
+
+    // ---- K. Variant 落盘再读回（Create / Save / Load 往返）----------------------
+    // I / J 两组的 variant 都是内存里现造的。真实用法是把它存成一个 .prefab 文件，
+    // 而 Variant 文件的形状很特殊：**里面只有一个 PrefabAsset 头，没有 root** ——
+    // 这恰恰是 LoadPrefabAsset 以前会直接判失败的形状。这一组钉四件事：
+    //   1. CreateVariantAsset + SaveVariantAsset 写得出来；
+    //   2. LoadPrefabAsset 肯读回一个"没有 root 但 IsVariant()"的资产；
+    //   3. 读回来的 base 指针指向的还是同一个 base 资产（跨文件 PPtr 通）；
+    //   4. 实例化读回来的 variant，override 照样生效。
+    std::printf("\n--- K. Variant 落盘再读回（无 root 的单对象 prefab）---\n");
+
+    GameObject* k_base_go = MakeGameObject(object_manager, "KBase");
+    CheckTrue("K1", "造出了 K 组的 base GameObject", k_base_go != nullptr);
+    if (k_base_go != nullptr)
+    {
+        CheckTrue("K2", "K base 挂上了 Transform",
+                  k_base_go->AddComponentByTypeName("Transform") != nullptr);
+        k_base_go->SyncSerializedComponents();
+
+        const std::filesystem::path k_base_path = scratch / "KBase.prefab";
+        CheckTrue("K3", "K base prefab 写盘成功",
+                  PrefabUtility::SaveAsPrefabAsset(k_base_go, k_base_path));
+
+        std::vector<GameObject*> k_base_gos;
+        PrefabAsset* k_base = PrefabUtility::LoadPrefabAsset(k_base_path, &k_base_gos);
+        CheckTrue("K4", "K base prefab 读回来了", k_base != nullptr);
+
+        GameObject* k_base_root = (k_base != nullptr) ? k_base->GetRootGameObject() : nullptr;
+        Transform* k_src_tf = (k_base_root != nullptr) ? k_base_root->GetTransform() : nullptr;
+        CheckTrue("K5", "拿得到 K base 的 Transform", k_src_tf != nullptr);
+
+        if (k_base != nullptr && k_src_tf != nullptr)
+        {
+            // 两轨各跑一遍：.prefab（YAML 对象图）和 .zasset（二进制 SerializedFile）
+            const char* k_exts[2] = { ".prefab", ".zasset" };
+            for (int t = 0; t < 2; ++t)
+            {
+                const std::string k_tag = std::string("K") + (t == 0 ? "-prefab" : "-zasset");
+                const std::filesystem::path var_path =
+                    scratch / (std::string("KVar") + k_exts[t]);
+
+                PrefabAsset* k_var = PrefabUtility::CreateVariantAsset(k_base, eastl::string("KVar"));
+                CheckTrue(Id(k_tag.c_str(), 1).c_str(), "CreateVariantAsset 造出了 variant",
+                          k_var != nullptr);
+                if (k_var == nullptr)
+                {
+                    continue;
+                }
+
+                CheckTrue(Id(k_tag.c_str(), 2).c_str(),
+                          "新 variant 没有 root（Variant 本来就不拥有对象树）",
+                          k_var->GetRootGameObject() == nullptr);
+
+                PropertyModification k_mod;
+                k_mod.target = PPtr<Object>(k_src_tf);
+                k_mod.property_path = eastl::string("m_LocalPositionD.x");
+                const double k_x = 42.0;
+                k_mod.value_bytes = DoubleBytes(k_x);
+                k_var->AddVariantOverride(k_mod);
+
+                CheckTrue(Id(k_tag.c_str(), 3).c_str(), "SaveVariantAsset 写盘成功",
+                          PrefabUtility::SaveVariantAsset(k_var, var_path));
+                CheckTrue(Id(k_tag.c_str(), 4).c_str(), "文件确实落盘了",
+                          std::filesystem::exists(var_path));
+
+                // 读回 —— 这个文件只有一个 PrefabAsset 头、没有 root
+                std::vector<GameObject*> k_var_gos;
+                PrefabAsset* k_loaded = PrefabUtility::LoadPrefabAsset(var_path, &k_var_gos);
+                CheckTrue(Id(k_tag.c_str(), 5).c_str(), "无 root 的 variant 文件能读回来",
+                          k_loaded != nullptr);
+                if (k_loaded != nullptr)
+                {
+                    CheckTrue(Id(k_tag.c_str(), 6).c_str(), "读回来的确实认自己是 Variant",
+                              k_loaded->IsVariant());
+                    CheckTrue(Id(k_tag.c_str(), 7).c_str(),
+                              "base 指针指回了同一个 base 资产（跨文件 PPtr 通）",
+                              k_loaded->GetVariantBase() == k_base);
+                    CheckEq(Id(k_tag.c_str(), 8).c_str(), "override 跟着穿过了磁盘",
+                            std::to_string(k_loaded->GetVariantOverrides().size()), "1");
+
+                    GameObject* k_clone = PrefabUtility::Instantiate(k_loaded, /*invoke_post_load=*/true);
+                    CheckTrue(Id(k_tag.c_str(), 9).c_str(), "读回来的 variant 能实例化",
+                              k_clone != nullptr);
+                    if (k_clone != nullptr)
+                    {
+                        CheckEq(Id(k_tag.c_str(), 10).c_str(), "克隆的是 base 的那棵树",
+                                std::string(k_clone->GetName().c_str()), "KBase");
+                        CheckEq(Id(k_tag.c_str(), 11).c_str(),
+                                "落盘再读回后 override 照样生效（x=42）",
+                                std::to_string(k_clone->GetTransform()->GetLocalPositionD().x),
+                                std::to_string(42.0));
+                    }
+                }
+
+                // Produce() 配 ObjectManager::Destroy —— 见 SaveAsPrefabAsset 里那段
+                // 关于 mimalloc / mi_usable_size 的说明。
+                object_manager->Destroy(k_var);
+            }
+        }
+    }
+
+    // ---- L. 字节层拼接：override 只进字节，不碰共享的源对象 --------------------
+    // Editor 的 Revert / MergeFromSource 要算"一个 Variant 实例该回退到什么值" =
+    // base 模板的字节 + variant 自己的 override。base 模板是**所有该 base 的实例
+    // 共享**的对象，直接往它身上 splice 会污染每一个实例，所以必须只改字节。
+    // 这一组钉三点：
+    //   1. 字节里 override 生效了；
+    //   2. **源对象本身没被改**（最关键的一条）；
+    //   3. 路径不存在 / 值尺寸不匹配时是失败，不是静默写坏字节。
+    std::printf("\n--- L. 字节层拼接（override 只进字节，不碰共享的源对象）---\n");
+
+    GameObject* l_go = MakeGameObject(object_manager, "LSrc");
+    CheckTrue("L1", "造出了 L 组的 GameObject", l_go != nullptr);
+    if (l_go != nullptr)
+    {
+        CheckTrue("L2", "挂上了 Transform",
+                  l_go->AddComponentByTypeName("Transform") != nullptr);
+        l_go->SyncSerializedComponents();
+
+        Transform* l_tf = l_go->GetTransform();
+        CheckTrue("L3", "拿得到 Transform", l_tf != nullptr);
+
+        if (l_tf != nullptr)
+        {
+            CheckEq("L4", "起始 x 是 0",
+                    std::to_string(l_tf->GetLocalPositionD().x), std::to_string(0.0));
+
+            PropertyModification l_mod;
+            l_mod.target = PPtr<Object>(l_tf);
+            l_mod.property_path = eastl::string("m_LocalPositionD.x");
+            l_mod.value_bytes = DoubleBytes(42.0);
+
+            prefab::SerialisedObject l_tree;
+            std::vector<uint8_t> l_bytes;
+            CheckTrue("L5", "SnapshotWithOverrides 成功",
+                      PrefabUtility::SnapshotWithOverrides(*l_tf, {l_mod}, l_tree, l_bytes));
+
+            // 最关键的一条：源对象没被污染
+            CheckEq("L6", "源对象本身没被改（共享模板安全）",
+                    std::to_string(l_tf->GetLocalPositionD().x), std::to_string(0.0));
+            CheckTrue("L7", "快照字节非空", !l_bytes.empty());
+
+            // 字节里确实带着 override —— 读回同一个对象验证
+            const bool read_back = TransferUtility::ReadObjectFromVector(*l_tf, l_bytes);
+            CheckTrue("L8", "字节里 override 生效了（读回后 x=42）",
+                      read_back && l_tf->GetLocalPositionD().x == 42.0);
+
+            // 负向：路径不存在 / 尺寸不匹配，都应该是失败而不是乱写
+            PropertyModification l_bad = l_mod;
+            l_bad.property_path = eastl::string("m_DoesNotExist.x");
+            CheckTrue("L9", "路径不存在时拼接失败（不静默写坏字节）",
+                      !PrefabUtility::SpliceModificationIntoBytes(l_bytes, l_tree, l_bad));
+
+            PropertyModification l_short = l_mod;
+            l_short.value_bytes = std::vector<uint8_t>(4, 0);  // double 字段只给 4 字节
+            CheckTrue("L10", "值尺寸不匹配时拼接失败",
+                      !PrefabUtility::SpliceModificationIntoBytes(l_bytes, l_tree, l_short));
+        }
+    }
 
     std::printf("\n---------------------------------------------\n");
     std::printf("checks=%d failed=%d\n", g_Checks, g_Failed);

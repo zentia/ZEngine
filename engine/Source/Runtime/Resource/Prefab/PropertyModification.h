@@ -9,18 +9,29 @@
 #include <vector>
 
 // =====================================================================================
-// PropertyModification — Editor-only override record for the Prefab system.
+// PropertyModification — one override record for the Prefab system.
 // -------------------------------------------------------------------------------------
-// One PropertyModification represents a single override applied by a PrefabInstance to
-// a particular property of a particular target object (a GameObject or Component that
-// was cloned from the source PrefabAsset).
+// 2026-10-27: moved from Editor/Prefab/ down to Runtime/Resource/Prefab/ (namespace
+// `prefab_editor` -> `prefab`). It is NOT editor-only any more: Prefab Variants
+// (model A) need their overrides to survive into the player, and anything stored on
+// PrefabInstance — which is kTypeIsEditorOnly — never gets there.
+//
+// One PropertyModification represents a single override applied to a particular
+// property of a particular target object (a GameObject or Component that was cloned
+// from the source PrefabAsset).
 //
 // Mirrors Unity's `Editor/Src/Prefabs/PropertyModification.h` 1:1 in layout:
 //
-//     target          PPtr<Object>   The instance object the override applies to.
-//                                    (NOT the source object — apply pipeline uses the
-//                                     PrefabInstance.corresponding_source map to look
-//                                     up the matching source object.)
+//     target          PPtr<Object>   The object the override applies to. Which graph
+//                                    it belongs to depends on who owns the record:
+//                                    * on a PrefabInstance  -> the INSTANCE object;
+//                                      the apply pipeline walks
+//                                      corresponding_source back to the source object.
+//                                    * on a Prefab Variant  -> the object in the
+//                                      DEEPEST BASE's graph. That is deliberate: every
+//                                      link of the variant chain then names the same
+//                                      object, so one clone of the base tree can take
+//                                      the whole chain's overrides via ptr_map.
 //     property_path   eastl::string  Dot-and-bracket path inside the object, e.g.
 //                                    "m_LocalPosition.x", "m_Components[2]", or
 //                                    just "m_Name".
@@ -30,8 +41,13 @@
 //     object_reference PPtr<Object>  Used instead of `value` when the target field is
 //                                    itself a PPtr<>/ObjectReference.
 //
-// PropertyModifications are stored on PrefabInstance and applied by `MergePrefabInto`
-// (Phase 2b) after each per-object Transfer-from-source completes.
+// PropertyModifications are stored in two places:
+//   * PrefabInstance::m_modifications — instance-level overrides, applied by
+//     `MergePrefabInto` (Phase 2b) after each per-object Transfer-from-source
+//     completes. Editor only.
+//   * PrefabAsset::m_variant_overrides — a Variant's own layer of changes, applied by
+//     `PrefabUtility::ApplyVariantOverrides` when the variant is instantiated. This
+//     one is Runtime, so overrides reach the player.
 //
 // IMPORTANT: keep this struct trivially-Transferable. Adding fields here means every
 // existing .zasset on disk needs its schema_version bumped — coordinate with
@@ -51,17 +67,19 @@ struct PropertyModification
     /// stream — `value` (the eastl::string above) is kept for editor display and
     /// future YAML round-trip but is NOT consulted by the apply pipeline.
     ///
-    /// Stored as eastl::string because ZEngine's SerializeTraits only specialises
-    /// std::vector for the basic-typed elements it knows about (int32/uint32/...
-    /// — uint8_t is NOT in that set), so a `std::vector<uint8_t>` field wouldn't
-    /// compile through TRANSFER. eastl::string accepts arbitrary byte content
-    /// (it's not zero-terminator constrained on the wire) and is already
-    /// fully covered by SerializeTraits.
+    /// ⚠️ This used to be an `eastl::string` used as a byte bag, and that silently
+    /// corrupted every payload whose first byte is 0x00 — which is most of them
+    /// (little-endian `double 42.0` is `00 00 00 00 00 00 45 40`). The YAML writer
+    /// emits a string as a scalar, so the leading NULs truncated it to "" and the
+    /// override came back from a .prefab file empty (binary .zasset survived, so
+    /// only the authoring track was broken). 2026-10-27: switched to
+    /// std::vector<uint8_t> — SerializeTraits<uint8_t> exists (it was added for
+    /// Texture2D::m_Pixels), so it transfers fine and both tracks agree.
     ///
     /// When `object_reference` is non-null, both `value` and `value_bytes` are
     /// ignored — the apply pipeline pulls the InstanceID from object_reference and
     /// writes a 4-byte int into the slot.
-    eastl::string value_bytes;
+    std::vector<uint8_t> value_bytes;
 
     // Equality helpers used by Apply/Revert and by GeneratePropertyDiff (Phase 2b).
     static bool ComparePathAndTarget(const PropertyModification& lhs, const PropertyModification& rhs)

@@ -192,15 +192,29 @@ namespace
     /// has full coverage for it whereas std::vector<uint8_t> would need a new
     /// uint8_t specialization). The string can hold arbitrary bytes including 0x00,
     /// so this is a faithful round-trip.
-    eastl::string BytesToStorageString(const std::vector<uint8_t>& bytes)
+    /// Snapshot the value an instance object should REVERT / MERGE to, plus its type
+    /// tree, WITHOUT mutating `source_obj`.
+    ///
+    /// `source_obj` is a base template object — shared by every instance of that base —
+    /// so layering the Variant's overrides onto it in place would corrupt all of them.
+    /// `PrefabUtility::SnapshotWithOverrides` layers them onto the BYTES instead.
+    ///
+    /// For a plain prefab the variant layer is empty and this is just a snapshot.
+    bool SnapshotEffectiveSource(Object& source_obj, const PrefabInstance* instance,
+                                 prefab::SerialisedObject& out_tree, std::vector<uint8_t>& out_bytes)
     {
-        return eastl::string(reinterpret_cast<const char*>(bytes.data()), bytes.size());
-    }
-
-    std::vector<uint8_t> StorageStringToBytes(const eastl::string& s)
-    {
-        return std::vector<uint8_t>(reinterpret_cast<const uint8_t*>(s.data()),
-                                    reinterpret_cast<const uint8_t*>(s.data()) + s.size());
+        std::vector<PropertyModification> layer;
+        if (instance != nullptr)
+        {
+            if (const PrefabAsset* variant = static_cast<const PrefabAsset*>(instance->GetSourcePrefab()))
+            {
+                if (variant->IsVariant())
+                {
+                    layer = variant->GetVariantOverrides();
+                }
+            }
+        }
+        return PrefabUtility::SnapshotWithOverrides(source_obj, layer, out_tree, out_bytes);
     }
 
     /// Find the existing modification entry for (target, path), or nullptr.
@@ -337,14 +351,14 @@ bool PrefabUtilityEditor::RecordPropertyOverride(PrefabInstance* instance,
     // Insert / overwrite.
     if (PropertyModification* existing = FindModification(instance, target, path))
     {
-        existing->value_bytes = BytesToStorageString(value_bytes);
+        existing->value_bytes = value_bytes;
         existing->object_reference = PPtr<Object>();
         return true;
     }
     PropertyModification mod;
     mod.target = target;
     mod.property_path = path;
-    mod.value_bytes = BytesToStorageString(value_bytes);
+    mod.value_bytes = value_bytes;
     instance->AddModification(mod);
     return true;
 }
@@ -416,8 +430,7 @@ int PrefabUtilityEditor::ApplyAll(PrefabInstance* instance)
         }
         else if (!mod.value_bytes.empty())
         {
-            const std::vector<uint8_t> raw = StorageStringToBytes(mod.value_bytes);
-            if (SpliceFieldValueInto(*source_obj, mod.property_path, &raw, nullptr, nullptr))
+            if (SpliceFieldValueInto(*source_obj, mod.property_path, &mod.value_bytes, nullptr, nullptr))
                 ++applied;
         }
         else
@@ -458,9 +471,11 @@ int PrefabUtilityEditor::Revert(PrefabInstance* instance)
             continue;
         }
 
+        // Base value + the variant's own overrides (never spliced into source_obj —
+        // it is shared). Reverting to the bare base would undo the whole variant layer.
         prefab::SerialisedObject src_tree;
         std::vector<uint8_t> src_bytes;
-        if (!SnapshotObject(*source_obj, src_tree, src_bytes))
+        if (!SnapshotEffectiveSource(*source_obj, instance, src_tree, src_bytes))
             continue;
 
         if (SpliceFieldValueInto(*instance_obj, mod.property_path, nullptr, &src_bytes, &src_tree))
@@ -488,9 +503,10 @@ bool PrefabUtilityEditor::RevertSingleOverride(PrefabInstance* instance,
     if (source_obj == nullptr)
         return false;
 
+    // Base value + the variant's own overrides (never spliced into source_obj).
     prefab::SerialisedObject src_tree;
     std::vector<uint8_t> src_bytes;
-    if (!SnapshotObject(*source_obj, src_tree, src_bytes))
+    if (!SnapshotEffectiveSource(*source_obj, instance, src_tree, src_bytes))
         return false;
 
     if (!SpliceFieldValueInto(*instance_obj, path, nullptr, &src_bytes, &src_tree))
@@ -782,11 +798,18 @@ GameObject* PrefabUtilityEditor::UnpackPrefabInstance(PrefabInstance* instance)
 // -------------------------------------------------------------------------------------
 // We walk the variant chain bottom-up to find the deepest non-variant base, then
 // instantiate it once via InstantiateAsPrefab (which seeds the corresponding-source
-// map). After that we no longer need the Variant ancestor's modifications to be
-// stored on PrefabAsset (Phase 3 omits storing variant-overrides on the asset
-// itself — see doc/PrefabSystem_Design.md §3.4 for the rationale). The Variant
-// asset pointer becomes the `m_SourcePrefab` of the resulting PrefabInstance, so
-// future Apply/Revert calls target the Variant, not its base.
+// map). Then we apply every link's overrides on top, base -> ... -> variant, so a
+// nearer link wins on the same field.
+//
+// 2026-10-27: the old comment here said "we no longer need the Variant ancestor's
+// modifications to be stored on PrefabAsset". That was wrong and it is why Variant
+// was dead code — nothing ever applied them. Modifications now live in
+// PrefabAsset::m_variant_overrides (NOT on PrefabInstance, which is
+// kTypeIsEditorOnly and therefore invisible to the player build), and this function
+// applies them through the same Runtime helper `PrefabUtility::Instantiate` uses.
+//
+// The Variant asset pointer becomes the `m_SourcePrefab` of the resulting
+// PrefabInstance, so future Apply/Revert calls target the Variant, not its base.
 // =====================================================================================
 
 PrefabInstance* PrefabUtilityEditor::InstantiateVariant(PrefabAsset* variant)
@@ -824,15 +847,188 @@ PrefabInstance* PrefabUtilityEditor::InstantiateVariant(PrefabAsset* variant)
     if (instance == nullptr)
         return nullptr;
 
+    // Apply the chain's overrides on top. Every link's `target` names an object in
+    // the DEEPEST base's graph, which is exactly what the corresponding-source map
+    // is keyed by — so one map serves the whole chain.
+    std::vector<PrefabAsset*> chain;
+    if (!PrefabUtility::ResolveVariantChain(variant, chain))
+    {
+        LOG_ERROR(ZPrefab, "InstantiateVariant: '{}' has a broken variant chain — nothing instantiated",
+                  variant->name.c_str());
+        return nullptr;
+    }
+
+    std::unordered_map<Object*, Object*> source_to_clone;
+    for (const auto& entry : instance->GetCorrespondingSourceMap())
+    {
+        Object* source = static_cast<Object*>(entry.source_object);
+        Object* clone = static_cast<Object*>(entry.instance_object);
+        if (source != nullptr && clone != nullptr)
+        {
+            source_to_clone[source] = clone;
+        }
+    }
+
+    const int applied = PrefabUtility::ApplyVariantOverrides(chain, source_to_clone);
+
     // Re-point m_SourcePrefab at the variant we were called with so future
     // Apply pushes overrides into `variant`, not into `deepest`.
     instance->SetSourcePrefab(PPtr<PrefabAsset>(variant));
 
     LOG_INFO(ZPrefab,
-             "InstantiateVariant: instantiated '{}' (base='{}'); source_prefab=variant, corresponding_source=base",
+             "InstantiateVariant: instantiated '{}' (base='{}'); {} variant override(s) applied; "
+             "source_prefab=variant, corresponding_source=base",
              variant->name.c_str(),
-             deepest->name.c_str());
+             deepest->name.c_str(),
+             applied);
     return instance;
+}
+
+// =====================================================================================
+// Apply to a Variant
+// -------------------------------------------------------------------------------------
+// See the header for why the plain ApplyAll must not be used here. Short version: the
+// source objects of a Variant instance ARE the base's objects, and the base is shared.
+// =====================================================================================
+
+int PrefabUtilityEditor::ApplyAllToVariant(PrefabInstance* instance)
+{
+    if (instance == nullptr)
+    {
+        return 0;
+    }
+
+    PrefabAsset* variant = static_cast<PrefabAsset*>(instance->GetSourcePrefab());
+    if (variant == nullptr || !variant->IsVariant())
+    {
+        LOG_ERROR(ZPrefab, "ApplyAllToVariant: the instance's source prefab is not a Variant");
+        return 0;
+    }
+
+    int applied = 0;
+    for (const PropertyModification& mod : instance->GetModifications())
+    {
+        if (mod.object_reference.IsNull() && mod.value_bytes.empty())
+        {
+            LOG_WARNING(ZPrefab, "ApplyAllToVariant: '{}' has neither a value nor a reference — skipped",
+                        mod.property_path.c_str());
+            continue;
+        }
+
+        // The override must name the object in the BASE's graph — that is what both
+        // Runtime's ptr_map and the editor's corresponding_source are keyed by.
+        PPtr<Object> base_object = instance->FindSourceForInstance(mod.target);
+        if (base_object.IsNull())
+        {
+            LOG_WARNING(ZPrefab, "ApplyAllToVariant: no base counterpart for '{}' — skipped",
+                        mod.property_path.c_str());
+            continue;
+        }
+
+        PropertyModification recorded = mod;
+        recorded.target = base_object;
+
+        // Same (target, path) replaces: a second Apply of the same field must not
+        // leave two entries fighting over one slot.
+        auto& overrides = variant->GetVariantOverrides();
+        bool replaced = false;
+        for (PropertyModification& existing : overrides)
+        {
+            if (existing.target.GetInstanceID() == recorded.target.GetInstanceID() &&
+                existing.property_path == recorded.property_path)
+            {
+                existing = recorded;
+                replaced = true;
+                break;
+            }
+        }
+        if (!replaced)
+        {
+            overrides.push_back(recorded);
+        }
+        ++applied;
+    }
+
+    if (applied == 0)
+    {
+        return 0;
+    }
+
+    AssetManager* asset_manager = GET_SYSTEM(AssetManager);
+    std::filesystem::path path;
+    int64_t header_file_id = 0;
+    if (asset_manager == nullptr ||
+        !asset_manager->TryGetIdentityForInstance(variant->GetInstanceID(), path, header_file_id) ||
+        path.empty())
+    {
+        LOG_ERROR(ZPrefab, "ApplyAllToVariant: the variant asset has no file identity; "
+                           "{} override(s) left unsaved", applied);
+        return 0;
+    }
+
+    if (!PrefabUtility::SaveVariantAsset(variant, path))
+    {
+        LOG_ERROR(ZPrefab, "ApplyAllToVariant: writing '{}' failed; {} override(s) left unsaved",
+                  path.generic_string(), applied);
+        return 0;
+    }
+
+    // Unity: after Apply the instance no longer overrides anything — the variant now
+    // carries that value itself.
+    instance->ClearModifications();
+
+    LOG_INFO(ZPrefab, "ApplyAllToVariant: {} override(s) recorded on '{}'",
+             applied, path.generic_string());
+    return applied;
+}
+
+PrefabAsset* PrefabUtilityEditor::CreateVariant(PrefabAsset*                 base,
+                                                const std::filesystem::path& variant_path)
+{
+    if (base == nullptr)
+    {
+        LOG_ERROR(ZPrefab, "CreateVariant: base asset is null");
+        return nullptr;
+    }
+    if (variant_path.empty())
+    {
+        LOG_ERROR(ZPrefab, "CreateVariant: variant_path is empty");
+        return nullptr;
+    }
+
+    const eastl::string variant_name(variant_path.stem().string().c_str());
+
+    // The header is only a vehicle for the write: Produce() gives it no
+    // path-derived instance ID, so what the asset registry / PPtr resolution
+    // needs is the copy that comes back off disk.
+    PrefabAsset* variant = PrefabUtility::CreateVariantAsset(base, variant_name);
+    if (variant == nullptr)
+    {
+        return nullptr;
+    }
+
+    const bool saved = PrefabUtility::SaveVariantAsset(variant, variant_path);
+
+    // Produce() pairs with ObjectManager::Destroy — pairing it with
+    // MemoryManager::DestroyObject crashes in mi_usable_size on Apple.
+    GET_SYSTEM(ObjectManager)->Destroy(variant);
+
+    if (!saved)
+    {
+        return nullptr;
+    }
+
+    PrefabAsset* persisted = PrefabUtility::LoadPrefabAsset(variant_path);
+    if (persisted == nullptr)
+    {
+        LOG_ERROR(ZPrefab, "CreateVariant: wrote '{}' but could not read it back",
+                  variant_path.generic_string());
+        return nullptr;
+    }
+
+    LOG_INFO(ZPrefab, "CreateVariant: '{}' is now a variant of '{}'",
+             variant_path.generic_string(), base->name.c_str());
+    return persisted;
 }
 
 // =====================================================================================
@@ -873,42 +1069,27 @@ int PrefabUtilityEditor::MergeFromSource(PrefabInstance* instance)
         // We use a value-vector rather than the in-place TransferUtility helper
         // so we can intercept and splice property overrides between write and
         // read.
+        //
+        // When the source is a Variant these bytes also carry the Variant's own
+        // overrides: an instance of a Variant merges to (base + variant), not to the
+        // bare base. They are layered onto the BYTES — source_obj is the base
+        // template, shared by every instance of that base.
         std::vector<uint8_t> bytes;
-        TransferUtility::WriteObjectToVector(*source_obj, bytes);
+        prefab::SerialisedObject src_tree;
+        if (!SnapshotEffectiveSource(*source_obj, instance, src_tree, bytes))
+        {
+            continue;
+        }
 
-        // Step 2: splice each instance-side override that targets this object.
+        // Step 2: splice each instance-side override that targets this object. The
+        // splice is the shared byte-level primitive (it also logs why a stale path
+        // was skipped) — the tree it needs was built by SnapshotEffectiveSource above.
         auto it = mods_by_target.find(PPtr<Object>(instance_obj).GetInstanceID());
         if (it != mods_by_target.end())
         {
-            // Build the type tree for the source bytes once so we can locate
-            // each override path.
-            prefab::SerialisedObject src_tree;
-            if (prefab::SerialiseObject(source_obj, src_tree))
+            for (const PropertyModification* mod : it->second)
             {
-                for (const PropertyModification* mod : it->second)
-                {
-                    std::vector<prefab::PathToken> tokens;
-                    if (!prefab::TokenizePropertyPath(mod->property_path, tokens))
-                        continue;
-
-                    prefab::PropertyLocation loc;
-                    if (!prefab::LocatePropertyInStream(src_tree.type_tree, bytes, tokens, loc))
-                        continue;
-                    if (!loc.valid())
-                        continue;
-
-                    std::vector<uint8_t> override_bytes;
-                    if (!mod->object_reference.IsNull())
-                        override_bytes = EncodePPtrAsBytes(mod->object_reference);
-                    else if (!mod->value_bytes.empty())
-                        override_bytes = StorageStringToBytes(mod->value_bytes);
-                    else
-                        continue;
-
-                    if (static_cast<int64_t>(override_bytes.size()) != loc.byte_size)
-                        continue;
-                    prefab::OverwriteScalarBytes(bytes, loc, override_bytes.data(), override_bytes.size());
-                }
+                PrefabUtility::SpliceModificationIntoBytes(bytes, src_tree, *mod);
             }
         }
 

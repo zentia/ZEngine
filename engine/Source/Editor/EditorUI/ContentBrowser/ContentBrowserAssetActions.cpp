@@ -4,6 +4,7 @@
 #include "Editor/EditorSceneManager/EditorSceneManager.h"
 #include "Editor/EditorUI/ContentBrowser/ContentBrowserHelpers.h"
 #include "Editor/EditorWindow/PreviewWindow/MeshDataPreview.h"
+#include "Editor/Prefab/PrefabUtilityEditor.h"
 #include "Editor/Menu/AssetsMenu.h"
 #include "Editor/Platform/Interface/EditorUtility.h"
 #include "Runtime/BaseClasses/GameObject.h"
@@ -786,6 +787,46 @@ namespace ContentBrowserAssetActions
         // path and then selects `asset_path` (ContentBrowserContext.h).
         ctx.asset_tree_dirty = true;
         ctx.pending_select_path = asset_path;
+        ctx.has_pending_select = true;
+    }
+
+    void CreatePrefabVariant(ContentBrowserContext& ctx, EditorFileNode* node)
+    {
+        if (node == nullptr || node->m_FilePath.empty())
+        {
+            return;
+        }
+
+        const std::filesystem::path base_path(node->m_FilePath.c_str());
+        if (base_path.extension() != ".prefab")
+        {
+            LOG_ERROR(ZEditor, "CreatePrefabVariant: '{}' is not a .prefab", base_path.generic_string());
+            return;
+        }
+
+        // Whole-graph load, not AssetManager::ReadObject<PrefabAsset>: reading the
+        // header alone never produces the root GameObject the header points at.
+        PrefabAsset* base = PrefabUtility::LoadPrefabAsset(base_path);
+        if (base == nullptr)
+        {
+            LOG_ERROR(ZEditor, "CreatePrefabVariant: cannot load base prefab '{}'", base_path.generic_string());
+            return;
+        }
+
+        // Sits next to its base; BuildUniquePrefabAssetPath appends _1, _2 ... if
+        // the name is taken, so repeat invocations never clobber each other.
+        const std::filesystem::path folder = base_path.parent_path();
+        const eastl::string variant_name((base_path.stem().string() + " Variant").c_str());
+        const std::filesystem::path variant_path = BuildUniquePrefabAssetPath(folder, variant_name);
+
+        if (PrefabUtilityEditor::CreateVariant(base, variant_path) == nullptr)
+        {
+            LOG_ERROR(ZEditor, "CreatePrefabVariant: failed to create '{}'", variant_path.generic_string());
+            return;
+        }
+
+        // Select it in the tree once it is rebuilt.
+        ctx.pending_select_path = variant_path;
         ctx.has_pending_select = true;
     }
 

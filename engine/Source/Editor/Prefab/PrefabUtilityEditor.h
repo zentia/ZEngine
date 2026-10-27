@@ -168,10 +168,51 @@ public:
     /// fresh PrefabInstance whose `m_SourcePrefab` points at the topmost
     /// `variant` argument (NOT at the deepest base).
     ///
+    /// The overrides come from `PrefabAsset::m_variant_overrides` (one list per
+    /// link), and are applied through `PrefabUtility::ApplyVariantOverrides` —
+    /// the same Runtime helper the player build uses, so the editor and the
+    /// player agree by construction. Their `target` names an object in the
+    /// deepest base's graph, which is what `corresponding_source` is keyed by.
+    ///
     /// This is the editor entry-point that matches Unity's
     /// `PrefabUtility.InstantiatePrefab(variant)` semantics for Variant assets.
     /// Non-variant assets are forwarded to InstantiateAsPrefab(asset).
+    ///
+    /// Returns nullptr if the chain is broken or cyclic (rather than silently
+    /// falling back to "instantiate the base"), so a dropped layer never goes
+    /// unnoticed.
     static PrefabInstance* InstantiateVariant(PrefabAsset* variant);
+
+    /// "Apply" for an instance whose source prefab is a **Variant**.
+    ///
+    /// The plain `ApplyAll` splices each override into the SOURCE object. For a
+    /// Variant that is wrong twice over: the source objects are the base's objects
+    /// (InstantiateVariant seeds corresponding_source against the deepest base), they
+    /// are shared by every instance of that base, and they do not live in the
+    /// Variant's file at all — so the splice corrupts the base template in memory and
+    /// `SaveSourcePrefab` then refuses to write anything.
+    ///
+    /// The Unity semantics are different: the value becomes the Variant's own
+    /// override. So this records each modification into
+    /// `PrefabAsset::m_variant_overrides` (target = the base object, which is what the
+    /// chain's ptr_map / corresponding_source is keyed by) and rewrites the Variant
+    /// file — a one-object file, base untouched.
+    ///
+    /// Returns how many overrides were recorded and saved (0 when nothing was
+    /// applied, or when the file could not be written — in which case the instance's
+    /// modifications are left alone so nothing is lost).
+    static int ApplyAllToVariant(PrefabInstance* instance);
+
+    /// Create a Variant of `base` and write it to `variant_path`.
+    ///
+    /// This is "Create > Prefab Variant" in the editor UI: the new asset starts
+    /// out identical to its base (zero overrides) and diverges as the user edits
+    /// it. A Variant of a Variant is fine — `base` may itself be one.
+    ///
+    /// Returns the persisted asset on success (loaded back off disk so the
+    /// caller gets the path-derived instance IDs), nullptr on failure.
+    static PrefabAsset* CreateVariant(PrefabAsset*                  base,
+                                      const std::filesystem::path&  variant_path);
 
     // ---- Phase 3d: Merge (refresh instance from updated source) ----
 

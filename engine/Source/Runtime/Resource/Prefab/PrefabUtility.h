@@ -1,13 +1,17 @@
 #pragma once
 
 #include "Runtime/BaseClasses/GameObject.h"
+#include "Runtime/Resource/Prefab/PropertyModification.h"
+#include "Runtime/Resource/Prefab/PropertyPathResolver.h"
 
 #include <filesystem>
+#include <unordered_map>
 #include <vector>
 
 class PrefabAsset;
 class Transform;
 class Level;
+class Object;
 
 // =====================================================================================
 // PrefabUtility (Runtime)
@@ -70,8 +74,87 @@ public:
     /// would re-produce the same IDs; the file is therefore read once and the cached
     /// graph is returned after that. The result is the TEMPLATE -- do not put it in a
     /// scene; Instantiate / InstantiateFromPath clone it.
+    ///
+    /// A **Variant** file legitimately has no root GameObject: it is a base PPtr
+    /// plus overrides, and the tree lives in its base. Such a file loads fine and
+    /// yields an empty `out_gameobjects`; only Instantiate (which walks the chain)
+    /// can do anything useful with it.
     static PrefabAsset* LoadPrefabAsset(const std::filesystem::path& prefab_path,
                                         std::vector<GameObject*>*    out_gameobjects = nullptr);
+
+    // ---- Prefab Variant (model A: true inheritance) ----
+    //
+    // A Variant owns NO object tree: it is `m_variant_base` plus the
+    // PropertyModifications that this link changes on top of the base. Both halves
+    // of that live on PrefabAsset (NOT PrefabInstance, which is kTypeIsEditorOnly
+    // and would never reach the player).
+
+    /// Walk `asset`'s variant base chain. On success `out_chain` is ordered
+    /// deepest-base-first and ends with `asset` itself — a plain prefab yields a
+    /// one-element chain. Returns false on a broken chain (a link marked variant
+    /// whose base PPtr is null) or a cycle (>64 links).
+    static bool ResolveVariantChain(PrefabAsset* asset, std::vector<PrefabAsset*>& out_chain);
+
+    /// Apply every link's variant overrides onto an already-built clone.
+    ///
+    /// `source_to_clone` maps an object in the deepest base's graph -> its
+    /// counterpart in the cloned tree (for `Instantiate` that is
+    /// `CloneResult::ptr_map`; the editor passes its corresponding-source map
+    /// instead). Links are applied top-down, so a nearer link wins over a farther
+    /// one on the same field.
+    ///
+    /// An override whose target is missing from `source_to_clone` (the base was
+    /// edited and no longer has that object) is skipped with a warning rather than
+    /// failing the whole instantiation. Returns how many were applied.
+    static int ApplyVariantOverrides(const std::vector<PrefabAsset*>&        chain,
+                                     const std::unordered_map<Object*, Object*>& source_to_clone);
+
+    /// Create an in-memory Variant of `base`: a PrefabAsset with NO object tree of
+    /// its own, carrying only `m_variant_base`. The caller owns the result and is
+    /// expected to fill `GetVariantOverrides()` before persisting it with
+    /// SaveVariantAsset().
+    ///
+    /// ⚠️ Tear it down with `ObjectManager::Destroy` — Produce() is `new`, and
+    /// pairing `new` with MemoryManager::DestroyObject crashes in mi_usable_size
+    /// on Apple (see the longer note in SaveAsPrefabAsset).
+    ///
+    /// Returns nullptr if `base` is null or the header cannot be allocated.
+    static PrefabAsset* CreateVariantAsset(PrefabAsset* base, const eastl::string& variant_name);
+
+    /// Write `variant` to `variant_path`. The file contains exactly one object —
+    /// the PrefabAsset header — because a Variant owns no tree; the base reference
+    /// is a cross-file PPtr and the overrides ride along in `m_variant_overrides`.
+    ///
+    /// `variant_path` must end in .prefab (YAML) or .zasset (binary SerializedFile),
+    /// matching SaveAsPrefabAsset's split.
+    static bool SaveVariantAsset(PrefabAsset* variant, const std::filesystem::path& variant_path);
+
+    // ---- Byte-level splicing (shared by the apply pipeline and the editor) ----
+    //
+    // These never touch a live Object. That matters whenever the bytes came from a
+    // SHARED object — a prefab base's template, which every instance of that base
+    // reads — where splicing into the object itself would corrupt all of them.
+
+    /// Splice `mod`'s value into `bytes` at `mod.property_path`. `tree` must be the
+    /// type tree of the object `bytes` was snapshotted from.
+    ///
+    /// Returns false (with a warning) when the path does not resolve, or the value's
+    /// byte size does not match the field's.
+    static bool SpliceModificationIntoBytes(std::vector<uint8_t>&            bytes,
+                                            const prefab::SerialisedObject&  tree,
+                                            const PropertyModification&      mod);
+
+    /// Snapshot `source` (type tree + StreamedBinary bytes) and layer `mods` onto the
+    /// **bytes** — `source` itself is NOT modified (serialisation only reads it).
+    ///
+    /// This is how the editor computes the value an instance of a Variant should
+    /// revert / merge to: the base template's bytes plus the Variant's own overrides.
+    /// Splicing into the base object instead would corrupt every other instance of
+    /// that base.
+    static bool SnapshotWithOverrides(Object&                                 source,
+                                      const std::vector<PropertyModification>& mods,
+                                      prefab::SerialisedObject&                out_tree,
+                                      std::vector<uint8_t>&                    out_bytes);
 
     /// Re-parent the freshly instantiated root under `parent` (Transform-based).
     /// `worldPositionStays` follows Unity semantics (see Transform::SetParent).

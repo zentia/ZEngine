@@ -4,6 +4,7 @@
 #include "Runtime/BaseClasses/ObjectManager.h"
 #include "Runtime/Core/Base/Macro.h"
 #include "Runtime/Core/Memory/MemoryManager.h"
+#include "Runtime/Core/Serialize/TransferUtility.h"
 #include "Runtime/Function/Framework/Component/Component.h"
 #include "Runtime/Function/Framework/Component/PrefabRefComponent.h"
 #include "Runtime/Function/Framework/Component/Rigidbody/RigidbodyComponent.h"
@@ -11,7 +12,12 @@
 #include "Runtime/Resource/Asset/AssetManager.h"
 #include "Runtime/Resource/Prefab/PrefabAsset.h"
 #include "Runtime/Resource/Prefab/PrefabSubtreeCloner.h"
+#include "Runtime/Resource/Prefab/PropertyModification.h"
+#include "Runtime/Resource/Prefab/PropertyPathResolver.h"
+#include "Runtime/Resource/Prefab/PropertyValueLocator.h"
 
+#include <algorithm>
+#include <cstring>
 #include <filesystem>
 #include <unordered_map>
 #include <unordered_set>
@@ -313,6 +319,214 @@ namespace
     };
 }  // namespace
 
+// =====================================================================================
+// Prefab Variant — model A (true inheritance)
+// -------------------------------------------------------------------------------------
+// A Variant owns NO object tree: it is `m_variant_base` (a PPtr to its base) plus
+// `m_variant_overrides` (what this link changes). Instantiating one therefore means:
+//
+//   1. walk the base chain down to the deepest NON-variant PrefabAsset — that is the
+//      only asset in the chain that actually carries GameObjects;
+//   2. clone THAT subtree (one clone, shared by the whole chain);
+//   3. apply every link's overrides top-down (base -> ... -> variant) onto the clone,
+//      so a nearer link wins over a farther one on the same field;
+//   4. post-load the clone as usual.
+//
+// Step 3 needs each override's `target` (an object in the BASE's graph) translated to
+// its counterpart in the clone — that is exactly `CloneResult::ptr_map`.
+// =====================================================================================
+namespace
+{
+    /// Snapshot `obj` into (type tree, StreamedBinary bytes) — the pair the locator
+    /// needs to find a field and overwrite it.
+    bool SnapshotObject(Object& obj, prefab::SerialisedObject& out_tree, std::vector<uint8_t>& out_bytes)
+    {
+        if (!prefab::SerialiseObject(&obj, out_tree))
+        {
+            return false;
+        }
+        out_bytes.clear();
+        TransferUtility::WriteObjectToVector(obj, out_bytes);
+        return true;
+    }
+
+    /// Push modified bytes back into the live object. Components get their
+    /// OnSerializedFieldsUpdated hook so derived state (e.g. cached matrices) follows.
+    // NOTE: non-const ref on purpose — ReadObjectFromVector takes a mutable buffer.
+    bool ReadBackInto(Object& obj, std::vector<uint8_t>& bytes)
+    {
+        if (!TransferUtility::ReadObjectFromVector(obj, bytes))
+        {
+            return false;
+        }
+        if (auto* component = Cast<Component>(&obj))
+        {
+            component->OnSerializedFieldsUpdated();
+        }
+        return true;
+    }
+
+    /// A PPtr leaf occupies one int32 slot holding the target's InstanceID — the same
+    /// convention SafeBinaryRead uses to walk past PPtr leaves.
+    std::vector<uint8_t> EncodePPtrAsBytes(PPtr<Object> ref)
+    {
+        int32_t id = ref.GetInstanceID();
+        std::vector<uint8_t> out(sizeof(int32_t));
+        std::memcpy(out.data(), &id, sizeof(int32_t));
+        return out;
+    }
+
+    /// Apply ONE PropertyModification to a live object: snapshot -> splice -> read back.
+    /// The byte-level splice itself is `PrefabUtility::SpliceModificationIntoBytes`
+    /// (public, so the editor can reuse it on bytes it snapshotted from a shared
+    /// source object).
+    bool ApplyModification(Object* recipient, const PropertyModification& mod)
+    {
+        if (recipient == nullptr)
+        {
+            return false;
+        }
+
+        prefab::SerialisedObject tree;
+        std::vector<uint8_t> bytes;
+        if (!SnapshotObject(*recipient, tree, bytes))
+        {
+            LOG_WARNING(ZPrefab, "variant override: snapshot failed on '{}'", recipient->name.c_str());
+            return false;
+        }
+
+        if (!PrefabUtility::SpliceModificationIntoBytes(bytes, tree, mod))
+        {
+            return false;
+        }
+        return ReadBackInto(*recipient, bytes);
+    }
+
+}  // namespace
+
+bool PrefabUtility::ResolveVariantChain(PrefabAsset* asset, std::vector<PrefabAsset*>& out_chain)
+{
+    out_chain.clear();
+    PrefabAsset* node = asset;
+    constexpr int kMaxDepth = 64;
+    while (node != nullptr)
+    {
+        if (static_cast<int>(out_chain.size()) >= kMaxDepth)
+        {
+            LOG_ERROR(ZPrefab, "variant chain longer than {} links — cycle?", kMaxDepth);
+            return false;
+        }
+        out_chain.push_back(node);
+        if (!node->IsVariant())
+        {
+            break;
+        }
+        PrefabAsset* base = static_cast<PrefabAsset*>(node->GetVariantBase());
+        if (base == nullptr)
+        {
+            LOG_ERROR(ZPrefab, "variant chain broken — '{}' is marked variant but its base PPtr is null",
+                      node->name.c_str());
+            return false;
+        }
+        node = base;
+    }
+    std::reverse(out_chain.begin(), out_chain.end());  // deepest first
+    return true;
+}
+
+bool PrefabUtility::SpliceModificationIntoBytes(std::vector<uint8_t>&            bytes,
+                                                const prefab::SerialisedObject&  tree,
+                                                const PropertyModification&      mod)
+{
+    std::vector<prefab::PathToken> tokens;
+    if (!prefab::TokenizePropertyPath(mod.property_path, tokens))
+    {
+        LOG_WARNING(ZPrefab, "override splice: malformed property_path '{}'", mod.property_path.c_str());
+        return false;
+    }
+
+    prefab::PropertyLocation loc;
+    if (!prefab::LocatePropertyInStream(tree.type_tree, bytes, tokens, loc) || !loc.valid())
+    {
+        LOG_WARNING(ZPrefab, "override splice: path '{}' not found in the stream", mod.property_path.c_str());
+        return false;
+    }
+
+    // A PPtr leaf occupies one int32 slot holding the target's InstanceID — the same
+    // convention SafeBinaryRead uses to walk past PPtr leaves.
+    std::vector<uint8_t> value = mod.object_reference.IsNull()
+        ? mod.value_bytes
+        : EncodePPtrAsBytes(mod.object_reference);
+
+    if (value.size() != static_cast<size_t>(loc.byte_size))
+    {
+        LOG_WARNING(ZPrefab,
+                    "override splice: value size {} != field size {} for '{}'",
+                    static_cast<int>(value.size()), static_cast<int>(loc.byte_size),
+                    mod.property_path.c_str());
+        return false;
+    }
+
+    return prefab::OverwriteScalarBytes(bytes, loc, value.data(), value.size());
+}
+
+bool PrefabUtility::SnapshotWithOverrides(Object&                                 source,
+                                          const std::vector<PropertyModification>& mods,
+                                          prefab::SerialisedObject&                out_tree,
+                                          std::vector<uint8_t>&                    out_bytes)
+{
+    if (!prefab::SerialiseObject(&source, out_tree))
+    {
+        LOG_WARNING(ZPrefab, "SnapshotWithOverrides: cannot serialise '{}'", source.name.c_str());
+        return false;
+    }
+    out_bytes.clear();
+    TransferUtility::WriteObjectToVector(source, out_bytes);
+
+    const int32_t source_id = source.GetInstanceID();
+    for (const PropertyModification& mod : mods)
+    {
+        if (mod.target.GetInstanceID() != source_id)
+        {
+            continue;
+        }
+        SpliceModificationIntoBytes(out_bytes, out_tree, mod);
+    }
+    return true;
+}
+
+int PrefabUtility::ApplyVariantOverrides(const std::vector<PrefabAsset*>&             chain,
+                                         const std::unordered_map<Object*, Object*>&  source_to_clone)
+{
+    int applied = 0;
+    for (PrefabAsset* layer : chain)
+    {
+        for (const PropertyModification& mod : layer->GetVariantOverrides())
+        {
+            Object* source = static_cast<Object*>(mod.target);
+            if (source == nullptr)
+            {
+                continue;
+            }
+            auto it = source_to_clone.find(source);
+            if (it == source_to_clone.end() || it->second == nullptr)
+            {
+                // The override names an object the base no longer has (base was
+                // edited since). Not fatal — skip it rather than fail the whole
+                // instantiation.
+                LOG_WARNING(ZPrefab, "variant override on '{}': target object is not in the base subtree — skipped",
+                            layer->name.c_str());
+                continue;
+            }
+            if (ApplyModification(it->second, mod))
+            {
+                ++applied;
+            }
+        }
+    }
+    return applied;
+}
+
 GameObject* PrefabUtility::Instantiate(PrefabAsset* asset, bool invoke_post_load)
 {
     if (asset == nullptr)
@@ -321,10 +535,21 @@ GameObject* PrefabUtility::Instantiate(PrefabAsset* asset, bool invoke_post_load
         return nullptr;
     }
 
-    GameObject* root = asset->GetRootGameObject();
+    // A Variant carries no object tree of its own — resolve the chain and clone the
+    // deepest non-variant base instead. For a plain prefab the chain is one element
+    // long and this is exactly the old behaviour.
+    std::vector<PrefabAsset*> chain;
+    if (!ResolveVariantChain(asset, chain))
+    {
+        return nullptr;
+    }
+
+    PrefabAsset* base_asset = chain.front();
+    GameObject* root = base_asset->GetRootGameObject();
     if (root == nullptr)
     {
-        LOG_ERROR(ZPrefab, "PrefabAsset has no root GameObject");
+        LOG_ERROR(ZPrefab, "PrefabAsset '{}' (base of the variant chain) has no root GameObject",
+                  base_asset->name.c_str());
         return nullptr;
     }
 
@@ -364,6 +589,16 @@ GameObject* PrefabUtility::Instantiate(PrefabAsset* asset, bool invoke_post_load
         }
     }
 
+    // Variant overrides go on BEFORE the post-load pass: PostLoadResource is what
+    // binds TypeScriptComponents and seeds Transform's double buffer, and it must
+    // see the overridden values, not the base's.
+    const int applied = chain.size() > 1 ? ApplyVariantOverrides(chain, clone.ptr_map) : 0;
+    if (applied > 0)
+    {
+        LOG_INFO(ZPrefab, "Instantiate: applied {} variant override(s) from a {}-link chain onto '{}'",
+                 applied, static_cast<int>(chain.size()), root->GetName().c_str());
+    }
+
     PrefabPostLoadDriver driver;
     driver.Run(clone.clone_root, clone_gameobjects, invoke_post_load);
     return clone.clone_root;
@@ -392,8 +627,13 @@ PrefabAsset* PrefabUtility::LoadPrefabAsset(const std::filesystem::path& prefab_
     {
         const int32_t header_id = asset_manager->GetInstanceIDFromPathAndFileID(prefab_path, 1);
         Object* cached = header_id != 0 ? object_manager->IDToPointer(header_id) : nullptr;
+        // A Variant legitimately has no root (the tree lives in its base), so
+        // "root != nullptr || IsVariant" is what makes a hydrated graph reusable.
+        // Without the IsVariant() half, every load of a variant file would
+        // re-Produce it under the same path-derived IDs.
         if (cached != nullptr && cached->GetType() == TypeOf<PrefabAsset>() &&
-            static_cast<PrefabAsset*>(cached)->GetRootGameObject() != nullptr)
+            (static_cast<PrefabAsset*>(cached)->GetRootGameObject() != nullptr ||
+             static_cast<PrefabAsset*>(cached)->IsVariant()))
         {
             // SaveAsPrefabAsset numbers the objects 1..N without gaps.
             for (int64_t file_id = 2;; ++file_id)
@@ -471,7 +711,10 @@ PrefabAsset* PrefabUtility::LoadPrefabAsset(const std::filesystem::path& prefab_
         LOG_ERROR(ZPrefab, "Prefab {} contained no PrefabAsset header", prefab_path.generic_string());
         return nullptr;
     }
-    if (asset->GetRootGameObject() == nullptr)
+    // A Variant has no root of its own by design — it is a base PPtr plus overrides,
+    // and the object tree lives in the base. Rejecting those here would make every
+    // .prefab written by CreateVariant unloadable.
+    if (asset->GetRootGameObject() == nullptr && !asset->IsVariant())
     {
         LOG_ERROR(ZPrefab, "Prefab {} PrefabAsset has no root GameObject", prefab_path.generic_string());
         return nullptr;
@@ -739,5 +982,104 @@ bool PrefabUtility::SaveAsPrefabAsset(GameObject* root, const std::filesystem::p
              prefab_path.generic_string(),
              static_cast<int>(objects.size()),
              root->GetName().c_str());
+    return true;
+}
+
+// =====================================================================================
+// Prefab Variant — authoring (create / save)
+// -------------------------------------------------------------------------------------
+// A Variant file is a one-object prefab: the PrefabAsset header, with
+// m_RootGameObject left null on purpose and m_VariantBase pointing at the base's
+// file. Loading one therefore needs LoadPrefabAsset to accept "no root but
+// IsVariant()" (see its comment), and instantiating one needs the chain walk.
+//
+// Both of these live on the Runtime side rather than in the Editor module so a
+// build tool can generate variants too — and, more importantly, because the
+// Editor's PrefabInstance is kTypeIsEditorOnly: anything that only exists there
+// never reaches the player.
+// =====================================================================================
+
+PrefabAsset* PrefabUtility::CreateVariantAsset(PrefabAsset* base, const eastl::string& variant_name)
+{
+    if (base == nullptr)
+    {
+        LOG_ERROR(ZPrefab, "CreateVariantAsset: base asset is null");
+        return nullptr;
+    }
+
+    ObjectManager* object_manager = GET_SYSTEM(ObjectManager);
+    if (object_manager == nullptr)
+    {
+        LOG_ERROR(ZPrefab, "CreateVariantAsset: no ObjectManager");
+        return nullptr;
+    }
+
+    Object* raw = object_manager->Produce(TypeOf<PrefabAsset>(), 0);
+    if (raw == nullptr)
+    {
+        LOG_ERROR(ZPrefab, "CreateVariantAsset: failed to allocate PrefabAsset");
+        return nullptr;
+    }
+
+    PrefabAsset* variant = static_cast<PrefabAsset*>(raw);
+    variant->name = variant_name;
+    variant->SetVariantBase(base);
+
+    LOG_INFO(ZPrefab, "Created prefab variant '{}' (base='{}')",
+             variant_name.c_str(), base->name.c_str());
+    return variant;
+}
+
+bool PrefabUtility::SaveVariantAsset(PrefabAsset* variant, const std::filesystem::path& variant_path)
+{
+    if (variant == nullptr)
+    {
+        LOG_ERROR(ZPrefab, "SaveVariantAsset: variant asset is null");
+        return false;
+    }
+    if (variant_path.empty())
+    {
+        LOG_ERROR(ZPrefab, "SaveVariantAsset: variant_path is empty");
+        return false;
+    }
+    if (!variant->IsVariant())
+    {
+        LOG_ERROR(ZPrefab, "SaveVariantAsset: '{}' has no base — it is a plain prefab, not a Variant",
+                  variant->name.c_str());
+        return false;
+    }
+
+    AssetManager* asset_manager = GET_SYSTEM(AssetManager);
+    if (asset_manager == nullptr)
+    {
+        LOG_ERROR(ZPrefab, "SaveVariantAsset: no AssetManager");
+        return false;
+    }
+
+    const std::filesystem::path parent_dir = variant_path.parent_path();
+    if (!parent_dir.empty())
+    {
+        std::error_code ec;
+        std::filesystem::create_directories(parent_dir, ec);
+    }
+
+    // Exactly one object: the header. Slot 0 is the PrefabAsset (fileID = 1), which
+    // is also what LoadPrefabAsset looks for.
+    Object* objects[1] = { variant };
+    const bool ok = (variant_path.extension() == ".prefab")
+        ? asset_manager->WriteObjectsToYaml(variant_path, objects, /*identifiers=*/nullptr, 1u)
+        : asset_manager->WriteObjectsToDiskThreadSafe(variant_path, objects, /*identifiers=*/nullptr, 1u);
+
+    if (!ok)
+    {
+        LOG_ERROR(ZPrefab, "SaveVariantAsset: AssetManager refused to write '{}'",
+                  variant_path.generic_string());
+        return false;
+    }
+
+    LOG_INFO(ZPrefab, "Saved prefab variant '{}' ({} override(s), base='{}')",
+             variant_path.generic_string(),
+             static_cast<int>(variant->GetVariantOverrides().size()),
+             static_cast<PrefabAsset*>(variant->GetVariantBase())->name.c_str());
     return true;
 }
