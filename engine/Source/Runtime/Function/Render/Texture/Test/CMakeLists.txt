@@ -50,3 +50,43 @@ if(ZENGINE_BUILD_VT_GPU_UPLOAD_AB_SMOKE_TEST)
         message(STATUS "Configured VT GPU upload A/B smoke test: VirtualTextureGpuUploadABSmokeTest")
     endif()
 endif()
+
+# =============================================================================
+# VirtualTexturePageTableLifecycleABSmokeTest — 页表纹理生命周期 A/B（Vulkan headless）
+# -----------------------------------------------------------------------------
+# 上面那个测试只验"加载"方向。本测试验页表纹理的另外两半：失效同步（unload /
+# 跨 VT 的池满 LRU 驱逐后 GPU 页表随之失效，不留指向别人像素的陈旧项）与释放
+# （Unregister / Shutdown 后 VMA 分配数回到基线）。判据是模拟 shader 间接寻址：
+# 读回 GPU 页表 → 槽位 → 读回 GPU 页池，必须与直接取源纹理逐字节一致。
+# 会自死锁的调用包在看门狗里，回归表现为 FAIL 而不是挂死。
+#
+#   cmake -B build -DZENGINE_BUILD_VT_PAGETABLE_LIFECYCLE_AB_SMOKE_TEST=ON
+#   cmake --build build --target VirtualTexturePageTableLifecycleABSmokeTest
+# =============================================================================
+option(ZENGINE_BUILD_VT_PAGETABLE_LIFECYCLE_AB_SMOKE_TEST
+       "Build the VirtualTexture page-table lifecycle A/B (Vulkan headless) smoke-test executable"
+       OFF)
+
+if(ZENGINE_BUILD_VT_PAGETABLE_LIFECYCLE_AB_SMOKE_TEST)
+    if(NOT WIN32 AND NOT (UNIX AND NOT APPLE))
+        message(STATUS "VT page-table lifecycle A/B smoke test needs the Vulkan backend (Windows/Linux); skipping")
+    else()
+        add_executable(VirtualTexturePageTableLifecycleABSmokeTest VirtualTexturePageTableLifecycleABSmokeTest.cpp)
+        set_target_properties(VirtualTexturePageTableLifecycleABSmokeTest PROPERTIES
+            CXX_STANDARD 23
+            FOLDER "Engine/Tests"
+        )
+        target_link_libraries(VirtualTexturePageTableLifecycleABSmokeTest PRIVATE ZRuntime)
+        if(TARGET ZEnginePCH)
+            target_link_libraries(VirtualTexturePageTableLifecycleABSmokeTest PRIVATE ZEnginePCH)
+            target_include_directories(VirtualTexturePageTableLifecycleABSmokeTest PRIVATE ${ENGINE_ROOT_DIR}/Source/CommonPCH)
+            add_dependencies(VirtualTexturePageTableLifecycleABSmokeTest ZEnginePCH)
+            target_precompile_headers(VirtualTexturePageTableLifecycleABSmokeTest REUSE_FROM ZEnginePCH)
+        endif()
+        if(MSVC)
+            target_compile_options(VirtualTexturePageTableLifecycleABSmokeTest PRIVATE /W4)
+        endif()
+        add_test(NAME VirtualTexturePageTableLifecycleABSmokeTest COMMAND VirtualTexturePageTableLifecycleABSmokeTest)
+        message(STATUS "Configured VT page-table lifecycle A/B smoke test: VirtualTexturePageTableLifecycleABSmokeTest")
+    endif()
+endif()

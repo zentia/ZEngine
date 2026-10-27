@@ -3,6 +3,7 @@
 #include "Runtime/Function/Render/RenderResourceBase.h"
 #include "VirtualTextureTypes.h"
 
+#include <atomic>
 #include <memory>
 #include <mutex>
 #include <unordered_map>
@@ -132,8 +133,43 @@ public:
     RHIImage* GetPageTableTexture() const { return m_PageTableTexture; }
     RHIImageView* getPageTableTextureView() const { return m_PageTableTextureView; }
 
-    // Update page table texture (call after modifying page table entries)
+    // Update page table texture: unconditionally (re)pack the CPU page table and
+    // upload it. Creates the texture on first call. Clears the dirty flag.
+    //
+    // Texel layout (R32G32_SFLOAT, one texel per mip-0 page, row-major):
+    //   .x = physical slot index (>= 0) if resident, kPageTableNotResident if not
+    //   .y = mip level
+    // The "not resident" sentinel is -1.0f, NOT float(UINT32_MAX): that rounds to
+    // 2^32, and converting it back to uint32 is undefined behaviour -- a shader
+    // (or test) can only safely test "x < 0".
     void UpdatePageTableTexture(RHI* rhi);
+
+    static constexpr float kPageTableNotResident = -1.0f;
+
+    // ---- Page-table texture lifecycle (the two interfaces that were missing) ----
+    //
+    // (1) Invalidation sync. SetPageTableEntry marks the table dirty; nothing
+    //     uploads per page any more. FlushPageTableTexture uploads only if dirty,
+    //     so a batch (ForceLoadPages / UnloadPages / one Update() frame / an
+    //     eviction that hits ANOTHER virtual texture) costs exactly one upload.
+    //     Before this, UnloadPage cleared the CPU entry and never touched the GPU
+    //     table -- the GPU kept saying "resident in slot N" after slot N had been
+    //     handed to a different page, i.e. it sampled someone else's pixels.
+    //     Returns true if an upload happened.
+    bool FlushPageTableTexture(RHI* rhi);
+    bool isPageTableDirty() const { return m_PageTableDirty.load(); }
+
+    // (2) Release. Destroys the image view, the VkImage + VMA allocation and both
+    //     wrapper objects. Shutdown() calls it; the old Shutdown only nulled the
+    //     pointers with a comment claiming "destroyed by manager" -- the manager
+    //     never did, so every registered VT leaked its page table. Safe to call
+    //     twice. After release the table is dirty again, so the next flush
+    //     recreates it.
+    void ReleasePageTableTexture();
+
+    // Number of GPU page-table uploads so far (diagnostic; the A/B test uses it
+    // to prove batching -- one upload per batch, zero for a clean table).
+    uint32_t getPageTableUploadCount() const { return m_PageTableUploadCount; }
 
 private:
     VirtualTextureHandle m_Handle;  // Virtual texture handle
@@ -168,6 +204,19 @@ private:
     // page table is re-uploaded every time any page's mapping changes, so only
     // the very first upload may treat the image as UNDEFINED.
     bool m_PageTableHasContent;
+    // Set by SetPageTableEntry, cleared by a successful upload. Atomic because
+    // entries are written from the page-loading thread as well.
+    //
+    // Starts FALSE on purpose (lazy creation): a VT that has never had a resident
+    // page has no stale GPU state to sync, so FlushPageTables must not allocate a
+    // page table for it just because some OTHER texture triggered a flush. Until
+    // the first residency change GetPageTableTexture() returns null -- consumers
+    // treat null as "nothing resident".
+    std::atomic<bool> m_PageTableDirty {false};
+    uint32_t m_PageTableUploadCount {0};
+    // The RHI that created the page table texture; Release needs it (Shutdown()
+    // takes no RHI parameter).
+    RHI* m_PageTableRhi {nullptr};
 
     // Initialize pages
     void InitializePages();

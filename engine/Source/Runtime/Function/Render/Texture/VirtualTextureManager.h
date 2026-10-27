@@ -112,6 +112,15 @@ public:
     // Check if pages are loaded for a virtual texture
     bool ArePagesLoaded(VirtualTextureHandle handle, uint32_t mip_level) const;
 
+    // Upload every DIRTY page table to the GPU (one upload per dirty VT, zero for
+    // clean ones). Called automatically at the end of ForceLoadPages /
+    // UnloadPages / Update; exposed for callers that mutate residency through
+    // other paths. Must run on the thread that owns GPU submission.
+    //
+    // Note an eviction triggered while loading VT "B" dirties VT "A"'s table, so
+    // this walks ALL registered textures, not just the one being loaded.
+    void FlushPageTables();
+
 private:
     // Page loading task
     struct PageLoadTask
@@ -165,8 +174,18 @@ private:
                                   uint32_t page_width,
                                   uint32_t page_height);
 
-    // Unload a page
+    // Unload a page. Marks the owner's page table dirty; does NOT upload it --
+    // the batch entry point (ForceLoadPages / UnloadPages / Update) flushes once.
     void UnloadPage(const VirtualTexturePageID& page_id, VirtualTextureHandle handle);
+
+    // Unload every loaded page of one texture without flushing (Unregister uses
+    // it: the table is about to be released, re-uploading it would be wasted).
+    void UnloadAllPagesNoFlush(VirtualTextureHandle handle);
+
+    // Pool full: evict the least-recently-used resident page THROUGH UnloadPage
+    // (so its owner's page table is invalidated). Returns false if nothing could
+    // be evicted.
+    bool EvictLRUPageForAllocation();
 
     // Update page priorities based on camera and objects
     void UpdatePagePriorities(const Vector3& camera_position,
@@ -216,6 +235,12 @@ private:
     // Statistics
     mutable std::mutex m_StatsMutex;
     VirtualTextureStats m_Stats;
+
+    // Monotonic LRU clock. It used to be steady_clock milliseconds: a batch that
+    // loads N pages within the same millisecond stamped them all identically, so
+    // "least recently used" degenerated into "lowest slot index". A counter gives
+    // a strict load order.
+    std::atomic<uint64_t> m_AccessTick {0};
 
     // Next handle
     static VirtualTextureHandle s_NextHandle;

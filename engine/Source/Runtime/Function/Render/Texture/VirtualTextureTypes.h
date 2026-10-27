@@ -20,6 +20,19 @@ struct VmaAllocation_T;
 typedef struct VmaAllocation_T* VmaAllocation;
 #endif
 
+// VT 的 GPU 路径（页池图 / 页表纹理 / 页上传）是 Vulkan 直连代码。Apple 走 Metal、
+// Emscripten 走 WebGL2，这两处一律编译掉，只剩纯 CPU 簿记（InitializeLogical）。
+//
+// 必须用一个宏统一守卫，而不是各处散写 __APPLE__ / __EMSCRIPTEN__：WASM 冒烟测试
+// （scripts/verify_vt_wasm.sh）用一个**影子 VulkanRHI.h** 只提供最小 Vk/vma 表面，
+// 任何漏守卫的 Vulkan 符号（VulkanImage、VK_FORMAT_*、vmaCreateBuffer…）都会让它
+// 编译失败——2026-10-27 第一版 GPU 上传就这样把 WASM 测试打红了而回归没跑到。
+#if !defined(__APPLE__) && !defined(__EMSCRIPTEN__)
+    #define ZENGINE_VT_GPU 1
+#else
+    #define ZENGINE_VT_GPU 0
+#endif
+
 // Forward declarations
 class RHI;
 class VirtualTextureManager;
@@ -239,7 +252,20 @@ public:
     // Shutdown the pool
     void Shutdown();
 
-    // Allocate a physical slot for a page
+    // Allocate a FREE physical slot for a page. Returns UINT32_MAX when the pool
+    // is full -- it never steals an occupied slot.
+    //
+    // It used to fall back to "take the LRU slot" internally. That had two bugs:
+    // (1) it called FindLRUSlot() while already holding m_SlotMutex, and
+    //     FindLRUSlot() takes the same non-recursive mutex => self-deadlock the
+    //     first time the pool filled up;
+    // (2) even without the deadlock it re-assigned the slot WITHOUT unloading the
+    //     previous owner, so the old page kept state=Loaded + the same
+    //     physical_slot and its page table kept pointing at pixels that now
+    //     belong to someone else (silent aliasing).
+    // Eviction is the manager's job: VirtualTextureManager::LoadPage evicts the
+    // LRU page through UnloadPage (which invalidates the owner's page table) and
+    // retries.
     uint32_t AllocateSlot(const VirtualTexturePageID& page_id);
 
     // Free a physical slot

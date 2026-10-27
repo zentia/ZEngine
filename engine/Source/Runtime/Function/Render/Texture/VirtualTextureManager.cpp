@@ -173,20 +173,29 @@ VirtualTextureHandle VirtualTextureManager::RegisterVirtualTexture(std::shared_p
 
 void VirtualTextureManager::UnregisterVirtualTexture(VirtualTextureHandle handle)
 {
-    std::lock_guard<std::mutex> lock(m_VirtualTexturesMutex);
-    auto it = m_VirtualTextures.find(handle);
-    if (it != m_VirtualTextures.end())
+    // 旧实现持着 m_VirtualTexturesMutex 调 UnloadPages → GetVirtualTexture 再锁同一把
+    // 非递归 std::mutex ⇒ 自死锁（原生平台第一次 Unregister 就挂死）。WASM 冒烟测试
+    // 一直 15/15 是因为 Emscripten 不开 pthreads 时 mutex 是空操作，掩盖了它。
+    //
+    // 现在：先不持锁卸页（释放槽位、页表项置无效），再持锁摘掉条目，最后在锁外
+    // Shutdown（会释放页表纹理，涉及 GPU 销毁，不该持容器锁做）。
+    UnloadAllPagesNoFlush(handle);
+
+    std::shared_ptr<VirtualTextureResource> resource;
     {
-        // Unload all pages
-        UnloadPages(handle);
-
-        // Shutdown resource
-        if (it->second.resource)
+        std::lock_guard<std::mutex> lock(m_VirtualTexturesMutex);
+        auto it = m_VirtualTextures.find(handle);
+        if (it == m_VirtualTextures.end())
         {
-            it->second.resource->Shutdown();
+            return;
         }
-
+        resource = it->second.resource;
         m_VirtualTextures.erase(it);
+    }
+
+    if (resource)
+    {
+        resource->Shutdown();
     }
 }
 
@@ -288,6 +297,9 @@ void VirtualTextureManager::Update(const Vector3& camera_position,
 
     // Evict LRU pages if memory budget exceeded
     EvictLRUPages();
+
+    // 本帧所有驻留变化（加载 + 预算驱逐，可能跨多个 VT）合并成每个脏页表一次上传。
+    FlushPageTables();
 
     // Update statistics. Two separate mutexes: m_VirtualTexturesMutex guards the
     // container we iterate, m_StatsMutex guards m_Stats. Always take the VT
@@ -466,10 +478,70 @@ bool VirtualTextureManager::ForceLoadPages(VirtualTextureHandle handle, uint32_t
         }
     }
 
+    // 整批一次：本 VT 的页表 + 被驱逐页所属的其它 VT 的页表。
+    FlushPageTables();
     return true;
 }
 
 void VirtualTextureManager::UnloadPages(VirtualTextureHandle handle)
+{
+    UnloadAllPagesNoFlush(handle);
+    FlushPageTables();
+}
+
+void VirtualTextureManager::FlushPageTables()
+{
+    if (m_Rhi == nullptr)
+    {
+        return;  // logical (headless WASM) pool: 没有 GPU 页表可传
+    }
+
+    // 锁内只拷 shared_ptr，锁外做 GPU 提交（提交要 vkQueueWaitIdle，不该持容器锁）。
+    std::vector<std::shared_ptr<VirtualTextureResource>> resources;
+    {
+        std::lock_guard<std::mutex> lock(m_VirtualTexturesMutex);
+        resources.reserve(m_VirtualTextures.size());
+        for (auto& pair : m_VirtualTextures)
+        {
+            if (pair.second.resource)
+            {
+                resources.push_back(pair.second.resource);
+            }
+        }
+    }
+
+    for (auto& resource : resources)
+    {
+        resource->FlushPageTableTexture(m_Rhi);
+    }
+}
+
+bool VirtualTextureManager::EvictLRUPageForAllocation()
+{
+    if (!m_PhysicalPool)
+    {
+        return false;
+    }
+
+    const uint32_t victim_slot = m_PhysicalPool->FindLRUSlot();
+    if (victim_slot == UINT32_MAX)
+    {
+        return false;
+    }
+
+    const VirtualTexturePageID victim = m_PhysicalPool->GetSlot(victim_slot).page_id;
+    UnloadPage(victim, victim.virtual_texture_id);
+
+    // 主人已注销/找不到（UnloadPage 什么都没做）时，仍要把槽位还回去，否则这个
+    // 槽位永远"已分配"却没人能释放 —— 池子会一格一格地漏光。
+    if (m_PhysicalPool->IsSlotAllocated(victim_slot))
+    {
+        m_PhysicalPool->FreeSlot(victim_slot);
+    }
+    return true;
+}
+
+void VirtualTextureManager::UnloadAllPagesNoFlush(VirtualTextureHandle handle)
 {
     auto resource = GetVirtualTexture(handle);
     if (!resource)
@@ -640,9 +712,16 @@ bool VirtualTextureManager::LoadPage(const VirtualTexturePageID& page_id, Virtua
     }
 
     uint32_t physical_slot = m_PhysicalPool->AllocateSlot(page_id);
+    if (physical_slot == UINT32_MAX && EvictLRUPageForAllocation())
+    {
+        // 池满：AllocateSlot 不再偷槽位，由这里经 UnloadPage 驱逐 LRU 页（其主人的
+        // 页表随之标脏、批末统一刷新），然后重试一次。
+        physical_slot = m_PhysicalPool->AllocateSlot(page_id);
+    }
     if (physical_slot == UINT32_MAX)
     {
         page->state = VirtualTexturePageState::Unloaded;
+        resource->UpdatePageState(page_id, VirtualTexturePageState::Unloaded);
         return false;
     }
 
@@ -652,11 +731,9 @@ bool VirtualTextureManager::LoadPage(const VirtualTexturePageID& page_id, Virtua
     resource->UpdatePageState(page_id, VirtualTexturePageState::Loaded);
 
     // Stamp the access clock so the LRU evictor has a real ordering key (was:
-    // every loaded slot tied at last_access_time == 0).
-    uint64_t now = static_cast<uint64_t>(
-        std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::steady_clock::now().time_since_epoch())
-            .count());
+    // every loaded slot tied at last_access_time == 0). 用单调计数而非毫秒时钟：
+    // 同一毫秒内加载的一批页时间戳曾全部相同，LRU 退化成"槽位下标最小者"。
+    const uint64_t now = ++m_AccessTick;
     page->last_access_time = now;
     m_PhysicalPool->UpdateSlotAccessTime(physical_slot, now);
 
@@ -678,11 +755,11 @@ bool VirtualTextureManager::LoadPage(const VirtualTexturePageID& page_id, Virtua
         UploadPageToPhysicalPool(page_id, handle, page_pixels.data(), page_pixel_width, page_pixel_height);
     }
 
-    // 槽位映射变了 ⇒ 页表纹理要跟着刷。
-    // ⚠️ LoadPage 跑在 m_PageLoadingThread 上，这里会从后台线程提交一次性命令缓冲。
-    // 目前只有 headless 测试走同步路径（直接 LoadPage/ForceLoadPages），真机异步加载
-    // 打开前需要先把这次提交收敛到渲染线程（或给队列加同步）。
-    resource->UpdatePageTableTexture(m_Rhi);
+    // 页表不在这里逐页上传：SetPageTableEntry 已标脏，由批入口（ForceLoadPages /
+    // UnloadPages / Update）末尾的 FlushPageTables 每个脏表传一次。这也把页表提交
+    // 从后台加载线程挪回了调用 Flush 的线程。
+    // ⚠️ 页像素上传（UploadPageToPhysicalPool）仍在 LoadPage 内，会从
+    // m_PageLoadingThread 提交一次性命令缓冲；真机异步加载打开前要收敛到渲染线程。
 
     return true;
 }

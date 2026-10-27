@@ -4,7 +4,7 @@
 #if defined(__APPLE__)
     #include <TargetConditionals.h>
 #endif
-#if !defined(__APPLE__)
+#if ZENGINE_VT_GPU
     #include "Runtime/Function/Render/Interface/Vulkan/VulkanRHI.h"
     #include "Runtime/Function/Render/Interface/Vulkan/VulkanRHIResource.h"
 #endif
@@ -41,8 +41,8 @@ bool PhysicalTexturePool::Initialize(RHI* rhi,
     m_PageSize = page_size;
     m_Format = format;
 
-#if defined(__APPLE__)
-    return false;
+#if !ZENGINE_VT_GPU
+    return false;  // 无 Vulkan 后端：调用方应走 InitializeLogical
 #else
     // Calculate physical texture dimensions
     uint32_t physical_width = pool_width_pages * page_size;
@@ -194,13 +194,23 @@ void PhysicalTexturePool::Shutdown()
 {
     if (m_PhysicalTextureView)
     {
-        // Image view will be destroyed by RHI
+        // 旧注释写"Image view will be destroyed by RHI"——RHI 从不替调用方销毁 view，
+        // 这里置空就是泄漏（VkImageView + VulkanRHI::CreateImageView new 出来的
+        // VulkanImageView 包装对象）。single-time 提交都 vkQueueWaitIdle 过，此刻无
+        // GPU 工作在用它，可直接销毁。
+#if ZENGINE_VT_GPU
+        if (m_Rhi)
+        {
+            m_Rhi->DestroyImageView(m_PhysicalTextureView);
+        }
+        delete (VulkanImageView*)m_PhysicalTextureView;
+#endif
         m_PhysicalTextureView = nullptr;
     }
 
     if (m_PhysicalTexture && m_Allocation && m_Rhi)
     {
-#if defined(__APPLE__)
+#if !ZENGINE_VT_GPU
         m_PhysicalTexture = nullptr;
         m_Allocation = nullptr;
 #else
@@ -221,6 +231,7 @@ void PhysicalTexturePool::Shutdown()
     }
 
     m_Slots.clear();
+    m_HasContent = false;
     m_Rhi = nullptr;
 }
 
@@ -240,16 +251,8 @@ uint32_t PhysicalTexturePool::AllocateSlot(const VirtualTexturePageID& page_id)
         }
     }
 
-    // No free slot, use LRU
-    uint32_t lru_slot = FindLRUSlot();
-    if (lru_slot != UINT32_MAX)
-    {
-        m_Slots[lru_slot].is_allocated = true;
-        m_Slots[lru_slot].page_id = page_id;
-        m_Slots[lru_slot].last_access_time = 0;
-        return lru_slot;
-    }
-
+    // 池满：不偷槽位（见头文件注释——旧实现在这里持锁调 FindLRUSlot 自死锁，
+    // 且偷来的槽位不通知原主人，造成页表别名）。由管理器走 UnloadPage 驱逐后重试。
     return UINT32_MAX;
 }
 
@@ -369,7 +372,7 @@ bool UploadImageRegion(RHI* rhi,
         return false;
     }
 
-#if defined(__APPLE__) || defined(__EMSCRIPTEN__)
+#if !ZENGINE_VT_GPU
     return false;
 #else
     auto vulkan_rhi = static_cast<VulkanRHI*>(rhi);

@@ -2,8 +2,10 @@
 
 #include "Runtime/Core/Math/Vector3.h"
 #include "Runtime/Function/Render/Interface/RHI.h"
-#include "Runtime/Function/Render/Interface/Vulkan/VulkanRHI.h"
-#include "Runtime/Function/Render/Interface/Vulkan/VulkanRHIResource.h"
+#if ZENGINE_VT_GPU
+    #include "Runtime/Function/Render/Interface/Vulkan/VulkanRHI.h"
+    #include "Runtime/Function/Render/Interface/Vulkan/VulkanRHIResource.h"
+#endif
 
 #include <algorithm>
 #include <cmath>
@@ -56,6 +58,10 @@ bool VirtualTextureResource::Initialize(const std::string& texture_path,
     // Initialize pages
     InitializePages();
 
+    // 全新的页表全是"不驻留"，没有要同步给 GPU 的东西（见 m_PageTableDirty 注释）。
+    // 重复 Initialize 会先 Shutdown→Release 把它置脏，这里归零。
+    m_PageTableDirty.store(false);
+
     m_IsInitialized = true;
     return true;
 }
@@ -94,23 +100,19 @@ bool VirtualTextureResource::Initialize(std::shared_ptr<TextureData> texture_dat
     // Initialize pages
     InitializePages();
 
+    // 全新的页表全是"不驻留"，没有要同步给 GPU 的东西（见 m_PageTableDirty 注释）。
+    // 重复 Initialize 会先 Shutdown→Release 把它置脏，这里归零。
+    m_PageTableDirty.store(false);
+
     m_IsInitialized = true;
     return true;
 }
 
 void VirtualTextureResource::Shutdown()
 {
-    if (m_PageTableTextureView)
-    {
-        m_PageTableTextureView = nullptr;
-    }
-
-    if (m_PageTableTexture && m_PageTableAllocation)
-    {
-        // Page table texture will be destroyed by manager
-        m_PageTableTexture = nullptr;
-        m_PageTableAllocation = nullptr;
-    }
+    // 旧实现只把指针置空、注释说"由 manager 销毁"——manager 从没销毁过，每个注册过
+    // 的 VT 都泄漏一张页表纹理（VkImage + VMA 分配 + VkImageView + 两个包装对象）。
+    ReleasePageTableTexture();
 
     {
         std::lock_guard<std::mutex> lock(m_PagesMutex);
@@ -266,6 +268,9 @@ void VirtualTextureResource::SetPageTableEntry(uint32_t mip_level,
     VirtualTexturePageID page_id = GetPageID(mip_level, page_x, page_y);
     std::lock_guard<std::mutex> lock(m_PageTableMutex);
     m_PageTable[page_id] = entry;
+    // GPU 页表只覆盖 mip 0 网格（见 UpdatePageTableTexture），但标脏不区分 mip：
+    // 多传一次的代价远小于漏传一次（漏传 = 采到别人的像素）。
+    m_PageTableDirty.store(true);
 }
 
 void VirtualTextureResource::UpdatePageState(const VirtualTexturePageID& page_id, VirtualTexturePageState state)
@@ -369,7 +374,7 @@ void VirtualTextureResource::UpdatePageTableTexture(RHI* rhi)
         return;
     }
 
-#if defined(__APPLE__) || defined(__EMSCRIPTEN__)
+#if !ZENGINE_VT_GPU
     return;
 #else
     // 格式选 R32G32_SFLOAT 而不是注释里写的 R32G32_UINT —— 本工程 RHIFormat 枚举
@@ -428,6 +433,8 @@ void VirtualTextureResource::UpdatePageTableTexture(RHI* rhi)
         m_PageTableTexture = new VulkanImage();
         ((VulkanImage*)m_PageTableTexture)->setResource(vk_image);
         m_PageTableAllocation = vk_allocation;
+        m_PageTableRhi = rhi;
+        m_PageTableHasContent = false;  // 新图是 UNDEFINED，首传必须 discard
 
         rhi->CreateImageView(m_PageTableTexture,
                              table_format,
@@ -439,7 +446,10 @@ void VirtualTextureResource::UpdatePageTableTexture(RHI* rhi)
     }
 
     // ---- 打包页表：行主序，每 texel = (physical_slot, mip_level) ----
-    // 未驻留的项写 UINT32_MAX（f32 能表示），shader 侧拿它和槽位总数比就知道无效。
+    // 未驻留写 kPageTableNotResident（-1）。**不能写 float(UINT32_MAX)**：它舍入成
+    // 2^32，再转回 uint32 是未定义行为，shader/测试都只能安全地判 "x < 0"。
+    // 判据只看 is_valid，不看 physical_slot：UnloadPage 写的无效项槽位是默认值，
+    // 将来任何路径若写了"无效但槽位非 MAX"的项，也不能让 GPU 以为它驻留。
     std::vector<uint8_t> table_bytes(static_cast<size_t>(m_PagesX) * static_cast<size_t>(m_PagesY) *
                                      kTableBytesPerTexel);
     float* texels = reinterpret_cast<float*>(table_bytes.data());
@@ -449,7 +459,8 @@ void VirtualTextureResource::UpdatePageTableTexture(RHI* rhi)
         {
             const PageTableEntry entry = GetPageTableEntry(0, page_x, page_y);
             const size_t index = (static_cast<size_t>(page_y) * m_PagesX + page_x) * 2;
-            texels[index + 0] = static_cast<float>(entry.physical_slot);  // UINT32_MAX when invalid
+            const bool resident = entry.is_valid && entry.physical_slot != UINT32_MAX;
+            texels[index + 0] = resident ? static_cast<float>(entry.physical_slot) : kPageTableNotResident;
             texels[index + 1] = static_cast<float>(entry.mip_level);
         }
     }
@@ -469,6 +480,53 @@ void VirtualTextureResource::UpdatePageTableTexture(RHI* rhi)
                           discard))
     {
         m_PageTableHasContent = true;
+        m_PageTableDirty.store(false);
+        ++m_PageTableUploadCount;
     }
 #endif
+}
+
+bool VirtualTextureResource::FlushPageTableTexture(RHI* rhi)
+{
+    if (!m_PageTableDirty.load())
+    {
+        return false;
+    }
+    const uint32_t before = m_PageTableUploadCount;
+    UpdatePageTableTexture(rhi);
+    return m_PageTableUploadCount != before;
+}
+
+void VirtualTextureResource::ReleasePageTableTexture()
+{
+#if ZENGINE_VT_GPU
+    // 调用前提：没有 GPU 工作还在读这张页表。VT 的所有提交都是 single-time
+    // （EndSingleTimeCommands 内 vkQueueWaitIdle），所以在本系统内成立；将来若有
+    // 渲染帧把它绑进描述符集，这里要改成延迟到帧围栏之后再销毁。
+    if (m_PageTableTextureView != nullptr)
+    {
+        if (m_PageTableRhi != nullptr)
+        {
+            m_PageTableRhi->DestroyImageView(m_PageTableTextureView);
+        }
+        delete (VulkanImageView*)m_PageTableTextureView;  // VulkanRHI::CreateImageView new 的包装
+    }
+
+    if (m_PageTableTexture != nullptr)
+    {
+        auto vulkan_rhi = static_cast<VulkanRHI*>(m_PageTableRhi);
+        VmaAllocator allocator = vulkan_rhi ? vulkan_rhi->getVmaAllocator() : nullptr;
+        if (allocator != nullptr && m_PageTableAllocation != nullptr)
+        {
+            vmaDestroyImage(allocator, ((VulkanImage*)m_PageTableTexture)->getResource(), m_PageTableAllocation);
+        }
+        delete (VulkanImage*)m_PageTableTexture;
+    }
+#endif
+    m_PageTableTextureView = nullptr;
+    m_PageTableTexture = nullptr;
+    m_PageTableAllocation = nullptr;
+    m_PageTableRhi = nullptr;
+    m_PageTableHasContent = false;
+    m_PageTableDirty.store(true);  // 下次 Flush 会重建
 }
