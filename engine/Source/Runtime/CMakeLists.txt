@@ -969,6 +969,14 @@ list(REMOVE_ITEM SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Scripting/ScriptMath/Test/ScriptMathSmokeTest.cpp")
 list(REMOVE_ITEM REGULAR_SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Scripting/ScriptMath/Test/ScriptMathSmokeTest.cpp")
+# 同上：脚本时间 API 冒烟测试的 main carve-out。它直接驱动 TimeState，不经过
+# 脚本运行时（纯 CPU、headless），但要链 ZRuntime（Time 是 ZCLASS）。
+# Only built when ZENGINE_BUILD_SCRIPT_TIME_SMOKE_TEST=ON (see
+# Scripting/ScriptTime/Test/CMakeLists.txt)。
+list(REMOVE_ITEM SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Scripting/ScriptTime/Test/ScriptTimeSmokeTest.cpp")
+list(REMOVE_ITEM REGULAR_SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Scripting/ScriptTime/Test/ScriptTimeSmokeTest.cpp")
 
 # UGUI control layer retired (P4). The shared GPU render layer + Font/UITypes/
 # WindowUI moved to Runtime/UI/ and are now picked up by the main GLOB_RECURSE
@@ -1993,6 +2001,13 @@ add_subdirectory(Function/Render/Spine/Test)
 # static，所以这个测试直接调它们，根本不经过脚本运行时 —— 纯 CPU、headless，
 # 每台机器都能跑。它链 ZRuntime（ScriptMath 是 ZCLASS，要 Object 的反射注册）。
 add_subdirectory(Scripting/ScriptMath/Test)
+
+# 脚本时间 API 冒烟测试。Own main(); carved out of the ZRuntime glob above and
+# built only when ZENGINE_BUILD_SCRIPT_TIME_SMOKE_TEST=ON。直接驱动
+# TimeState::BeginFrame 推进若干帧并断言 Time.* 会返回什么 —— 重点是
+# timeScale：它是脚本唯一能改变世界推进速度的状态，写错就是物理与脚本各按
+# 一套速度走。纯 CPU、headless。
+add_subdirectory(Scripting/ScriptTime/Test)
 
 # =============================================================================
 # ASTC texture decompression support (Phase 6)

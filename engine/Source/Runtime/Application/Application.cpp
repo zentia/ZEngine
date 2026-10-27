@@ -3,6 +3,7 @@
 #include "Runtime/Core/Base/Macro.h"
 #include "Runtime/Core/Base/ScopedAutoreleasePool.h"
 #include "Runtime/Core/Memory/MemoryManager.h"
+#include "Runtime/Core/Time/TimeState.h"
 #include "Runtime/Function/Console/RuntimeConsoleCommands.h"
 #include "Runtime/Function/Framework/World/WorldManager.h"
 #include "Runtime/Function/Input/InputSystem.h"
@@ -118,20 +119,31 @@ bool Application::TickOneFrame(float simulation_delta_time, float frame_delta_ti
     // 每帧累积。必须是这一帧的第一条语句：渲染、UI、PollEvents 都在它的作用域里。
     ScopedAutoreleasePool frame_autorelease_pool;
 
+    // 时间状态必须先于本帧任何可能读时间的东西更新 —— 逻辑 tick 里的
+    // Time.GetDeltaTime()、渲染侧的时间驱动 shader 参数都从这里取数。
+    //
+    // 之后本帧一律用 logic_delta_time，不再用传入的 simulation_delta_time：
+    // 两者的区别就是 timeScale（以及"本帧不推进逻辑"时前者恒为 0）。
+    // timeScale 默认 1.0f 且 should_update_logic 为 true 时
+    // logic_delta_time == simulation_delta_time，与改动前逐字节等价。
+    TimeState& time_state = TimeState::Get();
+    time_state.BeginFrame(simulation_delta_time, frame_delta_time, should_update_logic);
+    const float logic_delta_time = time_state.GetDeltaTime();
+
     TickDeferredConsoleCommands();   // exec.after（暂停时也走：它数的是帧，不是逻辑帧）
     if (should_update_logic)
     {
-        LogicalTick(simulation_delta_time);
+        LogicalTick(logic_delta_time);
     }
     CalculateFPS(frame_delta_time);
 
     // Game thread: exchange logic/render data, then dispatch the frame to render + RHI workers.
     GET_SYSTEM(RenderSystem)->SwapLogicRenderData();
 
-    RendererTick(simulation_delta_time);
+    RendererTick(logic_delta_time);
 
 #ifdef ENABLE_PHYSICS_DEBUG_RENDERER
-    g_runtime_global_context.m_PhysicsManager->RenderPhysicsWorld(simulation_delta_time);
+    g_runtime_global_context.m_PhysicsManager->RenderPhysicsWorld(logic_delta_time);
 #endif
 
     // Drive Slate/UMG UI rendering (UISystem::PreRender() -> RenderSlateRoot).
