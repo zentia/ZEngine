@@ -400,6 +400,21 @@ local-space 还是 world-space、shader 是否用 `gl_InstanceIndex`/`firstInsta
 前置能力问题已解决，且过程中修掉一个让页池完全画不出的真 bug（槽位表容量）。剩余分歧是页池去重语义问题，
 不是 headless 基建问题。
 
+**分歧已解（同日，commit `279463c3`）**：先反汇编/读 GLSL 源确认实例变换取法——`nanite_cluster.vert` 用
+`gl_InstanceIndex` 反查 cluster、再取 `cluster.geometry.w` 的实例 transform **逐实例变换 local-space 顶点**
+（顶点地址只由 index buffer 决定，`vertexOffset=0`）。所以"两实例共享 mesh_id 时集群按 `(mesh_id,
+cluster_index)` 别名到同一批页槽位（draw 命令 `firstIndex` 从 756 回绕到 0）"**不是 bug**——共享页本就是正确
+设计，之前误判方向。真正根因在 `UploadPageSlice`：mesh.index_data 里的索引值是 0 基于整条 mesh
+cluster-vertex 流的（cluster builder 写 `out_positions.size()`，cluster c 的索引落在
+`[c.vertex_offset, +c.vertex_count)`），而页只拷了该 cluster 的顶点切片进 `[dst_vertex_slot_base,
++vertex_count)`，所以索引必须先减 `cluster.vertex_offset` 再加 slot 基址。之前漏了减 —— 每个 cluster 的
+索引都指到 `vertex_offset` 个槽位之后（下一个 cluster 的顶点）。cluster 0（vertex_offset=0）不受影响，所以
+顶点 dump 和首个 cluster 的索引 dump 都对得上、把 bug 藏住了。稠密路径不受影响（整条 mesh 顶点流逐实例上传、
+索引按整段 vertex_base 偏移）。修复后 **`NanitePagePoolABSmokeTest` 13/13 全绿**：`covered_dense=2136
+covered_pool=2136 differing=0 max_channel_delta=0`，页池与稠密路径**逐像素一致**。全 Nanite 回归全绿
+（ClusterBuilder 77/77、PagePool / PageSlotTable / PageUploadPlanner / HiZ 全过）。页池 GPU 路径画面正确性
+**闭环**。
+
 ---
 
 ### 落地记录 · 2.5 HiZ（2026-10-26，CPU 侧；GPU 侧待真机）
