@@ -194,6 +194,28 @@ python3 scripts/run_smoke_test.py \
   —— 没改，只在这里记一笔，测试按"宿主不拥有组件"来写。
 * **V8 后端**：和另外两个脚本测试一样，非 QuickJS 构建直接 `#error`。
 * **Prefab / 场景反序列化过来的组件**：测的是 `AddComponentByTypeName` 这条
-  运行时挂载路径。从 `.object.json` 反序列化出来的 `TypeScriptComponent` 走的是
-  `PostLoadResource` 的同一个入口，但那一条的路径解析（`m_ScriptGuid` 怎么从
-  序列化数据里还原）没覆盖。
+  运行时挂载路径；从资产文件里反序列化出来的 `TypeScriptComponent` 是另一条路，
+  没覆盖。当前资产分两轨（`.object.json` 早已废弃）：
+  * **编辑器：`.prefab`** —— 人类可读的 YAML 对象图，扩展名即权威（不用读
+    header），由 `AssetManager::WriteObjectsToYaml` 写。
+  * **真机 / legacy：`.zasset`** —— 二进制 SerializedFile（`AssetFileHeader`
+    176 字节，由 `SerializedFile::WriteHeaderAndMetadata` 写）。它是所有 ZEngine
+    资产共用的统一容器，类比 UE 的 `.uasset`；由
+    `AssetManager::WriteObjectsToDiskThreadSafe` 写。
+  * 两条路**共用同一份有序对象表和同一套引用模型**：文件内引用用 `ImmediatePtr`
+    （file-local fileID + pathID），跨文件引用用 `PPtr`（GUID）。判定时
+    `path.extension() == ".prefab"` 优先，否则走 `isPrefabZAsset()`（legacy 二进制）。
+* **那这条为什么还是"没测"**：`m_script_guid` / `m_class_name` /
+  `m_serialized_fields` 三个字段都是 `ZPROPERTY` 且都在 `-- Serialised --` 段内，
+  原则上会随 prefab / zasset 一起 round-trip；反序列化后走
+  `LoadPrefabAsset → Instantiate → CloneSubtree → PrefabPostLoadDriver::Run`，
+  最终也落到同一个 `PostLoadResource` 入口。**没测过**的是两件事：还原出来的 guid
+  是否一定能绑上（脚本资产要能在 runtime 侧按 guid 解析到编译产物），以及
+  `m_SerializedFields`（Inspector override）能否跟着一起还原、并在
+  `ApplySerializedFields()` 里生效。
+* **顺带观察到的一个层级限制**：`PrefabPostLoadDriver` 靠
+  `{child Transform → owning GameObject}` 映射做 DFS 下发 `PostLoadResource`。
+  `.prefab` 路径能拿到完整的 `known_gameobjects`（YAML reader 直接给出），多层层级
+  全通；legacy `.zasset` 路径没有这份 flat list，只能从 root 发现，多层层级仍受
+  Phase-1 限制 —— 挂在下层子节点上的 `TypeScriptComponent` 在二进制路径上有可能
+  拿不到 `PostLoadResource`。
