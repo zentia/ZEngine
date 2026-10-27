@@ -5,6 +5,13 @@ function(compile_shader SHADERS TARGET_NAME SHADER_INCLUDE_FOLDER GENERATED_DIR 
     set(ALL_GENERATED_SPV_FILES "")
     set(ALL_GENERATED_CPP_FILES "")
 
+    # 被 #include 的头文件也必须是依赖。glslang 的 DEPENDS 只列了 shader 源文件本身，
+    # 所以改 nanite_common.h / vt_common.h 这类共享头**不会**重新生成任何 SPIR-V ——
+    # 二进制里的 shader 悄悄停留在旧契约上，而 C++ 侧已经按新契约走了（2026-10-27 做
+    # VT 突变测试时发现：改了头、重建、测试照绿，因为 SPIR-V 根本没重编）。
+    # 这里粗粒度处理：include 目录下任何文件变化都重编全部 shader（正确优先，shader 很小）。
+    file(GLOB_RECURSE SHADER_INCLUDE_DEPENDENCIES CONFIGURE_DEPENDS "${SHADER_INCLUDE_FOLDER}/*")
+
     if(UNIX AND GLSLANG_BIN AND NOT GLSLANG_BIN MATCHES "^/usr/")
         execute_process(COMMAND chmod a+x ${GLSLANG_BIN})
     endif()
@@ -21,7 +28,7 @@ function(compile_shader SHADERS TARGET_NAME SHADER_INCLUDE_FOLDER GENERATED_DIR 
         add_custom_command(
             OUTPUT ${SPV_FILE}
             COMMAND ${GLSLANG_BIN} -I${SHADER_INCLUDE_FOLDER} -V100 -o ${SPV_FILE} ${SHADER}
-            DEPENDS ${SHADER}
+            DEPENDS ${SHADER} ${SHADER_INCLUDE_DEPENDENCIES}
             WORKING_DIRECTORY "${working_dir}")
 
         list(APPEND ALL_GENERATED_SPV_FILES ${SPV_FILE})

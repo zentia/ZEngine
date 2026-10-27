@@ -90,3 +90,42 @@ if(ZENGINE_BUILD_VT_PAGETABLE_LIFECYCLE_AB_SMOKE_TEST)
         message(STATUS "Configured VT page-table lifecycle A/B smoke test: VirtualTexturePageTableLifecycleABSmokeTest")
     endif()
 endif()
+
+# =============================================================================
+# VirtualTextureResolveABSmokeTest — 页表间接寻址采样 A/B（Vulkan headless）
+# -----------------------------------------------------------------------------
+# 前两个 VT 测试验"数据对不对"，但它们的 A 路是测试里的 C++ 在**模拟** shader。本测试
+# 让真的 GLSL（vt_resolve.comp → vt_common.h）读页表做间接寻址，读回逐 texel 与源纹理比：
+# 驻留页 == 源；被驱逐页是 fallback 而不是占了它旧槽位的别的页的像素；整数入口 == UV 入口；
+# 非整页大小（右/下边缘残缺页）也对。依赖 ZShaderCompile 生成 vt_resolve_comp.h。
+#
+#   cmake -B build -DZENGINE_BUILD_VT_RESOLVE_AB_SMOKE_TEST=ON
+#   cmake --build build --target VirtualTextureResolveABSmokeTest
+# =============================================================================
+option(ZENGINE_BUILD_VT_RESOLVE_AB_SMOKE_TEST
+       "Build the VirtualTexture page-table indirect-sampling A/B (Vulkan headless) smoke-test executable"
+       OFF)
+
+if(ZENGINE_BUILD_VT_RESOLVE_AB_SMOKE_TEST)
+    if(NOT WIN32 AND NOT (UNIX AND NOT APPLE))
+        message(STATUS "VT resolve A/B smoke test needs the Vulkan backend (Windows/Linux); skipping")
+    else()
+        add_executable(VirtualTextureResolveABSmokeTest VirtualTextureResolveABSmokeTest.cpp)
+        set_target_properties(VirtualTextureResolveABSmokeTest PROPERTIES
+            CXX_STANDARD 23
+            FOLDER "Engine/Tests"
+        )
+        target_link_libraries(VirtualTextureResolveABSmokeTest PRIVATE ZRuntime)
+        if(TARGET ZEnginePCH)
+            target_link_libraries(VirtualTextureResolveABSmokeTest PRIVATE ZEnginePCH)
+            target_include_directories(VirtualTextureResolveABSmokeTest PRIVATE ${ENGINE_ROOT_DIR}/Source/CommonPCH)
+            add_dependencies(VirtualTextureResolveABSmokeTest ZEnginePCH)
+            target_precompile_headers(VirtualTextureResolveABSmokeTest REUSE_FROM ZEnginePCH)
+        endif()
+        if(MSVC)
+            target_compile_options(VirtualTextureResolveABSmokeTest PRIVATE /W4)
+        endif()
+        add_test(NAME VirtualTextureResolveABSmokeTest COMMAND VirtualTextureResolveABSmokeTest)
+        message(STATUS "Configured VT resolve A/B smoke test: VirtualTextureResolveABSmokeTest")
+    endif()
+endif()

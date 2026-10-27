@@ -1,0 +1,69 @@
+#version 450
+
+// ===========================================================================
+// VirtualTexture resolve —— 第一个真正消费页表纹理的 shader。
+//
+// 一个线程一个虚拟 texel（mip 0）：虚拟坐标 → 页表 texelFetch 取槽位 → 槽位换算成
+// 物理页池坐标 → 从页池 texelFetch。查找逻辑全部在 vt_common.h 里，这个 kernel 只是
+// 把结果写进 SSBO 让 CPU 读回比对；任何材质 shader 想读 VT，#include 同一份
+// vt_common.h 调 VTFetch / VTSampleUV 即可，契约只有一份。
+//
+// 输出每 texel 两个 uint：
+//   .x = packUnorm4x8(颜色)    —— 页池是 UNORM8，texelFetch 得 k/255，pack 回去逐位还原
+//   .y = 1 驻留 / 0 不驻留（不驻留时 .x = fallback）
+//
+// mode（params.extent.z）：0 = 按整数 texel 取（VTFetch），1 = 按 texel 中心 UV 取
+// （VTSampleUV）。两条入口必须给出同一个结果。
+// ===========================================================================
+
+#extension GL_GOOGLE_include_directive : enable
+
+#include "vt_common.h"
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) uniform _vt_resolve_params
+{
+    uvec4 lookup;   // x = page_size, y = pool_width_pages, z = pages_x, w = pages_y
+    uvec4 extent;   // x = virtual width, y = virtual height, z = mode (0 texel / 1 uv), w = unused
+    vec4 fallback;  // 不驻留页返回的颜色
+} u_params;
+
+layout(set = 0, binding = 1) uniform sampler2D u_page_table;
+layout(set = 0, binding = 2) uniform sampler2D u_physical_pool;
+
+layout(std430, set = 0, binding = 3) writeonly buffer _vt_resolve_output
+{
+    uvec2 resolved[];
+};
+
+void main()
+{
+    const uvec2 texel = gl_GlobalInvocationID.xy;
+    const uint width = u_params.extent.x;
+    const uint height = u_params.extent.y;
+    if (texel.x >= width || texel.y >= height)
+    {
+        return;
+    }
+
+    VTLookupParams p;
+    p.page_size = u_params.lookup.x;
+    p.pool_width_pages = u_params.lookup.y;
+    p.pages_x = u_params.lookup.z;
+    p.pages_y = u_params.lookup.w;
+
+    bool resident = false;
+    vec4 color;
+    if (u_params.extent.z == 0u)
+    {
+        color = VTFetch(u_page_table, u_physical_pool, p, texel, u_params.fallback, resident);
+    }
+    else
+    {
+        const vec2 uv = (vec2(texel) + vec2(0.5)) / vec2(width, height);
+        color = VTSampleUV(u_page_table, u_physical_pool, p, uv, uvec2(width, height), u_params.fallback, resident);
+    }
+
+    resolved[texel.y * width + texel.x] = uvec2(packUnorm4x8(color), resident ? 1u : 0u);
+}
