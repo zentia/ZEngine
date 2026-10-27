@@ -10,6 +10,15 @@
 
 namespace
 {
+// 一个 cluster 的几何字节（vertex + index 段里属于该 cluster 窗口的部分）。页池预算按此计。
+// Raw: 12B/顶点 + 4B/索引；Quantized: 6B/顶点 + 2B/索引（见 GeometryCodec）。
+uint32_t ClusterGeometryBytes(const NaniteMeshResource& mesh, const NaniteCluster& c)
+{
+    const uint32_t vertex_bytes = (mesh.geometry_codec == GeometryCodec::Quantized) ? 6u : 12u;
+    const uint32_t index_bytes = (mesh.geometry_codec == GeometryCodec::Quantized) ? 2u : 4u;
+    return c.vertex_count * vertex_bytes + c.triangle_count * 3u * index_bytes;
+}
+
 // 把几何写進资源的字节段，按 config.geometry_codec 选择编码。
 //
 // 历史：这两个字节段曾在函数开头被 clear 之后再也不写 —— NaniteMeshResource 带着一堆
@@ -551,6 +560,13 @@ void NaniteClusterManager::clear()
 {
     m_MeshResources.clear();
     m_StreamingQueue.clear();
+    // 页池簿记状态一并清空，避免残留登记在下次 Initialize 后仍占预算。
+    m_PagePool = nanite_pages::PagePool{m_Config.streaming_pool_budget_bytes > 0
+                                            ? m_Config.streaming_pool_budget_bytes
+                                            : 1};
+    m_ClusterPageIds.clear();
+    m_NextPageId = 1;
+    m_StreamingFrame = 0;
 }
 
 bool NaniteClusterManager::RegisterMeshResource(uint64_t mesh_id, const NaniteMeshResource& mesh_resource)
@@ -562,12 +578,46 @@ bool NaniteClusterManager::RegisterMeshResource(uint64_t mesh_id, const NaniteMe
     entry.cluster_loaded_flags.resize(mesh_resource.clusters.size(), true);
     entry.visible_clusters.clear();
 
+    // 页池：给每个叶子 cluster 分配一个 page_id，登记进池子（byte_size = 该 cluster 的
+    // 几何字节）。结构页(internal)也登记但标 is_leaf=false（永不驱逐）。未启用页池时
+    // 这些登记无害——UpdateStreaming 不会查池子。
+    // 重复注册同一 mesh_id：先撤掉旧页，避免旧 cluster 数 > 新 cluster 数时残留悬空登记。
+    auto stale = m_ClusterPageIds.find(mesh_id);
+    if (stale != m_ClusterPageIds.end())
+    {
+        for (uint32_t page_id : stale->second)
+            m_PagePool.RemovePage(page_id);
+    }
+    std::vector<uint32_t>& page_ids = m_ClusterPageIds[mesh_id];
+    page_ids.clear();
+    page_ids.resize(mesh_resource.clusters.size(), 0);
+    for (uint32_t ci = 0; ci < mesh_resource.clusters.size(); ++ci)
+    {
+        const NaniteCluster& c = mesh_resource.clusters[ci];
+        const uint32_t page_id = m_NextPageId++;
+        page_ids[ci] = page_id;
+        nanite_pages::PageRecord rec;
+        rec.page_id = page_id;
+        rec.mesh_id = mesh_id;
+        rec.byte_size = ClusterGeometryBytes(mesh_resource, c);
+        rec.is_leaf = c.is_leaf;
+        m_PagePool.UpsertPage(rec);
+    }
+
     m_MeshResources[mesh_id] = entry;
     return true;
 }
 
 void NaniteClusterManager::UnregisterMeshResource(uint64_t mesh_id)
 {
+    // 从页池撤掉该 mesh 的所有页，避免悬空登记累积。
+    auto it = m_ClusterPageIds.find(mesh_id);
+    if (it != m_ClusterPageIds.end())
+    {
+        for (uint32_t page_id : it->second)
+            m_PagePool.RemovePage(page_id);
+        m_ClusterPageIds.erase(it);
+    }
     m_MeshResources.erase(mesh_id);
 }
 
@@ -587,6 +637,71 @@ void NaniteClusterManager::UpdateStreaming(const Vector3& camera_position, float
 
     m_StreamingQueue.clear();
 
+    const bool use_pool = m_Config.streaming_pool_budget_bytes > 0;
+    if (use_pool)
+    {
+        m_PagePool.SetBudget(m_Config.streaming_pool_budget_bytes);
+    }
+
+    // 第一遍：算每个叶子 cluster 的距离，喂进页池（距离 + 字节），并收集"距离内"的叶子页
+    // id 作为本帧 want-resident 集合。结构页(internal)在 Update 内部被强制驻留。
+    std::vector<uint32_t> want_resident;
+    for (auto& entry : m_MeshResources)
+    {
+        const NaniteMeshResource& mesh = entry.second.mesh_resource;
+        const std::vector<uint32_t>& page_ids = m_ClusterPageIds[entry.first];
+
+        for (uint32_t cluster_index = 0; cluster_index < mesh.clusters.size(); ++cluster_index)
+        {
+            const NaniteCluster& cluster = mesh.clusters[cluster_index];
+            if (!cluster.is_leaf)
+                continue;  // 结构页：距离不参与 want，Update 会强制驻留
+
+            const float dist = camera_position.distance(cluster.bounds.getCenter());
+            if (use_pool)
+            {
+                nanite_pages::PageRecord rec;
+                rec.page_id = page_ids[cluster_index];
+                rec.mesh_id = entry.first;
+                rec.byte_size = ClusterGeometryBytes(mesh, cluster);
+                rec.is_leaf = true;
+                rec.distance = dist;
+                m_PagePool.UpsertPage(rec);  // 刷新距离/字节（保留 LRU 时间戳）
+            }
+            if (dist <= streaming_distance)
+            {
+                want_resident.push_back(page_ids[cluster_index]);
+            }
+        }
+    }
+
+    if (use_pool)
+    {
+        // 页池按"距离优先 + LRU"在字节预算内决定最终驻留位；换入/换出队列是渲染绑定的
+        // 真机清单（把 evicted/admitted 真正拷进/释放显存），这里只同步 cluster_loaded_flags。
+        m_PagePool.Update(want_resident, /*now=*/static_cast<double>(m_StreamingFrame++));
+
+        for (auto& entry : m_MeshResources)
+        {
+            const std::vector<uint32_t>& page_ids = m_ClusterPageIds[entry.first];
+            std::vector<bool>& loaded = entry.second.cluster_loaded_flags;
+            for (uint32_t cluster_index = 0; cluster_index < loaded.size(); ++cluster_index)
+            {
+                // 结构页永远驻留；叶子页看池子的驻留位。
+                const bool resident = !entry.second.mesh_resource.clusters[cluster_index].is_leaf
+                                          ? true
+                                          : m_PagePool.IsResident(page_ids[cluster_index]);
+                if (loaded[cluster_index] != resident)
+                {
+                    loaded[cluster_index] = resident;
+                    m_StreamingQueue.emplace_back(entry.first, cluster_index);
+                }
+            }
+        }
+        return;
+    }
+
+    // 未启用页池：退回纯距离裁剪（原语义，逐 cluster 标 flag）。
     for (auto& entry : m_MeshResources)
     {
         const NaniteMeshResource& mesh = entry.second.mesh_resource;
@@ -610,11 +725,6 @@ void NaniteClusterManager::UpdateStreaming(const Vector3& camera_position, float
             // （那需要屏幕误差积分 + 一个真实的页池），所以这是**距离裁剪**，不是
             // UE 那套 streaming pool。叶子中心在 streaming_distance 之内 ⇒ 驻留；
             // 之外 ⇒ 未驻留（本帧不提交渲染）。
-            //
-            // 重要：cluster_loaded_flags 目前是**策略/可见性闸门**，不是物理显存
-            // 回收。所有集群共享同一段 vertex_data/index_data 字节流（深度优先连续
-            // 窗口），卸载中间一个集群会破坏邻居的 offset。真正的按页驻留要等页池
-            // 落地（step 2.5 后续）；届时这里的语义从"标不标"升级为"拷不拷得进页"。
             const float dist = camera_position.distance(cluster.bounds.getCenter());
             const bool resident = dist <= streaming_distance;
 

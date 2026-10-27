@@ -228,6 +228,13 @@ struct NaniteConfig
     bool enable_culling = true;
     bool enable_streaming = true;
 
+    // 页池字节预算（step 2.5 后续：真正的按页驻留）。0 = 关闭页池，退回纯距离裁剪
+    // （UpdateStreaming 只标 cluster_loaded_flags，不约束总驻留字节）。> 0 时启用
+    // NanitePagePool：叶子页按"距离优先 + LRU 破平"装进该字节预算，装不下的远页被
+    // 驱逐——语义从"标不标"升级为"装不装得进预算池"。结构页(internal)永不驱逐。
+    // 注意：这只约束**簿记驻留位**；把换入/换出队列真正拷进/释放显存仍是渲染绑定。
+    uint64_t streaming_pool_budget_bytes = 0;
+
     float lod_bias = 0.0f;
     float max_screen_error = 1.0f;
     uint32_t max_visible_clusters = 100000;

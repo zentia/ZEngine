@@ -1,6 +1,7 @@
 #pragma once
 
 #include "NaniteTypes.h"
+#include "NanitePagePool.h"
 #include "Runtime/Core/Math/AxisAligned.h"
 // BuildClustersFromMesh takes std::vector<Vector2> **by value**, so every caller
 // needs the complete type, not just a forward declaration.
@@ -131,4 +132,14 @@ private:
 
     // 流式加载队列
     std::vector<std::pair<uint64_t, uint32_t>> m_StreamingQueue;
+
+    // 页池簿记层（step 2.5 后续）。streaming_pool_budget_bytes > 0 时启用：UpdateStreaming
+    // 把每个叶子页的 (page_id, byte_size, distance) 喂进来，池子按"距离优先 + LRU"在字节
+    // 预算内决定谁驻留，装不下的远页被驱逐。cluster_loaded_flags 随池子的驻留位同步——
+    // 这样 IsClusterLoaded 反映的是"进没进预算池"，不只是"近不近"。页 id 用全局自增计数。
+    nanite_pages::PagePool m_PagePool{1};
+    uint32_t m_NextPageId{1};
+    uint64_t m_StreamingFrame{0};  // 页池 LRU 时间戳（每帧 UpdateStreaming 自增）
+    // mesh_id → 该 mesh 每个叶子 cluster 的 page_id（RegisterMeshResource 时分配）。
+    std::unordered_map<uint64_t, std::vector<uint32_t>> m_ClusterPageIds;
 };

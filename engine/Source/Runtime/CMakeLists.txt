@@ -970,6 +970,29 @@ list(REMOVE_ITEM SOURCE_FILES
 list(REMOVE_ITEM REGULAR_SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Scripting/ScriptMath/Test/ScriptMathSmokeTest.cpp")
 
+# Nanite 页池簿记冒烟测试的 main carve-out（同理由）。它自带 main()，由
+# ZENGINE_BUILD_NANITE_PAGEPOOL_SMOKE_TEST 单独控制（见
+# Function/Render/Nanite/Test/CMakeLists.txt）。纯 CPU，headless。
+list(REMOVE_ITEM SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Nanite/Test/NanitePagePoolSmokeTest.cpp")
+list(REMOVE_ITEM REGULAR_SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Nanite/Test/NanitePagePoolSmokeTest.cpp")
+# ShaderLab 一批自带 main() 的冒烟测试同样要 carve-out：它们各自有独立 exe 目标
+# （见 Function/ShaderLab/Test/CMakeLists.txt），但此前从未从 ZRuntime 的
+# GLOB_RECURSE 里剔除，导致任何 /WHOLEARCHIVE 链接 ZRuntime 的消费 exe 都会
+# LNK2005 "main already defined"。只有当对应开关打开时才单独构建。
+foreach(_sl_test IN ITEMS
+        ShaderLabTextureSlotTest
+        ShaderLabPropertyLayoutTest
+        ShaderLabPropertyBlobTest
+        ShaderLabProgramExtractTest
+        ShaderLabCbufferReflectionTest)
+    list(REMOVE_ITEM SOURCE_FILES
+         "${CMAKE_CURRENT_SOURCE_DIR}/Function/ShaderLab/Test/${_sl_test}.cpp")
+    list(REMOVE_ITEM REGULAR_SOURCE_FILES
+         "${CMAKE_CURRENT_SOURCE_DIR}/Function/ShaderLab/Test/${_sl_test}.cpp")
+endforeach()
+
 # UGUI control layer retired (P4). The shared GPU render layer + Font/UITypes/
 # WindowUI moved to Runtime/UI/ and are now picked up by the main GLOB_RECURSE
 # above (compiled directly into ZRuntime, whole-archived for reflection).

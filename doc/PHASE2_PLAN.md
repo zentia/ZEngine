@@ -45,7 +45,7 @@
 | C0 | **Vulkan `MainCameraPass` 崩溃根因修复** | 跨切面阻塞：解除 Vulkan 侧验证能力 | **✅ 已被 `7e5d2521` 修掉（2026-10-25 复核关闭）** | — | ★★★ 已关闭 |
 | C1 | **RenderGraph 接管流水线** | 帧图编译器：自动屏障、瞬态 RT 别名、剔除 | **✅ 已默认开·真机验证 PASS**（165 编译+92 执行断言；RP2 图路径 2026-10-26 翻默认开 `c0d1bcfc`，同帧 A/B 逐位等价 + soak 无异常，见 §2 落地记录·2.6） | 阶段一 RHI 注册表 | ★★★ 高价值/低风险 |
 | C2 | **RenderGraph → RP1**（`render_pass_refactor`） | RP1 三子pass 拆成 3 独立 pass，纳入图管理 | **✅ 已默认开·真机验证 PASS**（2.3 三分已在代码：3 独立 render pass/subpass 恒 0；2.4 compiler 200/200 + executor 121/121 已验。`DrawRP1WithGraph` 2026-10-26 翻默认开 `871878e3`，同帧 A/B `rp1.backup_odd` 逐位 IDENTICAL + soak 无异常，见 §2 落地记录·2.6） | **必须在 C1 之后** | ★★ 高价值/中风险 |
-| C3 | **Nanite 收尾** | 流送 → 几何压缩 → HiZ 遮挡 | **大部分实现**（真 GPU dispatch 已有；几何压缩✅ + streaming✅ 已落地；**HiZ CPU 侧✅ 已落地 2026-10-26**，见 §2 落地记录·2.5 HiZ；剩 HiZ GPU 侧——compute 生成金字塔 + GPU 遮挡剔除，需真机） | C1/C2 给其 RG 管理的目标 | ★★★ 高价值/中风险 |
+| C3 | **Nanite 收尾** | 流送 → 几何压缩 → HiZ 遮挡 → 页池 | **大部分实现**（真 GPU dispatch 已有；几何压缩✅ + streaming✅ + **页池簿记层✅ 已落地 2026-10-26**（opt-in，`streaming_pool_budget_bytes>0`；显存上传待真机），见 §2 落地记录·2.5 页池；**HiZ CPU 侧✅ 已落地 2026-10-26**，见 §2 落地记录·2.5 HiZ；剩 HiZ GPU 侧——compute 生成金字塔 + GPU 遮挡剔除，需真机） | C1/C2 给其 RG 管理的目标 | ★★★ 高价值/中风险 |
 | C4 | **Virtual Texture 接线** | 分页纹理虚拟化，从"孤儿"到可用 | **已实现但零消费者**（6 文件无外部引用、无 CVar、3 处构建排除） | C1/C2 的 RG 资源注册 | ★★ 高价值/中高风险 |
 | C5 | ~~**Vulkan `MainCameraPass` 崩溃根因修复**~~ | 跨切面阻塞：解除 Vulkan 侧验证能力 | **✅ 已被 `7e5d2521` 修掉（2026-10-25 复核关闭）** | — | ★★★ 已关闭（见 §2 step 2.0） |
 | C6 | **Lumen 收尾（SSR → GPU 化）** | 动态 GI + 反射；取 SSR 一半 + 首个 Lumen shader | **✅ CPU 侧已完整**（GI/反射/接线/CVar/发布桥全落地 + 7 smoke test；2026-10-25 复核，见 §2 落地记录·2.7）。剩 SSR/HWRT/首个 shader 全 GPU 侧 | C2 的 GBuffer/depth 声明 | ★★ 中价值/高风险（CPU 侧无活，剩 GPU 放最后） |
@@ -141,6 +141,49 @@ HiZ 的 **CPU 侧**（金字塔构建 + 遮挡判据）已落地，见下方落�
 
 **诚实定位**：这是**距离裁剪**，不是 UE 那套 streaming pool。它带来真能力（远处叶子不再进裁剪/
 渲染），但没有带宽预算、没有按需分页、没有物理显存回收。页池是明确的后续项。
+
+---
+
+### 落地记录 · 2.5 页池簿记层（2026-10-26，CPU 侧；显存上传待真机）
+
+**做了什么**：兑现 streaming 落地记录里承诺的"页池后续项"——把**页池的簿记**抽成不依赖任何
+GPU/引擎类型的纯逻辑 `Function/Render/Nanite/NanitePagePool.h`（`nanite_pages::PagePool`），
+与 HiZ/几何压缩同一手法（header-only 核心 + headless 单测）。
+
+- **页模型**：页（page）= 驻留单位，带固定字节预算 `budget_bytes`。每个叶子 cluster 注册为一页
+  （`byte_size` = 该 cluster 的几何字节，Raw 12B/顶点+4B/索引、Quantized 6B+2B，见
+  `ClusterGeometryBytes`）。结构页（internal）也登记但标 `is_leaf=false`，**永不驱逐**——卸载它们
+  没有渲染收益，只会让层次查询拿到空缺（与 UpdateStreaming 的"内部节点永远驻留"不变量一致）。
+- **驻留判据**：仍是距离（与 UpdateStreaming 同一语义），但**进池要过预算闸**——想驻留的叶子页按
+  "距离升序 + LRU 破平"排序，预算装不下的远页被拒/驱逐。语义从 UpdateStreaming 的"标不标"升级为
+  "装不装得进预算池"。
+- **LRU**：每页一个 `last_used` 时间戳，只由 `Touch`（渲染层真正用到该页）推进。**刻意不在
+  `Update` 里给 want 页刷时间戳**——否则"被 want"会让所有页时间戳塌成同一帧，LRU 破平失效。
+  `UpsertPage` 也**保留已有 `last_used`**（元数据刷新 ≠ 生命周期重置）。
+- **增量队列**：`Update` 结束快照当前驻留页集合，下一帧与之比对——新进池进 `admitted`、不再驻留进
+  `evicted`。调用方每帧拿到**增量**而非全量，正好是渲染层"拷进/释放显存"的真机清单。
+
+**接线（opt-in，默认关闭）**：`NaniteConfig.streaming_pool_budget_bytes`（默认 0）。`> 0` 时
+`UpdateStreaming` 走页池路径：喂 (page_id, byte_size, distance) → `PagePool::Update` → 按池子驻留位
+同步 `cluster_loaded_flags`；`= 0` 时退回原纯距离裁剪，**字节级行为不变**（这是 77/77 回归全绿的前提）。
+`RegisterMeshResource` 分配页 id（全局自增 `m_NextPageId`）+ 播种池子（重复注册同一 mesh_id 先撤旧页）；
+`UnregisterMeshResource` / `clear()` 撤页，避免悬空登记累积占预算。
+
+**验证（Windows headless，无需真机）**：
+- 新增 `Nanite/Test/NanitePagePoolSmokeTest.cpp`（header-only，只链 include 根），**30 项断言全绿**：
+  预算闸、距离优先、结构页永不驱逐、增量换入/换出队列、LRU 驱逐、`Touch` 保护、`RemovePage`/
+  `SetBudget`、零预算。开发中修掉三个真 bug：①结构页测试预算给太小（50 < 30+30）导致结构页都装不下；
+  ②`Update` 给所有 want 页刷 `last_used=now` 使 LRU 塌平；③`UpsertPage` 把 `last_used` 清零使 `Touch` 失效。
+- **回归**：`NaniteClusterBuilderSmokeTest` **77/77 全绿**（默认 budget=0 走距离裁剪路径，行为逐位不变）。
+
+**修掉的既有构建 bug**：页池测试的 `main()` 此前被 `/WHOLEARCHIVE` 拉进 ZRuntime.lib，与消费 exe 的
+`main` 冲突（LNK2005）。在 `Runtime/CMakeLists.txt` 补 carve-out。**顺带修掉同病未治的 5 个 ShaderLab
+冒烟测试**（TextureSlot/PropertyLayout/PropertyBlob/ProgramExtract/CbufferReflection）——它们各有独立
+exe 目标却从未从 `GLOB_RECURSE` 剔除，任何 `/WHOLEARCHIVE` 链接 ZRuntime 的消费 exe 都会 LNK2005；
+此前只在恰好没开这些测试时侥幸不炸。carve-out 后各自 exe 仍独立可建（已验 `ShaderLabTextureSlotTest`）。
+
+**剩下**：把 `admitted`/`evicted` 队列真正拷进/释放显存是**渲染绑定**（RHI 上传/回收），需真机。
+本层只算簿记，不碰 GPU。
 
 ---
 

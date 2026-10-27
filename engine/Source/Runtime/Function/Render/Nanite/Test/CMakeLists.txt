@@ -232,3 +232,40 @@ if(ZENGINE_BUILD_NANITE_HIZ_SMOKE_TEST)
 
     message(STATUS "Configured Nanite HiZ smoke test: NaniteHiZSmokeTest")
 endif()
+
+# =====================================================================
+# Nanite 页池簿记层冒烟测试（step 2.5 后续：真正的按页驻留）。
+#
+# 验证 header-only 纯核心 NanitePagePool.h（nanite_pages::PagePool）：预算闸
+# （近页优先、装不下的远页被拒）、距离优先 + LRU 破平、结构页永不驱逐、
+# 增量换入/换出队列、LRU 驱逐、Touch 防驱逐、RemovePage/SetBudget/零预算边界。
+# 纯 CPU，只链 include root，不链 ZRuntime。
+#
+#   cmake -B build -DZENGINE_BUILD_NANITE_PAGEPOOL_SMOKE_TEST=ON
+#   cmake --build build --target NanitePagePoolSmokeTest
+# =====================================================================
+option(ZENGINE_BUILD_NANITE_PAGEPOOL_SMOKE_TEST
+       "Build the Nanite page-pool bookkeeping smoke-test executable"
+       OFF)
+
+if(ZENGINE_BUILD_NANITE_PAGEPOOL_SMOKE_TEST)
+    add_executable(NanitePagePoolSmokeTest NanitePagePoolSmokeTest.cpp)
+
+    set_target_properties(NanitePagePoolSmokeTest PROPERTIES
+        CXX_STANDARD 20
+        FOLDER "Engine/Tests"
+    )
+
+    # Header-only include chain: only the engine/Source root is needed.
+    target_include_directories(NanitePagePoolSmokeTest PRIVATE
+        ${ENGINE_ROOT_DIR}/Source
+    )
+
+    if(MSVC)
+        target_compile_options(NanitePagePoolSmokeTest PRIVATE /W4)
+    endif()
+
+    add_test(NAME NanitePagePoolSmokeTest COMMAND NanitePagePoolSmokeTest)
+
+    message(STATUS "Configured Nanite page-pool smoke test: NanitePagePoolSmokeTest")
+endif()
