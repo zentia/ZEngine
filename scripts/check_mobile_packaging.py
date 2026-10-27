@@ -30,10 +30,12 @@ ZEngine 移动端出包链 —— 静态一致性自检（P0-1）
 from __future__ import annotations
 
 import argparse
+import ast
 import plistlib
 import re
 import subprocess
 import sys
+import textwrap
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -83,9 +85,93 @@ def read(path: Path) -> str:
     return path.read_text(encoding="utf-8", errors="replace")
 
 
+_ENGINE_CMAKE: dict[str, str | None] = {}
+
+
+def engine_cmake_text() -> str | None:
+    """engine/CMakeLists.txt 的文本。
+
+    两个平台段都要读它（各自查自己的 add_subdirectory 分支），但"文件存在"
+    只该算一项检查，所以缓存住首次结果。
+    """
+    if "text" in _ENGINE_CMAKE:
+        return _ENGINE_CMAKE["text"]
+    path = ENGINE_DIR / "CMakeLists.txt"
+    ok = check(path.is_file(), "engine/CMakeLists.txt 存在", str(path))
+    _ENGINE_CMAKE["text"] = read(path) if ok else None
+    return _ENGINE_CMAKE["text"]
+
+
+def check_add_subdirectory_in_branch(engine_cmake: str, condition: str, subdir: str) -> None:
+    """`add_subdirectory(<subdir>)` 必须落在某个 <condition> 分支里。
+
+    分开查"文件里有 elseif(IOS)"和"文件里有 add_subdirectory(...)"，两条都过
+    并不代表后者在前者里面 —— 落在 ANDROID 分支里也会一起过。
+    """
+    statement = f"add_subdirectory({subdir})"
+    branches = cmake_branch_bodies(engine_cmake, condition)
+    if check(bool(branches), f"engine/CMakeLists.txt 有 {condition} 条件分支"):
+        if any(statement in b for b in branches):
+            check(True, f"{statement} 在 {condition} 分支里")
+            return
+        shown = "\n---\n".join(
+            "\n".join(b.strip().splitlines()[:6]) for b in branches
+        )
+        check(False, f"{statement} 在 {condition} 分支里",
+              f"共 {len(branches)} 个 {condition} 分支，都没有它：\n"
+              + textwrap.indent(shown, "    "))
+
+
 def cmake_target_name(cmake_text: str) -> str | None:
     m = re.search(r"^\s*set\s*\(\s*TARGET_NAME\s+([A-Za-z0-9_]+)\s*\)", cmake_text, re.MULTILINE)
     return m.group(1) if m else None
+
+
+# CMake 的块关键字。用来切出某个 if/elseif 分支的正文（含嵌套）。
+_CMAKE_BLOCK = re.compile(r"\b(if|elseif|else|endif)\s*\(")
+
+
+def _cmake_branch_at(text: str, start: int) -> tuple[str, int]:
+    """从 start 起切出一个分支的正文，返回 (正文, 分支结束位置)。
+
+    带嵌套计数：不把内层 if 的 endif 误当成分支结束 —— 引擎根 CMakeLists 里
+    分支套分支是常态。
+    """
+    depth = 1
+    pos = start
+    while True:
+        nxt = _CMAKE_BLOCK.search(text, pos)
+        if nxt is None:                     # 没闭合，剩下全当分支体
+            return text[start:], len(text)
+        kw = nxt.group(1)
+        if kw == "if":
+            depth += 1
+        elif kw == "endif":
+            depth -= 1
+            if depth == 0:
+                return text[start:nxt.start()], nxt.end()
+        elif depth == 1:                    # 同级 elseif / else：本分支到此为止
+            return text[start:nxt.start()], nxt.start()
+        pos = nxt.end()
+
+
+def cmake_branch_bodies(text: str, condition: str) -> list[str]:
+    """切出**所有** `if(<condition>)` / `elseif(<condition>)` 分支的正文。
+
+    必须收集全部而不是取第一个：engine/CMakeLists.txt 里 150 行有个 `if(ANDROID)`
+    （装 add_link_options），344 行那个 `elseif(ANDROID)` 才是 add_subdirectory
+    所在 —— 只取第一个会得出"分支里没有 add_subdirectory"的假失败。
+    """
+    start_re = re.compile(r"\b(?:if|elseif)\s*\(\s*" + re.escape(condition) + r"\s*\)")
+    bodies: list[str] = []
+    pos = 0
+    while True:
+        m = start_re.search(text, pos)
+        if m is None:
+            return bodies
+        body, end = _cmake_branch_at(text, m.end())
+        bodies.append(body)
+        pos = max(end, m.end() + 1)         # 防死循环
 
 
 # =========================================================================
@@ -197,34 +283,53 @@ def check_android() -> None:
             )
 
         # minSdk 必须 >= 24（Vulkan 从 API 24 起）
-        m = re.search(r"minSdk\s+(\d+)", text)
+        # 两种写法都认：AGP 8 的 `minSdk 26`，旧版的 `minSdkVersion 26`，
+        # 以及 Groovy DSL 里可能出现的 `minSdk = 26`。
+        m = re.search(r"minSdk(?:Version)?\s*[=:]?\s*(\d+)", text)
         if check(m is not None, "build.gradle 有 minSdk"):
             check(int(m.group(1)) >= 24, f"minSdk >= 24（Vulkan 下限，实际 {m.group(1)}）")
 
         # AGP 与 Gradle wrapper 版本配对
+        # AGP 版本可能声明在 settings.gradle 的 pluginManagement 里（AGP 7+ 常见），
+        # 只在 build.gradle 找会让它**整项静默消失** —— 不报错也不检查。
         m_agp = re.search(r"com\.android\.application'\s+version\s+'([0-9.]+)'", text)
-        wrapper = ANDROID_DIR / "gradle" / "wrapper" / "gradle-wrapper.properties"
-        if m_agp and wrapper.is_file():
-            m_g = re.search(r"gradle-([0-9.]+)-", read(wrapper))
-            if check(m_g is not None, "gradle-wrapper.properties 里有 gradle 版本"):
-                agp = tuple(int(x) for x in m_agp.group(1).split(".")[:2])
-                gradle = tuple(int(x) for x in m_g.group(1).split(".")[:2])
-                floor = (8, 11)
-                for agp_floor, g_floor in AGP_MIN_GRADLE:
-                    if agp >= agp_floor:
-                        floor = g_floor
-                check(
-                    gradle >= floor,
-                    f"Gradle {m_g.group(1)} 满足 AGP {m_agp.group(1)} 的下限 {'.'.join(map(str, floor))}",
-                    f"去 engine/Source/Player/Android 跑 "
-                    f"`gradle wrapper --gradle-version {'.'.join(map(str, floor))}`",
-                )
+        agp_where = "build.gradle"
+        if m_agp is None:
+            settings = ANDROID_DIR / "settings.gradle"
+            if settings.is_file():
+                m_agp = re.search(r"com\.android\.application'\s+version\s+'([0-9.]+)'", read(settings))
+                agp_where = "settings.gradle"
+        if check(m_agp is not None, "能读出 AGP 版本（build.gradle 或 settings.gradle）",
+                 "两处都没有 `com.android.application' version 'x.y.z'`"):
+            wrapper = ANDROID_DIR / "gradle" / "wrapper" / "gradle-wrapper.properties"
+            if wrapper.is_file():
+                m_g = re.search(r"gradle-([0-9.]+)-", read(wrapper))
+                if check(m_g is not None, "gradle-wrapper.properties 里有 gradle 版本"):
+                    agp = tuple(int(x) for x in m_agp.group(1).split(".")[:2])
+                    gradle = tuple(int(x) for x in m_g.group(1).split(".")[:2])
+                    floor = (8, 11)
+                    for agp_floor, g_floor in AGP_MIN_GRADLE:
+                        if agp >= agp_floor:
+                            floor = g_floor
+                    check(
+                        gradle >= floor,
+                        f"Gradle {m_g.group(1)} 满足 AGP {m_agp.group(1)}"
+                        f"（读自 {agp_where}）的下限 {'.'.join(map(str, floor))}",
+                        f"去 engine/Source/Player/Android 跑 "
+                        f"`gradle wrapper --gradle-version {'.'.join(map(str, floor))}`",
+                    )
 
     # --- 7. assets 根目录存在（脚本往这儿塞项目内容）----------------------
     assets = ANDROID_DIR / "src" / "main" / "assets"
     check(assets.is_dir(), "src/main/assets 存在（项目内容打进这里）", str(assets))
 
-    # --- 8. 宿主只调 PlayerShell.h 里声明过的接口 -------------------------
+    # --- 8. 引擎根真的会 add_subdirectory(Android) ------------------------
+    # 与 iOS 对称：宿主 .so 是这个分支里的 target 产出的，分支不在就什么都没有。
+    ec = engine_cmake_text()
+    if ec is not None:
+        check_add_subdirectory_in_branch(ec, "ANDROID", "Source/Player/Android")
+
+    # --- 9. 宿主只调 PlayerShell.h 里声明过的接口 -------------------------
     check_host_symbols(ANDROID_DIR / "AndroidMain.cpp", "AndroidMain.cpp")
 
 
@@ -246,11 +351,11 @@ def check_ios() -> None:
     ios_cmake_text = read(ios_cmake)
 
     # --- 1. Info.plist 是合法 plist ---------------------------------------
+    plist_text = read(plist_path)
     try:
-        plist_text = read(plist_path)
         # CMake 会把 ${...} 替换掉，但文件里存的是占位符；解析前先换成合法值，
         # 否则 plistlib 也能过（占位符就是普通字符串），这里只是确认结构没坏。
-        plistlib.loads(plist_text.encode("utf-8"))
+        plist_obj = plistlib.loads(plist_text.encode("utf-8"))
         check(True, "Info.plist 是合法 plist")
     except Exception as e:  # noqa: BLE001 - 任何解析失败都算失败
         check(False, "Info.plist 是合法 plist", str(e))
@@ -261,7 +366,14 @@ def check_ios() -> None:
     # 而且 Xcode 的报错完全指不到这里。
     placeholders = sorted(set(re.findall(r"\$\{([A-Za-z0-9_]+)\}", plist_text)))
     check(bool(placeholders), "Info.plist 里有 ${...} 占位符（该由 CMake 替换）")
-    missing = [p for p in placeholders if p not in ios_cmake_text and p != "MACOSX_BUNDLE_EXECUTABLE_NAME"]
+
+    # 整词匹配，不是子串：子串会把 ${MACOSX_BUNDLE_GUI_IDENTIFIER} 当成已被
+    # MACOSX_BUNDLE_GUI_IDENTIFIER_PREFIX 满足，放过真正的缺失。
+    def has_property(prop: str) -> bool:
+        return re.search(r"\b" + re.escape(prop) + r"\b", ios_cmake_text) is not None
+
+    missing = [p for p in placeholders
+               if not has_property(p) and p != "MACOSX_BUNDLE_EXECUTABLE_NAME"]
     check(
         not missing,
         f"全部 {len(placeholders)} 个占位符在 IOS/CMakeLists.txt 里有对应属性",
@@ -270,7 +382,13 @@ def check_ios() -> None:
     )
 
     # --- 3. Metal 是硬性要求 ----------------------------------------------
-    check("metal" in plist_text, "UIRequiredDeviceCapabilities 含 metal")
+    # 之前只查 "metal" 这四个字符在文件里出现过没有 —— 写在注释里、写在别的
+    # key 里都算过。要的是它在 UIRequiredDeviceCapabilities 数组里：只有进了
+    # 这个数组，App Store 才会替我们挡掉不支持 Metal 的设备。
+    caps = plist_obj.get("UIRequiredDeviceCapabilities")
+    check(isinstance(caps, list) and "metal" in caps,
+          "UIRequiredDeviceCapabilities 含 metal",
+          f"实际 UIRequiredDeviceCapabilities = {caps!r}")
 
     # --- 4. toolchain 必须显式设 IOS --------------------------------------
     # engine/CMakeLists.txt 用 elseif(IOS) 决定要不要加 ZGameIOS；不设就会
@@ -283,18 +401,24 @@ def check_ios() -> None:
         check("CMAKE_OSX_DEPLOYMENT_TARGET" in tc, "toolchain 设了 CMAKE_OSX_DEPLOYMENT_TARGET")
 
     # --- 5. 引擎根真的会 add_subdirectory(IOS) ----------------------------
-    engine_cmake = ENGINE_DIR / "CMakeLists.txt"
-    if check(engine_cmake.is_file(), "engine/CMakeLists.txt 存在", str(engine_cmake)):
-        ec = read(engine_cmake)
-        check("elseif(IOS)" in ec, "engine/CMakeLists.txt 有 elseif(IOS) 分支")
-        check("add_subdirectory(Source/Player/IOS)" in ec,
-              "elseif(IOS) 分支里有 add_subdirectory(Source/Player/IOS)")
+    ec = engine_cmake_text()
+    if ec is not None:
+        check_add_subdirectory_in_branch(ec, "IOS", "Source/Player/IOS")
 
     # --- 6. deployment target 三处一致 ------------------------------------
+    # 之前写成 `if m_xcode and check(...)`：XCODE_ATTRIBUTE 一旦缺失，整组检查
+    # 连"plist 有没有 MinimumOSVersion"都不报，静默消失。三项各自独立报。
     m_xcode = re.search(r'XCODE_ATTRIBUTE_IPHONEOS_DEPLOYMENT_TARGET\s+"([0-9.]+)"', ios_cmake_text)
     m_plist = re.search(r"<key>MinimumOSVersion</key>\s*<string>([0-9.]+)</string>", plist_text)
     m_tc = re.search(r'CMAKE_OSX_DEPLOYMENT_TARGET\s+"([0-9.]+)"', read(TOOLCHAIN)) if TOOLCHAIN.is_file() else None
-    if m_xcode and check(m_plist is not None, "Info.plist 有 MinimumOSVersion"):
+
+    check(m_plist is not None, "Info.plist 有 MinimumOSVersion")
+    check(m_xcode is not None,
+          "IOS/CMakeLists.txt 设了 XCODE_ATTRIBUTE_IPHONEOS_DEPLOYMENT_TARGET")
+    if TOOLCHAIN.is_file():
+        check(m_tc is not None, "toolchain 里能读出 CMAKE_OSX_DEPLOYMENT_TARGET 的值")
+
+    if m_xcode and m_plist:
         check(m_xcode.group(1) == m_plist.group(1),
               f"MinimumOSVersion 与 XCODE_ATTRIBUTE 一致（{m_plist.group(1)}）",
               f"plist: {m_plist.group(1)} / XCODE_ATTRIBUTE: {m_xcode.group(1)}")
@@ -327,12 +451,20 @@ def check_ios() -> None:
 def implementation_names(text: str) -> set[str]:
     """从 .cpp 里挑出"被定义"的函数名，而不是"被调用"的。
 
-    判据很土但够用：一行里出现 `ZPlayer_xxx(` 且这一行不以 `;` 结尾 ——
-    函数签名行（哪怕签名跨行，第一行也不会以分号结束）命中，普通调用语句
-    `ZPlayer_Shutdown();` 被排除。比"名字后面有括号"精确一层。
+    两条判据叠起来用：
+
+      * 行首无缩进 —— ZPlayer_* 是 extern "C" 的顶层符号，定义必然顶格；函数
+        体里的调用都在缩进里。这一条把 AndroidMain.cpp:372 / IOSMain.mm:84 那
+        种**跨行调用**（第一行为 `ZPlayer_Touch(` 且不以分号结尾）挡在外面。
+      * 不以 `;` 结尾 —— 顶格的声明 / 前向声明也不算实现。
+
+    只看"名字后面有括号"会把调用全当成实现，只看"不以分号结尾"又会放过跨行
+    调用，两个一起才够。
     """
     names: set[str] = set()
     for raw in text.splitlines():
+        if not raw or raw[0].isspace():          # 有缩进 = 函数体里，不是定义
+            continue
         line = raw.strip()
         if line.startswith("//") or line.startswith("*") or line.endswith(";"):
             continue
@@ -365,7 +497,15 @@ def check_host_symbols(host: Path, label: str) -> None:
     #   枚举成员 —— ZPlayer_OK / ZPlayer_RHI_Vulkan / ZPlayer_Touch_Down ...
     # 之前用 "名字里第 9 个字符是不是大写" 来区分，结果 ZPlayer_OK 的 'O' 也
     # 是大写，15 个枚举成员全被当成"声明了但没实现的函数"。
-    declared_functions = set(re.findall(r"\b(ZPlayer_[A-Za-z0-9_]+)\s*\(", shell_text))
+    declared_functions: set[str] = set()
+    for raw in shell_text.splitlines():
+        line = raw.strip()
+        if line.startswith("//") or line.startswith("*"):
+            continue
+        # typedef 里跟着括号的名字是类型名（函数指针别名那类），不是函数声明。
+        if line.startswith("typedef"):
+            continue
+        declared_functions.update(re.findall(r"\b(ZPlayer_[A-Za-z0-9_]+)\s*\(", line))
     declared_symbols = set(re.findall(r"\b(ZPlayer_[A-Za-z0-9_]+)\b", shell_text))
 
     used = set(re.findall(r"\b(ZPlayer_[A-Za-z0-9_]+)\b", host_text))
@@ -389,9 +529,19 @@ def check_scripts() -> None:
         path = REPO_ROOT / name
         if not check(path.is_file(), f"{name} 存在", str(path)):
             continue
-        result = subprocess.run([sys.executable, "--help"], capture_output=True, text=True)
-        check(result.returncode == 0, f"{name} 可以用当前 python 解析")
-        # --help 会 argparse 正常退出（code 0）
+
+        # 之前这里跑的是 [sys.executable, "--help"] —— 那是测**python 解释器**
+        # 自己，跟目标脚本一点关系都没有：文件写得多烂这一项都是 [ ok ]。
+        # 真去解析目标文件。用 ast 而不是 py_compile，免得落一地 __pycache__。
+        try:
+            ast.parse(read(path), filename=str(path))
+            check(True, f"{name} 可以被解析（语法完整）")
+        except SyntaxError as e:
+            check(False, f"{name} 可以被解析（语法完整）",
+                  f"第 {e.lineno} 行: {e.msg}")
+            continue
+
+        # --help 走完整一遍 argparse 初始化，参数表坏了这里才炸得出来。
         r = subprocess.run([sys.executable, str(path), "--help"], capture_output=True, text=True)
         check(r.returncode == 0 and "--project" in r.stdout,
               f"{name} --help 正常（参数表完整）",
