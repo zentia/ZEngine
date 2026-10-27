@@ -834,6 +834,14 @@ list(REMOVE_ITEM SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Test/SpotLightSmokeTest.cpp")
 list(REMOVE_ITEM REGULAR_SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Test/SpotLightSmokeTest.cpp")
+# SpotLight 阴影投影冒烟测试的 main carve-out（同理由）。它验证 header-only 纯核心
+# SpotShadow.h（聚光阴影透视锥的标量语义）。Only built when
+# ZENGINE_BUILD_SPOT_SHADOW_SMOKE_TEST=ON (see Function/Render/Test/CMakeLists.txt).
+# Header-only（spot_shadow 标量），只链 include root。
+list(REMOVE_ITEM SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Test/SpotShadowSmokeTest.cpp")
+list(REMOVE_ITEM REGULAR_SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Test/SpotShadowSmokeTest.cpp")
 # 分配器配对冒烟测试的 main carve-out（同理由）。Only built when
 # ZENGINE_BUILD_MEMORY_PAIRING_SMOKE_TEST=ON (see Core/Memory/Test/CMakeLists.txt).
 list(REMOVE_ITEM SOURCE_FILES

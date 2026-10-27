@@ -268,6 +268,33 @@ struct DirectionalLightShadowPerFrame
     Matrix4x4 light_proj_view;
 };
 
+// Spot-light shadow: unlike the point light (6-face cube via geometry shader,
+// Vulkan-only) a spot light needs a SINGLE 2D depth map along its direction --
+// structurally identical to one directional-light cascade, just a perspective
+// projection with fov = 2*outer_cone instead of an orthographic one. This keeps
+// the shadow pass far simpler than the point-light cube path and lets it reuse
+// the directional pass's 2D depth sampling.
+//
+// s_MaxSpotShadowCount caps how many spot lights cast shadows per frame (a
+// budget, like s_MaxPointLightCount). Lights beyond the cap simply don't cast
+// shadows (they still light, via the phase-1 cone branch).
+static const uint32_t s_MaxSpotShadowCount = 4;
+static const uint32_t s_SpotLightShadowMapDimension = 1024;
+
+struct SpotLightShadowPerFrame
+{
+    // Number of spot lights with a valid shadow map this frame (<= s_MaxSpotShadowCount).
+    uint32_t spot_shadow_num;
+    uint32_t _padding_spot_shadow_num_1;
+    uint32_t _padding_spot_shadow_num_2;
+    uint32_t _padding_spot_shadow_num_3;
+
+    // xyz = light world position, w = light attenuation range (shadow far plane).
+    Vector4 spot_position_and_range[s_MaxSpotShadowCount];
+    // Perspective view-projection along each spot's direction (fov = 2*outer_cone).
+    Matrix4x4 spot_view_proj[s_MaxSpotShadowCount];
+};
+
 // Shadow draw passes reuse the main-camera mesh instance / vertex-blending SSBO layouts.
 using MeshShadowPerDrawcall = MeshDrawPerDrawcall;
 using MeshShadowPerDrawcallVertexBlending = MeshDrawPerDrawcallVertexBlending;

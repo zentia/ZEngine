@@ -339,3 +339,48 @@ endif()
 add_test(NAME SpotLightSmokeTest COMMAND SpotLightSmokeTest)
 
 message(STATUS "Configured SpotLight smoke-test target: SpotLightSmokeTest")
+
+# =====================================================================
+# SpotLight shadow projection smoke test (phase 2 scalars).
+# ---------------------------------------------------------------------
+# Verifies the header-only pure core in Function/Render/SpotShadow.h
+# (spot_shadow::ShadowFovY / ShadowFovYHalfAngle / ShadowNear / ShadowFar /
+# ShadowAspect) -- the scalar semantics of the spot-light shadow perspective
+# frustum. Same pattern as SpotLightSmokeTest: pure function, no engine deps,
+# links only the include root.
+#
+# This is the only headless-verifiable piece of phase 2. The actual shadow pass
+# (build 2D depth, render depth, shader sampling) is GPU/real-machine bound --
+# see SPOTLIGHT_IMPLEMENTATION_PLAN.md phase-2 boundary.
+#
+#   cmake -B build -DZENGINE_BUILD_SPOT_SHADOW_SMOKE_TEST=ON
+#   cmake --build build --target SpotShadowSmokeTest
+# =====================================================================
+
+option(ZENGINE_BUILD_SPOT_SHADOW_SMOKE_TEST
+       "Build the SpotLight shadow-projection smoke-test executable"
+       OFF)
+
+if(NOT ZENGINE_BUILD_SPOT_SHADOW_SMOKE_TEST)
+    return()
+endif()
+
+add_executable(SpotShadowSmokeTest SpotShadowSmokeTest.cpp)
+
+set_target_properties(SpotShadowSmokeTest PROPERTIES
+    CXX_STANDARD 20
+    FOLDER "Engine/Tests"
+)
+
+# Header-only include chain: only the engine/Source root is needed.
+target_include_directories(SpotShadowSmokeTest PRIVATE
+    ${ENGINE_ROOT_DIR}/Source
+)
+
+if(MSVC)
+    target_compile_options(SpotShadowSmokeTest PRIVATE /W4)
+endif()
+
+add_test(NAME SpotShadowSmokeTest COMMAND SpotShadowSmokeTest)
+
+message(STATUS "Configured SpotShadow smoke-test target: SpotShadowSmokeTest")

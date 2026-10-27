@@ -42,6 +42,40 @@ Spot Light 组件、旋转方向、RenderDoc 抓帧看锥形光斑）。阶段 2
 
 ---
 
+## ✅ 阶段 2 落地记录（2026-10-27，数据层 + 纯核心已落地；pass 主体待真机）
+
+阶段 2（聚光单面 2D 阴影）的**可本地验证部分**已落地。**pass 主体**（建 2D depth、
+画深度、shader 采样）是 GPU/真机绑定，本机无法验证，未实现——见下方边界说明。
+
+**已落地**：
+- **纯核心 `SpotShadow.h`**（`spot_shadow::ShadowFovY / ShadowFovYHalfAngle / ShadowNear /
+  ShadowFar / ShadowAspect`）：聚光阴影透视锥的标量语义。关键决策——阴影 fov = 2*outer_cone
+  （正好包住整个光锥，不浪费分辨率也不裁锥缘）；近平面贴光源（0.01，避免 z=0 投影退化）；
+  远平面 = 光衰减半径（超出即无光，无需阴影）；正方形图（锥圆形对称）。超半圆钳到 pi/2
+  （透视投影物理上限 fov=180°）。
+- **数据结构 `SpotLightShadowPerFrame`**（RenderCommon.h）：`spot_shadow_num` + 
+  `spot_position_and_range[]`（xyz=pos, w=range）+ `spot_view_proj[]`（透视 view-proj）。
+  `s_MaxSpotShadowCount=4`（每帧阴影聚光预算，超出的聚光仍出光但不投影），
+  `s_SpotLightShadowMapDimension=1024`。结构上等价于"单级方向光 CSM"，只是透视而非正交——
+  这让 pass 主体可以复用方向光的 2D depth 采样，比点光立方体（6 面 + geometry shader）简单得多。
+- **验证**：`SpotShadowSmokeTest` 16/16 全绿（fov=2*outer_cone、负角归零、超半圆钳制、
+  near<far、端到端锥半宽=光半径）；ZRuntime 干净编译。
+
+**未落地（pass 主体，真机绑定）**：
+- 新建 `SpotLightShadowPass`（仿 `DirectionalLightShadowPass` 的 2D depth 路径，1286 行级别样板：
+  attachments/renderpass/framebuffer/descriptor/pipeline）。
+- 接进 4 个后端管线模块（Desktop/Mobile/Apple/Web 的 `*RenderPipelineModule.cpp`）。
+- 新 shadow depth shader（可复用方向光的 `mesh_directional_light_shadow_*`，改用透视 proj）。
+- `mesh_lighting.inl` 聚光分支加阴影采样（用 `spot_view_proj` 变换 + 2D depth 比较）。
+- `RenderScene` 填 `SpotLightShadowPerFrame`（算透视 view_proj：`MakePerspectiveMatrix(2*outer, 1, near, range)`
+  × `MakeLookAtMatrix(pos, pos+dir, up)`）。
+
+**为什么停下**：连**点光阴影在 DX12 上都还没建**（`PointLightPass.cpp:986` 明注 geometry-shader
+cubemap 是 Vulkan-only），方向光 CSM 多级也是后端相关。聚光阴影 pass 主体是跨 4 后端、无法本地
+验证的大工程——继续写只会堆无法验证的代码。数据层 + 纯核心已就位，真机一到即可按上述清单接线。
+
+---
+
 ---
 
 ## 0. 现状盘点（接线点已全部确认）
