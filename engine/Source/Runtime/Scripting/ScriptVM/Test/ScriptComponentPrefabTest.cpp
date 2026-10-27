@@ -89,6 +89,8 @@
 #include "Runtime/BaseClasses/TypeManager.h"
 #include "Runtime/Core/Base/SystemRegistry.h"
 #include "Runtime/Core/Serialize/TransferUtility.h"
+#include "Runtime/Resource/Prefab/PropertyPathResolver.h"
+#include "Runtime/Resource/Prefab/PropertyValueLocator.h"
 #include "Runtime/Function/Command/CommandSystem.h"
 #include "Runtime/Function/Framework/Component/Script/TypeScriptComponent.h"
 #include "Runtime/Function/Framework/Component/Transform/Transform.h"
@@ -1199,6 +1201,225 @@ int main(int argc, char** argv)
                 TypeScriptComponent* m_bc = OnlyScriptComponent(m_base_clone);
                 CheckTrue("M10", "base 克隆上那个 TSC 仍是 M_BASE（base 模板没被 variant 的删除污染）",
                           m_bc != nullptr && m_bc->GetScriptGuid() == kBaseGuid);
+            }
+        }
+    }
+
+    // ---- N. 链级结构：后一层能删前一层新增的组件；override 能指向新增的组件 ------
+    // M 组只测了单层。真实的 Variant 链是 base <- mid <- leaf，结构性变更要按"整条链
+    // 的净结果"算，而不是每层各算各的：
+    //   1. mid 新增的组件，leaf 可以再把它删掉（净结果里没有它）；
+    //   2. mid 新增的组件上，leaf 可以再叠一条属性 override（目标是 mid 文件里的
+    //      模板对象，不是 base 里的对象 —— 运行时的 ptr_map 必须认得它）；
+    //   3. 这两件事在 .prefab / .zasset 两轨上结果一致。
+    std::printf("\n--- N. 链级结构（后层删前层新增 / override 指向新增组件）---\n");
+
+    GameObject* n_base_go = MakeGameObject(object_manager, "NBase");
+    CheckTrue("N1", "造出了 N 组的 base GameObject", n_base_go != nullptr);
+    if (n_base_go != nullptr)
+    {
+        n_base_go->AddComponentByTypeName("Transform");
+        n_base_go->SyncSerializedComponents();
+        const std::filesystem::path n_base_path = scratch / "NBase.prefab";
+        CheckTrue("N2", "N base prefab 写盘成功", PrefabUtility::SaveAsPrefabAsset(n_base_go, n_base_path));
+
+        std::vector<GameObject*> n_base_gos;
+        PrefabAsset* n_base = PrefabUtility::LoadPrefabAsset(n_base_path, &n_base_gos);
+        GameObject* n_base_root = (n_base != nullptr) ? n_base->GetRootGameObject() : nullptr;
+        CheckTrue("N3", "N base 读回来了且有根", n_base_root != nullptr);
+
+        const char* n_exts[2] = { ".prefab", ".zasset" };
+        for (int t = 0; t < 2 && n_base_root != nullptr; ++t)
+        {
+            const std::string n_tag = std::string("N") + (t == 0 ? "-prefab" : "-zasset");
+            const std::filesystem::path mid_path  = scratch / (std::string("NMid")  + n_exts[t]);
+            const std::filesystem::path leaf_path = scratch / (std::string("NLeaf") + n_exts[t]);
+
+            auto MakeTsc = [&](const char* guid) -> TypeScriptComponent* {
+                Object* raw = object_manager->Produce(TypeOf<TypeScriptComponent>(), 0);
+                auto* tsc = (raw != nullptr) ? Cast<TypeScriptComponent>(raw) : nullptr;
+                if (tsc != nullptr)
+                {
+                    object_manager->AllocateAndAssignInstanceID(tsc);
+                    tsc->SetScriptGuid(eastl::string(guid));
+                }
+                return tsc;
+            };
+
+            // mid：往 base 根上加两个脚本组件（KEEP 和 DROP）
+            TypeScriptComponent* keep_tsc = MakeTsc("N_KEEP");
+            TypeScriptComponent* drop_tsc = MakeTsc("N_DROP");
+            PrefabAsset* mid = PrefabUtility::CreateVariantAsset(n_base, eastl::string("NMid"));
+            CheckTrue(Id(n_tag.c_str(), 1).c_str(), "造出了 mid 与两个待加组件",
+                      mid != nullptr && keep_tsc != nullptr && drop_tsc != nullptr);
+            if (mid == nullptr || keep_tsc == nullptr || drop_tsc == nullptr)
+            {
+                continue;
+            }
+            for (TypeScriptComponent* c : {keep_tsc, drop_tsc})
+            {
+                VariantComponentAddition add;
+                add.host      = PPtr<GameObject>(n_base_root);
+                add.component = c;
+                mid->GetVariantAddedComponents().push_back(add);
+            }
+            CheckTrue(Id(n_tag.c_str(), 2).c_str(), "mid 写盘成功", PrefabUtility::SaveVariantAsset(mid, mid_path));
+
+            PrefabAsset* mid_loaded = PrefabUtility::LoadPrefabAsset(mid_path);
+            CheckTrue(Id(n_tag.c_str(), 3).c_str(), "mid 读回来了，带着 2 个新增组件",
+                      mid_loaded != nullptr && mid_loaded->GetVariantAddedComponents().size() == 2);
+            if (mid_loaded == nullptr || mid_loaded->GetVariantAddedComponents().size() != 2)
+            {
+                object_manager->Destroy(mid);
+                continue;
+            }
+            Component* mid_keep = mid_loaded->GetVariantAddedComponents()[0].component;
+            Component* mid_drop = mid_loaded->GetVariantAddedComponents()[1].component;
+
+            // leaf：删掉 mid 加的 DROP，并给 KEEP 叠一条属性 override（目标是 mid 文件里
+            // 的模板对象）。
+            PrefabAsset* leaf = PrefabUtility::CreateVariantAsset(mid_loaded, eastl::string("NLeaf"));
+            CheckTrue(Id(n_tag.c_str(), 4).c_str(), "造出了 leaf", leaf != nullptr);
+            if (leaf == nullptr)
+            {
+                object_manager->Destroy(mid);
+                continue;
+            }
+            leaf->GetVariantRemovedComponents().push_back(PPtr<Component>(mid_drop));
+            CheckTrue(Id(n_tag.c_str(), 5).c_str(), "leaf 写盘成功", PrefabUtility::SaveVariantAsset(leaf, leaf_path));
+
+            PrefabAsset* leaf_loaded = PrefabUtility::LoadPrefabAsset(leaf_path);
+            CheckTrue(Id(n_tag.c_str(), 6).c_str(), "leaf 读回来了", leaf_loaded != nullptr);
+            if (leaf_loaded != nullptr)
+            {
+                // 净结构：base 根上只剩 KEEP
+                std::vector<PrefabAsset*> chain;
+                CheckTrue(Id(n_tag.c_str(), 7).c_str(), "三层链能解开",
+                          PrefabUtility::ResolveVariantChain(leaf_loaded, chain) && chain.size() == 3);
+                PrefabUtility::VariantStructure net;
+                PrefabUtility::ResolveVariantStructure(chain, net);
+                CheckEq(Id(n_tag.c_str(), 8).c_str(), "净结构：新增 1 个（DROP 被后层抵消）、删除 1 个记录",
+                        std::to_string(net.added.size()) + "/" + std::to_string(net.removed.size()), "1/1");
+
+                GameObject* n_clone = PrefabUtility::Instantiate(leaf_loaded, /*invoke_post_load=*/true);
+                CheckTrue(Id(n_tag.c_str(), 9).c_str(), "leaf 能实例化", n_clone != nullptr);
+                if (n_clone != nullptr)
+                {
+                    int tsc_count = 0;
+                    std::string only;
+                    for (ImmediatePtr<Component>& slot : n_clone->EditorGetComponentsRef())
+                    {
+                        if (auto* tsc = Cast<TypeScriptComponent>(static_cast<Component*>(slot)))
+                        {
+                            ++tsc_count;
+                            only = tsc->GetScriptGuid().c_str();
+                        }
+                    }
+                    CheckEq(Id(n_tag.c_str(), 10).c_str(), "克隆上只有 mid 加的 KEEP，DROP 被 leaf 删掉",
+                            std::to_string(tsc_count) + ":" + only, "1:N_KEEP");
+                }
+
+                // mid 自己实例化：DROP 还在（leaf 的删除不会倒灌回 mid）
+                GameObject* mid_clone = PrefabUtility::Instantiate(mid_loaded, /*invoke_post_load=*/true);
+                int mid_tsc = 0;
+                if (mid_clone != nullptr)
+                {
+                    for (ImmediatePtr<Component>& slot : mid_clone->EditorGetComponentsRef())
+                        if (Cast<TypeScriptComponent>(static_cast<Component*>(slot)) != nullptr)
+                            ++mid_tsc;
+                }
+                CheckEq(Id(n_tag.c_str(), 11).c_str(), "mid 自己实例化仍有 2 个脚本组件（后层的删除不倒灌）",
+                        std::to_string(mid_tsc), "2");
+            }
+            object_manager->Destroy(leaf);
+            object_manager->Destroy(mid);
+        }
+
+        // ---- override 指向 Variant 新增的组件 ----
+        // 单独成段：属性 override 的 target 是 mid 文件里的模板，不在 base 的图里。
+        {
+            const std::filesystem::path ov_mid_path = scratch / "NOvMid.prefab";
+            TypeScriptComponent* ov_tsc = nullptr;
+            {
+                Object* raw = object_manager->Produce(TypeOf<TypeScriptComponent>(), 0);
+                ov_tsc = (raw != nullptr) ? Cast<TypeScriptComponent>(raw) : nullptr;
+                if (ov_tsc != nullptr)
+                {
+                    object_manager->AllocateAndAssignInstanceID(ov_tsc);
+                    ov_tsc->SetScriptGuid(eastl::string("N_OV"));
+                }
+            }
+            PrefabAsset* ov_mid = (n_base != nullptr) ? PrefabUtility::CreateVariantAsset(n_base, eastl::string("NOvMid")) : nullptr;
+            CheckTrue("N-ov1", "造出了 mid 与新增组件", ov_mid != nullptr && ov_tsc != nullptr && n_base_root != nullptr);
+            if (ov_mid != nullptr && ov_tsc != nullptr && n_base_root != nullptr)
+            {
+                VariantComponentAddition add;
+                add.host      = PPtr<GameObject>(n_base_root);
+                add.component = ov_tsc;
+                ov_mid->GetVariantAddedComponents().push_back(add);
+                CheckTrue("N-ov2", "mid 写盘成功", PrefabUtility::SaveVariantAsset(ov_mid, ov_mid_path));
+                PrefabAsset* ov_loaded = PrefabUtility::LoadPrefabAsset(ov_mid_path);
+                Component* tpl = (ov_loaded != nullptr && !ov_loaded->GetVariantAddedComponents().empty())
+                    ? static_cast<Component*>(ov_loaded->GetVariantAddedComponents()[0].component)
+                    : nullptr;
+                CheckTrue("N-ov3", "读回了新增组件的模板对象", tpl != nullptr);
+
+                // leaf 把 N_OV 组件的 m_ScriptGuid 改成别的值：目标是 mid 文件里的模板
+                PrefabAsset* ov_leaf = (tpl != nullptr) ? PrefabUtility::CreateVariantAsset(ov_loaded, eastl::string("NOvLeaf")) : nullptr;
+                CheckTrue("N-ov4", "造出了 leaf", ov_leaf != nullptr);
+                if (ov_leaf != nullptr)
+                {
+                    // 借 SnapshotWithOverrides 的字节布局拿到 m_ScriptGuid 的位置和长度，
+                    // 再造一个等长的新值（"N_OV" -> "N_XX"）。
+                    prefab::SerialisedObject tree;
+                    std::vector<uint8_t> bytes;
+                    PrefabUtility::SnapshotWithOverrides(*tpl, {}, tree, bytes);
+                    prefab::PropertyLocation loc;
+                    std::vector<prefab::PathToken> tokens;
+                    prefab::TokenizePropertyPath(eastl::string("m_script_guid"), tokens);
+                    const bool located = prefab::LocatePropertyInStream(tree.type_tree, bytes, tokens, loc) && loc.valid();
+                    CheckTrue("N-ov5", "定位到模板上的 m_script_guid 字段", located);
+                    if (located)
+                    {
+                        PropertyModification mod;
+                        mod.target = PPtr<Object>(tpl);
+                        mod.property_path = eastl::string("m_script_guid");
+                        // 字符串的流布局是 [len:int32][chars...][0 补到 4 字节边界]，所以
+                        // "N_OV"(4 字符) 占 4+4+1 字节：改的是 chars 的最后两个字符，
+                        // 即从 4 字节长度头之后数的第 3、4 个字符，而不是切片末尾。
+                        mod.value_bytes = std::vector<uint8_t>(bytes.begin() + loc.byte_offset,
+                                                               bytes.begin() + loc.byte_offset + loc.byte_size);
+                        int32_t str_len = 0;
+                        std::memcpy(&str_len, mod.value_bytes.data(), sizeof(str_len));
+                        CheckEq("N-ov5b", "字符串切片的长度头是 4（\"N_OV\"）", std::to_string(str_len), "4");
+                        const size_t chars = sizeof(int32_t);
+                        mod.value_bytes[chars + 2] = 'X';
+                        mod.value_bytes[chars + 3] = 'X';
+                        ov_leaf->AddVariantOverride(mod);
+                        CheckTrue("N-ov6", "leaf 写盘成功",
+                                  PrefabUtility::SaveVariantAsset(ov_leaf, scratch / "NOvLeaf.prefab"));
+                        PrefabAsset* ov_leaf_loaded = PrefabUtility::LoadPrefabAsset(scratch / "NOvLeaf.prefab");
+                        CheckTrue("N-ov6b", "leaf 读回来后 override 还在，且 target 解析回 mid 文件里的模板对象",
+                                  ov_leaf_loaded != nullptr && ov_leaf_loaded->GetVariantOverrides().size() == 1 &&
+                                      static_cast<Object*>(ov_leaf_loaded->GetVariantOverrides()[0].target) == tpl);
+                        GameObject* ov_clone = (ov_leaf_loaded != nullptr)
+                            ? PrefabUtility::Instantiate(ov_leaf_loaded, /*invoke_post_load=*/true)
+                            : nullptr;
+                        std::string seen = "<none>";
+                        if (ov_clone != nullptr)
+                        {
+                            for (ImmediatePtr<Component>& slot : ov_clone->EditorGetComponentsRef())
+                                if (auto* tsc = Cast<TypeScriptComponent>(static_cast<Component*>(slot)))
+                                    seen = tsc->GetScriptGuid().c_str();
+                        }
+                        CheckEq("N-ov7", "override 落在 mid 新增的组件上（N_OV -> N_XX）", seen, "N_XX");
+                    }
+                    object_manager->Destroy(ov_leaf);
+                }
+            }
+            if (ov_mid != nullptr)
+            {
+                object_manager->Destroy(ov_mid);
             }
         }
     }

@@ -119,15 +119,22 @@ namespace
     /// Push the instance's current modification list into the source. Variant sources
     /// go through ApplyAllToVariant, which also writes the file; plain prefabs splice
     /// into the source objects and FinishApply writes the file afterwards.
-    int ApplyToSource(PrefabInstance* instance, bool& out_already_saved)
+    ///
+    /// `include_structure` (Variant only): also commit added / removed components.
+    /// ApplyField passes false — one field's Apply must not take the instance's
+    /// structural overrides with it (it did, between A7 and A8).
+    int ApplyToSource(PrefabInstance* instance, bool include_structure, bool& out_already_saved)
     {
         out_already_saved = false;
         if (SourceIsVariant(instance))
         {
             out_already_saved = true;
-            return PrefabUtilityEditor::ApplyAllToVariant(instance);
+            return PrefabUtilityEditor::ApplyAllToVariant(instance, include_structure);
         }
-        return PrefabUtilityEditor::ApplyAll(instance);
+        // A plain prefab has no structural Apply: the source graph would need new
+        // objects with new fileIDs. ApplyAll applies properties only; component
+        // overrides stay on the instance (the Inspector lists them as Revert-only).
+        return instance->GetModifications().empty() ? 0 : PrefabUtilityEditor::ApplyAll(instance);
     }
 
     PrefabOverrideModel::ApplyReport FinishApply(const Level* level, PrefabInstance* instance, int applied,
@@ -188,29 +195,89 @@ namespace PrefabOverrideModel
         std::vector<OverrideRow> rows;
         if (instance == nullptr)
             return rows;
+        auto label_of = [](Object* obj) -> eastl::string {
+            if (GameObject* go = Cast<GameObject>(obj))
+                return go->GetName();
+            if (Component* c = Cast<Component>(obj))
+            {
+                eastl::string label =
+                    c->GetParentObject() != nullptr ? c->GetParentObject()->GetName() : eastl::string("?");
+                label += " / ";
+                label += c->GetTypeName();
+                return label;
+            }
+            return obj != nullptr ? eastl::string(obj->GetTypeName()) : eastl::string("<missing>");
+        };
         for (const PropertyModification& m : instance->GetModifications())
         {
             OverrideRow row;
+            row.kind = OverrideRow::Kind::Property;
             row.target = m.target;
             row.property_path = m.property_path;
-            Object* obj = static_cast<Object*>(m.target);
-            if (GameObject* go = Cast<GameObject>(obj))
+            row.label = label_of(static_cast<Object*>(m.target));
+            rows.push_back(row);
+        }
+
+        const bool variant = SourceIsVariant(instance);
+        for (const PPtr<Component>& p : instance->GetAddedComponents())
+        {
+            OverrideRow row;
+            row.kind = OverrideRow::Kind::AddedComponent;
+            row.target = PPtr<Object>(static_cast<Component*>(p));
+            row.label = label_of(static_cast<Component*>(p));
+            row.can_apply = variant;
+            rows.push_back(row);
+        }
+        for (const PPtr<Component>& p : instance->GetRemovedComponents())
+        {
+            // The target is the SOURCE component (the instance's copy is detached and
+            // unpaired); label it with the instance-side GameObject it was taken off.
+            Component* source = static_cast<Component*>(p);
+            OverrideRow row;
+            row.kind = OverrideRow::Kind::RemovedComponent;
+            row.target = PPtr<Object>(source);
+            row.label = source != nullptr ? eastl::string(source->GetTypeName()) : eastl::string("<missing>");
+            if (source != nullptr && source->GetParentObject() != nullptr)
             {
-                row.label = go->GetName();
+                Object* inst_host = static_cast<Object*>(
+                    instance->FindInstanceForSource(PPtr<Object>(source->GetParentObject())));
+                if (GameObject* go = Cast<GameObject>(inst_host))
+                    row.label = go->GetName() + " / " + row.label;
             }
-            else if (Component* c = Cast<Component>(obj))
-            {
-                row.label = c->GetParentObject() != nullptr ? c->GetParentObject()->GetName() : eastl::string("?");
-                row.label += " / ";
-                row.label += c->GetTypeName();
-            }
-            else
-            {
-                row.label = obj != nullptr ? obj->GetTypeName() : "<missing>";
-            }
+            row.can_apply = variant;
             rows.push_back(row);
         }
         return rows;
+    }
+
+    bool HasOverrides(const PrefabInstance* instance)
+    {
+        return instance != nullptr &&
+               (!instance->GetModifications().empty() || !instance->GetAddedComponents().empty() ||
+                !instance->GetRemovedComponents().empty());
+    }
+
+    bool RevertStructuralRow(PrefabInstance* instance, const OverrideRow& row)
+    {
+        if (instance == nullptr)
+            return false;
+        switch (row.kind)
+        {
+            case OverrideRow::Kind::AddedComponent:
+            {
+                Component* added = Cast<Component>(static_cast<Object*>(row.target));
+                if (added == nullptr || added->GetParentObject() == nullptr)
+                    return false;
+                return PrefabUtilityEditor::RemoveAddedComponent(
+                    instance, PPtr<GameObject>(added->GetParentObject()), added);
+            }
+            case OverrideRow::Kind::RemovedComponent:
+                return PrefabUtilityEditor::UnsuppressSourceComponent(
+                    instance, PPtr<Component>(Cast<Component>(static_cast<Object*>(row.target))));
+            case OverrideRow::Kind::Property:
+                break;
+        }
+        return false;
     }
 
     int SyncFieldOverride(PrefabInstance* instance, Object* target, const eastl::string& path)
@@ -285,7 +352,7 @@ namespace PrefabOverrideModel
         for (const PropertyModification& m : selected)
             instance->AddModification(m);
         bool already_saved = false;
-        const int applied = ApplyToSource(instance, already_saved);
+        const int applied = ApplyToSource(instance, /*include_structure=*/false, already_saved);
         if (applied <= 0)
         {
             instance->ClearModifications();
@@ -299,10 +366,12 @@ namespace PrefabOverrideModel
 
     ApplyReport ApplyAll(const Level* level, PrefabInstance* instance)
     {
-        if (instance == nullptr || instance->GetModifications().empty())
+        // HasOverrides, not "has property overrides": an instance whose only override
+        // is an added component used to return here and nothing was applied.
+        if (!HasOverrides(instance))
             return {};
         bool already_saved = false;
-        const int applied = ApplyToSource(instance, already_saved);
+        const int applied = ApplyToSource(instance, /*include_structure=*/true, already_saved);
         return FinishApply(level, instance, applied, already_saved);
     }
 

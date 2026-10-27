@@ -527,91 +527,135 @@ int PrefabUtility::ApplyVariantOverrides(const std::vector<PrefabAsset*>&       
     return applied;
 }
 
-int PrefabUtility::ApplyVariantStructuralChanges(const std::vector<PrefabAsset*>&             chain,
-                                                 const std::unordered_map<Object*, Object*>&  source_to_clone)
+void PrefabUtility::ResolveVariantStructure(const std::vector<PrefabAsset*>& chain, VariantStructure& out)
 {
-    int applied = 0;
-
+    out.removed.clear();
+    out.added.clear();
     for (PrefabAsset* layer : chain)
     {
-        // ---- Components this link suppresses -------------------------------------
-        for (const PPtr<Component>& removed : layer->GetVariantRemovedComponents())
+        if (layer == nullptr)
         {
-            Object* source = static_cast<Object*>(removed);
-            if (source == nullptr)
-            {
-                continue;
-            }
-            auto it = source_to_clone.find(source);
-            if (it == source_to_clone.end() || it->second == nullptr)
-            {
-                LOG_WARNING(ZPrefab, "variant removal on '{}': component is not in the base subtree — skipped",
-                            layer->name.c_str());
-                continue;
-            }
-            Component* clone_component = Cast<Component>(it->second);
-            if (clone_component == nullptr)
-            {
-                continue;
-            }
-            GameObject* host = clone_component->GetParentObject();
-            if (host == nullptr)
-            {
-                LOG_WARNING(ZPrefab, "variant removal on '{}': component has no host GameObject — skipped",
-                            layer->name.c_str());
-                continue;
-            }
-            // Ownership stays with whoever owned it (the clone tree); the list entry
-            // is what severs it from the GameObject.
-            host->EditorRemoveComponent(clone_component);
-            ++applied;
+            continue;
         }
-
-        // ---- Components this link adds -------------------------------------------
+        // Within one link removals come first (a link cannot remove what it itself
+        // adds — ApplyAllToVariant drops the addition instead), but a removal CAN name
+        // an earlier link's addition, which then leaves the net result.
+        for (const PPtr<Component>& entry : layer->GetVariantRemovedComponents())
+        {
+            Component* removed = static_cast<Component*>(entry);
+            if (removed == nullptr)
+            {
+                continue;
+            }
+            out.added.erase(std::remove_if(out.added.begin(), out.added.end(),
+                                           [removed](const std::pair<Component*, GameObject*>& a) {
+                                               return a.first == removed;
+                                           }),
+                            out.added.end());
+            if (std::find(out.removed.begin(), out.removed.end(), removed) == out.removed.end())
+            {
+                out.removed.push_back(removed);
+            }
+        }
         for (const VariantComponentAddition& addition : layer->GetVariantAddedComponents())
         {
-            Component*  template_component = addition.component;
-            GameObject* source_host        = addition.host;
-            if (template_component == nullptr || source_host == nullptr)
+            Component*  component = addition.component;
+            GameObject* host      = addition.host;
+            if (component != nullptr && host != nullptr)
             {
-                LOG_WARNING(ZPrefab, "variant addition on '{}': component or host missing — skipped",
-                            layer->name.c_str());
-                continue;
+                out.added.emplace_back(component, host);
             }
-
-            auto it = source_to_clone.find(source_host);
-            if (it == source_to_clone.end() || it->second == nullptr)
-            {
-                LOG_WARNING(ZPrefab, "variant addition on '{}': host '{}' is not in the base subtree — skipped",
-                            layer->name.c_str(), source_host->name.c_str());
-                continue;
-            }
-            GameObject* clone_host = Cast<GameObject>(it->second);
-            if (clone_host == nullptr)
-            {
-                continue;
-            }
-
-            // The component stored in the variant FILE is a template, exactly like
-            // the base's own objects: the file's graph is cached under path-derived
-            // instance IDs and shared, so handing it out would give every instance
-            // of this variant the same component object. Clone it instead.
-            Object* clone_object = TransferUtility::CloneObjectViaSerialization(*template_component);
-            Component* clone_component = Cast<Component>(clone_object);
-            if (clone_component == nullptr)
-            {
-                LOG_WARNING(ZPrefab, "variant addition on '{}': cloning the component failed — skipped",
-                            layer->name.c_str());
-                continue;
-            }
-
-            // BindOwnerIfUnbound (not PostLoadResource): Instantiate's post-load
-            // driver runs after this and does the real initialisation, the same way
-            // it does for every other component of the cloned tree.
-            clone_component->BindOwnerIfUnbound(clone_host);
-            clone_host->addComponent(clone_component);
-            ++applied;
         }
+    }
+}
+
+void PrefabUtility::CollectVariantLayerOverrides(const std::vector<PrefabAsset*>&    chain,
+                                                 std::vector<PropertyModification>&  out)
+{
+    out.clear();
+    for (PrefabAsset* layer : chain)
+    {
+        if (layer != nullptr)
+        {
+            const auto& mods = layer->GetVariantOverrides();
+            out.insert(out.end(), mods.begin(), mods.end());
+        }
+    }
+}
+
+int PrefabUtility::ApplyVariantStructuralChanges(const std::vector<PrefabAsset*>&  chain,
+                                                 std::unordered_map<Object*, Object*>& source_to_clone)
+{
+    VariantStructure structure;
+    ResolveVariantStructure(chain, structure);
+
+    int applied = 0;
+
+    // ---- Components the chain suppresses ------------------------------------------
+    for (Component* source : structure.removed)
+    {
+        auto it = source_to_clone.find(source);
+        if (it == source_to_clone.end() || it->second == nullptr)
+        {
+            // Either an earlier link's addition (it never made it into the map — the
+            // net structure already dropped it), or the base no longer has it.
+            continue;
+        }
+        Component* clone_component = Cast<Component>(it->second);
+        source_to_clone.erase(it);
+        if (clone_component == nullptr)
+        {
+            continue;
+        }
+        GameObject* host = clone_component->GetParentObject();
+        if (host == nullptr)
+        {
+            LOG_WARNING(ZPrefab, "variant removal: component has no host GameObject — skipped");
+            continue;
+        }
+        // Ownership stays with whoever owned it (the clone tree); the list entry is
+        // what severs it from the GameObject.
+        host->EditorRemoveComponent(clone_component);
+        ++applied;
+    }
+
+    // ---- Components the chain adds ------------------------------------------------
+    for (const auto& [template_component, source_host] : structure.added)
+    {
+        auto it = source_to_clone.find(source_host);
+        if (it == source_to_clone.end() || it->second == nullptr)
+        {
+            LOG_WARNING(ZPrefab, "variant addition: host '{}' is not in the base subtree — skipped",
+                        source_host->name.c_str());
+            continue;
+        }
+        GameObject* clone_host = Cast<GameObject>(it->second);
+        if (clone_host == nullptr)
+        {
+            continue;
+        }
+
+        // The component stored in the variant FILE is a template, exactly like the
+        // base's own objects: the file's graph is cached under path-derived instance
+        // IDs and shared, so handing it out would give every instance of this
+        // variant the same component object. Clone it instead.
+        Object* clone_object = TransferUtility::CloneObjectViaSerialization(*template_component);
+        Component* clone_component = Cast<Component>(clone_object);
+        if (clone_component == nullptr)
+        {
+            LOG_WARNING(ZPrefab, "variant addition: cloning the component failed — skipped");
+            continue;
+        }
+
+        // BindOwnerIfUnbound (not PostLoadResource): Instantiate's post-load driver
+        // runs after this and does the real initialisation, the same way it does for
+        // every other component of the cloned tree.
+        clone_component->BindOwnerIfUnbound(clone_host);
+        clone_host->addComponent(clone_component);
+        // Property overrides may name the template (an override on a component a
+        // Variant added): make it resolvable like any base object.
+        source_to_clone[template_component] = clone_component;
+        ++applied;
     }
     return applied;
 }
@@ -1167,10 +1211,43 @@ bool PrefabUtility::SaveVariantAsset(PrefabAsset* variant, const std::filesystem
     objects.push_back(variant);
     variant->CollectAddedComponentObjects(objects);
 
+    // Keep every object's fileID. A scene's reference into this file is (file,
+    // fileID); renumbering 1..N on each save — what this did until 2026-10-27 — moved
+    // every template after a removed addition down one slot, so those references
+    // silently pointed at the wrong component (same rule SaveSourcePrefab follows).
+    // The header is always 1; objects without an identity in this file yet (a template
+    // created by Apply) go after the largest fileID in use.
+    std::vector<int64_t> ids(objects.size(), 0);
+    ids[0] = 1;
+    int64_t next_id = 1;
+    for (size_t i = 1; i < objects.size(); ++i)
+    {
+        std::filesystem::path existing_path;
+        int64_t file_id = 0;
+        const int32_t object_id = objects[i]->GetInstanceID();
+        // "Has an identity IN THIS FILE": the (variant_path, fileID) slot maps back to
+        // this very object — spelling-independent, same lookup PPtr resolution uses.
+        if (asset_manager->TryGetIdentityForInstance(object_id, existing_path, file_id) &&
+            file_id > 1 &&
+            asset_manager->GetInstanceIDFromPathAndFileID(variant_path, file_id) == object_id &&
+            std::find(ids.begin(), ids.end(), file_id) == ids.end())
+        {
+            ids[i] = file_id;
+            next_id = std::max(next_id, file_id);
+        }
+    }
+    for (size_t i = 1; i < objects.size(); ++i)
+    {
+        if (ids[i] == 0)
+        {
+            ids[i] = ++next_id;
+        }
+    }
+
     const bool ok = (variant_path.extension() == ".prefab")
-        ? asset_manager->WriteObjectsToYaml(variant_path, objects.data(), /*identifiers=*/nullptr,
+        ? asset_manager->WriteObjectsToYaml(variant_path, objects.data(), ids.data(),
                                             static_cast<uint32_t>(objects.size()))
-        : asset_manager->WriteObjectsToDiskThreadSafe(variant_path, objects.data(), /*identifiers=*/nullptr,
+        : asset_manager->WriteObjectsToDiskThreadSafe(variant_path, objects.data(), ids.data(),
                                                       static_cast<uint32_t>(objects.size()));
 
     if (!ok)

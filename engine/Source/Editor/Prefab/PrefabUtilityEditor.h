@@ -96,6 +96,9 @@ public:
 
     /// Pull every override's source-side value back into the instance,
     /// effectively un-doing every recorded mutation, then clear the list.
+    /// Structural overrides too: components the instance added are detached and
+    /// components it suppressed come back (ReconcileStructure), so the instance
+    /// ends up shaped exactly like its source.
     static int Revert(PrefabInstance* instance);
 
     /// Re-read the source-side value of a single (target, path) pair and
@@ -201,7 +204,28 @@ public:
     /// Returns how many overrides were recorded and saved (0 when nothing was
     /// applied, or when the file could not be written — in which case the instance's
     /// modifications are left alone so nothing is lost).
-    static int ApplyAllToVariant(PrefabInstance* instance);
+    ///
+    /// `include_structure`: also commit the instance's added / removed components
+    /// into the Variant (Apply All). Single-field Apply passes false — it must not
+    /// silently write the instance's structural changes along with one field.
+    static int ApplyAllToVariant(PrefabInstance* instance, bool include_structure = true);
+
+    /// Bring `instance`'s component STRUCTURE in line with its source: the source
+    /// prefab's components, plus/minus the Variant chain's net additions/removals,
+    /// plus/minus the instance's own m_added_components / m_removed_components.
+    ///
+    ///   1. detach every paired component whose source the chain removes, or that
+    ///      came from a variant addition the chain no longer has;
+    ///   2. clone in every chain addition the instance has no counterpart for (and
+    ///      has not suppressed itself);
+    ///   3. re-introduce every base component that is neither chain-removed nor
+    ///      instance-suppressed but has no counterpart.
+    ///
+    /// Every component it introduces carries the source value plus the chain's
+    /// overrides on it, and is paired in corresponding_source. InstantiateVariant,
+    /// MergeFromSource and Revert all go through this, so they agree on the result.
+    /// Returns how many components were attached or detached.
+    static int ReconcileStructure(PrefabInstance* instance);
 
     /// Create a Variant of `base` and write it to `variant_path`.
     ///
@@ -225,12 +249,15 @@ public:
     ///   layer 2:  instance overrides (instance.m_Modifications)
     ///
     /// MergeFromSource:
+    ///   * ReconcileStructure first: components the source (or the Variant chain)
+    ///     added / removed since instantiation are attached / detached; components
+    ///     the instance has explicitly added or suppressed are left as they are.
+    ///     (This doc comment promised that since Phase 3 — the body never did it
+    ///     until 2026-10-27, so an instance never saw a component another instance
+    ///     had just Applied into the Variant.)
     ///   * For every (instance_obj, source_obj) pair in corresponding_source,
     ///     re-snapshot the source's bytes, splice in any layer-1 / layer-2
     ///     overrides, and read the merged result back into `instance_obj`.
-    ///   * Detects added/removed components on the source side and propagates
-    ///     them (within the limits of the bookkeeping — components that the
-    ///     instance has explicitly suppressed are NOT re-introduced).
     ///
     /// Returns the number of objects whose merged value was written.
     static int MergeFromSource(PrefabInstance* instance);

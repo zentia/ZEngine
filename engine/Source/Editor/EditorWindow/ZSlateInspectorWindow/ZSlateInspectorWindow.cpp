@@ -526,10 +526,14 @@ namespace
     }
 
     /// Undo snapshot of every object an override list touches (Revert writes them).
+    /// Property rows only: a RemovedComponent row's target is the SOURCE component —
+    /// a shared prefab template — and an undo must never write into that.
     void RecordOverrideTargetsForUndo(PrefabInstance* instance, const Object* only_target)
     {
         for (const PrefabOverrideModel::OverrideRow& row : PrefabOverrideModel::ListOverrides(instance))
         {
+            if (row.kind != PrefabOverrideModel::OverrideRow::Kind::Property)
+                continue;
             Object* obj = static_cast<Object*>(row.target);
             if (only_target != nullptr && obj != only_target)
                 continue;
@@ -3316,25 +3320,57 @@ void ZSlateInspectorWindow::BuildForObject(float scale)
                 .AutoSize()
                 .SetPadding(ZSlate::FMargin(0.0f, 0.0f, 6.0f * scale, 0.0f));
             // Apply writes the source prefab file and refreshes the level's other
-            // instances; like Unity, that part is not undoable.
-            header->AddSlot(make_button("Apply All", [this]() {
-                       if (PrefabInstance* inst = SelectedPrefabInstance())
-                           PrefabOverrideModel::ApplyAll(ActiveLevel(), inst);
-                       m_ForceRebuild = true;
-                   }))
-                .AutoSize();
+            // instances; like Unity, that part is not undoable. Hidden when nothing
+            // can be applied (a plain prefab whose only overrides are component rows
+            // — it has no structural Apply).
+            const bool any_applicable = std::any_of(rows.begin(), rows.end(),
+                                                    [](const PrefabOverrideModel::OverrideRow& r) { return r.can_apply; });
+            if (any_applicable)
+            {
+                header->AddSlot(make_button("Apply All", [this]() {
+                           if (PrefabInstance* inst = SelectedPrefabInstance())
+                               PrefabOverrideModel::ApplyAll(ActiveLevel(), inst);
+                           m_ForceRebuild = true;
+                       }))
+                    .AutoSize();
+            }
         }
         column->AddSlot(header).AutoSize().SetPadding(ZSlate::FMargin(0.0f, 0.0f, 0.0f, 4.0f * scale));
 
         for (const PrefabOverrideModel::OverrideRow& row : rows)
         {
+            using Kind = PrefabOverrideModel::OverrideRow::Kind;
             const PPtr<Object> target = row.target;
             const eastl::string path = row.property_path;
+            std::string text = row.label.c_str();
+            if (row.kind == Kind::AddedComponent)
+                text += "  (added component)";
+            else if (row.kind == Kind::RemovedComponent)
+                text += "  (removed component)";
+            else
+                text += std::string("  ") + path.c_str();
+
             auto line = std::make_shared<SHorizontalBox>();
-            line->AddSlot(MakeText((std::string(row.label.c_str()) + "  " + path.c_str()).c_str(), 13.0f * scale, kLabelColor))
+            line->AddSlot(MakeText(text.c_str(), 13.0f * scale, kLabelColor))
                 .Fill(1.0f)
                 .SetVAlign(EVerticalAlignment::Center)
                 .SetPadding(ZSlate::FMargin(12.0f * scale, 0.0f, 0.0f, 0.0f));
+
+            if (row.kind != Kind::Property)
+            {
+                // Component rows: Revert only per row (Apply All commits them on a
+                // Variant). Structural Revert is not on the undo stack yet — the undo
+                // record covers the property-override list, not the component lists.
+                line->AddSlot(make_button("Revert", [this, row]() {
+                         if (PrefabInstance* inst = SelectedPrefabInstance())
+                             PrefabOverrideModel::RevertStructuralRow(inst, row);
+                         m_ForceRebuild = true;
+                     }))
+                    .AutoSize();
+                column->AddSlot(line).AutoSize().SetPadding(ZSlate::FMargin(0.0f, 0.0f, 0.0f, 2.0f * scale));
+                continue;
+            }
+
             line->AddSlot(make_button("Revert", [this, target, path]() {
                      PrefabInstance* inst = SelectedPrefabInstance();
                      Object* obj = static_cast<Object*>(target);

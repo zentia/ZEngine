@@ -122,10 +122,33 @@ public:
     ///     cloned via TransferUtility::CloneObjectViaSerialization and attached to
     ///     the clone of its host.
     ///
-    /// Same translation rule as ApplyVariantOverrides: every entry names an object
-    /// in the deepest base's graph. Returns how many changes were applied.
-    static int ApplyVariantStructuralChanges(const std::vector<PrefabAsset*>&        chain,
-                                             const std::unordered_map<Object*, Object*>& source_to_clone);
+    /// What gets applied is the chain's NET structure (ResolveVariantStructure), so a
+    /// later link can remove a component an earlier link added.
+    ///
+    /// `source_to_clone` is in/out: each added template is inserted as
+    /// (template -> its clone). That is what lets a property override target a
+    /// component a Variant added — ApplyVariantOverrides, run afterwards with the
+    /// same map, resolves it like any base object. Removed entries are erased.
+    /// Returns how many changes were applied.
+    static int ApplyVariantStructuralChanges(const std::vector<PrefabAsset*>&  chain,
+                                             std::unordered_map<Object*, Object*>& source_to_clone);
+
+    /// The net structural effect of a whole chain, deepest link first: every
+    /// component it removes, and every (template, base host) it adds that no later
+    /// link removed again. Entries name objects in the deepest base's graph
+    /// (removed base components, hosts) or in a link's own file (templates).
+    struct VariantStructure
+    {
+        std::vector<Component*>                          removed;
+        std::vector<std::pair<Component*, GameObject*>>  added;   ///< (template, base host)
+    };
+    static void ResolveVariantStructure(const std::vector<PrefabAsset*>& chain, VariantStructure& out);
+
+    /// Every link's property overrides concatenated deepest-first, so splicing them
+    /// in order lets the nearer link win. The value a Variant instance should revert
+    /// or merge to is the base PLUS ALL OF THESE — not just the leaf link's.
+    static void CollectVariantLayerOverrides(const std::vector<PrefabAsset*>&    chain,
+                                             std::vector<PropertyModification>&  out);
 
     /// Create an in-memory Variant of `base`: a PrefabAsset with NO object tree of
     /// its own, carrying only `m_variant_base`. The caller owns the result and is

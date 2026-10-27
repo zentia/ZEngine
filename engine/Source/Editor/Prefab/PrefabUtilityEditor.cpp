@@ -13,8 +13,10 @@
 #include "Runtime/Resource/Prefab/PrefabAsset.h"
 #include "Runtime/Resource/Prefab/PrefabUtility.h"
 
+#include <algorithm>
 #include <cstring>
 #include <unordered_map>
+#include <unordered_set>
 #include "Runtime/BaseClasses/Cast.h"
 #include "Runtime/Function/Framework/Component/Component.h"
 
@@ -187,11 +189,6 @@ namespace
         return out;
     }
 
-    /// Bridge between the public `std::vector<uint8_t>` API surface and the storage
-    /// type on PropertyModification (eastl::string — chosen because SerializeTraits
-    /// has full coverage for it whereas std::vector<uint8_t> would need a new
-    /// uint8_t specialization). The string can hold arbitrary bytes including 0x00,
-    /// so this is a faithful round-trip.
     /// Snapshot the value an instance object should REVERT / MERGE to, plus its type
     /// tree, WITHOUT mutating `source_obj`.
     ///
@@ -200,21 +197,114 @@ namespace
     /// `PrefabUtility::SnapshotWithOverrides` layers them onto the BYTES instead.
     ///
     /// For a plain prefab the variant layer is empty and this is just a snapshot.
+    ///
+    /// The layer is the WHOLE chain's overrides, deepest first (nearer wins). Until
+    /// 2026-10-27 this took only the leaf variant's list, so on base <- mid <- leaf a
+    /// field mid set and leaf did not reverted to the BASE value instead of mid's.
+    void VariantLayerOf(const PrefabInstance* instance, std::vector<PropertyModification>& out_layer)
+    {
+        out_layer.clear();
+        if (instance == nullptr)
+            return;
+        PrefabAsset* source = static_cast<PrefabAsset*>(instance->GetSourcePrefab());
+        if (source == nullptr || !source->IsVariant())
+            return;
+        std::vector<PrefabAsset*> chain;
+        if (PrefabUtility::ResolveVariantChain(source, chain))
+            PrefabUtility::CollectVariantLayerOverrides(chain, out_layer);
+    }
+
     bool SnapshotEffectiveSource(Object& source_obj, const PrefabInstance* instance,
                                  prefab::SerialisedObject& out_tree, std::vector<uint8_t>& out_bytes)
     {
         std::vector<PropertyModification> layer;
-        if (instance != nullptr)
-        {
-            if (const PrefabAsset* variant = static_cast<const PrefabAsset*>(instance->GetSourcePrefab()))
-            {
-                if (variant->IsVariant())
-                {
-                    layer = variant->GetVariantOverrides();
-                }
-            }
-        }
+        VariantLayerOf(instance, layer);
         return PrefabUtility::SnapshotWithOverrides(source_obj, layer, out_tree, out_bytes);
+    }
+
+    /// Drop the corresponding-source entry whose instance side is `instance_object`.
+    void ErasePairForInstanceObject(PrefabInstance* instance, const Object* instance_object)
+    {
+        if (instance == nullptr || instance_object == nullptr)
+            return;
+        const int32_t id = instance_object->GetInstanceID();
+        auto& map = instance->GetCorrespondingSourceMap();
+        map.erase(std::remove_if(map.begin(), map.end(),
+                                 [id](const PrefabInstance::CorrespondingSourceEntry& e) {
+                                     return e.instance_object.GetInstanceID() == id;
+                                 }),
+                  map.end());
+    }
+
+    /// The variant chain of `instance`'s source (one element for a plain prefab).
+    bool ChainOf(const PrefabInstance* instance, std::vector<PrefabAsset*>& out_chain)
+    {
+        out_chain.clear();
+        PrefabAsset* source = instance != nullptr ? static_cast<PrefabAsset*>(instance->GetSourcePrefab()) : nullptr;
+        return source != nullptr && PrefabUtility::ResolveVariantChain(source, out_chain);
+    }
+
+    /// The base GameObject a SOURCE component hangs off. A base component knows it
+    /// (m_ParentObject, bound when the template graph was prepared). A Variant's
+    /// added-component template does not — it lives in the variant file and its host
+    /// in the base file — so its host comes from the chain's addition record.
+    GameObject* SourceHostOf(const PrefabInstance* instance, Component* source)
+    {
+        if (source == nullptr)
+            return nullptr;
+        if (GameObject* host = source->GetParentObject())
+            return host;
+        std::vector<PrefabAsset*> chain;
+        if (!ChainOf(instance, chain))
+            return nullptr;
+        PrefabUtility::VariantStructure structure;
+        PrefabUtility::ResolveVariantStructure(chain, structure);
+        for (const auto& [component, host] : structure.added)
+        {
+            if (component == source)
+                return host;
+        }
+        return nullptr;
+    }
+
+    /// Clone `source` (a base component or a variant's added-component template) onto
+    /// `instance_host`, carrying the value the instance should see — the source PLUS
+    /// the variant chain's overrides on it — and pair it in the corresponding-source
+    /// map. This is what every structural re-introduction goes through (Unsuppress,
+    /// Revert, Merge, InstantiateVariant), so they all agree on the resulting state.
+    Component* IntroduceComponentFromSource(PrefabInstance* instance, Component& source, GameObject& instance_host)
+    {
+        Object* clone_obj = TransferUtility::CloneObjectViaSerialization(source);  // assigns the instance ID
+        Component* clone = clone_obj != nullptr ? Cast<Component>(clone_obj) : nullptr;
+        if (clone == nullptr)
+        {
+            LOG_ERROR(ZPrefab, "IntroduceComponentFromSource: cloning a {} failed", source.GetTypeName());
+            return nullptr;
+        }
+        clone->PostLoadResource(&instance_host);
+        instance_host.addComponent(clone);
+
+        // The chain may override fields of this very component; a plain clone would
+        // carry the bare source value.
+        std::vector<PropertyModification> layer;
+        VariantLayerOf(instance, layer);
+        const int32_t source_id = source.GetInstanceID();
+        const bool overridden = std::any_of(layer.begin(), layer.end(), [source_id](const PropertyModification& m) {
+            return m.target.GetInstanceID() == source_id;
+        });
+        if (overridden)
+        {
+            prefab::SerialisedObject tree;
+            std::vector<uint8_t> bytes;
+            if (PrefabUtility::SnapshotWithOverrides(source, layer, tree, bytes))
+                ReadBackInto(*clone, bytes);
+        }
+
+        PrefabInstance::CorrespondingSourceEntry entry;
+        entry.instance_object = PPtr<Object>(clone);
+        entry.source_object = PPtr<Object>(&source);
+        instance->GetCorrespondingSourceMap().push_back(entry);
+        return clone;
     }
 
     /// Find the existing modification entry for (target, path), or nullptr.
@@ -483,6 +573,26 @@ int PrefabUtilityEditor::Revert(PrefabInstance* instance)
     }
 
     instance->ClearModifications();
+
+    // ---- Structural overrides ----------------------------------------------------
+    // Components the instance added go away; components it suppressed come back.
+    // The re-introduction is ReconcileStructure's (same path as Merge and
+    // InstantiateVariant), so a suppressed component returns with the value the
+    // source — and the Variant chain — gives it, not a stale copy.
+    for (const PPtr<Component>& entry : instance->GetAddedComponents())
+    {
+        if (Component* added = static_cast<Component*>(entry))
+        {
+            if (GameObject* host = added->GetParentObject())
+                host->EditorRemoveComponent(added);
+            ++reverted;
+        }
+    }
+    instance->GetAddedComponents().clear();
+    reverted += static_cast<int>(instance->GetRemovedComponents().size());
+    instance->GetRemovedComponents().clear();
+    ReconcileStructure(instance);
+
     LOG_INFO(ZPrefab, "Revert: {} modifications reverted", reverted);
     return reverted;
 }
@@ -657,6 +767,12 @@ bool PrefabUtilityEditor::SuppressSourceComponent(PrefabInstance* instance,
         host->EditorRemoveComponent(instance_comp);
     }
 
+    // The detached clone is no longer the instance's counterpart of the source
+    // component. Keeping the pair (as this used to) meant "has a counterpart" no
+    // longer implied "is attached" — and Unsuppress then added a SECOND pair for the
+    // same source, so one suppress/unsuppress round trip left it paired twice.
+    ErasePairForInstanceObject(instance, instance_comp);
+
     // 3) Append source PPtr to m_RemovedComponents (skip duplicates).
     auto& removed = instance->GetRemovedComponents();
     int32_t src_id = source_component.GetInstanceID();
@@ -704,7 +820,7 @@ bool PrefabUtilityEditor::UnsuppressSourceComponent(PrefabInstance* instance,
         LOG_WARNING(ZPrefab, "UnsuppressSourceComponent: source PPtr could not be dereferenced");
         return false;
     }
-    GameObject* src_host = src_comp->GetParentObject();
+    GameObject* src_host = SourceHostOf(instance, src_comp);
     if (src_host == nullptr)
     {
         LOG_WARNING(ZPrefab, "UnsuppressSourceComponent: source Component has no parent GameObject");
@@ -722,37 +838,15 @@ bool PrefabUtilityEditor::UnsuppressSourceComponent(PrefabInstance* instance,
     if (instance_host == nullptr)
         return false;
 
-    // 3) Clone the source Component via the round-trip helper. Since a single
-    //    Component has no nested PPtrs in the prefab subtree (its references go
-    //    OUT to assets, materials, etc., not into the prefab), the generic
-    //    round-trip is sufficient here — we don't need the full structural
-    //    cloner used for whole-subtree cases.
-    Object* clone_obj = TransferUtility::CloneObjectViaSerialization(*src_comp);
-    if (clone_obj == nullptr)
-    {
-        LOG_ERROR(ZPrefab, "UnsuppressSourceComponent: CloneObjectViaSerialization returned null");
+    // 3) Clone the source Component onto the instance host, with the variant chain's
+    //    overrides on it, and pair it in the corresponding-source map so later
+    //    property overrides on it still resolve apply/revert. (This used to clone the
+    //    bare source value — on a Variant instance that dropped the variant's own
+    //    overrides on the re-introduced component.)
+    if (IntroduceComponentFromSource(instance, *src_comp, *instance_host) == nullptr)
         return false;
-    }
-    Component* clone_comp = Cast<Component>(clone_obj);
-    if (clone_comp == nullptr)
-    {
-        LOG_ERROR(ZPrefab, "UnsuppressSourceComponent: clone is not a Component");
-        return false;
-    }
 
-    // 4) Bind the clone's parent + attach to the instance host.
-    clone_comp->PostLoadResource(instance_host);
-    instance_host->addComponent(clone_comp);
-
-    // 5) Pair the clone with its source in the corresponding-source map so
-    //    subsequent property overrides on the un-suppressed component still
-    //    resolve apply/revert correctly.
-    PrefabInstance::CorrespondingSourceEntry entry;
-    entry.instance_object = PPtr<Object>(clone_comp);
-    entry.source_object = PPtr<Object>(src_comp);
-    instance->GetCorrespondingSourceMap().push_back(entry);
-
-    // 6) Drop from m_RemovedComponents.
+    // 4) Drop from m_RemovedComponents.
     removed.erase(it);
 
     LOG_INFO(ZPrefab,
@@ -858,6 +952,17 @@ PrefabInstance* PrefabUtilityEditor::InstantiateVariant(PrefabAsset* variant)
         return nullptr;
     }
 
+    // Re-point m_SourcePrefab at the variant first: ReconcileStructure reads the
+    // chain from it.
+    instance->SetSourcePrefab(PPtr<PrefabAsset>(variant));
+
+    // Structure first, same as Runtime's Instantiate. In the editor this goes through
+    // ReconcileStructure rather than PrefabUtility::ApplyVariantStructuralChanges: it
+    // applies the same net structure (ResolveVariantStructure) but ALSO pairs each
+    // added component's clone with its template in corresponding_source — without
+    // that pair the clone is invisible to Suppress, to overrides on it and to Revert.
+    const int structural = ReconcileStructure(instance);
+
     std::unordered_map<Object*, Object*> source_to_clone;
     for (const auto& entry : instance->GetCorrespondingSourceMap())
     {
@@ -868,16 +973,9 @@ PrefabInstance* PrefabUtilityEditor::InstantiateVariant(PrefabAsset* variant)
             source_to_clone[source] = clone;
         }
     }
-
-    // Structural changes come first, same as Runtime's Instantiate: a component the
-    // variant removes must be gone before the post-load pass walks the tree, and one
-    // it adds must already be attached to its host by then.
-    const int structural = PrefabUtility::ApplyVariantStructuralChanges(chain, source_to_clone);
+    // Includes overrides whose target is a variant-added template: the map now
+    // pairs those too.
     const int applied = structural + PrefabUtility::ApplyVariantOverrides(chain, source_to_clone);
-
-    // Re-point m_SourcePrefab at the variant we were called with so future
-    // Apply pushes overrides into `variant`, not into `deepest`.
-    instance->SetSourcePrefab(PPtr<PrefabAsset>(variant));
 
     LOG_INFO(ZPrefab,
              "InstantiateVariant: instantiated '{}' (base='{}'); {} variant override(s) and "
@@ -897,7 +995,7 @@ PrefabInstance* PrefabUtilityEditor::InstantiateVariant(PrefabAsset* variant)
 // source objects of a Variant instance ARE the base's objects, and the base is shared.
 // =====================================================================================
 
-int PrefabUtilityEditor::ApplyAllToVariant(PrefabInstance* instance)
+int PrefabUtilityEditor::ApplyAllToVariant(PrefabInstance* instance, bool include_structure)
 {
     if (instance == nullptr)
     {
@@ -911,6 +1009,11 @@ int PrefabUtilityEditor::ApplyAllToVariant(PrefabInstance* instance)
         return 0;
     }
 
+    // Rolled back if the file cannot be written (see the failure branch below).
+    const std::vector<PropertyModification>      saved_overrides = variant->GetVariantOverrides();
+    const std::vector<VariantComponentAddition>  saved_added     = variant->GetVariantAddedComponents();
+    const std::vector<PPtr<Component>>           saved_removed   = variant->GetVariantRemovedComponents();
+
     int applied = 0;
     for (const PropertyModification& mod : instance->GetModifications())
     {
@@ -921,8 +1024,10 @@ int PrefabUtilityEditor::ApplyAllToVariant(PrefabInstance* instance)
             continue;
         }
 
-        // The override must name the object in the BASE's graph — that is what both
-        // Runtime's ptr_map and the editor's corresponding_source are keyed by.
+        // The override must name the object's SOURCE — a base object, or the template
+        // of a component some link of the chain added (InstantiateVariant pairs those
+        // too). Either is resolvable when the variant is instantiated: Runtime's
+        // ptr_map gains template -> clone in ApplyVariantStructuralChanges.
         PPtr<Object> base_object = instance->FindSourceForInstance(mod.target);
         if (base_object.IsNull())
         {
@@ -958,11 +1063,18 @@ int PrefabUtilityEditor::ApplyAllToVariant(PrefabInstance* instance)
     // ---- Structural changes: components this instance added / suppressed --------
     //
     // Same translation as the property half: `m_added_components` names objects on
-    // the INSTANCE and `m_removed_components` already names the base's components,
-    // so both have to be re-expressed against the base graph before they can be
-    // stored on the variant — which is the graph every link of the chain targets.
+    // the INSTANCE and `m_removed_components` already names source components (a
+    // base component, or a template some link of the chain added), so both have to be
+    // re-expressed against the chain before they can be stored on the variant.
+    //
+    // Single-field Apply passes include_structure=false: before this flag existed,
+    // applying ONE field from the Inspector silently committed every added / removed
+    // component of the instance too.
+    std::vector<std::pair<Component*, Component*>> adopted;  // (instance component, new template)
     auto& variant_added = variant->GetVariantAddedComponents();
-    for (const PPtr<Component>& entry : instance->GetAddedComponents())
+    auto& variant_removed = variant->GetVariantRemovedComponents();
+    for (const PPtr<Component>& entry : include_structure ? instance->GetAddedComponents()
+                                                          : std::vector<PPtr<Component>>{})
     {
         Component* added = static_cast<Component*>(entry);
         if (added == nullptr)
@@ -988,6 +1100,8 @@ int PrefabUtilityEditor::ApplyAllToVariant(PrefabInstance* instance)
 
         // The variant FILE needs its own copy: this component belongs to the scene's
         // SerializedFile and must not be referenced across files.
+        // (CloneObjectViaSerialization assigns the instance ID itself; A7 assigned a
+        // second one here, leaving a dangling ID-table entry behind.)
         Object* clone_object = TransferUtility::CloneObjectViaSerialization(*added);
         Component* clone_component = (clone_object != nullptr) ? Cast<Component>(clone_object) : nullptr;
         if (clone_component == nullptr)
@@ -995,37 +1109,41 @@ int PrefabUtilityEditor::ApplyAllToVariant(PrefabInstance* instance)
             LOG_WARNING(ZPrefab, "ApplyAllToVariant: cloning the added component failed — skipped");
             continue;
         }
-        // It is about to become an object of the variant file, so it needs an
-        // identity of its own.
-        if (ObjectManager* object_manager = GET_SYSTEM(ObjectManager))
-        {
-            object_manager->AllocateAndAssignInstanceID(clone_component);
-        }
 
         VariantComponentAddition addition;
         addition.host      = PPtr<GameObject>(base_host);
         addition.component = clone_component;
         variant_added.push_back(addition);
+        adopted.emplace_back(added, clone_component);
         ++applied;
     }
 
-    auto& variant_removed = variant->GetVariantRemovedComponents();
-    for (const PPtr<Component>& entry : instance->GetRemovedComponents())
+    for (const PPtr<Component>& entry : include_structure ? instance->GetRemovedComponents()
+                                                          : std::vector<PPtr<Component>>{})
     {
         if (entry.IsNull())
         {
             continue;
         }
         const int32_t id = entry.GetInstanceID();
-        bool already = false;
-        for (const PPtr<Component>& existing : variant_removed)
+
+        // Removing a component THIS variant added: drop the addition. Recording a
+        // removal would do nothing — within one link removals resolve before
+        // additions — and the component would come straight back.
+        const auto own = std::find_if(variant_added.begin(), variant_added.end(),
+                                      [id](const VariantComponentAddition& a) {
+                                          const Component* c = a.component;
+                                          return c != nullptr && c->GetInstanceID() == id;
+                                      });
+        if (own != variant_added.end())
         {
-            if (existing.GetInstanceID() == id)
-            {
-                already = true;
-                break;
-            }
+            variant_added.erase(own);
+            ++applied;
+            continue;
         }
+
+        const bool already = std::any_of(variant_removed.begin(), variant_removed.end(),
+                                         [id](const PPtr<Component>& p) { return p.GetInstanceID() == id; });
         if (!already)
         {
             variant_removed.push_back(entry);
@@ -1041,27 +1159,43 @@ int PrefabUtilityEditor::ApplyAllToVariant(PrefabInstance* instance)
     AssetManager* asset_manager = GET_SYSTEM(AssetManager);
     std::filesystem::path path;
     int64_t header_file_id = 0;
-    if (asset_manager == nullptr ||
-        !asset_manager->TryGetIdentityForInstance(variant->GetInstanceID(), path, header_file_id) ||
-        path.empty())
+    const bool has_identity = asset_manager != nullptr &&
+                              asset_manager->TryGetIdentityForInstance(variant->GetInstanceID(), path, header_file_id) &&
+                              !path.empty();
+    if (!has_identity || !PrefabUtility::SaveVariantAsset(variant, path))
     {
-        LOG_ERROR(ZPrefab, "ApplyAllToVariant: the variant asset has no file identity; "
-                           "{} override(s) left unsaved", applied);
-        return 0;
-    }
-
-    if (!PrefabUtility::SaveVariantAsset(variant, path))
-    {
-        LOG_ERROR(ZPrefab, "ApplyAllToVariant: writing '{}' failed; {} override(s) left unsaved",
-                  path.generic_string(), applied);
+        LOG_ERROR(ZPrefab, "ApplyAllToVariant: {} — {} change(s) left unsaved",
+                  has_identity ? "writing '" + path.generic_string() + "' failed"
+                               : std::string("the variant asset has no file identity"),
+                  applied);
+        // Put the variant back the way it was: the instance keeps its overrides, so
+        // nothing is lost — but a half-applied variant in memory would diverge from
+        // its file and leak into every other instance on the next Merge.
+        variant->GetVariantOverrides() = saved_overrides;
+        variant->GetVariantAddedComponents() = saved_added;
+        variant->GetVariantRemovedComponents() = saved_removed;
         return 0;
     }
 
     // Unity: after Apply the instance no longer overrides anything — the variant now
     // carries those values and that structure itself.
     instance->ClearModifications();
-    instance->GetAddedComponents().clear();
-    instance->GetRemovedComponents().clear();
+    if (include_structure)
+    {
+        // The live component the user added is now the instance's counterpart of the
+        // variant's new template. Without this pair the next ReconcileStructure (a
+        // Merge, a Revert) would see a variant addition with no counterpart and clone
+        // a SECOND copy onto the host.
+        for (const auto& [instance_component, template_component] : adopted)
+        {
+            PrefabInstance::CorrespondingSourceEntry pair;
+            pair.instance_object = PPtr<Object>(instance_component);
+            pair.source_object = PPtr<Object>(template_component);
+            instance->GetCorrespondingSourceMap().push_back(pair);
+        }
+        instance->GetAddedComponents().clear();
+        instance->GetRemovedComponents().clear();
+    }
 
     LOG_INFO(ZPrefab, "ApplyAllToVariant: {} change(s) recorded on '{}' "
                       "({} override(s), {} added / {} removed component(s))",
@@ -1134,10 +1268,150 @@ PrefabAsset* PrefabUtilityEditor::CreateVariant(PrefabAsset*                 bas
 // to pick up the changes — except wherever the instance has its own override.
 // =====================================================================================
 
+int PrefabUtilityEditor::ReconcileStructure(PrefabInstance* instance)
+{
+    if (instance == nullptr)
+        return 0;
+
+    std::vector<PrefabAsset*> chain;
+    if (!ChainOf(instance, chain))
+        return 0;
+    PrefabUtility::VariantStructure structure;
+    PrefabUtility::ResolveVariantStructure(chain, structure);
+
+    std::unordered_set<int32_t> chain_removed;
+    for (Component* c : structure.removed)
+        chain_removed.insert(c->GetInstanceID());
+    std::unordered_set<int32_t> chain_added;
+    for (const auto& [component, host] : structure.added)
+        chain_added.insert(component->GetInstanceID());
+    std::unordered_set<int32_t> instance_removed;
+    for (const PPtr<Component>& p : instance->GetRemovedComponents())
+        instance_removed.insert(p.GetInstanceID());
+    std::unordered_set<const Object*> instance_added;
+    for (const PPtr<Component>& p : instance->GetAddedComponents())
+        if (Component* c = static_cast<Component*>(p))
+            instance_added.insert(c);
+
+    // Base components = the live component lists of the base GameObjects we pair.
+    std::vector<std::pair<GameObject*, GameObject*>> go_pairs;  // (source, instance)
+    std::unordered_set<int32_t> base_components;
+    for (const auto& e : instance->GetCorrespondingSourceMap())
+    {
+        GameObject* src_go = Cast<GameObject>(static_cast<Object*>(e.source_object));
+        GameObject* inst_go = Cast<GameObject>(static_cast<Object*>(e.instance_object));
+        if (src_go == nullptr || inst_go == nullptr)
+            continue;
+        go_pairs.emplace_back(src_go, inst_go);
+        for (ImmediatePtr<Component>& slot : src_go->EditorGetComponentsRef())
+            if (Component* c = slot)
+                base_components.insert(c->GetInstanceID());
+    }
+
+    int changes = 0;
+
+    // ---- 1. detach what the source no longer has --------------------------------
+    auto& map = instance->GetCorrespondingSourceMap();
+    for (size_t i = 0; i < map.size();)
+    {
+        Component* inst = Cast<Component>(static_cast<Object*>(map[i].instance_object));
+        Component* src = Cast<Component>(static_cast<Object*>(map[i].source_object));
+        const int32_t src_id = map[i].source_object.GetInstanceID();
+        if (inst == nullptr)
+        {
+            ++i;  // a GameObject pair
+            continue;
+        }
+        if (src == nullptr)
+        {
+            // The source does not resolve (e.g. a reloaded scene's reference to a
+            // template the variant file gained after it was loaded). Drop the PAIR
+            // but keep the component: detaching it would orphan every instance
+            // override on it, and step 2/3 re-pair it by adoption.
+            map.erase(map.begin() + static_cast<std::ptrdiff_t>(i));
+            continue;
+        }
+        const bool stale = chain_removed.count(src_id) != 0 ||
+                           (base_components.count(src_id) == 0 && chain_added.count(src_id) == 0);
+        if (!stale)
+        {
+            ++i;
+            continue;
+        }
+        if (GameObject* host = inst->GetParentObject())
+            host->EditorRemoveComponent(inst);
+        map.erase(map.begin() + static_cast<std::ptrdiff_t>(i));
+        ++changes;
+    }
+
+    // Is `source` already represented on `instance_host`? Either paired, or an
+    // unpaired component of the same type that is not one the instance added itself
+    // — the latter is adopted (paired) rather than cloned a second time. That is the
+    // state a reloaded scene is in when its pair to a template written after the
+    // template's file was loaded came back null.
+    auto represented = [&](Component& source, GameObject& instance_host) -> bool {
+        if (!instance->FindInstanceForSource(PPtr<Object>(&source)).IsNull())
+            return true;
+        for (ImmediatePtr<Component>& slot : instance_host.EditorGetComponentsRef())
+        {
+            Component* c = slot;
+            if (c == nullptr || c->GetType() != source.GetType() || instance_added.count(c) != 0)
+                continue;
+            if (!instance->FindSourceForInstance(PPtr<Object>(c)).IsNull())
+                continue;
+            PrefabInstance::CorrespondingSourceEntry entry;
+            entry.instance_object = PPtr<Object>(c);
+            entry.source_object = PPtr<Object>(&source);
+            instance->GetCorrespondingSourceMap().push_back(entry);
+            return true;
+        }
+        return false;
+    };
+
+    // ---- 2. clone in the chain's additions --------------------------------------
+    for (const auto& [template_component, source_host] : structure.added)
+    {
+        if (instance_removed.count(template_component->GetInstanceID()) != 0)
+            continue;
+        GameObject* inst_host =
+            Cast<GameObject>(static_cast<Object*>(instance->FindInstanceForSource(PPtr<Object>(source_host))));
+        if (inst_host == nullptr || represented(*template_component, *inst_host))
+            continue;
+        if (IntroduceComponentFromSource(instance, *template_component, *inst_host) != nullptr)
+            ++changes;
+    }
+
+    // ---- 3. re-introduce base components nobody suppresses any more -------------
+    for (const auto& [src_go, inst_go] : go_pairs)
+    {
+        for (ImmediatePtr<Component>& slot : src_go->EditorGetComponentsRef())
+        {
+            Component* c = slot;
+            if (c == nullptr)
+                continue;
+            const int32_t id = c->GetInstanceID();
+            if (chain_removed.count(id) != 0 || instance_removed.count(id) != 0)
+                continue;
+            if (represented(*c, *inst_go))
+                continue;
+            if (IntroduceComponentFromSource(instance, *c, *inst_go) != nullptr)
+                ++changes;
+        }
+    }
+
+    if (changes > 0)
+        LOG_INFO(ZPrefab, "ReconcileStructure: {} component(s) attached or detached", changes);
+    return changes;
+}
+
 int PrefabUtilityEditor::MergeFromSource(PrefabInstance* instance)
 {
     if (instance == nullptr)
         return 0;
+
+    // Shape first, values second: a component the source just gained has to exist
+    // (and be paired) before the value pass below can refresh it.
+    ReconcileStructure(instance);
 
     int merged = 0;
 
