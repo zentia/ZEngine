@@ -319,6 +319,46 @@ device + 帧循环）。而且 **draw 路径目前仍读稠密 `positions`/`indi
 SPIRV-Cross 重编 shader。真机上要验证三件事：①页池启用时画面与稠密路径一致（几何没丢/没错位）；②未驻留
 集群确实不画（无空洞）；③页 churn 时槽位复用不串页。这三件只能真机抓帧比对。
 
+**真机验证可行性核查（2026-10-27，本机 Windows + RTX 5080）**：应"真机跑一遍对比页池/稠密画面"的要求，
+实际排查了本机能否跑这条 GPU 路径，结论是**当前不能，且根因是架构性的、不是缺个测试**：
+
+- 本机确有 DX12 runtime（`d3d12.dll`/`dxgi.dll` 在）+ NVIDIA RTX 5080，`DX12RHI::Initialize` 也只
+  deref `WindowSystem->GetFramebufferSize()`（无窗口时兜底 1280×720，null-safe），所以**建 headless
+  DX12 device 本身可行**。
+- 但 Nanite 的 shader 是 **SPIR-V**（`Z::Shader::NANITE_CLUSTER_CULL_COMP`，宏名就叫
+  `ZENGINE_NANITE_HAS_CULL_SPIRV`），而 `DX12RHI::CreateShaderModule` 只把字节包成 `ID3DBlob`、
+  `DX12ShaderCompiler` 走 **DXC（HLSL→DXIL）**，**没有 SPIR-V→HLSL 的交叉编译**。所以 Nanite 的
+  compute/raster 管线在 DX12 上建不出来 —— 这正是 `EnsureComputePipeline` 里 `gpu_pipelines_unsupported`
+  那个 latch 预期的失败。建了 harness 也只会画出一屏清屏色，比对无从谈起。
+- 交叉编译库 `spirv-cross` **在树里**（`engine/3rdparty/spirv-cross`，MetalRHI 已用它转 MSL），但
+  `engine/3rdparty/CMakeLists.txt:252` 是 `if(APPLE ...)` 才 `add_subdirectory(spirv-cross)` ——
+  **Windows 上根本不编译**，DX12 也没链它。
+
+**要真正在本机跑 GPU 对比，前置工作是给 DX12 补 SPIR-V→HLSL 交叉编译**（把 spirv-cross 在 Windows 也
+编进来 + DX12 `CreateShaderModule`/管线路径接上，或改用 Vulkan 后端——但 Windows 上 Vulkan 后端是否
+注册/可用需另查）。这是一项独立的后端能力建设，不是 Nanite 页池本身的事，工作量显著且风险面在 shader
+工具链，超出本次页池任务边界。已如实记录，不假装跑过。
+
+**补充核查（Vulkan 后端路径，2026-10-27）**：本机 `ZENGINE_USE_VULKAN=ON`、`VulkanRHI.obj` 已编进
+ZRuntime、Vulkan SDK 已装 —— Vulkan 原生吃 SPIR-V，**不需要**交叉编译，所以 shader 这关能过。但
+`VulkanRHI::Initialize` 走 `CreateWindowSurface`（无主窗口只打错误日志、`m_Surface` 留空）→
+`FindQueueFamilies` 里 `vkGetPhysicalDeviceSurfaceSupportKHR(..., m_Surface=null, ...)` 恒返回不支持 →
+`present_family` 留空 → `IsComplete()` 为 false，而 `InitializeLogicalDevice`（`VulkanRHI.cpp:1311`）
+无条件 `m_QueueIndices.present_family.value()` —— 对空 `std::optional` 调 `.value()` **抛
+`std::bad_optional_access`，headless 直接崩**。
+
+**结论（两个后端都卡在 headless 初始化，不是 shader）**：
+- DX12：卡在 shader（SPIR-V 无交叉编译，DXC 只吃 HLSL）。
+- Vulkan：shader 能过，但卡在 device 创建（present_family 依赖 surface，headless 无 surface →
+  `.value()` 抛异常）。
+
+**要真正在本机无头跑 GPU 对比，前置工作是给 RHI 补 headless 初始化路径**：Vulkan 侧把 `present_family`
+改成可选（无 surface 时跳过 present queue，Nanite 离屏渲染本就不需要 swapchain/present）+ 跳过
+`CreateWindowSurface`/`CreateSwapchain`；或 DX12 侧接 spirv-cross。两者都是**独立的 RHI 后端能力建设**，
+风险面在 swapchain/queue-family 语义，显著超出本次 Nanite 页池任务边界。真实可行的替代：在**带窗口的
+目标**上跑（游戏/编辑器运行时，或 Mac 上走 Metal——Nanite 的 GPU 路径目前只有 Metal 端到端测过）。已如实
+记录，不假装跑过。
+
 ---
 
 ### 落地记录 · 2.5 HiZ（2026-10-26，CPU 侧；GPU 侧待真机）
