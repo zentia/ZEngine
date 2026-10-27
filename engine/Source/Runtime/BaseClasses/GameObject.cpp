@@ -213,6 +213,21 @@ GameObject* GameObject::FindByName(const eastl::string& name)
     return level->FindGObjectByName(name);
 }
 
+void GameObject::DestroyObject(GameObject* gobject)
+{
+    if (gobject == nullptr)
+    {
+        return;
+    }
+
+    Level* level = GetActiveLevel("GameObject.Destroy");
+    if (level == nullptr)
+    {
+        return;
+    }
+    level->QueueDestroy(gobject->GetID());
+}
+
 Component* GameObject::AddComponentByTypeName(const std::string& component_type_name)
 {
     const Type* wanted = TypeManager::GetInstance().ClassNameToType(component_type_name.c_str());

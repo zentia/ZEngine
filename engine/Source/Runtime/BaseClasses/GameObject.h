@@ -157,6 +157,20 @@ public:
     ZFUNCTION(Name="Find")
     static GameObject* FindByName(const eastl::string& name);
 
+    /// TS 入口：`GameObject.Destroy(obj)`。
+    ///
+    /// **延迟**到帧末才真正销毁（Unity 同语义）：脚本可以在任何地方调用，包括
+    /// 在某个对象的 OnUpdate 里销毁另一个对象 —— 立即销毁会让 Level::Tick 手里
+    /// 正在用的迭代器失效。
+    ///
+    /// 只销毁传入的那一个。它的子对象**不会**跟着被销毁，而是提升到场景根 ——
+    /// 否则父 Transform 没了，每个子对象的 m_Father 都指向已释放的内存。（Unity
+    /// 是连整棵子树一起销毁；这里是刻意的选择，改动前先想清楚谁会依赖它。）
+    ///
+    /// 同一帧重复销毁同一个对象是安全的（内部去重）。
+    ZFUNCTION(Name="Destroy")
+    static void DestroyObject(GameObject* gobject);
+
     void addComponent(Component* component)
     {
         if (component != nullptr)

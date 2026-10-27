@@ -110,6 +110,14 @@ public:
     /// 按名字查：先主表（关卡对象），再运行时表（Instantiate 产物）。
     /// O(n)，与 Unity 的 GameObject.Find 同量级 —— 不是给每帧用的。
     GameObject* FindGObjectByName(const eastl::string& name) const;
+
+    /// 请求销毁。真正销毁发生在 FlushPendingDestroys()（帧末），所以脚本在
+    /// 任何时候调用都安全 —— 包括在某个对象的 Tick 里销毁另一个对象：立即销毁
+    /// 会让 Level::Tick 手里正在用的迭代器 / 指针当场失效。
+    void QueueDestroy(GObjectID go_id);
+
+    /// 执行 QueueDestroy 攒下的销毁。由 Level::Tick 末尾调用。
+    void FlushPendingDestroys();
     std::weak_ptr<Character> getCurrentActiveCharacter() const { return m_CurrentActiveCharacter; }
     CameraComponent* GetMainCameraComponent() const;
     void SetMainCamera(GObjectID go_id);
@@ -152,6 +160,9 @@ protected:
     // Deliberately NOT part of m_Gobjects -- see the comment on
     // RegisterRuntimeGObject for why.
     std::unordered_map<GObjectID, GameObject*> m_RuntimeGObjects;
+
+    // Destroy requests, drained by FlushPendingDestroys() at end of Tick.
+    std::vector<GObjectID> m_PendingDestroys;
 
     std::shared_ptr<Character> m_CurrentActiveCharacter;
     /// Id of the character's object after DeleteGObjectByID unbound it, so
