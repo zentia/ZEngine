@@ -45,7 +45,7 @@
 | C0 | **Vulkan `MainCameraPass` 崩溃根因修复** | 跨切面阻塞：解除 Vulkan 侧验证能力 | **✅ 已被 `7e5d2521` 修掉（2026-10-25 复核关闭）** | — | ★★★ 已关闭 |
 | C1 | **RenderGraph 接管流水线** | 帧图编译器：自动屏障、瞬态 RT 别名、剔除 | **✅ 已默认开·真机验证 PASS**（165 编译+92 执行断言；RP2 图路径 2026-10-26 翻默认开 `c0d1bcfc`，同帧 A/B 逐位等价 + soak 无异常，见 §2 落地记录·2.6） | 阶段一 RHI 注册表 | ★★★ 高价值/低风险 |
 | C2 | **RenderGraph → RP1**（`render_pass_refactor`） | RP1 三子pass 拆成 3 独立 pass，纳入图管理 | **✅ 已默认开·真机验证 PASS**（2.3 三分已在代码：3 独立 render pass/subpass 恒 0；2.4 compiler 200/200 + executor 121/121 已验。`DrawRP1WithGraph` 2026-10-26 翻默认开 `871878e3`，同帧 A/B `rp1.backup_odd` 逐位 IDENTICAL + soak 无异常，见 §2 落地记录·2.6） | **必须在 C1 之后** | ★★ 高价值/中风险 |
-| C3 | **Nanite 收尾** | 流送 → 几何压缩 → HiZ 遮挡 | **部分实现**（真 GPU dispatch 已有；**几何压缩已落地 2026-10-25**，见 §2 落地记录；剩 streaming + HiZ 两处 TODO） | C1/C2 给其 RG 管理的目标 | ★★★ 高价值/中风险 |
+| C3 | **Nanite 收尾** | 流送 → 几何压缩 → HiZ 遮挡 | **大部分实现**（真 GPU dispatch 已有；几何压缩✅ + streaming✅ 已落地；**HiZ CPU 侧✅ 已落地 2026-10-26**，见 §2 落地记录·2.5 HiZ；剩 HiZ GPU 侧——compute 生成金字塔 + GPU 遮挡剔除，需真机） | C1/C2 给其 RG 管理的目标 | ★★★ 高价值/中风险 |
 | C4 | **Virtual Texture 接线** | 分页纹理虚拟化，从"孤儿"到可用 | **已实现但零消费者**（6 文件无外部引用、无 CVar、3 处构建排除） | C1/C2 的 RG 资源注册 | ★★ 高价值/中高风险 |
 | C5 | ~~**Vulkan `MainCameraPass` 崩溃根因修复**~~ | 跨切面阻塞：解除 Vulkan 侧验证能力 | **✅ 已被 `7e5d2521` 修掉（2026-10-25 复核关闭）** | — | ★★★ 已关闭（见 §2 step 2.0） |
 | C6 | **Lumen 收尾（SSR → GPU 化）** | 动态 GI + 反射；取 SSR 一半 + 首个 Lumen shader | **✅ CPU 侧已完整**（GI/反射/接线/CVar/发布桥全落地 + 7 smoke test；2026-10-25 复核，见 §2 落地记录·2.7）。剩 SSR/HWRT/首个 shader 全 GPU 侧 | C2 的 GBuffer/depth 声明 | ★★ 中价值/高风险（CPU 侧无活，剩 GPU 放最后） |
@@ -103,7 +103,8 @@
 oracle 误设顶点按 `grid.indices` 顺序（实为空间深度优先序），改用 Raw build 自身 emitted 顶点作对照；
 ③ 编码器用截断（误差达 1 级）改四舍五入（误差半级）。
 
-**剩下**：HiZ 遮挡（GPU 侧，需真机）。streaming 已落地，见下方落地记录。
+**剩下**：HiZ 遮挡的 **GPU 侧**（compute shader 生成深度金字塔 + GPU 遮挡剔除，需真机）。streaming 已落地，
+HiZ 的 **CPU 侧**（金字塔构建 + 遮挡判据）已落地，见下方落地记录·2.5 HiZ。
 
 ---
 
@@ -139,6 +140,40 @@ oracle 误设顶点按 `grid.indices` 顺序（实为空间深度优先序），
 
 **诚实定位**：这是**距离裁剪**，不是 UE 那套 streaming pool。它带来真能力（远处叶子不再进裁剪/
 渲染），但没有带宽预算、没有按需分页、没有物理显存回收。页池是明确的后续项。
+
+---
+
+### 落地记录 · 2.5 HiZ（2026-10-26，CPU 侧；GPU 侧待真机）
+
+**做了什么**：把 `NaniteHierarchicalZBuffer` 那组纯 TODO 桩（`UpdateDepthBuffer` / `BuildHierarchy` /
+`BuildMipLevel` / `IsOccluded` 全是空实现）兑现为**可运行的 CPU 侧 HiZ**——从一帧深度图构建层次 Z
+金字塔 + 按屏幕区域采样 + 保守遮挡判据。与 streaming/几何压缩同一手法：把纯算术抽成 header-only
+核心（`Function/Render/Nanite/NaniteHiZ.h`，`nanite_hiz::{HiZPyramid, BuildHiZPyramid, MipLevelForRect,
+SampleMaxDepth, TestOccluded}`），脱离 RHI/窗口单测；`NaniteHierarchicalZBuffer` 只做薄封装（存金字塔 +
+把 AABB 投影到屏幕矩形）。
+
+- **深度约定**：**reversed-Z**（1.0=最近、0.0=最远），现代深度缓冲通用。金字塔 **max 归约**：每个粗
+  texel 存覆盖 2x2 里的最大深度（= 最近表面）。
+- **遮挡判据（保守，拿不准绝不剔除）**：物体最近深度 < 区域内金字塔最大深度 ⇒ 被完全遮挡（区域内
+  所有东西都比物体近）⇒ 可安全剔除；只要有一个 texel 更远或相等 ⇒ 可见，不剔除（误剔=画面破洞，
+  比不剔更糟）。
+- **接线**：`NaniteCullingSystem` 拥有 `NaniteHierarchicalZBuffer m_HiZ`；新增 `UpdateHiZDepth(depth,w,h)`
+  喂深度图重建金字塔；`OcclusionCull(bounds,transform,view_projection)` 在 HiZ 就绪时委托它，否则保守
+  不剔除（与 `FrustumCull` 对无效 bounds 的处理一致）。`CullInstancesCPU` 的遮挡分支已接上。
+- **类重排**：`NaniteHierarchicalZBuffer` 移到 `NaniteCullingSystem` 之前（后者按值持有它，需完整类型）。
+
+**验证（Windows headless，无需真机）**：新增 `Nanite/Test/NaniteHiZSmokeTest.cpp`（header-only，只链
+include root，开关 `ZENGINE_BUILD_NANITE_HIZ_SMOKE_TEST`），**28/28 全绿**：金字塔构建（尺寸/mip 数/
+max 归约/空输入）、mip 级别选择、区域采样、遮挡判据（近/等/远/部分遮挡/越界/无效金字塔）。
+`Runtime/CMakeLists.txt` 加 carve-out + `add_subdirectory`。ZRuntime 同步重建（HiZ 接线类型检查通过）。
+
+**诚实定位 / 边界**：
+- 这是 HiZ 的 **CPU 侧**。GPU 侧（compute shader 生成深度金字塔、GPU 逐簇遮挡剔除）仍需真机；而且
+  现有 `NaniteGPUCullingSmokeTest` 的真 dispatch 段是 **Apple Metal 专属**（`#if __APPLE__`），Windows
+  DX12 上还没接——GPU 遮挡剔除落地时这块也要补。
+- `NaniteHierarchicalZBuffer::IsOccluded` 的 AABB→屏幕矩形投影是 CPU 侧近似（8 角点投影取包围盒 +
+  物体最近深度）；相机横跨视锥的角点保守判可见。真实 GPU 版用 HiZ 纹理采样，精度更高。
+- 尚无驱动它的真实渲染帧（深度图从哪来、何时重建），属"核心已验、端到端待真实内容"。
 
 ---
 
@@ -393,6 +428,29 @@ CPU 能力缺口兑现——GAS 的冷却时间（此前 3 处 TODO：`GameplayA
   ZRuntime 同步重建（ASC/spec 接线类型检查通过）。
 - **诚实边界**：纯 CPU 算术语义已验；ASC 层的端到端（真实激活→冷却→再激活的运行时流程）尚无驱动
   它的游戏场景，属"接线已通、待真实内容"。
+
+---
+
+### 落地记录 · 穿插（2026-10-27）：GAS 周期性效果执行（同簇 CPU 活）
+
+紧接 GAS 冷却，兑现同在 `AbilitySystemComponent::UpdateEffects` 里的最后一处 GAS CPU TODO——周期性
+效果（DoT/HoT 类）的周期执行（此前 `// TODO: 实现周期性执行逻辑`，`onPeriodicExecute` 从未被调用）。
+
+- **设计**：与冷却同一手法。周期计时状态落在 **`GameplayEffectSpec`**（`m_PeriodElapsed` = 距上次触发
+  的秒数），纯算术抽成 header-only 的 `Function/Gas/GasPeriodic.h`（`gas_periodic::PendingExecutions /
+  IsValidPeriod`），spec 只做薄封装（`StepPeriodic`）转发。核心语义：**跨周期补触发**——推进后只要
+  计时跨过 period 就触发一次并**减去 period（不清零）**，低帧率/卡顿下一次 Update 跨过多个周期时正确
+  补触发多次，不丢拍；`period<=0` 视为无效周期永不触发（防除零/死循环），负 dt 视为 0，病态输入封顶
+  64 次防拖死帧。
+- **接线**：`UpdateEffects` 里对 `is_periodic && IsValidPeriod(period)` 的 spec 推进计时并按返回次数调
+  `onPeriodicExecute`；`ApplyEffect` 里对 `execute_on_application` 的周期效果在应用时立即执行一次并
+  `ResetPeriodic()`（归零计时，避免首个周期被重复补触发）。
+- **验证**：新增 `Function/Gas/Test/GasPeriodicSmokeTest.cpp`（header-only，只链 include root，开关
+  `ZENGINE_BUILD_GAS_PERIODIC_SMOKE_TEST`），19 项 Check：IsValidPeriod 边界、单触发/不触发不清零、
+  跨多周期补触发、病态输入防御（无效 period/负 dt/封顶）、端到端触发次数、帧率无关性、低帧率不丢拍。
+  **19/19 全绿**。ZRuntime 同步重建（ASC/spec 接线类型检查通过）。
+- **诚实边界**：纯 CPU 算术语义已验；ASC 层端到端（真实 DoT 效果按周期跳伤害的运行时流程）尚无驱动
+  它的游戏内容，属"接线已通、待真实内容"。至此 `Function/Gas/` 下非测试 TODO 已清零。
 
 ---
 

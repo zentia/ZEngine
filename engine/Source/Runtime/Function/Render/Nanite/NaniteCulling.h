@@ -1,5 +1,6 @@
 #pragma once
 
+#include "NaniteHiZ.h"
 #include "NaniteTypes.h"
 #include "Runtime/Function/Render/RenderCamera.h"
 
@@ -8,6 +9,45 @@
 
 class RHI;
 class RenderScene;
+
+// 层次Z缓冲（用于遮挡剔除）。定义在 NaniteCullingSystem 之前：后者按值持有它
+// （m_HiZ），需要完整类型。
+class NaniteHierarchicalZBuffer
+{
+public:
+    NaniteHierarchicalZBuffer();
+    ~NaniteHierarchicalZBuffer();
+
+    // 初始化。rhi 保留给未来的 GPU 路径；CPU 路径不用它，宽度/高度决定金字塔尺寸。
+    bool Initialize(RHI* rhi, uint32_t width, uint32_t height);
+
+    // 清理
+    void clear();
+
+    // 上传一帧深度图（reversed-Z：1=最近、0=最远，行主序，长度 width*height）并重建
+    // 金字塔。CPU 路径的权威入口——不碰 GPU。
+    void UpdateDepthBuffer(const float* depth_data, uint32_t width, uint32_t height);
+
+    // 构建层次结构（从 m_Pyramid 的 mip0 做 max 归约）。
+    void BuildHierarchy();
+
+    // 遮挡测试：把 bounds（经 transform 到世界空间）的 AABB 用 view_projection 投影到
+    // 屏幕矩形 + 取物体最近深度，再交给 nanite_hiz::TestOccluded。返回 true = 被遮挡。
+    // view_projection = projection * view（与 FrustumCull 一致）。
+    bool IsOccluded(const AxisAlignedBox& bounds, const Matrix4x4& transform, const Matrix4x4& view_projection);
+
+    // 金字塔只读访问（供测试 / 调试检查构建结果）。
+    const nanite_hiz::HiZPyramid& GetPyramid() const { return m_Pyramid; }
+
+private:
+    RHI* m_Rhi = nullptr;  // 保留给未来 GPU 路径；CPU 路径不用。
+
+    uint32_t m_Width = 0;
+    uint32_t m_Height = 0;
+
+    // CPU 层次 Z 金字塔（max 归约）。替代原来那组 void* m_MipBuffers。
+    nanite_hiz::HiZPyramid m_Pyramid;
+};
 
 // 裁剪系统 - 负责视锥裁剪、遮挡剔除等
 class NaniteCullingSystem
@@ -42,8 +82,17 @@ public:
     // 同一件事，但直接吃 view_projection：不需要相机的路径（以及测试）用它。
     bool FrustumCull(const AxisAlignedBox& bounds, const Matrix4x4& transform, const Matrix4x4& view_projection);
 
-    // 遮挡剔除（基于层次Z缓冲）。返回 true = 被剔除。
-    bool OcclusionCull(const AxisAlignedBox& bounds, const Matrix4x4& transform);
+    // 遮挡剔除（基于层次Z缓冲）。view_projection = projection * view（与 FrustumCull
+    // 一致）：把 bounds 投影到屏幕矩形 + 取物体最近深度。返回 true = 被剔除。
+    // HiZ 为空（还没喂过深度图）时保守地"不剔除"——不知道深度就把实例裁掉比不裁更糟。
+    bool OcclusionCull(const AxisAlignedBox& bounds, const Matrix4x4& transform, const Matrix4x4& view_projection);
+
+    // 喂一帧深度图（reversed-Z，行主序，width*height 个 float）重建 HiZ 金字塔。
+    // CPU 路径的遮挡剔除依赖它；不喂深度则 OcclusionCull 恒不剔除（保守）。
+    void UpdateHiZDepth(const float* depth_data, uint32_t width, uint32_t height);
+
+    // HiZ 是否已就绪（喂过至少一帧深度）。
+    bool HasHiZ() const { return m_HiZ.GetPyramid().Valid(); }
 
     // 距离裁剪。返回 true = 被剔除。
     bool DistanceCull(const Vector3& position, float distance, float max_distance);
@@ -81,44 +130,10 @@ private:
     RHI* m_Rhi;
     NaniteConfig m_Config;
 
-    // GPU裁剪资源
+    // CPU 层次 Z 缓冲（遮挡剔除）。深度图经 UpdateHiZDepth 喂入并重建金字塔。
+    NaniteHierarchicalZBuffer m_HiZ;
+
+    // GPU裁剪资源（未来路径，暂未使用）
     void* m_CullingBuffer = nullptr;
     void* m_VisibilityBuffer = nullptr;
-    void* m_HierarchicalZBuffer = nullptr;
-};
-
-// 层次Z缓冲（用于遮挡剔除）
-class NaniteHierarchicalZBuffer
-{
-public:
-    NaniteHierarchicalZBuffer();
-    ~NaniteHierarchicalZBuffer();
-
-    // 初始化
-    bool Initialize(RHI* rhi, uint32_t width, uint32_t height);
-
-    // 清理
-    void clear();
-
-    // 更新深度缓冲
-    void UpdateDepthBuffer(const void* depth_data, uint32_t width, uint32_t height);
-
-    // 构建层次结构
-    void BuildHierarchy();
-
-    // 遮挡测试
-    bool IsOccluded(const AxisAlignedBox& bounds, const Matrix4x4& transform, float min_z);
-
-private:
-    RHI* m_Rhi;
-
-    uint32_t m_Width = 0;
-    uint32_t m_Height = 0;
-    uint32_t m_MipLevels = 0;
-
-    // 层次深度缓冲
-    std::vector<void*> m_MipBuffers;
-
-    // 构建单个Mip级别
-    void BuildMipLevel(uint32_t mip_level);
 };

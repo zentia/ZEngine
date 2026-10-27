@@ -258,6 +258,14 @@ AbilitySystemComponent::ApplyEffect(GameplayEffect* effect, int32_t level, GameO
     // 调用效果应用回调
     effect->onEffectApplied(spec.get(), this);
 
+    // 周期性效果：应用时立即执行一次（execute_on_application），并把周期计时归零，
+    // 避免首个周期在后续 Update 里被补触发重复执行。
+    if (effect->period.is_periodic && effect->period.execute_on_application)
+    {
+        effect->onPeriodicExecute(spec.get(), this);
+        spec->ResetPeriodic();
+    }
+
     GameplayEffectSpec* spec_ptr = spec.get();
     m_ActiveEffects.push_back(std::move(spec));
 
@@ -353,11 +361,15 @@ void AbilitySystemComponent::UpdateEffects(float delta_time)
 
         GameplayEffect* effect = spec->getEffect();
 
-        // 处理周期性效果
-        if (effect->period.is_periodic)
+        // 处理周期性效果：推进计时，本帧跨过多少个周期就触发多少次
+        // （低帧率/卡顿下一次 Update 可能跨过多个 period，需补触发以免丢拍）。
+        if (effect->period.is_periodic && gas_periodic::IsValidPeriod(effect->period.period))
         {
-            // TODO: 实现周期性执行逻辑
-            // effect->onPeriodicExecute(spec.get(), this);
+            const int exec_count = spec->StepPeriodic(effect->period.period, delta_time);
+            for (int i = 0; i < exec_count; ++i)
+            {
+                effect->onPeriodicExecute(spec.get(), this);
+            }
         }
 
         // 更新持续时间
