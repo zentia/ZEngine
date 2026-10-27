@@ -39,6 +39,11 @@ zsyntax.py 只做 `-fsyntax-only`。也就是说在这台没有 cmake / ninja �
     ScriptVM      见 doc/SCRIPT_VM_E2E.md 第 4 节（还要额外 4 个 .gen.cpp）
     ScriptTsChain ScriptVM 的那 6 个，再加
                   --extra-source engine/Source/Runtime/Scripting/Wrapper/ScriptEnv.cpp
+    ScriptComponent
+                  见 doc/TYPESCRIPT_COMPONENT.md 第 5 节。要点是必须带上
+                  --extra-source engine/Source/Runtime/BaseClasses/TypeManager.cpp：
+                  .a 里那份的 TypeRegistrationDesc 布局是旧的，现编 .gen.cpp 的
+                  注册器喂进去 desc.type 会是 nullptr，类型表就是空的。
 
   一般不用手写：`scripts/check_ts_chain.py` 自带完整清单，一条命令跑完
   "导出 d.ts -> tsc 编译 -> 与签入产物 diff -> 跑测试" 四步。
@@ -66,6 +71,10 @@ LINK_LIBS = [
     "mimalloc",
     "spirv-cross-core",
     "spirv-cross-glsl",
+    # 拉到 ShaderLab / Metal RHI 的测试还会要 msl 后端的 vtable
+    # （`__ZTVN11spirv_cross11CompilerMSLE`）。它不是"要编译 shader"，只是
+    # 静态初始化 / typeid 顺藤摸瓜带出来的引用，缺了就是 dyld 起步失败。
+    "spirv-cross-msl",
     "astcenc",
     "bc7enc",
     "lmdb",

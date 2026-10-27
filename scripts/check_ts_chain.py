@@ -16,6 +16,8 @@ d.ts 变了，却忘了重新编译，于是测试喂给 ScriptEnv 的其实是�
     3. 与签入的 TscOutput/ 逐字节 diff —— 漂移就报错（--update 可刷新）
     4. 再跑一遍 ScriptTsChainSmokeTest，但 --js-root 指向**刚编译出来的**临时
        目录，证明新产物也跑得通
+    5. 再跑一遍 ScriptComponentSmokeTest：同一批产物挂到真的 GameObject 上，
+       走 PostLoadResource -> OnAwake/OnStart -> Tick -> 热重载 -> OnDestroy
 
 用法
 ----
@@ -68,6 +70,24 @@ EXTRA_SOURCES = [
     "engine/Source/Runtime/Core/Time/TimeState.cpp",
 ]
 
+# TypeScriptComponent 真身在 ScriptTsChain 那套之外还要的几份：
+#   * TypeManager.cpp —— .a 里那份的 TypeRegistrationDesc 布局和现编的 .gen.cpp
+#     对不上，RegisterType 读到的 desc.type 是错位后的 nullptr，GameObject /
+#     Transform / TypeScriptComponent 全注册不进类型表。
+#   * GameObject.cpp + GameObject/Transform/Behaviour/TypeScriptComponent 的
+#     .gen.cpp —— AddComponentByTypeName 和 Cast<Component> 都走类型表。
+SCRIPT_COMPONENT_SRC = TEST_DIR / "ScriptComponentSmokeTest.cpp"
+SCRIPT_COMPONENT_EXTRA_SOURCES = EXTRA_SOURCES + [
+    "engine/Source/Runtime/BaseClasses/TypeManager.cpp",
+    "engine/Source/Runtime/BaseClasses/GameObject.cpp",
+    # 组件本身也要现编：否则测的是 .a 里那份，改了源码测试不会红。
+    "engine/Source/Runtime/Function/Framework/Component/Script/TypeScriptComponent.cpp",
+    "build/Generated/ZHT/ZRuntime/Src/GameObject.gen.cpp",
+    "build/Generated/ZHT/ZRuntime/Src/Transform.gen.cpp",
+    "build/Generated/ZHT/ZRuntime/Src/Behaviour.gen.cpp",
+    "build/Generated/ZHT/ZRuntime/Src/TypeScriptComponent.gen.cpp",
+]
+
 
 def find_tsc() -> list[str]:
     env = os.environ.get("ZENGINE_TSC")
@@ -103,7 +123,7 @@ def main() -> int:
 
     # 1) 当前的 zengine.d.ts
     if not args.skip_build:
-        print("[1/4] 导出当前 zengine.d.ts ...", flush=True)
+        print("[1/5] 导出当前 zengine.d.ts ...", flush=True)
         cmd = [sys.executable, str(RUN_SMOKE), str(TS_CHAIN_SRC),
                "--template", "Function/Audio/AudioSystem.cpp"]
         for s in EXTRA_SOURCES:
@@ -119,7 +139,7 @@ def main() -> int:
         dts_path.parent.mkdir(parents=True, exist_ok=True)
 
     # 2) tsc 编译
-    print("[2/4] tsc 编译 Scripts/*.ts ...", flush=True)
+    print("[2/5] tsc 编译 Scripts/*.ts ...", flush=True)
     TYPINGS.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(dts_path, TYPINGS / "zengine.d.ts")
     tsc = find_tsc()
@@ -142,7 +162,7 @@ def main() -> int:
             print("[strict-dts] d.ts 单独检查通过")
 
     # 3) 与签入产物 diff
-    print("[3/4] 与签入的 TscOutput/ 比对 ...", flush=True)
+    print("[3/5] 与签入的 TscOutput/ 比对 ...", flush=True)
     fresh = sorted(p.name for p in out_dir.iterdir() if p.is_file())
     if not fresh:
         print("tsc 没产出任何文件")
@@ -168,7 +188,7 @@ def main() -> int:
     print("  一致")
 
     # 4) 跑测试，指向刚编译出来的产物
-    print("[4/4] 跑 ScriptTsChainSmokeTest（js root = 刚编译出来的目录）...", flush=True)
+    print("[4/5] 跑 ScriptTsChainSmokeTest（js root = 刚编译出来的目录）...", flush=True)
     cmd = [sys.executable, str(RUN_SMOKE), str(TS_CHAIN_SRC),
            "--template", "Function/Audio/AudioSystem.cpp"]
     for s in EXTRA_SOURCES:
@@ -176,6 +196,23 @@ def main() -> int:
     cmd += ["--run-arg=--js-root", f"--run-arg={out_dir}"]
     r = run(cmd)
     # 过滤掉编译噪声，只留测试输出
+    for line in r.stdout.splitlines():
+        if line.startswith("[build]") or line.startswith("In file included"):
+            continue
+        print(line)
+    if r.returncode != 0:
+        return r.returncode
+
+    # 5) 再跑一遍组件侧：同一批 tsc 产物挂到 GameObject 上跑完整生命周期。
+    #    （本测试自己造临时工程，把 Scripts/ 和 TscOutput/ 拷过去，所以传的是
+    #     resource-dir 而不是 js root。）
+    print("[5/5] 跑 ScriptComponentSmokeTest（TypeScriptComponent 真身）...", flush=True)
+    cmd = [sys.executable, str(RUN_SMOKE), str(SCRIPT_COMPONENT_SRC),
+           "--template", "Function/Audio/AudioSystem.cpp"]
+    for s in SCRIPT_COMPONENT_EXTRA_SOURCES:
+        cmd += ["--extra-source", s]
+    cmd += ["--run-arg=--resource-dir", f"--run-arg={TEST_DIR}"]
+    r = run(cmd)
     for line in r.stdout.splitlines():
         if line.startswith("[build]") or line.startswith("In file included"):
             continue

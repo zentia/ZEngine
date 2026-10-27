@@ -159,6 +159,72 @@ if(PAPI_TYPE STREQUAL "quickjs")
 
         add_test(NAME ScriptTsChainSmokeTest COMMAND ScriptTsChainSmokeTest)
         message(STATUS "Configured TS->tsc->VM chain smoke test: ScriptTsChainSmokeTest")
+
+        # ---------------------------------------------------------------------
+        # TypeScriptComponent 真身：把 tsc 产物挂到 GameObject 上跑完整生命周期。
+        #
+        # 前两个测试都是"自己 new 一个 ScriptEnv 手喂模块"。这个走的是组件侧：
+        # ObjectManager::Produce(GameObject) -> AddComponentByTypeName("TypeScript
+        # Component") -> SetScriptGuid -> PostLoadResource 里 ResolveScript /
+        # LoadModule / CreateInstance / 注入 gameObject·transform·component ->
+        # OnAwake / OnStart -> 每帧 Tick 转发 OnUpdate -> 热重载重建 -> 析构
+        # OnDestroy。
+        #
+        # 除了脚本绑定用的 4 个 .gen.cpp，这里还要把 GameObject / Transform /
+        # Behaviour / TypeScriptComponent 的 .gen.cpp 编进来：AddComponentBy
+        # TypeName 和 Cast<Component> 都走 TypeManager 的类型表，而类型表正是
+        # IMPLEMENT_REGISTER_CLASS 的静态注册器填的。Behaviour 必须带（TypeScript
+        # Component 的直接基类），否则 Builder 走不到 Component，Cast<Component>
+        # 的范围测试落空。
+        # ---------------------------------------------------------------------
+        add_executable(ScriptComponentSmokeTest ScriptComponentSmokeTest.cpp)
+
+        set_target_properties(ScriptComponentSmokeTest PROPERTIES
+            CXX_STANDARD 23
+            FOLDER "Engine/Tests"
+        )
+
+        set(_zht_component_gen_sources
+            "${ZHT_GEN_SRC}/GameObject.gen.cpp"
+            "${ZHT_GEN_SRC}/Transform.gen.cpp"
+            "${ZHT_GEN_SRC}/Behaviour.gen.cpp"
+            "${ZHT_GEN_SRC}/TypeScriptComponent.gen.cpp"
+        )
+        set_source_files_properties(${_zht_bind_sources} ${_zht_component_gen_sources}
+                                    PROPERTIES GENERATED TRUE)
+        target_sources(ScriptComponentSmokeTest PRIVATE
+            ${_zht_bind_sources} ${_zht_component_gen_sources})
+        if(TARGET ZRuntime_ZHeaderTool)
+            add_dependencies(ScriptComponentSmokeTest ZRuntime_ZHeaderTool)
+        endif()
+
+        # 测试要把它临时工程里的 Scripts/ 和 Intermediate/Scripts/ 铺满，需要知道
+        # 本仓库里 .ts 和 tsc 产物在哪（也接受 --resource-dir 覆盖）。
+        target_compile_definitions(ScriptComponentSmokeTest PRIVATE
+            ZENGINE_SCRIPT_COMPONENT_RESOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+
+        target_compile_definitions(ScriptComponentSmokeTest PRIVATE PAPI_QUICKJS=1)
+
+        target_link_libraries(ScriptComponentSmokeTest PRIVATE ZRuntime)
+
+        if(TARGET ZEnginePCH)
+            target_link_libraries(ScriptComponentSmokeTest PRIVATE ZEnginePCH)
+            target_include_directories(ScriptComponentSmokeTest PRIVATE ${ENGINE_ROOT_DIR}/Source/CommonPCH)
+            add_dependencies(ScriptComponentSmokeTest ZEnginePCH)
+            target_precompile_headers(ScriptComponentSmokeTest REUSE_FROM ZEnginePCH)
+        endif()
+
+        if(APPLE)
+            target_sources(ScriptComponentSmokeTest PRIVATE
+                ${ENGINE_ROOT_DIR}/Source/Runtime/Core/Serialize/Test/SmokeTestAppleLinkStubs.cpp)
+        endif()
+
+        if(MSVC)
+            target_compile_options(ScriptComponentSmokeTest PRIVATE /W4)
+        endif()
+
+        add_test(NAME ScriptComponentSmokeTest COMMAND ScriptComponentSmokeTest)
+        message(STATUS "Configured TypeScriptComponent smoke test: ScriptComponentSmokeTest")
     endif()
 else()
     message(STATUS "ScriptVMSmokeTest skipped: requires -DPAPI_TYPE=quickjs (current: ${PAPI_TYPE})")
