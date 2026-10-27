@@ -5,6 +5,7 @@
 #include "Runtime/BaseClasses/Object.h"
 #include "Runtime/BaseClasses/PPtr.h"
 #include "Runtime/Core/Serialize/SerializeUtility.h"
+#include "Runtime/Resource/Prefab/PropertyModification.h"
 #include "PrefabAsset.generated.h"
 
 // =====================================================================================
@@ -48,13 +49,42 @@ public:
 
     bool IsVariant() const { return !m_VariantBase.IsNull(); }
 
+    // ---- Variant overrides (model A) ----
+    //
+    // A Variant owns NO object tree of its own: it is a base pointer plus the list
+    // of PropertyModifications that this variant (and each intermediate variant in
+    // the chain) applies on top of the deepest non-variant base.
+    //
+    // `target` in each entry is a PPtr naming an object **in the base's graph**
+    // (a file-local fileID in the base's .prefab / .zasset). Every link in a
+    // variant chain therefore targets the SAME deepest base's objects, which is
+    // what lets a chain of any length be applied to one cloned base tree:
+    //   base objects --clone--> clone objects --apply--> base overrides
+    //                                                --> mid overrides
+    //                                                --> variant overrides
+    //
+    // Why these live on the asset (and not on the editor-only PrefabInstance,
+    // which is what doc/PrefabSystem_Design.md §9.3 originally settled on):
+    // PrefabInstance is `kTypeIsEditorOnly`, so a variant's overrides could never
+    // reach the runtime — `GameObject.Instantiate(variantPath)` on device would
+    // silently produce a plain copy of the base. Storing them here is what makes
+    // "Variant" mean anything outside the editor.
+    std::vector<PropertyModification>& GetVariantOverrides() { return m_VariantOverrides; }
+    const std::vector<PropertyModification>& GetVariantOverrides() const { return m_VariantOverrides; }
+    void AddVariantOverride(const PropertyModification& mod) { m_VariantOverrides.push_back(mod); }
+    void ClearVariantOverrides() { m_VariantOverrides.clear(); }
+
     // ---- Schema versioning (so future format breaks are detectable) ----
     uint32_t GetSchemaVersion() const { return m_SchemaVersion; }
 
-    static constexpr uint32_t kCurrentSchemaVersion = 1u;
+    /// Bumped 1 -> 2 when `m_variant_overrides` was appended. Older files keep
+    /// reporting 1; the field is appended last so readers that don't know it
+    /// still resolve every earlier field by name.
+    static constexpr uint32_t kCurrentSchemaVersion = 2u;
 
 protected:
-    // Serialized order: m_schema_version, m_root_game_object, m_variant_base.
+    // Serialized order: m_schema_version, m_root_game_object, m_variant_base,
+    // m_variant_overrides. Appending is what keeps old readers working.
     ZPROPERTY(Name="m_schema_version")
     uint32_t m_SchemaVersion {kCurrentSchemaVersion};
 
@@ -79,4 +109,9 @@ protected:
     /// PrefabAsset may live in a different .zasset file.
     ZPROPERTY(Name="m_variant_base")
     PPtr<PrefabAsset> m_VariantBase;
+
+    /// What this Variant changes relative to its base chain. Empty for a plain
+    /// prefab. See the accessors above for the model.
+    ZPROPERTY(Name="m_variant_overrides")
+    std::vector<PropertyModification> m_VariantOverrides;
 };
