@@ -206,6 +206,13 @@ public:
     void OnSerializedFieldsUpdated() override;
     void Tick(float delta_time) override;
 
+    /// 激活状态一变就重发一次渲染状态。
+    ///
+    /// 不做这个的话停用是"只停 Tick、画面照样画"：GameObject::Tick 在对象未激活时
+    /// 直接 return，本组件的 Tick 不会再被调到，而下面 SubmitRenderState 里那条
+    /// "提交空 parts 撤掉渲染实体"的分支只有在 Tick 里被触发 —— 死路一条。
+    void OnOwnerActiveChanged(bool active) override;
+
     void RefreshRenderStateFromTransformDispatch() const;
 
 protected:

@@ -39,13 +39,18 @@ GameObject::~GameObject()
 
 void GameObject::Tick(float delta_time)
 {
-    // Transform::m_Enabled is the GameObject active flag (Unity activeSelf analogue).
-    if (Transform* transform_component = tryGetComponent(Transform))
+    // 层级激活判定（Unity activeInHierarchy 语义）：自己开着还不够，祖先里只要有
+    // 一个关着就不 Tick。
+    //
+    // 这里以前只查自己的 Transform::m_Enabled，于是"父级停用、子对象照跑" —— 而
+    // 渲染侧后来认了层级（BaseRenderer::SubmitRenderState 查 IsActiveInHierarchy），
+    // 两边一不一致就变成"看不见但还在动"。统一到同一个判定上。
+    //
+    // Transform::m_Enabled is the GameObject active flag (Unity activeSelf analogue);
+    // IsActiveInHierarchy() walks the Transform parents on top of it.
+    if (!IsActiveInHierarchy())
     {
-        if (!transform_component->isEnabled())
-        {
-            return;
-        }
+        return;
     }
 
     for (auto& component : m_Components)
@@ -97,6 +102,95 @@ bool GameObject::HasComponent(const std::string& component_type_name) const
 Transform* GameObject::GetTransform() const
 {
     return Cast<Transform>(GetComponentByTypeName("Transform"));
+}
+
+void GameObject::SetActive(bool active)
+{
+    Transform* transform = tryGetComponent(Transform);
+    if (transform == nullptr)
+    {
+        // 没有 Transform 就没有"激活"这件事（也无从挂在层级里）。不静默吞掉：
+        // 脚本拿到的是"设了但没生效"，比崩了更难查。
+        LOG_ERROR(ZObject, "GameObject::SetActive: '{}' has no Transform -- cannot change active state", name.c_str());
+        return;
+    }
+
+    if (transform->isEnabled() == active)
+    {
+        return;
+    }
+
+    transform->SetEnabled(active);
+
+    // 必须主动推：对象停用后 GameObject::Tick 直接 return，组件的 Tick 再也跑不到，
+    // 它们没有任何机会自己去撤渲染实体 / 关光源。
+    NotifyActiveChanged();
+}
+
+bool GameObject::GetActiveSelf() const
+{
+    const Transform* transform = tryGetComponentConst(Transform);
+    // 没有 Transform 时按"激活"处理 —— 与 GameObject::Tick / BaseRenderer 的既有
+    // 约定一致（两者都把 null Transform 当成不影响激活判断）。
+    return transform == nullptr || transform->isEnabled();
+}
+
+bool GameObject::IsActiveInHierarchy() const
+{
+    const Transform* transform = tryGetComponentConst(Transform);
+    if (transform == nullptr)
+    {
+        return true;
+    }
+    if (!transform->isEnabled())
+    {
+        return false;
+    }
+    // 与 Transform::GetRoot() 同样的写法（同样不加环保护）：父子链成环的话
+    // GetRoot() 早就先死循环了，这里再单独加一道上限只会掩住真正的问题。
+    for (const Transform* ancestor = transform->GetParent(); ancestor != nullptr; ancestor = ancestor->GetParent())
+    {
+        if (!ancestor->isEnabled())
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+void GameObject::NotifyActiveChanged()
+{
+    const bool active_in_hierarchy = IsActiveInHierarchy();
+    for (auto& component : m_Components)
+    {
+        Component* component_ptr = static_cast<Component*>(component);
+        if (component_ptr != nullptr)
+        {
+            component_ptr->OnOwnerActiveChanged(active_in_hierarchy);
+        }
+    }
+
+    // 子树：父级开关一变，整棵子树的 activeInHierarchy 都变了，逐个重推。
+    // 递归而不是显式栈：层级深度是场景结构的深度，不是对象数量。
+    Transform* transform = tryGetComponent(Transform);
+    if (transform == nullptr)
+    {
+        return;
+    }
+    for (const auto& child : transform->GetChildren())
+    {
+        Transform* child_transform = static_cast<Transform*>(child);
+        if (child_transform == nullptr)
+        {
+            continue;
+        }
+        GameObject* child_object = child_transform->GetParentObject();
+        if (child_object == nullptr)
+        {
+            continue;
+        }
+        child_object->NotifyActiveChanged();
+    }
 }
 
 namespace

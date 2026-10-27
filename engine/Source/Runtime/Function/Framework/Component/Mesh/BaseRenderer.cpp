@@ -564,7 +564,12 @@ void BaseRenderer::SubmitRenderState() const
     const Transform* transform_component = m_ParentObject->tryGetComponent(Transform);
 
     RenderSwapContext& render_swap_context = GET_SYSTEM(RenderSystem)->GetSwapContext();
-    const bool object_active = transform_component == nullptr || transform_component->isEnabled();
+    // 层级激活（Unity activeInHierarchy）：父级被停用，子对象也得藏。
+    //
+    // 这里以前是 `transform_component == nullptr || transform_component->isEnabled()`，
+    // 只认自己那一个开关，于是"父停用、子仍画"。改成问 GameObject，和
+    // GameObject::Tick 用的是同一个判定。
+    const bool object_active = m_ParentObject->IsActiveInHierarchy();
     if (!isEnabled() || !object_active)
     {
         // Empty parts remove stale render entities for this GameObject.
@@ -574,6 +579,14 @@ void BaseRenderer::SubmitRenderState() const
     }
 
     render_swap_context.GetLogicSwapData().AddDirtyGameObject(BuildGameObjectDesc(transform_component));
+}
+
+void BaseRenderer::OnOwnerActiveChanged(bool active)
+{
+    (void)active;
+    // 值本身不用读：SubmitRenderState 会重新问一次 IsActiveInHierarchy()，
+    // 传进来的这个只是给"不关心方向的组件"用的。
+    SubmitRenderState();
 }
 
 void BaseRenderer::Tick(float delta_time)

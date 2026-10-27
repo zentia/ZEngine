@@ -374,6 +374,19 @@ void SpineRenderer::SetEnabled(bool enabled)
     PushTransform(0.0f);
 }
 
+void SpineRenderer::OnOwnerActiveChanged(bool active)
+{
+    (void)active;
+    // 停用后 GameObject::Tick 直接 return，本组件的 Tick 不再被调到，PushTransform
+    // 也就永远不会再推 —— 上最后一次推的 visible=true 会一直留在渲染器里，骨架
+    // 不会消失。这里主动补推一次（visible 由 PushTransform 自己重新问
+    // IsActiveInHierarchy()，不读传进来的这个参数）。
+    //
+    // m_InstanceId == 0（还没 Tick 过、实例没建）时 PushTransform 直接返回，
+    // 那种情况下本来也没有东西可藏。
+    PushTransform(0.0f);
+}
+
 void SpineRenderer::Submit(std::function<void(uint32_t)> command)
 {
     if (m_InstanceId != 0)
@@ -762,7 +775,9 @@ void SpineRenderer::PushTransform(float delta_time)
     if (Transform* transform = m_ParentObject->tryGetComponent(Transform))
     {
         model = transform->GetLocalToWorldMatrix();
-        active = transform->isEnabled();   // Transform::m_Enabled = GameObject 激活标志
+        // 层级激活：父级被停用，骨架也要藏。以前只查自己的 Transform::isEnabled()，
+        // 于是"父停用、子骨架还在画"。
+        active = m_ParentObject->IsActiveInHierarchy();
         const Vector3 position = transform->GetPosition();
         const Vector3 lossy = transform->GetLossyScale();
         billboard.position[0] = position.x;

@@ -469,8 +469,8 @@ namespace
     {
         if (!go)
             return false;
-        Transform* xf = go->tryGetComponent(Transform);
-        return xf == nullptr || xf->isEnabled();
+        // 与 GameObject::GetActiveSelf 同一套判定，别在这里再抄一份。
+        return go->GetActiveSelf();
     }
 
     void NotifyAllComponentsUpdated(GameObject* go)
@@ -3242,7 +3242,10 @@ void ZSlateInspectorWindow::BuildForObject(float scale)
             return;
         EditorUndo::ScopedTransaction undo_scope(active ? "Activate GameObject" : "Deactivate GameObject");
         EditorUndo::RecordTransform(xf);
-        xf->SetEnabled(active);
+        // 走 GameObject::SetActive 而不是 xf->SetEnabled：后者只写自己那一个 flag，
+        // 子树里的 renderer 收不到通知，父级开关一变它们就留在旧状态上（停用后仍
+        // 在画面里）。SetActive 会连整棵子树一起重推。
+        go->SetActive(active);
         xf->OnSerializedFieldsUpdated();
         NotifyAllComponentsUpdated(go.get());
     };

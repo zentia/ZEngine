@@ -56,6 +56,20 @@ public:
     virtual void Tick(float delta_time) {};
     virtual void OnSerializedFieldsUpdated() {}
 
+    /// 宿主 GameObject 的**层级激活状态**（activeInHierarchy）刚发生变化时的通知。
+    /// 传进来的 `active` 是变化后的新值：父级被停用时，子对象自己的 activeSelf
+    /// 没动，但这里收到 false。
+    ///
+    /// 为什么必须有这个钩子、不能让组件自己在 Tick 里判断：GameObject::Tick 在对象
+    /// 未激活时**直接 return**，组件压根不会被 Tick 到。也就是说"停用"这件事在
+    /// 时序上没有任何一次 Tick 能替组件收尾 —— BaseRenderer 那条"提交空 parts 撤掉
+    /// 渲染实体"的路子就一直是死的（对象停用了，画面上还留着）。状态变化只能由
+    /// GameObject 主动推给组件。
+    ///
+    /// 语义对应 Unity 的 OnEnable / OnDisable，但**不**排队到帧末：这里要的就是
+    /// 立刻生效（同一帧内画面就得跟着变）。
+    virtual void OnOwnerActiveChanged(bool active) { (void)active; }
+
     /// Editor undo/redo just overwrote this component's serialized fields in place
     /// (UE UObject::PostEditUndo). The default re-derives runtime state the same way
     /// an Inspector edit does; override when a field change needs more than that --

@@ -301,7 +301,22 @@ namespace EditorUndoRecords
         {
             // Same path as the Inspector's active toggle: every component re-derives
             // its runtime state (renderers drop / resubmit their entities).
-            transform->SetEnabled(state.enabled);
+            //
+            // 走 GameObject::SetActive 而不是 transform->SetEnabled：后者只写自己
+            // 那一个 flag，子树里的 renderer 收不到通知 —— 撤销把父级停用后，子对象
+            // 的渲染实体会留在画面上。
+            if (GameObject* owner = transform->GetParentObject())
+            {
+                owner->SetActive(state.enabled);
+            }
+            else
+            {
+                // 没有宿主 GameObject 就没有"对象激活状态"这回事（也不在层级里），
+                // 写 Transform 的 flag 没有意义 —— 记一条警告而不是偷偷写下去，
+                // 免得这里变成又一处绕过 SetActive 的口子。
+                LOG_WARNING(ZUndo, "TransformStateRecord::Restore: Transform has no owner GameObject; "
+                                   "cannot restore active state");
+            }
             NotifyAllComponentsUpdated(transform->GetParentObject());
         }
     }

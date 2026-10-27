@@ -553,7 +553,11 @@ CameraComponent* Level::GetMainCameraComponent() const
         }
 
         CameraComponent* camera_component = object->tryGetComponent(CameraComponent);
-        if (camera_component != nullptr && camera_component->isEnabled() && camera_component->isMainCamera())
+        // 停用（含父级被停用）的对象上的相机不再当主相机 —— 否则
+        // SetActive(false) 对相机毫无效果，画面照旧，正是这次要修的那类"看不见
+        // 变化"的 bug。Unity 同：disabled camera 不渲染。
+        if (camera_component != nullptr && camera_component->isEnabled() && camera_component->isMainCamera() &&
+            object->IsActiveInHierarchy())
         {
             return camera_component;
         }
