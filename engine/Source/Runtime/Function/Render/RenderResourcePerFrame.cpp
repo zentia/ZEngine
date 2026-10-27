@@ -175,6 +175,25 @@ void RenderResource::UpdatePerFrameBuffer(std::shared_ptr<RenderScene> render_sc
         mesh_perframe_storage_buffer_object.scene_point_lights[i].radius = radius;
         mesh_perframe_storage_buffer_object.scene_point_lights[i].intensity = point_light_intensity;
 
+        // Spot payload: the shader keys the cone branch off `type`, so point
+        // lights keep type=0 and their zeroed spot fields (bit-identical to the
+        // pre-spotlight behaviour). Spot lights fill direction + cone cosines.
+        const PointLight& src_light = render_scene->m_PointLightList.m_Lights[i];
+        if (src_light.m_IsSpot)
+        {
+            mesh_perframe_storage_buffer_object.scene_point_lights[i].type = 1.0f;
+            mesh_perframe_storage_buffer_object.scene_point_lights[i].spot_direction = src_light.m_Direction;
+            mesh_perframe_storage_buffer_object.scene_point_lights[i].spot_inner_cos = src_light.m_InnerConeCos;
+            mesh_perframe_storage_buffer_object.scene_point_lights[i].spot_outer_cos = src_light.m_OuterConeCos;
+        }
+        else
+        {
+            mesh_perframe_storage_buffer_object.scene_point_lights[i].type = 0.0f;
+            mesh_perframe_storage_buffer_object.scene_point_lights[i].spot_direction = Vector3::ZERO;
+            mesh_perframe_storage_buffer_object.scene_point_lights[i].spot_inner_cos = 0.0f;
+            mesh_perframe_storage_buffer_object.scene_point_lights[i].spot_outer_cos = 0.0f;
+        }
+
         m_PointLightShadowPerFrame.point_lights_position_and_radius[i] = Vector4(point_light_position, radius);
     }
 

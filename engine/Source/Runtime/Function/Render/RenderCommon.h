@@ -33,13 +33,58 @@ struct SceneDirectionalLight
     float _padding_color;
 };
 
+// Per-frame point/spot light carried in the MainCameraPerFrame UBO.
+//
+// Layout is 64 bytes (four vec4 pairs) so it is safe under both std140 and
+// std430:
+//   vec4_0 = {position.xyz, radius}
+//   vec4_1 = {intensity.xyz, type}
+//   vec4_2 = {spot_direction.xyz, spot_inner_cos}
+//   vec4_3 = {spot_outer_cos, _padding_spot_0/1/2}
+// Vector3 is 12 bytes (3 floats, 4-byte aligned), so each vec3 MUST be followed
+// by exactly one float to complete a 16-byte vec4 pair -- hence the three
+// trailing pads. With s_MaxPointLightCount == 15 the array grows from 240B to
+// 960B -- negligible.
+//
+// `type` is a float (not an int/uint) on purpose: the shader branches on it
+// with a plain float compare, which sidesteps int-alignment surprises across
+// the four RHIs. 0.0 = point (unchanged behaviour), 1.0 = spot.
+//
+// The spot fields (spot_direction / spot_inner_cos / spot_outer_cos) are zero
+// for point lights; the shader only reads them inside the `type > 0.5` branch.
 struct ScenePointLight
 {
     Vector3 position;
     float radius;
     Vector3 intensity;
-    float _padding_intensity;
+    float type {0.0f};
+
+    // ---- spot-only payload (point lights leave these at zero) ---------------
+    // vec4_2 = {spot_direction.xyz, spot_inner_cos}; vec4_3 = {spot_outer_cos,
+    // _padding_spot_0/1/2}. The three trailing pads are REQUIRED: Vector3 is 12
+    // bytes (3 floats, 4-byte aligned), so without them the C++ struct is 60B
+    // while the std140 shader struct is 64B (vec3 array elements pad to vec4
+    // stride) -- a silent CPU/GPU desync. The static_assert below pins this.
+    Vector3 spot_direction {Vector3(0.0f, 0.0f, 0.0f)};  // unit vector
+    float spot_inner_cos {0.0f};
+    float spot_outer_cos {0.0f};
+    float _padding_spot_0 {0.0f};
+    float _padding_spot_1 {0.0f};
+    float _padding_spot_2 {0.0f};
 };
+
+// Pin the UBO element stride: 32 bytes = two vec4 pairs, safe under std140 and
+// std430. The shader-side mirrors (scene_lighting_structs.hlsli / structures.h)
+// must stay bit-identical to this layout -- if this assert fires, someone changed
+// a field and desynced the GPU from the CPU (which fails silently as garbled
+// light data, not a hard error).
+static_assert(sizeof(ScenePointLight) == 64,
+              "ScenePointLight must be 64 bytes (four vec4 pairs) to match the "
+              "std140/std430 shader-side PointLight struct. If this fires, a field "
+              "was added/removed and the CPU layout desynced from the GPU -- which "
+              "fails silently as garbled light data, not a hard error. Note Vector3 "
+              "is 12 bytes, so the spot payload needs THREE trailing pad floats to "
+              "complete the fourth vec4 pair.");
 
 // Lumen 的间接光结果：CPU probe 网格 -> per-frame uniform 的桥。
 //
