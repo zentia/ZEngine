@@ -1,5 +1,8 @@
 # 脚本侧输入 API（Input）
 
+> 端到端（真起 QuickJS VM、从 JS 里读 `Input.GetKeyDown(Key.Space)`，并验证
+> ZENUM 发布的 `Key` 与 C++ 的 `KeyCodes::Key` 同值）见 `doc/SCRIPT_VM_E2E.md`。
+
 ## 1. 之前脚本一个输入 API 都没有
 
 两层原因，缺哪一层的理解都会得出错误的修法：

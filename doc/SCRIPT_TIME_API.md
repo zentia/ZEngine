@@ -3,6 +3,9 @@
 > 配套：输入查询（键盘 / 鼠标 / 触摸 / action）在 `doc/SCRIPT_INPUT_API.md`。
 > 那边有个坑值得先读：帧内量（按键边沿、鼠标位移）由 `EndFrame()` 滚动，脚本
 > 读到的是**上一帧**的值。
+>
+> 端到端（真起 QuickJS VM、从 JS 里读 `Time.*`、并从 JS 调 `SetTimeScale` 反过来
+> 影响 C++ 的下一帧）见 `doc/SCRIPT_VM_E2E.md`。
 
 ## 1. 先说清楚：脚本并不缺 delta
 

@@ -26,6 +26,19 @@ zsyntax.py 只做 `-fsyntax-only`。也就是说在这台没有 cmake / ninja �
     python3 scripts/run_smoke_test.py <test.cpp> --template Function/Render/RenderScene.cpp
 
 退出码 = 测试的退出码（0 = 全部检查通过）。
+
+本机各冒烟测试需要的 --extra-source
+----------------------------------
+`bin/libZRuntime.a` 比最近几次提交都旧（2026-10-26），凡是被那几次提交**改过**
+的引擎源文件都得显式列进来，否则链接期看不出来（Apple 上有
+`-Wl,-undefined,dynamic_lookup`），运行期一跳进去就是 SIGSEGV：
+
+    ScriptTime    --extra-source engine/Source/Runtime/Core/Time/TimeState.cpp
+    ScriptInput   --extra-source engine/Source/Runtime/Function/Input/EnhancedInputSystem.cpp
+                  --extra-source engine/Source/Runtime/Function/Input/InputSystem.cpp
+    ScriptVM      见 doc/SCRIPT_VM_E2E.md 第 4 节（还要额外 4 个 .gen.cpp）
+
+症状很好认：BqLog 打完 "log_manager is constructed" 就没了，`echo $?` 是 139。
 """
 
 from __future__ import annotations

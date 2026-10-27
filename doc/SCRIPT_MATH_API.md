@@ -3,6 +3,10 @@
 > 配套：时间查询（deltaTime / 累计时间 / timeScale）在 `doc/SCRIPT_TIME_API.md`。
 > 注意脚本的 `OnUpdate(dt)` 本来就收到本帧步长 —— 缺的是 `Time.time` 这类
 > 累计量与 timeScale，不是 delta 本身。
+>
+> 端到端（真起一个 QuickJS VM、真 eval JS 走一遍 pesapi 绑定链）见
+> `doc/SCRIPT_VM_E2E.md`；`QuaternionMath.ToEuler` 的分量->轴映射就是靠那边的
+> C1 确定下来的，见本文第 6 节。
 
 ## 1. 为什么是"装静态方法的空类"
 

@@ -985,6 +985,14 @@ list(REMOVE_ITEM SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Scripting/ScriptInput/Test/ScriptInputSmokeTest.cpp")
 list(REMOVE_ITEM REGULAR_SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Scripting/ScriptInput/Test/ScriptInputSmokeTest.cpp")
+# 同上：脚本 VM 端到端冒烟测试的 main carve-out。它真起一个 QuickJS VM 并链
+# ZRuntime，绝不能被 whole-archive 进 ZRuntime。Only built when
+# ZENGINE_BUILD_SCRIPT_VM_SMOKE_TEST=ON (see Scripting/ScriptVM/Test/
+# CMakeLists.txt)，且只在 PAPI_TYPE=quickjs 时可用。
+list(REMOVE_ITEM SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Scripting/ScriptVM/Test/ScriptVMSmokeTest.cpp")
+list(REMOVE_ITEM REGULAR_SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Scripting/ScriptVM/Test/ScriptVMSmokeTest.cpp")
 
 # Nanite 页池簿记冒烟测试的 main carve-out（同理由）。它自带 main()，由
 # ZENGINE_BUILD_NANITE_PAGEPOOL_SMOKE_TEST 单独控制（见
@@ -2056,6 +2064,14 @@ add_subdirectory(Scripting/ScriptTime/Test)
 # 与"REPEAT 不算新按下"这两条 —— 违反前者会让一次按键丢事件，违反后者会让
 # "按一次跳一下"变成"按住每帧都跳"。
 add_subdirectory(Scripting/ScriptInput/Test)
+
+# 脚本 VM 端到端冒烟测试。Own main(); carved out of the ZRuntime glob above and
+# built only when ZENGINE_BUILD_SCRIPT_VM_SMOKE_TEST=ON（且 PAPI_TYPE=quickjs）。
+# 这是唯一一个真正跑 pesapi 绑定链的测试：起一个真的 QuickJS VM，往里 eval 真
+# 的 JS，调 VectorMath / Time / Input / Key.Space / Debug.Log，再走一遍
+# LoadModule + CreateInstance + OnUpdate —— 也就是 TypeScriptComponent 实际走的
+# 那条路。headless，不需要窗口 / GPU / 引擎系统。
+add_subdirectory(Scripting/ScriptVM/Test)
 
 # =============================================================================
 # ASTC texture decompression support (Phase 6)
