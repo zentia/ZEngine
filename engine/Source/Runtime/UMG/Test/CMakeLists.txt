@@ -132,3 +132,44 @@ endif()
 add_test(NAME UMGAnimationSmokeTest COMMAND UMGAnimationSmokeTest)
 
 message(STATUS "Configured UMG animation smoke-test target: UMGAnimationSmokeTest")
+
+# =====================================================================
+# UMG anchor smoke test (P1 anchor / adaptive layout).
+# ---------------------------------------------------------------------
+# Verifies the header-only pure core in Layout/UMGAnchor.h (Clamp01 /
+# AnchorSpanOffset / AnchorSpanSize / ResolveTopLeft): point-anchor top-left
+# resolution for the four corners + center, positive/negative pixel offsets,
+# out-of-range anchor/pivot clamping, and non-origin parent rects. Fully
+# self-contained (std headers only), so the target links only the include root.
+#
+#   cmake -B build -DZENGINE_BUILD_UMG_ANCHOR_SMOKE_TEST=ON
+#   cmake --build build --target UMGAnchorSmokeTest
+# =====================================================================
+
+option(ZENGINE_BUILD_UMG_ANCHOR_SMOKE_TEST
+       "Build the UMG anchor smoke-test executable"
+       OFF)
+
+if(NOT ZENGINE_BUILD_UMG_ANCHOR_SMOKE_TEST)
+    return()
+endif()
+
+add_executable(UMGAnchorSmokeTest UMGAnchorSmokeTest.cpp)
+
+set_target_properties(UMGAnchorSmokeTest PROPERTIES
+    CXX_STANDARD 20
+    FOLDER "Engine/Tests"
+)
+
+# Header-only include chain: only the engine/Source root is needed.
+target_include_directories(UMGAnchorSmokeTest PRIVATE
+    ${ENGINE_ROOT_DIR}/Source
+)
+
+if(MSVC)
+    target_compile_options(UMGAnchorSmokeTest PRIVATE /W4)
+endif()
+
+add_test(NAME UMGAnchorSmokeTest COMMAND UMGAnchorSmokeTest)
+
+message(STATUS "Configured UMG anchor smoke-test target: UMGAnchorSmokeTest")

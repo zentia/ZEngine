@@ -867,6 +867,14 @@ list(REMOVE_ITEM SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/UMG/Test/UMGAnimationSmokeTest.cpp")
 list(REMOVE_ITEM REGULAR_SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/UMG/Test/UMGAnimationSmokeTest.cpp")
+# UMG 锚点冒烟测试的 main carve-out（同理由）。它验证 header-only 纯核心 UMGAnchor.h
+# （Clamp01/AnchorSpanOffset/AnchorSpanSize/ResolveTopLeft：点锚四角+中心定位、正负偏移、
+# 越界夹紧、非原点父矩形）。Only built when ZENGINE_BUILD_UMG_ANCHOR_SMOKE_TEST=ON.
+# Header-only，只链 include root。
+list(REMOVE_ITEM SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/UMG/Test/UMGAnchorSmokeTest.cpp")
+list(REMOVE_ITEM REGULAR_SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/UMG/Test/UMGAnchorSmokeTest.cpp")
 # 分配器配对冒烟测试的 main carve-out（同理由）。Only built when
 # ZENGINE_BUILD_MEMORY_PAIRING_SMOKE_TEST=ON (see Core/Memory/Test/CMakeLists.txt).
 list(REMOVE_ITEM SOURCE_FILES

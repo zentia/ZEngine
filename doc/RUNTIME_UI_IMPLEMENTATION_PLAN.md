@@ -85,6 +85,32 @@ P1 的**可本地验证部分**（动画的纯逻辑驱动 + 作用对象字段�
 
 ---
 
+## ✅ P1 落地记录（补，2026-10-27，锚点/自适应布局纯换算）
+
+**缺口 6（锚点/自适应）——纯换算已落地**：
+- **`UMG/Layout/UMGAnchor.h`**（header-only，无引擎/ZSlate 依赖）：Unity RectTransform 的最小可用子集。
+  - `Clamp01`：anchor/pivot 越界夹紧。
+  - `AnchorSpanOffset/AnchorSpanSize`：拉伸锚下锚点跨距的像素偏移与尺寸（Fill 用）。
+  - `ResolveTopLeft`：点锚下 widget 左上角绝对像素位置。公式
+    `top_left = parent_pos + anchor*parent_size + offset - pivot*size`，统一处理四角/中心锚
+    （anchor=pivot=(0,0)→贴父左上；(1,1)→贴父右下；(0.5,0.5)→居中）。
+- **`UMG/Core/UWidget.h`**：加 `m_AnchorMin/m_AnchorMax/m_Pivot/m_Offset`（默认 anchor 0,0 /
+  pivot 0,0 / offset 0 = "贴左上、无偏移"，即 ZSlate flow layout 现状，**现有 widget 不受影响**）
+  + getter/setter（setter 自动 Clamp01）+ `ResolveAbsoluteTopLeft(parent_pos,parent_size,size)`
+  （纯转发到 `layout_core::ResolveTopLeft`）。anchor 四字段序列化进 `UMGPropertyBag`
+  （`SerializeProperties/DeserializeProperties`），Designer 存的锚点能 round-trip。
+- **验证**：`UMGAnchorSmokeTest` 17/17 绿（Clamp01 / 拉伸锚跨距：全屏/顶部条/点锚 /
+  点锚四角定位 / 中心居中 / 正偏移 / 负偏移内缩 / 越界 anchor+pivot 夹紧 / 非原点父矩形）。
+- ZRuntime 干净编译（`UWidget.h` 新字段/新方法 + 序列化类型检查通过）。
+
+**未落地（渲染绑定，留真机清单）**：
+1. **喂给 ZSlate FGeometry**：`ResolveAbsoluteTopLeft` 算出的绝对位置要经 `FGeometry::MakeChild`
+   传给 layout/paint——属 ZSlate submodule 渲染绑定，无法本地验证。
+2. **拉伸锚的实际 Fill**：`AnchorSpanSize` 给出跨距，但让 widget 真按跨距拉伸需接 ZSlate 的
+   `AlignChildInRegion`（Fill 分支）。
+
+---
+
 > 所以本方案**不是从零建 UI**，而是**补齐现有 UMG 相对 Unity uGUI / UE UMG 的缺口**。
 
 ---
@@ -210,11 +236,13 @@ ZSlate 层有焦点概念，但 UMG 层没有暴露"哪个 widget 有焦点 / ta
 **仍待真机**：把 `m_RenderTransform` 应用到 ZSlate `SWidget` 的 paint（opacity 乘 tint /
 transform 折进几何），见顶部 P1 记录的"未落地"清单。
 
-### 3.2 缺口 6 — 锚点/自适应（P1 末）
+### 3.2 缺口 6 — 锚点/自适应（✅ 纯换算已落地，见顶部 P1 记录）
 
-UMG 用 ZSlate flow layout，无 Unity Anchor。最小方案：给 `UWidget` 加
-`Anchor`(0-1 归一化) + `Offset`，`UUserWidget` 布局时按 viewport 尺寸换算成绝对位置。
-> 这是"够用"方案，不是 Unity 的完整 anchor presets。真要全功能可后置。
+UMG 用 ZSlate flow layout，无 Unity Anchor。已落地为 `UMG/Layout/UMGAnchor.h`（纯换算核心）+
+`UWidget` 的 `anchor_min/anchor_max/pivot/offset` 字段与 `ResolveAbsoluteTopLeft`。
+
+**仍待真机**：把算出的绝对位置喂给 ZSlate 的 `FGeometry`（`MakeChild`）——属渲染绑定，留清单。
+> 这是"够用"方案（点锚四角/中心 + 拉伸锚跨距），不是 Unity 的完整 anchor presets。
 
 ---
 

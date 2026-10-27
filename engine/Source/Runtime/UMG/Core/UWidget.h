@@ -4,6 +4,7 @@
 #include "Runtime/UMG/Core/UMGProperties.h"
 #include "Runtime/UMG/Animation/UMGAnimation.h"
 #include "Runtime/UMG/Animation/UWidgetAnimation.h"
+#include "Runtime/UMG/Layout/UMGAnchor.h"
 
 #include <memory>
 #include <string>
@@ -118,6 +119,36 @@ public:
     virtual int GetChildCount() const { return 0; }
     virtual std::shared_ptr<UWidget> GetChildAt(int index) const { (void)index; return nullptr; }
 
+    // --- Anchor / adaptive layout (P1) ---------------------------------------
+    // A minimal Unity-RectTransform-style anchor model (see Layout/UMGAnchor.h for
+    // the pure conversion core). anchor_min/anchor_max are normalized [0,1] points
+    // inside the parent rect; min==max is a point anchor (widget keeps its own size
+    // and follows the anchor), min!=max is a stretch anchor (widget fills that span
+    // along the axis). pivot is this widget's own reference point [0,1]. offset is a
+    // pixel offset added after the anchor pixel position. The default (anchor 0,0 /
+    // pivot 0,0 / offset 0) means "top-left, no offset" — the ZSlate flow-layout
+    // behaviour widgets already have, so existing widgets are unaffected.
+    const layout_core::Vec2& GetAnchorMin() const { return m_AnchorMin; }
+    const layout_core::Vec2& GetAnchorMax() const { return m_AnchorMax; }
+    const layout_core::Vec2& GetPivot() const { return m_Pivot; }
+    const layout_core::Vec2& GetOffset() const { return m_Offset; }
+    void SetAnchorMin(layout_core::Vec2 a) { m_AnchorMin = layout_core::Clamp01(a); }
+    void SetAnchorMax(layout_core::Vec2 a) { m_AnchorMax = layout_core::Clamp01(a); }
+    void SetPivot(layout_core::Vec2 p) { m_Pivot = layout_core::Clamp01(p); }
+    void SetOffset(layout_core::Vec2 o) { m_Offset = o; }
+
+    // Resolve this widget's absolute top-left pixel position inside a parent rect
+    // (parent_pos..parent_pos+parent_size) given this widget's own pixel size. Pure
+    // forwarding to layout_core::ResolveTopLeft so the arithmetic is testable
+    // headlessly. Applying the result to ZSlate's FGeometry (MakeChild) is the
+    // render-bound wiring on the real-machine list, not here.
+    layout_core::Vec2 ResolveAbsoluteTopLeft(layout_core::Vec2 parent_pos,
+                                             layout_core::Vec2 parent_size,
+                                             layout_core::Vec2 size) const
+    {
+        return layout_core::ResolveTopLeft(parent_pos, parent_size, m_AnchorMin, m_Pivot, m_Offset, size);
+    }
+
     // --- Reflection / serialization surface (P2) -----------------------------
     // Stable class identity used by the widget factory and the on-disk node
     // (UWidgetAsset). Must match UMGWidgetFactory::Create().
@@ -130,10 +161,22 @@ public:
     virtual void SerializeProperties(UMGPropertyBag& bag) const
     {
         bag.SetInt("visibility", static_cast<int>(m_Visibility));
+        bag.SetFloat("anchor_min_x", m_AnchorMin.x);
+        bag.SetFloat("anchor_min_y", m_AnchorMin.y);
+        bag.SetFloat("anchor_max_x", m_AnchorMax.x);
+        bag.SetFloat("anchor_max_y", m_AnchorMax.y);
+        bag.SetFloat("pivot_x", m_Pivot.x);
+        bag.SetFloat("pivot_y", m_Pivot.y);
+        bag.SetFloat("offset_x", m_Offset.x);
+        bag.SetFloat("offset_y", m_Offset.y);
     }
     virtual void DeserializeProperties(const UMGPropertyBag& bag)
     {
         m_Visibility = static_cast<ZSlate::EVisibility>(bag.GetInt("visibility", static_cast<int>(m_Visibility)));
+        m_AnchorMin = layout_core::Clamp01(layout_core::Vec2{bag.GetFloat("anchor_min_x", m_AnchorMin.x), bag.GetFloat("anchor_min_y", m_AnchorMin.y)});
+        m_AnchorMax = layout_core::Clamp01(layout_core::Vec2{bag.GetFloat("anchor_max_x", m_AnchorMax.x), bag.GetFloat("anchor_max_y", m_AnchorMax.y)});
+        m_Pivot = layout_core::Clamp01(layout_core::Vec2{bag.GetFloat("pivot_x", m_Pivot.x), bag.GetFloat("pivot_y", m_Pivot.y)});
+        m_Offset = layout_core::Vec2{bag.GetFloat("offset_x", m_Offset.x), bag.GetFloat("offset_y", m_Offset.y)};
     }
 
 protected:
@@ -154,6 +197,10 @@ protected:
     int m_TabOrder {0};
     anim_core::RenderTransform m_RenderTransform;
     std::vector<UWidgetAnimation> m_Animations;
+    layout_core::Vec2 m_AnchorMin {0.0f, 0.0f};
+    layout_core::Vec2 m_AnchorMax {0.0f, 0.0f};
+    layout_core::Vec2 m_Pivot {0.0f, 0.0f};
+    layout_core::Vec2 m_Offset {0.0f, 0.0f};
     std::shared_ptr<ZSlate::SWidget> m_Widget;
 };
 }  // namespace ZUMG
