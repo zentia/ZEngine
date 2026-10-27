@@ -46,7 +46,8 @@ namespace NaniteGPUBinding
     constexpr uint32_t kDrawCommands  = 4;  // storage（写）：RHIDrawIndexedIndirectCommand[]
     constexpr uint32_t kDrawCounter   = 5;  // storage（读写，原子）：可见计数
     constexpr uint32_t kPositions     = 6;  // storage：vec4[]，全局顶点位置
-    constexpr uint32_t kBindingCount  = 7;
+    constexpr uint32_t kHiZData       = 7;  // storage（只读，COMPUTE_BIT only）：HiZ 平铺金字塔
+    constexpr uint32_t kBindingCount  = 8;
 }  // namespace NaniteGPUBinding
 
 // ---------------------------------------------------------------------------
@@ -126,6 +127,10 @@ struct NaniteCullConstants
     Vector4 camera_position;     // xyz = 世界空间相机位置
     Vector4 lod_params;          // x = max_screen_error, y = lod_bias, z/w = 保留
     NaniteGPUUVec4 counts;       // x = cluster_count, y = instance_count, z = enable_lod, w = enable_culling
+    // HiZ 遮挡剔除（切法二）参数。x = enable_hiz_occlusion（0/1），y/z/w = 金字塔 baseW/baseH/numMips。
+    // numMips == 0 ⇒ kernel 里 SampleMaxDepth 直接返回 0（最远）⇒ 不遮挡，天然覆盖"还没有金字塔"
+    // 的第一帧（时间性 HiZ：剔除在帧首，本帧深度还没画出来，只能用上一帧的金字塔）。
+    Vector4 hiz;                 // x = enable_hiz_occlusion, y = baseW, z = baseH, w = numMips
 };
 
 // ---------------------------------------------------------------------------
@@ -142,7 +147,7 @@ struct NaniteCullCounter
 static_assert(sizeof(NaniteGPUUVec4) == 16, "NaniteGPUUVec4 must be 16 bytes");
 static_assert(sizeof(NaniteGPUCluster) == 80, "NaniteGPUCluster must be 80 bytes");
 static_assert(sizeof(NaniteGPUInstance) == 176, "NaniteGPUInstance must be 176 bytes");
-static_assert(sizeof(NaniteCullConstants) == 208, "NaniteCullConstants must be 208 bytes");
+static_assert(sizeof(NaniteCullConstants) == 224, "NaniteCullConstants must be 224 bytes (208 + hiz vec4)");
 static_assert(sizeof(NaniteCullCounter) == 16, "NaniteCullCounter must be 16 bytes");
 
 static_assert(offsetof(NaniteGPUCluster, center_radius) == 0, "cluster layout drifted");

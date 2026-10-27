@@ -303,6 +303,13 @@ private:
     NaniteClusterManager m_ClusterManager;
     NaniteCullingSystem m_CullingSystem;
 
+    // HiZ 遮挡（切法二）用的金字塔**布局镜像**（baseW/baseH/numMips + 每级尺寸/偏移）。
+    // 只记布局、不存深度——深度在 GPU 的 hiz_data 里，kernel 直接读。BuildHiZPyramidGPU
+    // 建完金字塔后 RecordHiZLayout 把它填上；下一帧帧首 BuildCullConstants 读它把
+    // baseW/baseH/numMips 塞进 cull constants。时间性 HiZ：本帧剔除读上一帧的金字塔。
+    // DestroyHiZResources 时清空（numMips=0 ⇒ 下一帧保守不遮挡，直到金字塔重建）。
+    nanite_hiz::HiZPyramid m_HiZPyramid;
+
     // 页池启用时的持久页槽位表（page_id → GPU 槽位）。容量按页池预算换算的元素数建。
     // UpdateStreaming 之后由 ExecuteStreamingUploads 驱动：admitted 认领槽位并拷几何、
     // evicted 归还槽位。未启用页池时它闲置（draw 仍走稠密 positions/indices）。

@@ -970,6 +970,34 @@ bool NaniteRenderer::EnsureGPUResources(uint32_t cluster_count,
     // 不动它，所以这里只要确认它不小于需求即可。
     m_GPU.cluster_capacity = std::max(m_GPU.cluster_capacity, cluster_count);
 
+    // HiZ 金字塔 buffer（binding 7）必须**始终**存在：cull shader 静态引用它，Vulkan 要求
+    // 一次 dispatch 里被管线引用的描述符都合法（VUID-08114）。第一帧剔除发生在任何深度
+    // 画出来之前，EnsureHiZResources 还没跑、hiz_data 还是 null —— 那样 binding 7 就是
+    // 未更新的描述符，vkCmdDispatch 报错。这里先建一个最小占位 buffer（1 float），让
+    // binding 7 恒合法；真正的金字塔由 EnsureHiZResources 按需长到 total_texels。占位期
+    // constants.hiz.x==0（enable_hiz_occlusion 关，或 numMips==0），kernel 走不遮挡分支，
+    // 根本不读它。
+    if (m_GPU.hiz_data == nullptr || m_GPU.hiz_data_memory == nullptr || m_GPU.hiz_data_capacity == 0)
+    {
+        if (m_GPU.hiz_data_memory != nullptr)
+        {
+            m_Rhi->FreeMemory(m_GPU.hiz_data_memory);
+            m_GPU.hiz_data_memory = nullptr;
+        }
+        if (m_GPU.hiz_data != nullptr)
+        {
+            m_Rhi->DestroyBuffer(m_GPU.hiz_data);
+            m_GPU.hiz_data = nullptr;
+        }
+        m_Rhi->CreateBuffer(sizeof(float),
+                            RHI_BUFFER_USAGE_STORAGE_BUFFER_BIT | RHI_BUFFER_USAGE_TRANSFER_SRC_BIT |
+                                RHI_BUFFER_USAGE_TRANSFER_DST_BIT,
+                            kNaniteHostMemory,
+                            m_GPU.hiz_data,
+                            m_GPU.hiz_data_memory);
+        m_GPU.hiz_data_capacity = 1;
+    }
+
     return ok_clusters && ok_instances && ok_positions && ok_indices && ok_visible && ok_commands &&
            ok_counter && ok_constants;
 }
@@ -1032,6 +1060,16 @@ void NaniteRenderer::UpdateDescriptorWrites()
         sizeof(Vector4);
     positions_info.buffer = use_page_pos ? m_GPU.page_positions : m_GPU.positions;
 
+    // HiZ 金字塔（切法二）：剔除 kernel 读上一帧的金字塔判遮挡。hiz_data 可能还没建
+    // （第一帧 / DestroyHiZResources 之后）——那种情况写一个空 range，kernel 靠
+    // constants.hiz.x==0 直接走不遮挡分支，不会真去读它。
+    RHIDescriptorBufferInfo hiz_info {};
+    hiz_info.offset = 0;
+    hiz_info.buffer = m_GPU.hiz_data;
+    hiz_info.range = (m_GPU.hiz_data != nullptr)
+                         ? static_cast<RHIDeviceSize>(m_GPU.hiz_data_capacity) * sizeof(float)
+                         : 0;
+
     RHIWriteDescriptorSet writes[] = {
         make_write(m_GPU.descriptor_set, NaniteGPUBinding::kCullConstants),
         make_write(m_GPU.descriptor_set, NaniteGPUBinding::kClusters),
@@ -1040,6 +1078,7 @@ void NaniteRenderer::UpdateDescriptorWrites()
         make_write(m_GPU.descriptor_set, NaniteGPUBinding::kDrawCommands),
         make_write(m_GPU.descriptor_set, NaniteGPUBinding::kDrawCounter),
         make_write(m_GPU.descriptor_set, NaniteGPUBinding::kPositions),
+        make_write(m_GPU.descriptor_set, NaniteGPUBinding::kHiZData),
     };
 
     writes[0].descriptorType = RHI_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
@@ -1054,6 +1093,7 @@ void NaniteRenderer::UpdateDescriptorWrites()
     writes[4].pBufferInfo = &command_info;
     writes[5].pBufferInfo = &counter_info;
     writes[6].pBufferInfo = &positions_info;
+    writes[7].pBufferInfo = &hiz_info;
 
     m_Rhi->UpdateDescriptorSets(static_cast<uint32_t>(sizeof(writes) / sizeof(writes[0])), writes, 0, nullptr);
 }
@@ -1096,11 +1136,13 @@ bool NaniteRenderer::EnsureComputePipeline()
                                                       nullptr};
         for (uint32_t slot = 1; slot < NaniteGPUBinding::kBindingCount; ++slot)
         {
-            bindings[slot] = {slot,
-                              RHI_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                              1,
-                              RHI_SHADER_STAGE_COMPUTE_BIT | RHI_SHADER_STAGE_VERTEX_BIT,
-                              nullptr};
+            // kHiZData（binding 7）是 COMPUTE_BIT only：只有剔除 kernel 读它，光栅 vertex
+            // shader 不碰。加它之前这套 layout 是 compute+vertex 共用的 7 个 binding，动
+            // vertex 的可见性会波及光栅管线，所以 HiZ 单独标 COMPUTE_BIT。
+            const RHIShaderStageFlags stage = (slot == NaniteGPUBinding::kHiZData)
+                                                  ? RHI_SHADER_STAGE_COMPUTE_BIT
+                                                  : (RHI_SHADER_STAGE_COMPUTE_BIT | RHI_SHADER_STAGE_VERTEX_BIT);
+            bindings[slot] = {slot, RHI_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, stage, nullptr};
         }
 
         RHIDescriptorSetLayoutCreateInfo layout_info {};
@@ -1346,6 +1388,16 @@ NaniteCullConstants NaniteRenderer::BuildCullConstants(const std::shared_ptr<Ren
     constants.counts.y = static_cast<uint32_t>(m_SceneGPUData.instances.size());
     constants.counts.z = config.enable_lod ? 1u : 0u;
     constants.counts.w = config.enable_culling ? 1u : 0u;
+
+    // HiZ 遮挡（切法二）：开关 + 上一帧金字塔的尺寸。numMips==0（还没建过金字塔，即第一帧）
+    // 时 kernel 的 SampleMaxDepth 恒返回 0 ⇒ 不遮挡，天然保守。金字塔是时间性的——上一帧
+    // 末尾 BuildHiZPyramidGPU 生成，本帧帧首的剔除读它。
+    const nanite_hiz::HiZPyramid& hiz_pyramid = m_HiZPyramid;
+    const bool hiz_ready = config.enable_hiz_occlusion && hiz_pyramid.Valid();
+    constants.hiz = Vector4(hiz_ready ? 1.0f : 0.0f,
+                            static_cast<float>(hiz_pyramid.baseW),
+                            static_cast<float>(hiz_pyramid.baseH),
+                            static_cast<float>(hiz_ready ? hiz_pyramid.numMips : 0));
 
     return constants;
 }
@@ -1799,6 +1851,30 @@ void NaniteRenderer::BuildHiZPyramidGPU()
     int layout_mips = 0;
     nanite_hiz::HiZMipLayout(width, height, mips, layout_mips);
 
+    // 记录金字塔布局镜像，供下一帧帧首的 BuildCullConstants 把 baseW/baseH/numMips 塞进
+    // cull constants（时间性 HiZ：本帧剔除读上一帧的金字塔）。GPU 金字塔的平铺布局与
+    // HiZMipLayout 逐位一致（nanite_hiz.comp 用同一套整数推导），所以只记布局即可。
+    {
+        nanite_hiz::HiZPyramid& py = m_HiZPyramid;
+        py.Reset();
+        py.baseW = width;
+        py.baseH = height;
+        py.numMips = layout_mips;
+        py.mipW.resize(layout_mips);
+        py.mipH.resize(layout_mips);
+        py.mipOffset.resize(layout_mips);
+        for (int i = 0; i < layout_mips; ++i)
+        {
+            py.mipW[i] = mips[i][0];
+            py.mipH[i] = mips[i][1];
+            py.mipOffset[i] = mips[i][2];
+        }
+        // data 不填（深度在 GPU hiz_data 里）；Valid() 只看 baseW/baseH/numMips/data 非空，
+        // 这里 data 为空会让 Valid() 返回 false，所以直接把标志位单独判。为让 BuildCullConstants
+        // 的 hiz_ready 判据成立，塞一个占位元素使 data 非空（布局才是权威，深度不在此）。
+        py.data.assign(1, 0.0f);
+    }
+
     RHICommandBuffer* command_buffer = m_Rhi->GetCurrentCommandBuffer();
     const bool owns_command_buffer = (command_buffer == nullptr);
     if (owns_command_buffer)
@@ -2048,6 +2124,9 @@ void NaniteRenderer::BuildHiZPyramidGPU()
 
 void NaniteRenderer::DestroyHiZResources()
 {
+    // 布局镜像一并清空：下一帧 BuildCullConstants 拿到 numMips==0 ⇒ 保守不遮挡，
+    // 直到金字塔随新的深度 target 重建。
+    m_HiZPyramid.Reset();
     if (m_Rhi == nullptr)
     {
         return;

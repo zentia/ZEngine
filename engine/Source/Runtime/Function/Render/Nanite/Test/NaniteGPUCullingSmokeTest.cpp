@@ -895,14 +895,16 @@ int main()
 
     // 描述符槽：C++ 的 NaniteGPUBinding 与 GLSL 的 layout(binding = N) 必须一一对应。
     // 写错一个槽，kernel 会读到完全无关的缓冲，而编译期毫无提示。
+    // 切法二加了 kHiZData（binding 7，HiZ 遮挡剔除读上一帧金字塔），cull kernel 现在绑 7 个。
     Check(SameSequence(ExtractBindings(cull_source),
                        {NaniteGPUBinding::kCullConstants,
                         NaniteGPUBinding::kClusters,
                         NaniteGPUBinding::kInstances,
                         NaniteGPUBinding::kVisibleList,
                         NaniteGPUBinding::kDrawCommands,
-                        NaniteGPUBinding::kDrawCounter}),
-          "the cull kernel binds its six resources at the slots NaniteGPUBinding declares");
+                        NaniteGPUBinding::kDrawCounter,
+                        NaniteGPUBinding::kHiZData}),
+          "the cull kernel binds its seven resources at the slots NaniteGPUBinding declares");
     Check(SameSequence(ExtractBindings(vert_source),
                        {NaniteGPUBinding::kCullConstants,
                         NaniteGPUBinding::kClusters,

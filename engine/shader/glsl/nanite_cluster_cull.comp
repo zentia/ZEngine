@@ -30,6 +30,7 @@ layout(set = 0, binding = 0) uniform _nanite_cull_constants
     vec4 camera_position;
     vec4 lod_params;         // x = max_screen_error
     uvec4 counts;            // x = cluster_count, y = instance_count, z = enable_lod, w = enable_culling
+    vec4 hiz;                // x = enable_hiz_occlusion, y = baseW, z = baseH, w = numMips
 } u_constants;
 
 layout(std430, set = 0, binding = 1) readonly buffer _nanite_clusters
@@ -59,6 +60,19 @@ layout(std430, set = 0, binding = 5) buffer _nanite_cull_counter
     uint culled_count;
     uint reserved;
 } u_counter;
+
+// HiZ 金字塔（切法二遮挡剔除）：平铺 storage buffer，布局与 CPU nanite_hiz::HiZPyramid.data
+// 逐字节一致（mip0 全部 texel 在前，其后 mip1……每 texel 是该区域 max 深度）。
+// **上一帧**末尾由 nanite_hiz.comp 生成（时间性 HiZ：剔除发生在帧首，本帧深度还没画出来）。
+// 每级尺寸/偏移不进 header——由 hiz.y/z/w（baseW/baseH/numMips）在本文件里按 HiZMipLayout
+// 的同一套整数推导重算，与 CPU 逐位一致。binding 7 是 COMPUTE_BIT only（见 NaniteGPUBinding）。
+// 放在计数器（binding 5）之后声明，让 layout 声明的出现顺序与 NaniteGPUBinding 槽位一致
+// （NaniteGPUCullingSmokeTest 按出现顺序抽取各 layout 的绑定槽号再比对，所以注释里
+// 千万别出现 layout 绑定槽加数字的字面量——否则抽取器会在这里误停，把真正的槽号漏掉）。
+layout(std430, set = 0, binding = 7) readonly buffer _nanite_hiz_data
+{
+    float hiz_data[];
+};
 
 // 把模型空间的 AABB 变成世界空间的 AABB。
 // 8 个角点全变换一遍再取 min/max —— 和 CPU 侧
@@ -133,6 +147,199 @@ bool LodKeepsCluster(in NaniteGPUCluster cluster, in vec3 world_center)
     return lod_level >= uint(cluster.bounds_max.w);
 }
 
+// ===========================================================================
+// HiZ 遮挡判据（切法二）。逐行镜像 CPU 侧：
+//   * NaniteHierarchicalZBuffer::IsOccluded   （NaniteCulling.cpp:364）
+//   * nanite_hiz::MipLevelForRect             （NaniteHiZ.h:178）
+//   * nanite_hiz::SampleMaxDepth              （NaniteHiZ.h:199）
+//   * nanite_hiz::TestOccluded                （NaniteHiZ.h:230）
+// 任何一处走偏，GPU 与 CPU 对"这个簇被不被遮挡"的判断就会不一致，A/B 测试当场红。
+//
+// 深度约定（与 CPU 逐位一致，见 NaniteHiZ.h 头注释）：
+//   * reversed-Z：1.0 = 最近、0.0 = 最远；金字塔 max 归约（存区域内最近的深度）。
+//   * 物体被遮挡 ⟺ 物体最近深度 < 区域内金字塔最大深度（区域里所有 texel 都比它近）。
+//     保守底线：只要有一个 texel 更远或相等 ⇒ 判可见，绝不剔除（误剔 = 破洞，比不剔更糟）。
+// ===========================================================================
+
+// 每级 (width, height, offset)。与 CPU HiZMipLayout 逐位一致：mip 数 = 使 maxDim>>n
+// 仍 >0 的最大 n（封顶 16，与 GPU header 一致）；mip L 尺寸 = base >> L（0 则取 1）；
+// offset 是前面所有级 texel 数累加。
+void HiZMipLayout(out uint widths[16], out uint heights[16], out uint offsets[16])
+{
+    const uint baseW = uint(u_constants.hiz.y);
+    const uint baseH = uint(u_constants.hiz.z);
+    const uint maxDim = max(baseW, baseH);
+    int numMips = 1;
+    while ((maxDim >> uint(numMips)) > 0u && numMips < 16)
+    {
+        ++numMips;
+    }
+    uint offset = 0u;
+    for (int level = 0; level < numMips; ++level)
+    {
+        const uint w = (baseW >> uint(level)) != 0u ? (baseW >> uint(level)) : 1u;
+        const uint h = (baseH >> uint(level)) != 0u ? (baseH >> uint(level)) : 1u;
+        widths[level] = w;
+        heights[level] = h;
+        offsets[level] = offset;
+        offset += w * h;
+    }
+}
+
+// 屏幕矩形该采哪个 mip：让矩形在金字塔上覆盖约 1~4 个 texel 的那一级。逐行对应
+// MipLevelForRect——矩形越大 mip 越粗。
+int MipLevelForRect(uint x0, uint y0, uint x1, uint y1, int numMips)
+{
+    if (x1 <= x0 || y1 <= y0 || numMips <= 1)
+    {
+        return 0;
+    }
+    const uint maxSide = max(x1 - x0, y1 - y0);
+    int level = 0;
+    uint span = maxSide;
+    while (span > 4u && level < numMips - 1)
+    {
+        span >>= 1u;
+        ++level;
+    }
+    return level;
+}
+
+// 采样矩形区域内的最大深度。逐行对应 SampleMaxDepth（结构一致，深度约定见下）。
+float SampleMaxDepth(uint x0, uint y0, uint x1, uint y1)
+{
+    const uint baseW = uint(u_constants.hiz.y);
+    const uint baseH = uint(u_constants.hiz.z);
+    const int numMips = int(u_constants.hiz.w);
+    if (x1 <= x0 || y1 <= y0 || numMips <= 0)
+    {
+        return 0.0f;  // 空区域 → 0（最远），保守：不遮挡。
+    }
+
+    x0 = min(x0, baseW);
+    y0 = min(y0, baseH);
+    x1 = min(x1, baseW);
+    y1 = min(y1, baseH);
+    if (x1 <= x0 || y1 <= y0)
+    {
+        return 0.0f;
+    }
+
+    uint widths[16];
+    uint heights[16];
+    uint offsets[16];
+    HiZMipLayout(widths, heights, offsets);
+
+    const int level = MipLevelForRect(x0, y0, x1, y1, numMips);
+    const uint div = 1u << uint(level);
+    const uint tx0 = (x0 + div - 1u) / div;  // ceil(x0 / 2^level)
+    const uint ty0 = (y0 + div - 1u) / div;
+    const uint tx1 = (x1 - 1u) / div;        // floor((x1-1) / 2^level)
+    const uint ty1 = (y1 - 1u) / div;
+
+    // 金字塔是 max 归约（nanite_hiz.comp 存区域里最**远**的深度）。standard-Z 下越界
+    // texel 返回 1.0（最远）——与 CPU HiZPyramid::Texel 的 0.0 不同，因为这里深度约定
+    // 反过来了：返回 1.0 让越界 texel 永不"更近"，不会把区域误判成更近（更保守）。
+    float maxDepth = 0.0f;
+    for (uint ty = ty0; ty <= ty1; ++ty)
+    {
+        for (uint tx = tx0; tx <= tx1; ++tx)
+        {
+            float t = 1.0f;
+            if (tx < widths[level] && ty < heights[level])
+            {
+                t = hiz_data[offsets[level] + ty * widths[level] + tx];
+            }
+            maxDepth = max(maxDepth, t);
+        }
+    }
+    return maxDepth;
+}
+
+// 遮挡判据：把模型空间 AABB 的 8 个角点乘实例变换到世界空间，投影到 NDC → 屏幕矩形 +
+// 取物体最近深度，再交给 SampleMaxDepth。结构与 CPU NaniteHierarchicalZBuffer::IsOccluded
+// 一致，但深度约定按**真实深度缓冲**（standard-Z）走，见下。返回 true = 被遮挡（可剔除）。
+//
+// 深度约定（关键，与 NaniteHiZ.h 头注释的 reversed-Z 相反——那是纯 CPU 核心的旧假设）：
+//   本工程投影矩阵 Math::MakePerspectiveMatrix 给 standard-Z：ndc.z 近平面=0、远平面=1；
+//   离屏深度 target 清屏值 1.0、depthCompareOp = LESS（NaniteRenderer.cpp:1284,2189）。
+//   所以深度缓冲里"近=0、远=1"，金字塔 max 归约存的是区域里**最远**的深度。
+//   物体被遮挡 ⟺ 物体**最近**点（8 角点里最小的 ndc.z）比区域内最远 texel 还远：
+//       nearest_depth > regionMax  ⇒  区域里所有已画表面都比物体近 ⇒ 物体藏在后面 ⇒ 剔除。
+//   保守底线：只要有一个 texel 比物体最近点更近（regionMax < nearest_depth）或相等，
+//   就判可见、不剔除——误剔 = 破洞，比不剔更糟。
+bool HiZOccludeCluster(in NaniteGPUInstance instance, in vec3 box_min, in vec3 box_max)
+{
+    if (u_constants.hiz.x == 0.0f)
+    {
+        return false;  // HiZ 遮挡未启用：保守地不剔除。
+    }
+
+    const mat4 view_projection = u_constants.view_projection;
+    const float baseWf = u_constants.hiz.y;
+    const float baseHf = u_constants.hiz.z;
+
+    // 8 个角点投影到 NDC（view_projection * vec4(world, 1)，除以 w），与 CPU
+    // transformCoord 一致（w==0 折成 ZERO）。
+    float min_px = baseWf;
+    float min_py = baseHf;
+    float max_px = 0.0f;
+    float max_py = 0.0f;
+    float nearest_depth = 1.0f;  // standard-Z：最近 = 最小 ndc.z（初始化为最远，取 min）
+    bool offscreen = false;
+    for (int corner = 0; corner < 8; ++corner)
+    {
+        const vec3 local = vec3(((corner & 1) == 0) ? box_min.x : box_max.x,
+                                ((corner & 2) == 0) ? box_min.y : box_max.y,
+                                ((corner & 4) == 0) ? box_min.z : box_max.z);
+        const vec4 world = instance.transform * vec4(local, 1.0);
+        const vec4 clip = view_projection * world;
+        vec3 ndc = (clip.w == 0.0f) ? vec3(0.0f) : clip.xyz / clip.w;
+
+        // 任一角点落在 [-1,1] 之外 ⇒ 物体横跨视锥，保守放宽到全屏（几乎必然判可见）。
+        if (ndc.x < -1.0f || ndc.x > 1.0f || ndc.y < -1.0f || ndc.y > 1.0f)
+        {
+            offscreen = true;
+            nearest_depth = min(nearest_depth, clamp(ndc.z, 0.0f, 1.0f));
+            break;
+        }
+        const float px = (ndc.x * 0.5f + 0.5f) * baseWf;
+        const float py = (1.0f - (ndc.y * 0.5f + 0.5f)) * baseHf;  // 翻转 y（行 0 = 顶）
+        min_px = min(min_px, px);
+        min_py = min(min_py, py);
+        max_px = max(max_px, px);
+        max_py = max(max_py, py);
+        nearest_depth = min(nearest_depth, clamp(ndc.z, 0.0f, 1.0f));
+    }
+
+    if (offscreen)
+    {
+        min_px = 0.0f;
+        min_py = 0.0f;
+        max_px = baseWf;
+        max_py = baseHf;
+    }
+
+    const uint x0 = uint(clamp(min_px, 0.0f, baseWf));
+    const uint y0 = uint(clamp(min_py, 0.0f, baseHf));
+    const uint x1 = uint(clamp(max_px, 0.0f, baseWf));
+    const uint y1 = uint(clamp(max_py, 0.0f, baseHf));
+
+    const float regionMax = SampleMaxDepth(x0, y0, x1, y1);
+    // regionMax==0（空区域，全被近处覆盖到 0）在 standard-Z 下几乎不出现（清屏 1.0），
+    // 但保留这条：空区域 → 不遮挡（保守）。
+    if (regionMax <= 0.0f)
+    {
+        return false;
+    }
+    // 保守容差：物体最近深度只比区域最远 texel 大一点点（< eps）时判可见、不剔除。
+    // CPU 与 GPU 各自算 ndc.z 的最后一位可能有 ulp 级差异，落在边界上的簇两边会翻转；
+    // 加 eps 让这种"贴着深度边界"的簇统一走保守（可见）分支，两边一致，且符合"误剔比
+    // 不剔更糟"的底线。eps 取深度量化噪声的量级（standard-Z 在远处精度差，取 1e-3）。
+    const float kOcclusionEps = 1.0e-3f;
+    return nearest_depth > regionMax + kOcclusionEps;
+}
+
 void main()
 {
     uint cluster_index = gl_GlobalInvocationID.x;
@@ -174,6 +381,14 @@ void main()
             atomicAdd(u_counter.culled_count, 1u);
             return;
         }
+    }
+
+    // HiZ 遮挡剔除（切法二）：读上一帧的金字塔，判这个簇的屏幕矩形是否被完全遮挡。
+    // 保守判据——拿不准就绝不剔除，所以误剔比不剔更糟的破洞不会出现。开关在 hiz.x。
+    if (HiZOccludeCluster(instance, cluster.bounds_min.xyz, cluster.bounds_max.xyz))
+    {
+        atomicAdd(u_counter.culled_count, 1u);
+        return;
     }
 
     if (!LodKeepsCluster(cluster, (world_min + world_max) * 0.5))

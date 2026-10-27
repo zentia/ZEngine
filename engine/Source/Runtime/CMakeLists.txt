@@ -1042,6 +1042,13 @@ list(REMOVE_ITEM SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Nanite/Test/NaniteHiZABSmokeTest.cpp")
 list(REMOVE_ITEM REGULAR_SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Nanite/Test/NaniteHiZABSmokeTest.cpp")
+# HiZ 遮挡剔除 A/B 测试同理：自带 main()、链 VulkanRHI.h，独立 exe（见 Nanite/Test/
+# CMakeLists.txt 的 ZENGINE_BUILD_NANITE_HIZ_OCCLUSION_AB_SMOKE_TEST），必须从 ZRuntime
+# glob 剔除，否则 /WHOLEARCHIVE 链接 ZRuntime 的消费 exe 会 LNK2005 "main already defined"。
+list(REMOVE_ITEM SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Nanite/Test/NaniteHiZOcclusionABSmokeTest.cpp")
+list(REMOVE_ITEM REGULAR_SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Nanite/Test/NaniteHiZOcclusionABSmokeTest.cpp")
 # ShaderLab 一批自带 main() 的冒烟测试同样要 carve-out：它们各自有独立 exe 目标
 # （见 Function/ShaderLab/Test/CMakeLists.txt），但此前从未从 ZRuntime 的
 # GLOB_RECURSE 里剔除，导致任何 /WHOLEARCHIVE 链接 ZRuntime 的消费 exe 都会

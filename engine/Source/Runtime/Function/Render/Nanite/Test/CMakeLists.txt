@@ -439,3 +439,52 @@ if(ZENGINE_BUILD_NANITE_HIZ_AB_SMOKE_TEST)
         message(STATUS "Configured Nanite HiZ A/B smoke test: NaniteHiZABSmokeTest")
     endif()
 endif()
+
+# =============================================================================
+# NaniteHiZOcclusionABSmokeTest — HiZ 遮挡剔除真机 A/B（Vulkan headless，切法二）。
+# -----------------------------------------------------------------------------
+# 把 VulkanRHI 在无窗口环境下拉起，跑多帧离屏渲染（时间性 HiZ：第 N 帧剔除读第 N-1
+# 帧末尾的金字塔），验证 nanite_cluster_cull.comp 里逐行镜像 CPU 判据的 HiZ 遮挡分支：
+# ①被遮挡簇从 draw_commands 消失；②可见簇一个不少；③无破洞（GBuffer 覆盖率不因误剔
+# 下降，硬门槛）；④GPU 可见集 == CPU nanite_hiz:: 逐簇黄金参照。两个场景：无遮挡
+# （不许误剔）+ 有遮挡（occluder 藏住后平面，剔除后覆盖率不变）。
+#
+# 与 NaniteHiZABSmokeTest 同一套 harness 手法（链 VulkanRHI.h + 注册无主窗口 WindowSystem），
+# 只在 Windows/Linux（有 Vulkan 后端）下配置。
+#
+#   cmake -B build -DZENGINE_BUILD_NANITE_HIZ_OCCLUSION_AB_SMOKE_TEST=ON
+#   cmake --build build --target NaniteHiZOcclusionABSmokeTest
+# =============================================================================
+option(ZENGINE_BUILD_NANITE_HIZ_OCCLUSION_AB_SMOKE_TEST
+       "Build the Nanite HiZ occlusion-cull A/B (Vulkan headless) smoke-test executable"
+       OFF)
+
+if(ZENGINE_BUILD_NANITE_HIZ_OCCLUSION_AB_SMOKE_TEST)
+    if(NOT WIN32 AND NOT (UNIX AND NOT APPLE))
+        message(STATUS "Nanite HiZ occlusion A/B smoke test needs the Vulkan backend (Windows/Linux); skipping on this platform")
+    else()
+        add_executable(NaniteHiZOcclusionABSmokeTest NaniteHiZOcclusionABSmokeTest.cpp)
+
+        set_target_properties(NaniteHiZOcclusionABSmokeTest PROPERTIES
+            CXX_STANDARD 23
+            FOLDER "Engine/Tests"
+        )
+
+        target_link_libraries(NaniteHiZOcclusionABSmokeTest PRIVATE ZRuntime)
+
+        if(TARGET ZEnginePCH)
+            target_link_libraries(NaniteHiZOcclusionABSmokeTest PRIVATE ZEnginePCH)
+            target_include_directories(NaniteHiZOcclusionABSmokeTest PRIVATE ${ENGINE_ROOT_DIR}/Source/CommonPCH)
+            add_dependencies(NaniteHiZOcclusionABSmokeTest ZEnginePCH)
+            target_precompile_headers(NaniteHiZOcclusionABSmokeTest REUSE_FROM ZEnginePCH)
+        endif()
+
+        if(MSVC)
+            target_compile_options(NaniteHiZOcclusionABSmokeTest PRIVATE /W4)
+        endif()
+
+        add_test(NAME NaniteHiZOcclusionABSmokeTest COMMAND NaniteHiZOcclusionABSmokeTest)
+
+        message(STATUS "Configured Nanite HiZ occlusion A/B smoke test: NaniteHiZOcclusionABSmokeTest")
+    endif()
+endif()

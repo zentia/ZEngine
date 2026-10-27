@@ -228,6 +228,12 @@ struct NaniteConfig
     bool enable_culling = true;
     bool enable_streaming = true;
 
+    // HiZ 遮挡剔除（切法二）。开启后 cluster-cull kernel 读上一帧的金字塔判遮挡，被完全
+    // 遮挡的簇写空命令。保守判据（拿不准绝不剔除），误剔比不剔更糟，所以正确性底线是"无破洞"。
+    // 时间性 HiZ：剔除在帧首，本帧深度还没画出来，只能用上一帧末尾生成的金字塔——第一帧
+    // （还没有金字塔）天然不遮挡。需要 enable_culling 也开（遮挡是视锥之后的第二步）。
+    bool enable_hiz_occlusion = false;
+
     // 页池字节预算（step 2.5 后续：真正的按页驻留）。0 = 关闭页池，退回纯距离裁剪
     // （UpdateStreaming 只标 cluster_loaded_flags，不约束总驻留字节）。> 0 时启用
     // NanitePagePool：叶子页按"距离优先 + LRU 破平"装进该字节预算，装不下的远页被
