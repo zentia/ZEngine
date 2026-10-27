@@ -187,6 +187,41 @@ exe 目标却从未从 `GLOB_RECURSE` 剔除，任何 `/WHOLEARCHIVE` 链接 ZRu
 
 ---
 
+### 落地记录 · 2.5 页槽位分配器（2026-10-26，CPU 侧；GPU 上传/回收待真机）
+
+**做了什么**：兑现页池落地记录里"剩下：拷进/释放显存"的第一层——**页槽位分配器**
+`Function/Render/Nanite/NanitePageSlotTable.h`（`nanite_pages::PageSlotTable`），header-only 纯簿记。
+
+**为什么需要它（现状诊断）**：`NaniteBuildSceneGPUData`（`NaniteGPUData.h:202`）把**整个场景**的几何
+摊成一段稠密 `positions`/`indices`，`NaniteRenderer`（`:1081-1111`）每帧把**全量** `UploadBytes` 到 GPU。
+`cluster_loaded_flags` 只闸渲染提交（`PrepareRenderData:431` 跳过未驻留叶子），**不闸上传**——所以 GPU
+始终物理持有全部几何，页池的 `admitted`/`evicted` 队列没有东西可拷/可释放。要让"拷进/释放显存"成立，
+GPU 数据布局必须从"整场景稠密"改成"持久页槽位 + 间接寻址"：
+
+1. 持久 GPU vertex/index 缓冲，容量 = 页池预算（不是整场景）。
+2. **本表**维护 `page_id → (vertex_slot_base, index_slot_base)` 的稳定映射 + 空闲表。`admitted` 页认领
+   槽位（渲染层随后把该页几何切片拷进对应 GPU 偏移）；`evicted` 页把槽位还回空闲表。
+3. shader 侧间接寻址：cluster geometry 经页表解析，而非稠密 `vertex_base`。
+
+**本层职责**：只管槽位簿记——稳定句柄、空闲表回收、churn 下不泄漏不重叠。设计要点：
+- **best-fit 分配**：从空闲段里选能装下的最小段，减少碎片。
+- **相邻段合并**：`Evict` 归还时按 start 排序合并相邻空闲段，防碎片化（已验：释放三段后能重新装下整段）。
+- **稳定句柄**：已驻留页重复 `Admit` 是 no-op，返回既有槽位、不重复计费。
+- **原子 admit**：vertex + index 两段必须同时拿到才 admit；任一不足则整体失败、不半驻留（避免页只进
+  一半几何）。
+- **稠密槽位数组**：`Evict` 用末尾元素填洞并同步被移动页的索引，`m_Slots` 无空洞。
+
+**验证（Windows headless，无需真机）**：新增 `Nanite/Test/NanitePageSlotTableSmokeTest.cpp`
+（header-only，只链 include 根），**32 项断言全绿**：基本认领连续/base 单调、稳定句柄 no-op、evict 归还 +
+相邻段合并、**200 轮 churn 无泄漏不重叠**、best-fit 装碎片洞、空间不足整体失败（含 index 段不足不半驻留）、
+evict 未驻留页安全 no-op、Reset 全清。`ZRuntime` 仍链接干净（carve-out 生效）。
+
+**剩下（真机项）**：①把本表接进 `NaniteRenderer`——`admitted` 页按 `vertex_slot_base` 增量 `UploadBytes`
+该页几何切片、`evicted` 页释放槽位；②持久 GPU 缓冲容量从"整场景"改成"页池预算换算的元素数"；③shader
+cluster geometry 改经页表间接寻址。这三步需要真机验证（本地只能编译 + 静态检查）。
+
+---
+
 ### 落地记录 · 2.5 HiZ（2026-10-26，CPU 侧；GPU 侧待真机）
 
 **做了什么**：把 `NaniteHierarchicalZBuffer` 那组纯 TODO 桩（`UpdateDepthBuffer` / `BuildHierarchy` /

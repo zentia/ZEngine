@@ -269,3 +269,39 @@ if(ZENGINE_BUILD_NANITE_PAGEPOOL_SMOKE_TEST)
 
     message(STATUS "Configured Nanite page-pool smoke test: NanitePagePoolSmokeTest")
 endif()
+
+# =============================================================================
+# NanitePageSlotTableSmokeTest — 页槽位分配器（NanitePageSlotTable.h）的无头验证
+# -----------------------------------------------------------------------------
+# 页池 admitted/evicted 增量队列与真实 RHI 上传/回收之间唯一 CPU 可验的桥：
+# 稳定句柄、空闲表回收不泄漏不重叠、churn、best-fit 碎片、空间不足整体失败。
+# 纯 CPU，只链 include root，不链 ZRuntime。
+#
+#   cmake -B build -DZENGINE_BUILD_NANITE_PAGETABLE_SMOKE_TEST=ON
+#   cmake --build build --target NanitePageSlotTableSmokeTest
+# =====================================================================
+option(ZENGINE_BUILD_NANITE_PAGETABLE_SMOKE_TEST
+       "Build the Nanite page-slot-table smoke-test executable"
+       OFF)
+
+if(ZENGINE_BUILD_NANITE_PAGETABLE_SMOKE_TEST)
+    add_executable(NanitePageSlotTableSmokeTest NanitePageSlotTableSmokeTest.cpp)
+
+    set_target_properties(NanitePageSlotTableSmokeTest PROPERTIES
+        CXX_STANDARD 20
+        FOLDER "Engine/Tests"
+    )
+
+    # Header-only include chain: only the engine/Source root is needed.
+    target_include_directories(NanitePageSlotTableSmokeTest PRIVATE
+        ${ENGINE_ROOT_DIR}/Source
+    )
+
+    if(MSVC)
+        target_compile_options(NanitePageSlotTableSmokeTest PRIVATE /W4)
+    endif()
+
+    add_test(NAME NanitePageSlotTableSmokeTest COMMAND NanitePageSlotTableSmokeTest)
+
+    message(STATUS "Configured Nanite page-slot-table smoke test: NanitePageSlotTableSmokeTest")
+endif()

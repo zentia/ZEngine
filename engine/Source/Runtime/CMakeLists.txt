@@ -985,6 +985,11 @@ list(REMOVE_ITEM SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Nanite/Test/NanitePagePoolSmokeTest.cpp")
 list(REMOVE_ITEM REGULAR_SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Nanite/Test/NanitePagePoolSmokeTest.cpp")
+# Nanite 页槽位分配器冒烟测试的 main carve-out（同理由，同页池测试）。
+list(REMOVE_ITEM SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Nanite/Test/NanitePageSlotTableSmokeTest.cpp")
+list(REMOVE_ITEM REGULAR_SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Nanite/Test/NanitePageSlotTableSmokeTest.cpp")
 # ShaderLab 一批自带 main() 的冒烟测试同样要 carve-out：它们各自有独立 exe 目标
 # （见 Function/ShaderLab/Test/CMakeLists.txt），但此前从未从 ZRuntime 的
 # GLOB_RECURSE 里剔除，导致任何 /WHOLEARCHIVE 链接 ZRuntime 的消费 exe 都会
