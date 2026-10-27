@@ -52,6 +52,35 @@ public:
     }
     ZSlate::EVisibility GetVisibility() const { return m_Visibility; }
 
+    // --- Per-frame tick (P1, wired now so P0 nav can rely on it) -------------
+    // Called once per frame for every widget in an in-viewport tree, before the
+    // Slate paint. Default no-op; subclasses override for animated / live HUD
+    // widgets (progress bars, timers). delta_time is the frame delta in seconds.
+    // Panels should override to recurse into children (see UMGTick.h for the
+    // shared recursion that skips Collapsed subtrees).
+    virtual void NativeTick(float delta_time) { (void)delta_time; }
+
+    // --- Keyboard focus / navigation (P0) ------------------------------------
+    // Whether this widget can take keyboard focus (UE UWidget::IsFocusable
+    // analogue). Interactive widgets (button, slider, editable text) return true.
+    bool IsFocusable() const { return m_Focusable; }
+    void SetFocusable(bool focusable) { m_Focusable = focusable; }
+
+    // Tab-order weight: focusable widgets are collected in depth-first tree
+    // order and Tab moves through them; a smaller weight sorts earlier. Default
+    // 0 = use tree order. (UE has explicit tab-order slots; this is the minimal
+    // subset that makes "Tab cycles through my buttons in the order I added
+    // them" work without a full navigation-rule graph.)
+    int GetTabOrder() const { return m_TabOrder; }
+    void SetTabOrder(int order) { m_TabOrder = order; }
+
+    // Child access for tree traversal (Tick / focus collection). UWidget is a
+    // leaf by default (0 children); UPanelWidget overrides to expose its
+    // children. This keeps the traversal header-only and dependency-light
+    // without a downcast or a children-view trait.
+    virtual int GetChildCount() const { return 0; }
+    virtual std::shared_ptr<UWidget> GetChildAt(int index) const { (void)index; return nullptr; }
+
     // --- Reflection / serialization surface (P2) -----------------------------
     // Stable class identity used by the widget factory and the on-disk node
     // (UWidgetAsset). Must match UMGWidgetFactory::Create().
@@ -84,6 +113,8 @@ protected:
     }
 
     ZSlate::EVisibility m_Visibility {ZSlate::EVisibility::Visible};
+    bool m_Focusable {false};
+    int m_TabOrder {0};
     std::shared_ptr<ZSlate::SWidget> m_Widget;
 };
 }  // namespace ZUMG

@@ -2,8 +2,11 @@
 
 #include "ZSlate/Widgets/SWidget.h"
 #include "Runtime/UMG/Core/UWidget.h"
+#include "Runtime/UMG/Core/UMGTree.h"
 
+#include <algorithm>
 #include <memory>
+#include <vector>
 
 class UWidgetAsset;
 
@@ -44,11 +47,28 @@ public:
     void RemoveFromViewport();
     bool IsInViewport() const { return m_InViewport; }
 
+    // --- Per-frame tick (P1, driven by UISystem::PreRender) ------------------
+    // Depth-first NativeTick over the tree, skipping Collapsed subtrees. Safe to
+    // call with no tree built (no-op). delta_time is the frame delta in seconds.
+    void TickTree(float delta_time);
+
+    // --- Keyboard focus / Tab navigation (P0) --------------------------------
+    // Collect the focusable widgets (depth-first, Collapsed subtrees skipped),
+    // stable-sorted by TabOrder. Returns the count. Used by the host input router
+    // to move focus with Tab / Shift+Tab.
+    int CollectFocusableWidgets(std::vector<std::shared_ptr<UWidget>>& out) const;
+
+    // Move keyboard focus to the next (reverse=false) or previous (reverse=true)
+    // focusable widget, wrapping around. Returns true if focus moved. index_hint
+    // is the currently-focused index into the collected list (-1 = none yet).
+    bool AdvanceFocus(int& index_hint, bool reverse);
+
 protected:
     void EnsureBuilt();
 
     std::shared_ptr<UWidget> m_Root;
     bool m_Built {false};
     bool m_InViewport {false};
+    int m_FocusIndex {-1};  // index into the last-collected focusable list
 };
 }  // namespace ZUMG

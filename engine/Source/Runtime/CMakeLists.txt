@@ -842,6 +842,23 @@ list(REMOVE_ITEM SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Test/SpotShadowSmokeTest.cpp")
 list(REMOVE_ITEM REGULAR_SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Test/SpotShadowSmokeTest.cpp")
+# UMG 命名事件注册表冒烟测试的 main carve-out（同理由）。它验证 header-only 纯核心
+# UMGDelegates.h（P0 数据绑定：Designer 资产存事件名，游戏按名 Bind，widget 点击 Invoke）。
+# Only built when ZENGINE_BUILD_UMG_DELEGATES_SMOKE_TEST=ON (see UMG/Test/CMakeLists.txt).
+# Header-only（UMGEventRegistry 纯 C++ 容器），只链 include root。注意 UMGDelegates.cpp
+# （运行时单例）不是 header-only，它留在 GLOB_RECURSE 里进 ZRuntime。
+list(REMOVE_ITEM SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/UMG/Test/UMGDelegatesSmokeTest.cpp")
+list(REMOVE_ITEM REGULAR_SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/UMG/Test/UMGDelegatesSmokeTest.cpp")
+# UMG 树遍历冒烟测试的 main carve-out（同理由）。它验证 header-only 纯核心 UMGTree.h
+# （TickWidgetTree/CollectFocusable/NextFocusIndex：深度优先 tick + Collapsed 跳过 +
+# Tab 循环索引算术）。Only built when ZENGINE_BUILD_UMG_TREE_SMOKE_TEST=ON.
+# Header-only，只链 include root。
+list(REMOVE_ITEM SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/UMG/Test/UMGTreeSmokeTest.cpp")
+list(REMOVE_ITEM REGULAR_SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/UMG/Test/UMGTreeSmokeTest.cpp")
 # 分配器配对冒烟测试的 main carve-out（同理由）。Only built when
 # ZENGINE_BUILD_MEMORY_PAIRING_SMOKE_TEST=ON (see Core/Memory/Test/CMakeLists.txt).
 list(REMOVE_ITEM SOURCE_FILES
@@ -1849,6 +1866,13 @@ add_subdirectory(Resource/Cache/Test)
 # built only when ZENGINE_BUILD_AI_SMOKE_TEST=ON. Runs headless -- no world,
 # no physics, no RHI -- so it links on every host.
 add_subdirectory(Function/AI/Test)
+
+# UMG named-event registry smoke test (P0 data binding). Own main(); carved out
+# of the ZRuntime glob above and built only when
+# ZENGINE_BUILD_UMG_DELEGATES_SMOKE_TEST=ON. Header-only (UMGEventRegistry pure
+# C++ container), links only the include root -- headless on every host.
+# Also hosts the widget-tree traversal smoke test (UMGTreeSmokeTest).
+add_subdirectory(UMG/Test)
 
 # Physics P0-2 smoke test (character controller, triggers, joints). Opt in with
 # -DZENGINE_BUILD_PHYSICS_CHARACTER_SMOKE_TEST=ON; headless, no RHI.

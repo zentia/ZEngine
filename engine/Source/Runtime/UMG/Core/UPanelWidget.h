@@ -44,6 +44,11 @@ public:
         return m_Children[static_cast<size_t>(index)];
     }
 
+    // UWidget tree-traversal hooks (see UMGTree.h). Panels expose their children
+    // so Tick / focus collection recurse into them.
+    int GetChildCount() const override { return static_cast<int>(m_Children.size()); }
+    std::shared_ptr<UWidget> GetChildAt(int index) const override { return GetChildWidgetAt(index); }
+
 protected:
     std::vector<std::shared_ptr<UWidget>> m_Children;
 };
