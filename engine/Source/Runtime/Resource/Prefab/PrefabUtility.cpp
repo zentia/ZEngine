@@ -53,11 +53,21 @@ namespace
     {
     public:
         /// `known_gameobjects`, when non-empty, is the COMPLETE set of GameObjects in the
-        /// prefab graph (the YAML reader has this directly). Seeding the
-        /// Transform -> owning-GameObject map from it lets VisitGameObject
-        /// resolve every child Transform's owner, lifting the single-level restriction.
-        /// When empty (legacy binary path, which has no flat list), the driver falls back
-        /// to root-only discovery and the old Phase-1 multi-level limitation applies.
+        /// prefab graph. Seeding the Transform -> owning-GameObject map from it lets
+        /// VisitGameObject resolve every child Transform's owner and descend the whole
+        /// subtree at any depth.
+        ///
+        /// When it is empty the driver falls back to root-only discovery and
+        /// **skips every child subtree** (see the warning in VisitGameObject):
+        /// children get no PostLoadResource at all.
+        ///
+        /// ⚠️ 这条**与文件格式无关**。早先的注释说 "legacy 二进制路径没有 flat
+        /// list，所以多层仍受 Phase-1 限制" —— 那是错的：列表不是读出来的，而是
+        /// `PrefabUtility::Instantiate` 从 **clone.clones** 拼出来传进来的
+        /// （见下面的调用点），`.prefab`（YAML）和 `.zasset`（二进制 SerializedFile）
+        /// 走的是同一份代码，行为完全一致。只有"调用方什么都不传"时才会退化成
+        /// 单层。已由 ScriptComponentPrefabTest 的 H 组验到三层深
+        /// （见 doc/TYPESCRIPT_COMPONENT.md 第 8.5 节）。
         /// `invoke_post_load = false` skips only step 2a (the PostLoadResource call);
         /// the DFS and nested-prefab expansion still run. Used when the tree is being
         /// instantiated as a *definition* whose components will be merged into another
@@ -105,7 +115,17 @@ namespace
                 }
             }
 
-            // Iterative DFS over GameObjects (using `m_PendingGameobjects` as a worklist).
+            // Fallback: seed from `root` only. NOTE this worklist never enqueues
+            // children — so it is not actually a walk over the tree:
+            //   * caller passed the complete list  -> `root` is already in
+            //     m_KnownGameobjects, the loop `continue`s immediately and this is
+            //     dead code (the seed loop above already mapped everything);
+            //   * caller passed nothing            -> only `root`'s Transform gets
+            //     mapped, and VisitGameObject's missing-owner branch then skips
+            //     every child subtree.
+            // Deliberately left as-is: it is unreachable for every current caller
+            // (Instantiate always supplies the clone's object list), and "silently
+            // post-load only the root" is a worse failure than a loud skip+warn.
             std::vector<GameObject*> worklist;
             worklist.push_back(root);
 
