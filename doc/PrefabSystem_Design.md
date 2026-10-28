@@ -597,6 +597,9 @@ public:
 
 27. **路径失败自带原因（`prefab::ExplainPathFailure`）**：`override splice` / `SpliceFieldValueInto` / `RecordPropertyOverride` / `RecordCurrentValueAsOverride` 的失败日志原先只有 "path not found"，A8 连续三次因此猜错（`m_ScriptGuid` 实为 `m_script_guid`、`m_Scale` 实为 `m_scale`、`shared_materials[0]` 定位器根本不支持）。现在日志里带原因，例如 `no field 'm_DoesNotExist' under '<root>' (available: enabled, m_LocalRotation, ...)`；对非数组用 `[n]`、畸形路径、数组处给了字段名也各有说法。它只看 TypeTree、不需要流字节，所以流本身坏掉时也能用。**注意**：它报 "resolves" 时真正的 locator 仍可能失败——locator 跨不过变长元素数组的下标，那种情况只能整数组覆盖。测试 N-diag 1–4 钉住这几种输出，3 处变异全红。
 
+28. **P18 的三层对称检查（原生 `types` 模式，67 类型 / 342 checks）**：① 位置读消费字节数 == 写出字节数；② 逐叶子植入（单个定长标量，抓『放错字段 / 丢字段』；double 位置与其 float 副本按结构规则放行）；③ **整流合成**——直接从 TypeTree 造一个填满的流（数组 2 元素、字符串 3–5 字符、嵌套结构递归；对齐按**绝对流位置**补 4 字节），位置读入再写出逐字节比较，抓『动态内容』与『值域』：Wide 模式每个标量每个字节都非零且互不相同（符号位/高字节置位），Edge 模式 −0.0 / 非规格化 / ±FLT_MAX / INT_MIN / INT_MAX。默认对象载荷几乎全 0、数组字符串全空，前两层读不出『位宽错、丢尾、反序、字符串截断、−0.0 被规范化』。变异验证 10 个（vector<string> 反序/丢尾、字符串截断、vector<struct> 丢尾/反序、float 清低位字节、uint8 清高位、−0.0 规范化、非规格化清零、范围钳位），**全部只被第 ③ 层抓住**；W1 只在 wide、E1/E2/E3 只在 edge 模式转红，两种取值缺一不可。
+    **合成器自己的两个缺陷（都先被当成引擎 bug，值得记）**：(a) 键字节生成周期只有 5，map 的两个键逐字节相同，map 合法地合并成 1 项；(b) `unordered_map` 读回的元素顺序由容器自己决定（MemoryProfiler.CSharp.data 两个元素原样回来、顺序对调），所以 map 只放 1 个元素，多元素顺序由普通 vector 覆盖。另：前提断言第一版只数『访问过的数组』，生成器把所有数组置空它也绿——改为只数有元素的数组、再加元素总数下限后才被抓住。**限制**：只覆盖 TypeTree 能表达的布局；引用字段（m_FileID/m_PathID）置零不植入；map 的多元素顺序不检查；无序列化字段的 7 个脚本绑定类（Input/Mathf/Time/…）默认流为空，逐个打印跳过。
+
 **未验证**：编辑器里真的拖一个 Prefab 进场景、在 Inspector 上改值后 Apply、保存场景再打开（UI 链路本身是第 3 条，未接）。`Level::load(url)` 带物理场景的完整路径未在无头环境跑过（它与 `LoadObjectGraph` 的差别只在建物理场景）。**Inspector 的 ZSlate 渲染**（结构行的按钮、can_apply 的显隐）只过了 `-fsyntax-only`，没有上机看。
 
 
