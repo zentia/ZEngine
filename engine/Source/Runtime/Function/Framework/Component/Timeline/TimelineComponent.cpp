@@ -26,12 +26,12 @@ void TimelineComponent::PostLoadResource(GameObject* parent_object)
     // 加载Timeline资源
     if (LoadTimelineAsset())
     {
-        // 获取Level（通过WorldManager）
+        // 获取Level（通过WorldManager）。没有 WorldManager（编辑器工具、无头测试实例化 prefab）
+        // 与"没有活动关卡"同样处理：level 留空，Director 自己决定能不能初始化。
         Level* level = nullptr;
-        auto level_weak = GET_SYSTEM(WorldManager)->getCurrentActiveLevel();
-        if (auto level_shared = level_weak)
+        if (WorldManager* world_manager = GET_SYSTEM(WorldManager))
         {
-            level = level_shared;
+            level = world_manager->getCurrentActiveLevel();
         }
 
         // 初始化Director

@@ -89,6 +89,8 @@
 #include "Runtime/Function/Framework/Component/Camera/CameraComponent.h"
 #include "Runtime/Function/Framework/Component/Mesh/MeshRenderer.h"
 #include "Runtime/Function/Framework/Component/Particle/ParticleComponent.h"
+#include "Runtime/Function/Framework/Component/Rigidbody/RigidbodyComponent.h"
+#include "Runtime/Function/Framework/Component/Timeline/TimelineComponent.h"
 #include "Runtime/Function/Framework/Level/Level.h"
 #include "Runtime/Function/Framework/World/WorldManager.h"
 #include "Runtime/Function/Particle/ParticleManager.h"
@@ -2517,6 +2519,49 @@ static void scenario_P21_load_without_systems()
         particle->PostLoadResource(par_go);  // used to dereference the null ParticleManager
         particle->Tick(0.016f);              // used to dereference the null RenderSystem
         Check(true, "P21/particle", "PostLoadResource + Tick complete without ParticleManager / RenderSystem");
+    }
+
+    // ---- RigidBodyComponent: a prefab-expanded body runs PostLoadResource on every load ----
+    // (the component's own comment says so, and it already handles "no physics scene yet" --
+    // it just never considered "no WorldManager at all").
+    if (TypeManager::GetInstance().ClassNameToType("RigidBodyComponent") != nullptr)
+    {
+        GameObject* rb_go = MakeGameObject(om, "P21Rigid");
+        auto* rb = rb_go != nullptr ? static_cast<RigidBodyComponent*>(om->Produce(TypeOf<RigidBodyComponent>(), 0)) : nullptr;
+        Check(rb != nullptr, "P21/rigid", "producing a RigidBodyComponent");
+        if (rb != nullptr && rb_go != nullptr)
+        {
+            om->AllocateAndAssignInstanceID(rb);
+            rb_go->addComponent(rb);
+            rb_go->AddComponentByTypeName("Transform");  // PostLoadResource insists on one
+            rb->PostLoadResource(rb_go);
+            Check(rb->HasPendingBody(), "P21/rigid",
+                  "with no WorldManager the body stays PENDING (flushed once a physics scene exists)");
+            Check(!rb->FlushPendingBody() && rb->HasPendingBody(), "P21/rigid",
+                  "a flush without a WorldManager reports failure and stays pending");
+        }
+    }
+
+    // ---- TimelineComponent ----
+    if (TypeManager::GetInstance().ClassNameToType("TimelineComponent") != nullptr)
+    {
+        GameObject* tl_go = MakeGameObject(om, "P21Timeline");
+        auto* tl = tl_go != nullptr ? static_cast<TimelineComponent*>(om->Produce(TypeOf<TimelineComponent>(), 0)) : nullptr;
+        Check(tl != nullptr, "P21/timeline", "producing a TimelineComponent");
+        if (tl != nullptr)
+        {
+            om->AllocateAndAssignInstanceID(tl);
+            tl_go->addComponent(tl);
+            // HONEST SCOPE: a default TimelineComponent has an empty asset path, so
+            // LoadTimelineAsset() returns false and PostLoadResource never reaches the
+            // WorldManager lookup. This proves only that an asset-less timeline loads. The
+            // WorldManager guard itself is NOT covered here -- mutating it back to the
+            // unguarded form survived (T1). Covering it needs a real .timeline file plus a
+            // way to set the private m_TimelineRes, which was judged heavier than the
+            // 3-line null check it would protect.
+            tl->PostLoadResource(tl_go);
+            Check(true, "P21/timeline", "an asset-less TimelineComponent loads (the WorldManager guard is NOT exercised)");
+        }
     }
 }
 

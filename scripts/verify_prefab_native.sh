@@ -69,6 +69,8 @@ e2e_args() {
       --extra-source engine/Source/Runtime/Function/Framework/Component/Mesh/MaterialCustomParamNames.cpp
       --extra-source engine/Source/Runtime/Function/Framework/Component/Camera/CameraComponent.cpp
       --extra-source engine/Source/Runtime/Function/Framework/Component/Particle/ParticleComponent.cpp
+      --extra-source engine/Source/Runtime/Function/Framework/Component/Rigidbody/RigidbodyComponent.cpp
+      --extra-source engine/Source/Runtime/Function/Framework/Component/Timeline/TimelineComponent.cpp
       --extra-source "${G}/GameObject.gen.cpp"
       --extra-source "${G}/Transform.gen.cpp"
       --extra-source "${G}/Behaviour.gen.cpp"
@@ -88,6 +90,7 @@ e2e_args() {
       --exclude-archive-member MeshRenderer.cpp.o --exclude-archive-member MeshRenderer.gen.cpp.o
       --exclude-archive-member BaseRenderer.gen.cpp.o
       --exclude-archive-member CameraComponent.cpp.o --exclude-archive-member ParticleComponent.cpp.o
+      --exclude-archive-member RigidbodyComponent.cpp.o --exclude-archive-member TimelineComponent.cpp.o
     )
 }
 

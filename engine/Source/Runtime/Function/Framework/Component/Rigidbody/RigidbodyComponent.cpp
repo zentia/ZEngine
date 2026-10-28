@@ -6,6 +6,20 @@
 #include "Runtime/Function/Framework/World/WorldManager.h"
 #include "Runtime/Function/Physics/PhysicsScene.h"
 
+namespace
+{
+    /// The active physics scene, or null when there is none OR no WorldManager at all.
+    /// Every caller already handles "no scene yet" (deferred body, level teardown); a
+    /// process without a WorldManager -- an editor tool or headless test instantiating a
+    /// prefab that holds a body -- is the same situation and must take the same path
+    /// instead of dereferencing GET_SYSTEM(WorldManager).
+    std::shared_ptr<PhysicsScene> CurrentPhysicsScene()
+    {
+        WorldManager* world = GET_SYSTEM(WorldManager);
+        return world != nullptr ? world->GetCurrentActivePhysicsScene().lock() : nullptr;
+    }
+}  // namespace
+
 
 
 void RigidBodyComponent::PostLoadResource(GameObject* parent_object)
@@ -23,7 +37,7 @@ void RigidBodyComponent::PostLoadResource(GameObject* parent_object)
     // active, so there is no current physics scene yet. A prefab-expanded body
     // hits this on every level load. Defer instead of asserting: FlushPendingBody
     // creates it once the scene exists.
-    std::shared_ptr<PhysicsScene> physics_scene = GET_SYSTEM(WorldManager)->GetCurrentActivePhysicsScene().lock();
+    std::shared_ptr<PhysicsScene> physics_scene = CurrentPhysicsScene();
     if (!physics_scene)
     {
         m_HasPendingBody = true;
@@ -46,7 +60,7 @@ bool RigidBodyComponent::FlushPendingBody()
         return false;
     }
 
-    std::shared_ptr<PhysicsScene> physics_scene = GET_SYSTEM(WorldManager)->GetCurrentActivePhysicsScene().lock();
+    std::shared_ptr<PhysicsScene> physics_scene = CurrentPhysicsScene();
     if (!physics_scene)
     {
         return false;
@@ -82,7 +96,7 @@ RigidBodyComponent::~RigidBodyComponent()
         return;
     }
 
-    std::shared_ptr<PhysicsScene> physics_scene = GET_SYSTEM(WorldManager)->GetCurrentActivePhysicsScene().lock();
+    std::shared_ptr<PhysicsScene> physics_scene = CurrentPhysicsScene();
     if (!physics_scene)
     {
         return;
@@ -93,7 +107,7 @@ RigidBodyComponent::~RigidBodyComponent()
 
 void RigidBodyComponent::CreateRigidBody(const TransformTRS& global_transform)
 {
-    std::shared_ptr<PhysicsScene> physics_scene = GET_SYSTEM(WorldManager)->GetCurrentActivePhysicsScene().lock();
+    std::shared_ptr<PhysicsScene> physics_scene = CurrentPhysicsScene();
     ASSERT(physics_scene);
 
     m_RigidbodyId = physics_scene->CreateRigidBody(global_transform, m_RigidbodyRes);
@@ -110,7 +124,7 @@ void RigidBodyComponent::RemoveRigidBody()
         return;
     }
 
-    std::shared_ptr<PhysicsScene> physics_scene = GET_SYSTEM(WorldManager)->GetCurrentActivePhysicsScene().lock();
+    std::shared_ptr<PhysicsScene> physics_scene = CurrentPhysicsScene();
     if (!physics_scene)
     {
         return;
@@ -129,7 +143,7 @@ std::shared_ptr<PhysicsScene> RigidBodyComponent::GetActivePhysicsScene() const
         return nullptr;
     }
 
-    return GET_SYSTEM(WorldManager)->GetCurrentActivePhysicsScene().lock();
+    return CurrentPhysicsScene();
 }
 
 void RigidBodyComponent::SetActorType(RigidBodyActorType actor_type)
@@ -255,7 +269,7 @@ void RigidBodyComponent::UpdateGlobalTransform(const TransformTRS& transform, bo
     }
     else
     {
-        std::shared_ptr<PhysicsScene> physics_scene = GET_SYSTEM(WorldManager)->GetCurrentActivePhysicsScene().lock();
+        std::shared_ptr<PhysicsScene> physics_scene = CurrentPhysicsScene();
         ASSERT(physics_scene);
 
         physics_scene->UpdateRigidBodyGlobalTransform(m_RigidbodyId, transform);
@@ -264,7 +278,7 @@ void RigidBodyComponent::UpdateGlobalTransform(const TransformTRS& transform, bo
 
 void RigidBodyComponent::GetShapeBoundingBoxes(std::vector<AxisAlignedBox>& out_bounding_boxes) const
 {
-    std::shared_ptr<PhysicsScene> physics_scene = GET_SYSTEM(WorldManager)->GetCurrentActivePhysicsScene().lock();
+    std::shared_ptr<PhysicsScene> physics_scene = CurrentPhysicsScene();
     ASSERT(physics_scene);
 
     physics_scene->GetShapeBoundingBoxes(m_RigidbodyId, out_bounding_boxes);

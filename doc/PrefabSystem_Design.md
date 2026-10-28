@@ -607,6 +607,13 @@ public:
     **变异第一次存活，原因是个独立的发现**：把相机交接的守卫全部还原成无保护，测试仍然是绿的。因为 `createDefaultCameraParameter()` 用 `MemoryManager::CreateObject` 造默认参数，它**没有 instance ID**，而 `PPtr<CameraParameter>(ptr)` 以 instance ID 为键，于是默认参数包进 PPtr 后读回是 **null**——`PostLoadResource` 因此在『camera parameter is null』处提前返回，渲染交接那段在这条路径上是**死代码**（完整引擎里也一样）。测试改为用 `ObjectManager::Produce` 造一个有身份的参数，并先断言 `GetCameraParameter() == cam_param`（前提）；之后守卫还原才转红。**这个默认参数的身份问题本身没修**，是否该改成 `ObjectManager` 分配需要你决定（涉及 §工程规则里的分配器配对）。
     `verify_prefab_native.sh`：两个源加入重编清单；`types` 模式下 P21 若被跳过（Camera/Particle 没注册）直接判失败，否则这条回归保护会悄悄消失；默认 `e2e` 模式只注册约 9 个类型，P21 在那里可见地跳过。
 
+31. **全仓扫描：无保护 `GET_SYSTEM(X)->`（176 处 / 53 个文件）的分级结论**：不全改——先按『无头加载路径上会不会执行』分级。测试进程里实际存在的只有 ObjectManager / AssetManager / FileSystem；Render / World / Particle / Input / Window / Config / DebugDraw / RHI 都不存在。
+    - **Tick 类函数**（`CameraComponent::Tick*`、`MotorComponent::TickPlayerMotor`…）只在引擎主循环里被调用，那时这些系统必然存在，**不属于加载路径，不改**。
+    - **`RigidBodyComponent::PostLoadResource`**：真问题。组件自己的注释写着『prefab 展开的 body 每次关卡加载都会走到这里』，并已处理『还没有物理场景』，却漏了『根本没有 WorldManager』。7 处取场景的调用收敛成 `CurrentPhysicsScene()`；3 处 `ASSERT(physics_scene)`（显式 `CreateRigidBody` / 查询接口的**前置条件**）原样保留，没有弱化。析构 / `RemoveRigidBody` / `GetActivePhysicsScene` 先判了 `m_RigidbodyId`（无头实例化下 body 从没建成），本来就走不到，也一并走了辅助函数。**还原守卫后测试崩溃，被抓住。**
+    - **`TimelineComponent::PostLoadResource`**：同型，已加空检查；**但没有被测试保护**——默认组件的资产路径为空，`LoadTimelineAsset()` 立刻返回 false，WorldManager 那行在默认状态下**不可达**；把守卫还原成无保护，测试仍是绿的（变异存活，如实记录）。要覆盖需要真实 `.timeline` 文件 + 设置私有 `m_TimelineRes`，成本明显高于它要保护的 3 行空检查，所以选择不硬凑。P21 里该断言的措辞已改成它真实证明的东西。
+    - `MotorComponent::PostLoadResource` 的 `ObjectManager`：`RegisterCore` 注册，所有进程都有，不改。
+    - **剩下约 150 处未逐个看**（AssetManager 26、WorldManager 21、WindowSystem 19、InputSystem 11…，多在渲染 / 窗口 / 输入层）：它们不在 prefab 加载路径上，本轮没有证据说它们会在无头进程里被执行，所以**没有改动**。这是『没发现问题』而不是『确认没有问题』。
+
 **未验证**：编辑器里真的拖一个 Prefab 进场景、在 Inspector 上改值后 Apply、保存场景再打开（UI 链路本身是第 3 条，未接）。`Level::load(url)` 带物理场景的完整路径未在无头环境跑过（它与 `LoadObjectGraph` 的差别只在建物理场景）。**Inspector 的 ZSlate 渲染**（结构行的按钮、can_apply 的显隐）只过了 `-fsyntax-only`，没有上机看。
 
 
