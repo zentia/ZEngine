@@ -114,7 +114,7 @@ run_e2e() {
     e2e_args
     [ "${1:-}" = "types" ] && add_full_type_args
     out="$(python3 scripts/run_smoke_test.py engine/Source/Editor/Prefab/Test/PrefabEndToEndSmokeTest.cpp "${E2E_ARGS[@]}" 2>&1)"
-    echo "${out}" | grep -E "\[FAIL\]|checks,|types round|asymmetric|misaligned|error:|Undefined symbols|dyld|FAILED|ALL PASSED" || echo "${out}" | tail -20
+    echo "${out}" | grep -E "\[FAIL\]|checks,|types round|whole-stream|mismatch|asymmetric|misaligned|error:|Undefined symbols|dyld|FAILED|ALL PASSED" || echo "${out}" | tail -20
     local real_failures floor_only
     real_failures="$(echo "${out}" | grep -c '\[FAIL\]' || true)"
     # P18/types wants >20 registered types. A plain link only has ~9 (see

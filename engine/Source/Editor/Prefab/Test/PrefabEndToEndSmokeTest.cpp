@@ -1351,6 +1351,313 @@ namespace
     }
 }  // namespace
 
+// ---- P18 helpers: WHOLE-STREAM synthesis (dynamic content + wide / edge values) ---------
+//
+// The per-leaf pass above plants ONE small integer into ONE fixed-size scalar of a
+// default object. Two things it cannot reach:
+//
+//  * Dynamic content. A default object has empty arrays and empty strings, so a reader
+//    that reverses a vector, truncates a string, drops the last element or mis-sizes an
+//    element has nothing to get wrong.
+//  * Value range. (idx+2)*1.5f and small ints exercise "wrong field" but not "wrong
+//    width": a reader that keeps only the low 16 bits of an int32, clears a float's low
+//    mantissa byte, or canonicalises -0.0 to +0.0 reads 3.0f / 5 back perfectly.
+//
+// So build a complete, populated stream straight from the type's TypeTree (the layout
+// rules are WalkPastNode's: fixed-size nodes are flat, arrays are [int32 count][elements],
+// kAlignBytesFlag pads to 4 on the ABSOLUTE stream position), read it positionally into a
+// fresh object, write it back, and demand byte-for-byte equality.
+namespace
+{
+    enum class SynthMode
+    {
+        Wide,  ///< every byte of every scalar non-zero and distinct (sign bits and high bytes set)
+        Edge,  ///< -0.0 / denormal / max-finite floats and doubles, INT_MIN / INT_MAX / -1 / 1 integers
+    };
+
+    struct SynthSpan
+    {
+        std::string path;
+        std::string type;
+        size_t offset = 0;
+        size_t size = 0;
+    };
+
+    struct StreamSynth
+    {
+        SynthMode mode = SynthMode::Wide;
+        std::vector<uint8_t> bytes;
+        std::vector<SynthSpan> spans;  ///< every scalar leaf in stream order
+        size_t counter = 0;
+        int arrays = 0;
+        int strings = 0;
+        int maps = 0;
+        int elements = 0;  ///< array elements actually emitted
+        int pair_index = -1;  ///< set just before descending into element i of a {first, second} array
+        int key_index = -1;   ///< >= 0 while synthesizing the `first` (key) of element i of such an array
+        bool unsupported = false;  ///< a node shape the synthesizer does not understand
+        std::string reason;        ///< why, for the log
+    };
+
+    void SynthUnsupported(StreamSynth& s, const std::string& why)
+    {
+        if (!s.unsupported)
+            s.reason = why;
+        s.unsupported = true;
+    }
+
+    // Non-zero byte `i` of scalar number `k`. The period in k is 251 (prime) -- an earlier
+    // `0x11 * (((k*3+i) % 15) + 1)` repeated every 5 scalars, so the two keys of a
+    // two-element map came out byte-identical and the map legitimately collapsed them to
+    // one entry (a generator defect that looked like an engine bug).
+    uint8_t SynthByte(size_t k, size_t i) { return static_cast<uint8_t>((k * 7919u + i * 104729u + 13u) % 251u + 1u); }
+
+    uint32_t SynthFloatBits(SynthMode mode, size_t k)
+    {
+        if (mode == SynthMode::Edge)
+        {
+            static const uint32_t kEdge[4] = {0x80000000u /* -0.0 */, 0x0000007Fu /* denormal */, 0x7E967699u /* 3e38 */,
+                                              0xFF7FFFFFu /* -FLT_MAX */};
+            return kEdge[k % 4];
+        }
+        const uint32_t sign = static_cast<uint32_t>(k & 1);
+        const uint32_t exponent = 0x70u + static_cast<uint32_t>(k % 0x20);  // finite, well inside the range
+        const uint32_t mantissa = ((0x2A5A5Bu ^ static_cast<uint32_t>(k * 0x010203u)) & 0x7FFFFFu) | 0x010101u;  // every byte non-zero
+        return (sign << 31) | (exponent << 23) | mantissa;
+    }
+
+    uint64_t SynthDoubleBits(SynthMode mode, size_t k)
+    {
+        if (mode == SynthMode::Edge)
+        {
+            static const uint64_t kEdge[4] = {0x8000000000000000ull /* -0.0 */, 0x0000000000000001ull /* denormal */,
+                                              0x7FEFFFFFFFFFFFFFull /* DBL_MAX */, 0xFFEFFFFFFFFFFFFFull /* -DBL_MAX */};
+            return kEdge[k % 4];
+        }
+        uint64_t u = 0;
+        for (size_t i = 0; i < 8; ++i)
+            u |= static_cast<uint64_t>(SynthByte(k, i)) << (8 * i);
+        return (u & 0x000FFFFFFFFFFFFFull) | (static_cast<uint64_t>(0x3E0 + k % 0x20) << 52) | (static_cast<uint64_t>(k & 1) << 63);
+    }
+
+    void SynthPush(StreamSynth& s, const void* data, size_t size)
+    {
+        const uint8_t* p = static_cast<const uint8_t*>(data);
+        s.bytes.insert(s.bytes.end(), p, p + size);
+    }
+
+    void SynthLeaf(StreamSynth& s, const std::string& path, const std::string& type, size_t size)
+    {
+        const size_t k = s.counter++;
+        uint8_t buf[16] = {};
+        ScalarLeaf probe;
+        probe.path = path;
+        probe.type = type;
+        probe.size = size;
+        if (size > sizeof(buf))
+        {
+            SynthUnsupported(s, "scalar leaf '" + path + "' is " + std::to_string(size) + " bytes wide");
+            return;
+        }
+        if (IsReferenceLeaf(probe))
+        {
+            // zeros: a planted id is something the reader may try to resolve
+        }
+        else if (s.key_index >= 0 && type == "char" && size == 1)
+        {
+            // a map key that is a string: element i is "a"*len, "b"*len, ... -- lexicographically increasing
+            buf[0] = static_cast<uint8_t>('a' + s.key_index % 26);
+        }
+        else if (s.key_index >= 0 && type != "float" && type != "double" && type != "bool")
+        {
+            // a map key that is an integer: positive in BOTH the signed and unsigned reading and
+            // strictly increasing with the element index. A std::map re-sorts on write, so a key
+            // list that is not already in order would "change" for a perfectly good reader.
+            const uint64_t v = 0x11223344ull + static_cast<uint64_t>(s.key_index) * 0x01010101ull;
+            std::memcpy(buf, &v, size < 8 ? size : 8);
+        }
+        else if (type == "bool" && size == 1)
+        {
+            buf[0] = 1;
+        }
+        else if (type == "char" && size == 1)
+        {
+            buf[0] = static_cast<uint8_t>('a' + k % 26);
+        }
+        else if (type == "float" && size == 4)
+        {
+            const uint32_t u = SynthFloatBits(s.mode, k);
+            std::memcpy(buf, &u, 4);
+        }
+        else if (type == "double" && size == 8)
+        {
+            const uint64_t u = SynthDoubleBits(s.mode, k);
+            std::memcpy(buf, &u, 8);
+        }
+        else if (s.mode == SynthMode::Wide)
+        {
+            for (size_t i = 0; i < size; ++i)
+                buf[i] = SynthByte(k, i);
+        }
+        else
+        {
+            switch (k % 4)
+            {
+                case 0: buf[size - 1] = 0x80; break;                                   // INT_MIN
+                case 1: std::memset(buf, 0xFF, size); buf[size - 1] = 0x7F; break;      // INT_MAX
+                case 2: std::memset(buf, 0xFF, size); break;                            // -1 / UINT_MAX
+                default: buf[0] = 1; break;                                             // 1
+            }
+        }
+        SynthSpan span;
+        span.path = path;
+        span.type = type;
+        span.offset = s.bytes.size();
+        span.size = size;
+        s.spans.push_back(span);
+        SynthPush(s, buf, size);
+    }
+
+    void SynthNode(const TypeTreeIterator& node, const std::string& path, StreamSynth& s, int depth)
+    {
+        const TypeTreeNode* n = node.operator->();
+        const int pair_index = s.pair_index;  // belongs to THIS element only
+        s.pair_index = -1;
+        // Each array costs two levels (the array node and its element), so a vector of
+        // structs holding a vector of structs holding a string is already 6 deep.
+        if (n == nullptr || depth > 16 || s.bytes.size() > (1u << 20))
+        {
+            SynthUnsupported(s, n == nullptr ? "null TypeTree node at '" + path + "'"
+                                             : "nesting deeper than 16 (or stream over 1 MiB) at '" + path + "'");
+            return;
+        }
+        const bool any_child_align = (n->m_MetaFlag & kAnyChildUsesAlignBytesFlag) != 0;
+        // Visit the children of a struct-like node. The child named `first` of a {first, second}
+        // array element is a map key, which must come out in ascending order (see SynthLeaf).
+        auto visit_children = [&](const TypeTreeIterator& parent) {
+            for (TypeTreeIterator c = parent.Children(); !c.IsNull(); c = c.Next())
+            {
+                const bool is_key = pair_index >= 0 && c.Name() == "first";
+                if (is_key)
+                    s.key_index = pair_index;
+                SynthNode(c, path.empty() ? std::string(c.Name().c_str()) : path + "." + c.Name().c_str(), s, depth + 1);
+                if (is_key)
+                    s.key_index = -1;
+            }
+        };
+
+        if (n->m_ByteSize != -1 && !any_child_align)
+        {
+            if (node.Children().IsNull())
+            {
+                SynthLeaf(s, path, node.Type().c_str(), static_cast<size_t>(n->m_ByteSize));
+            }
+            else
+            {
+                const size_t before = s.bytes.size();
+                visit_children(node);
+                if (s.bytes.size() - before != static_cast<size_t>(n->m_ByteSize))
+                    SynthUnsupported(s, "children of '" + path + "' add up to " + std::to_string(s.bytes.size() - before) +
+                                            " bytes but the node says " + std::to_string(n->m_ByteSize));
+            }
+        }
+        else if (n->IsArray())
+        {
+            TypeTreeIterator size_child = node.Children();
+            TypeTreeIterator data_child = size_child.IsNull() ? size_child : size_child.Next();
+            if (data_child.IsNull() || (n->m_TypeFlags & TypeTreeNode::IsArrayOfRefs) != 0)
+            {
+                // Arrays of managed references need a type table to be meaningful; leave them empty.
+                const int32_t zero = 0;
+                SynthPush(s, &zero, sizeof(zero));
+            }
+            else
+            {
+                const bool is_string = data_child.Children().IsNull() && data_child.Type() == "char";
+                TypeTreeIterator first_child = data_child.Children();
+                const bool is_pair = !first_child.IsNull() && first_child.Name() == "first" && !first_child.Next().IsNull() &&
+                                     first_child.Next().Name() == "second";
+                // A {first, second} array is a map. Maps get ONE element: the TypeTree does not say
+                // ordered or unordered, and a std::unordered_map reads two elements back in an order
+                // of its own (MemoryProfiler's CSharp.data did exactly that: element 1 came out
+                // first, every byte intact). So element ORDER of a multi-element map is not
+                // checkable here -- multi-element handling is covered by the plain vectors.
+                const int32_t count = is_pair ? 1 : (is_string ? static_cast<int32_t>(3 + s.counter % 3) : 2);
+                SynthPush(s, &count, sizeof(count));
+                // Count only arrays that really got elements. Counting visited arrays let a
+                // generator that emitted every array EMPTY keep the premise check green
+                // (found by mutating the generator: `count = 0` survived).
+                if (count > 0)
+                {
+                    ++s.arrays;
+                    s.elements += count;
+                    if (is_string)
+                        ++s.strings;
+                    if (is_pair)
+                        ++s.maps;
+                }
+                for (int32_t i = 0; i < count; ++i)
+                {
+                    s.pair_index = is_pair ? i : -1;
+                    SynthNode(data_child, path + "[" + std::to_string(i) + "]", s, depth + 1);
+                }
+            }
+        }
+        else
+        {
+            if (node.Children().IsNull())
+                SynthUnsupported(s, "'" + path + "' (" + std::string(node.Type().c_str()) +
+                                        ") is variable-size, not an array and has no children");
+            visit_children(node);
+        }
+
+        if ((n->m_MetaFlag & kAlignBytesFlag) != 0)
+            while (s.bytes.size() % 4 != 0)
+                s.bytes.push_back(0);
+    }
+
+    /// The writer regenerates a position's float copy from its double (see
+    /// DerivedFloatPartnerOfDouble). A stream that disagrees with itself there cannot
+    /// round-trip, so make the synthesized one consistent.
+    void SynthMakeDerivedConsistent(StreamSynth& s)
+    {
+        for (const SynthSpan& d : s.spans)
+        {
+            ScalarLeaf probe;
+            probe.path = d.path;
+            probe.type = d.type;
+            probe.size = d.size;
+            const std::string partner = DerivedFloatPartnerOfDouble(probe);
+            if (partner.empty())
+                continue;
+            for (const SynthSpan& f : s.spans)
+            {
+                if (f.path == partner && f.size == 4 && f.type == "float")
+                {
+                    double v = 0;
+                    std::memcpy(&v, s.bytes.data() + d.offset, sizeof(v));
+                    const float fv = static_cast<float>(v);
+                    std::memcpy(s.bytes.data() + f.offset, &fv, sizeof(fv));
+                    break;
+                }
+            }
+        }
+    }
+
+    std::string HexRun(const std::vector<uint8_t>& b, size_t from, size_t count)
+    {
+        static const char* kHex = "0123456789abcdef";
+        std::string out;
+        for (size_t i = from; i < from + count && i < b.size(); ++i)
+        {
+            out += kHex[b[i] >> 4];
+            out += kHex[b[i] & 15];
+            out += ' ';
+        }
+        return out;
+    }
+}  // namespace
+
 static void scenario_P18_positional_stream_symmetry()
 {
     std::fprintf(stderr, "[P18] positional stream symmetry (prefab clone of a MeshRenderer, every type)\n");
@@ -1410,6 +1717,13 @@ static void scenario_P18_positional_stream_symmetry()
     size_t value_leaves_checked = 0;
     int derived_leaves = 0;
     std::vector<std::string> derived_names;
+    int synth_runs = 0;
+    int synth_arrays = 0;
+    int synth_strings = 0;
+    int synth_maps = 0;
+    int synth_elements = 0;
+    int synth_unsupported = 0;
+    size_t synth_scalars = 0;
     for (uint32_t i = 0; i < types.count; ++i)
     {
         const Type* type = types.types[i];
@@ -1579,17 +1893,99 @@ static void scenario_P18_positional_stream_symmetry()
                 }
             }
         }
+        // ---- WHOLE-STREAM pass: dynamic content + wide / edge values ----
+        // Only meaningful when the default object is itself symmetric (otherwise it is
+        // already reported once above and this would just repeat the same defect).
+        if (first != second || first.empty())
+        {
+            // Visible, not silent: a type that never reaches the whole-stream pass is a hole.
+            std::fprintf(stderr, "    (whole-stream pass not run for %s: %s)\n", type->GetName(),
+                         first.empty() ? "its default stream is empty" : "its default object is not symmetric");
+        }
+        if (first == second && !first.empty())
+        {
+            prefab::SerialisedObject full_tree;
+            if (prefab::SerialiseObject(a, full_tree) && !full_tree.type_tree.Root().IsNull())
+            {
+                for (const SynthMode mode : {SynthMode::Wide, SynthMode::Edge})
+                {
+                    const char* mode_name = mode == SynthMode::Wide ? "wide" : "edge";
+                    StreamSynth synth;
+                    synth.mode = mode;
+                    SynthNode(full_tree.type_tree.Root(), "", synth, 0);
+                    if (synth.unsupported)
+                    {
+                        ++synth_unsupported;
+                        std::fprintf(stderr, "    (whole-stream %s pass skipped for %s: %s)\n", mode_name, type->GetName(),
+                                     synth.reason.c_str());
+                        continue;
+                    }
+                    SynthMakeDerivedConsistent(synth);
+                    if (synth.bytes.empty())
+                        continue;
+
+                    Object* c = om->Produce(type, 0);
+                    if (c == nullptr)
+                        continue;
+                    std::vector<uint8_t> in = synth.bytes;
+                    const size_t used = ReadPositional(*c, in);
+                    std::vector<uint8_t> out;
+                    TransferUtility::WriteObjectToVector(*c, out);
+                    om->Destroy(c);
+
+                    ++synth_runs;
+                    synth_arrays += synth.arrays;
+                    synth_strings += synth.strings;
+                    synth_maps += synth.maps;
+                    synth_elements += synth.elements;
+                    synth_scalars += synth.spans.size();
+
+                    if (used == synth.bytes.size() && out == synth.bytes)
+                        continue;
+
+                    // Localize: the first byte that differs, mapped back to the field it belongs to.
+                    std::string where = "stream length " + std::to_string(synth.bytes.size()) + " -> " + std::to_string(out.size());
+                    size_t first_diff = 0;
+                    while (first_diff < synth.bytes.size() && first_diff < out.size() && synth.bytes[first_diff] == out[first_diff])
+                        ++first_diff;
+                    for (const SynthSpan& span : synth.spans)
+                    {
+                        if (first_diff >= span.offset && first_diff < span.offset + span.size)
+                        {
+                            where = "field " + span.path + " (" + span.type + ", " + std::to_string(span.size) + " bytes at +" +
+                                    std::to_string(span.offset) + ")";
+                            break;
+                        }
+                    }
+                    if (where.rfind("stream length", 0) == 0 && out.size() == synth.bytes.size())
+                        where = "bytes at +" + std::to_string(first_diff) + " (inside a length prefix or padding)";
+                    std::fprintf(stderr, "    synth mismatch [%s]: %s %s; consumed %zu of %zu; wrote %s; planted %s\n", mode_name,
+                                 type->GetName(), where.c_str(), used, synth.bytes.size(), HexRun(out, first_diff, 8).c_str(),
+                                 HexRun(synth.bytes, first_diff, 8).c_str());
+                    Check(false, "P18/synth", "a populated stream (arrays, strings, wide or edge values) did not round-trip");
+                }
+            }
+        }
         ++checked;
         om->Destroy(a);
         om->Destroy(b);
     }
     std::fprintf(stderr, "    %d types round-tripped; field values planted in %d types (%zu scalar fields, %d via the double->float position rule)\n",
                  checked, value_types_checked, value_leaves_checked, derived_leaves);
+    std::fprintf(stderr, "    whole-stream: %d populated round-trips (%d non-empty arrays / %d elements, incl. %d strings and %d maps; %zu scalars), %d types unsupported\n",
+                 synth_runs, synth_arrays, synth_elements, synth_strings, synth_maps, synth_scalars, synth_unsupported);
     Check(checked > 20, "P18/types", "expected to round-trip the registered runtime types");
     // Premise of the value check: it must actually have had something to plant, or every
     // mutation of it "passes" vacuously (a mutation survived once exactly like that).
     Check(value_types_checked >= 3 && value_leaves_checked >= 6, "P18/values",
           "the value check planted almost nothing -- its premise (scalar leaves reachable) did not hold");
+    // Same for the whole-stream pass: it must have populated real arrays AND strings, or
+    // "dynamic content survives" is vacuously true.
+    Check(synth_runs >= 6 && synth_arrays >= 4 && synth_elements >= 8 && synth_strings >= 2 && synth_scalars >= 20, "P18/synth",
+          "the whole-stream pass populated almost nothing -- its premise (arrays / strings reachable) did not hold");
+    // A type the synthesizer cannot lay out is a hole in coverage, not a pass. Keep the
+    // hole small and visible rather than silently growing.
+    Check(synth_unsupported <= 6, "P18/synth", "too many types have a TypeTree shape the stream synthesizer cannot lay out");
 }
 
 // ---- P19 helpers --------------------------------------------------------------------
