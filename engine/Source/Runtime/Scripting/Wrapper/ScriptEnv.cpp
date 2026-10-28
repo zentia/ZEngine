@@ -119,7 +119,7 @@ namespace
     }
 }  // namespace
 
-ScriptEnv::ScriptEnv(Backend* backend, int debugPort)
+ScriptEnv::ScriptEnv(Backend* backend, int debugPort, bool editorDomain)
 {
     m_Backend = backend;
     if (!isInitialized)
@@ -165,7 +165,7 @@ ScriptEnv::ScriptEnv(Backend* backend, int debugPort)
     m_Papis->set_registry(env, registry);
     // Publish `GameObject`, `Transform`, ... as globals, matching the
     // `declare class` block of the generated zengine.d.ts.
-    ScriptBindingRegistry::InstallGlobals(m_Papis, env);
+    ScriptBindingRegistry::InstallGlobals(m_Papis, env, editorDomain);
 
     auto&& moduleExecutorFunc = m_Backend->GetModuleExecutor(env);
     (void)moduleExecutorFunc;

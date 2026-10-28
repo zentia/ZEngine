@@ -39,7 +39,20 @@ def generated_body_macro_name(cls: ClassInfo) -> str:
     return "ZGEN_BODY_" + cls.name
 
 
-def _enum_block(header: HeaderInfo) -> List[str]:
+def _domain_init_suffix(domain: str) -> str:
+    """Trailing aggregate-initialiser for ZClassScriptBinding / ZScriptEnum.
+
+    Both structs end in `next` followed by `domain`, so a non-default domain
+    has to spell the (null) `next` out. The Runtime domain is the struct's
+    default and emits nothing, which keeps every ZRuntime .gen.cpp
+    byte-identical to what it was before domains existed.
+    """
+    if domain == "editor":
+        return ", nullptr, ZScriptDomain::Editor"
+    return ""
+
+
+def _enum_block(header: HeaderInfo, domain: str = "runtime") -> List[str]:
     """Runtime (name, value) table for every ZENUM in this header (phase 8).
 
     The table is the single source for both halves of an enum: the d.ts
@@ -57,8 +70,8 @@ def _enum_block(header: HeaderInfo) -> List[str]:
         out.append("    const ZScriptEnumEntry kZhtScriptEnumValues_%s[] = {\n" % ident)
         out.extend('        {.name = "%s", .value = %d},\n' % (v.ts_name, v.value) for v in enum.values)
         out.append("    };\n")
-        out.append('    ZScriptEnum kZhtScriptEnum_%s {"%s", kZhtScriptEnumValues_%s, %d};\n'
-                   % (ident, enum.name, ident, len(enum.values)))
+        out.append('    ZScriptEnum kZhtScriptEnum_%s {"%s", kZhtScriptEnumValues_%s, %d%s};\n'
+                   % (ident, enum.name, ident, len(enum.values), _domain_init_suffix(domain)))
         out.append("    const ZScriptEnumRegistrar kZhtScriptEnumRegistrar_%s(kZhtScriptEnum_%s);\n" % (ident, ident))
         out.append("}  // namespace\n")
     return out
@@ -386,7 +399,8 @@ def _script_property_entries(cls: ClassInfo, script_enums: Optional[Dict[str, st
     return out
 
 
-def _script_block(cls: ClassInfo, super_name: Optional[str], script_enums: Optional[Dict[str, str]] = None) -> List[str]:
+def _script_block(cls: ClassInfo, super_name: Optional[str], script_enums: Optional[Dict[str, str]] = None,
+                  domain: str = "runtime") -> List[str]:
     """Static pesapi binding table for one class (methods + properties)."""
     properties = _script_property_entries(cls, script_enums)
     if not cls.methods and not properties:
@@ -403,10 +417,11 @@ def _script_block(cls: ClassInfo, super_name: Optional[str], script_enums: Optio
         out.append("    const ZScriptPropertyEntry kZhtScriptProperties_%s[] = {\n" % ident)
         out.extend("        %s,\n" % entry for entry in properties)
         out.append("    };\n")
-    out.append("    ZClassScriptBinding kZhtScriptClass_%s {ZScriptTypeId<%s>::Get(), %s, \"%s\", %s, %s, %d, %s, %d};\n"
+    out.append("    ZClassScriptBinding kZhtScriptClass_%s {ZScriptTypeId<%s>::Get(), %s, \"%s\", %s, %s, %d, %s, %d%s};\n"
                % (ident, cls.qualified_name, super_type, cls.name, super_name_lit,
                   "kZhtScriptMethods_%s" % ident if cls.methods else "nullptr", len(cls.methods),
-                  "kZhtScriptProperties_%s" % ident if properties else "nullptr", len(properties)))
+                  "kZhtScriptProperties_%s" % ident if properties else "nullptr", len(properties),
+                  _domain_init_suffix(domain)))
     out.append("    const ZClassScriptBindingRegistrar kZhtScriptRegistrar_%s(kZhtScriptClass_%s);\n" % (ident, ident))
     out.append("}  // namespace\n")
     return out
@@ -414,7 +429,7 @@ def _script_block(cls: ClassInfo, super_name: Optional[str], script_enums: Optio
 
 def generate_source(header: HeaderInfo, type_headers: Optional[Dict[str, str]] = None,
                     bound_classes: Optional[set] = None, base_of: Optional[Dict[str, Optional[str]]] = None,
-                    script_enums: Optional[Dict[str, str]] = None) -> str:
+                    script_enums: Optional[Dict[str, str]] = None, domain: str = "runtime") -> str:
     enums = script_enums or {}
     out = [_banner(header), "\n", '#include "%s"\n' % header.include_path]
     needs_meta = any(p.meta and not p.transient for cls in header.classes for p in cls.properties)
@@ -434,7 +449,7 @@ def generate_source(header: HeaderInfo, type_headers: Optional[Dict[str, str]] =
         if any(not cls.custom_transfer for cls in header.classes):
             out.extend('#include "%s"\n' % inc for inc in _TRANSFER_INCLUDES)
     if needs_enum:
-        out.extend(_enum_block(header))
+        out.extend(_enum_block(header, domain))
     for cls in header.classes:
         out.append("\n")
         out.append("// ---- %s ----\n" % cls.qualified_name)
@@ -445,7 +460,7 @@ def generate_source(header: HeaderInfo, type_headers: Optional[Dict[str, str]] =
             out.append("// INSTANTIATE_TEMPLATE_TRANSFER_EXPORTED live in the hand-written .cpp.\n")
             out.extend(_meta_block(cls))
             out.extend(_script_accessor_block(cls, enums))
-            out.extend(_script_block(cls, super_name, enums))
+            out.extend(_script_block(cls, super_name, enums, domain))
             continue
         out.append("IMPLEMENT_OBJECT_SERIALIZE(%s)\n" % cls.qualified_name)
         out.append("\n")
@@ -457,5 +472,5 @@ def generate_source(header: HeaderInfo, type_headers: Optional[Dict[str, str]] =
             out.extend(_transfer_definition(cls, ""))
         out.extend(_meta_block(cls))
         out.extend(_script_accessor_block(cls, enums))
-        out.extend(_script_block(cls, super_name, enums))
+        out.extend(_script_block(cls, super_name, enums, domain))
     return "".join(out)

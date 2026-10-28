@@ -9,6 +9,7 @@
 #include "Editor/PackageManager/PackageManager.h"
 #include "Editor/Prefab/PrefabSceneBinding.h"
 #include "Editor/RenderDoc/RenderDocLoader.h"
+#include "Editor/Scripting/EditorScriptingManager.h"
 #include "Editor/Scripting/TypeScriptCompiler.h"
 #include "Editor/Undo/EditorUndo.h"
 #include "Runtime/Function/Framework/GameFramework/GameEngine.h"
@@ -26,6 +27,7 @@ namespace
         REGISTER_SYSTEM(Editor);
         REGISTER_SYSTEM_AS(EditorAssetManager, AssetManager);
         REGISTER_SYSTEM(TypeScriptCompiler);
+        REGISTER_SYSTEM(EditorScriptingManager);
         REGISTER_SYSTEM(PackageManager);
         // PIE 的游戏层。RegisterGameRuntime()（独立进程专用）也会注册它，
         // 但编辑器不走那条路，而 PIE 需要 GameInstance / LocalPlayer /

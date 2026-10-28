@@ -174,6 +174,14 @@ public:
     /// Returns nullptr if Initialize() failed (e.g. PAPI_QUICKJS unset).
     ScriptEnv* GetEnv() { return m_ScriptEnv; }
 
+    /// Create an additional, fully isolated VM using the build's JS backend
+    /// (QuickJS or V8). The caller owns the result and must `delete` it before
+    /// ScriptingManager::Shutdown. Used by EditorScriptingManager for the
+    /// editor VM: `editorDomain` publishes ZScriptDomain::Editor bindings into
+    /// it, which the game VM never receives. Returns nullptr when the build has
+    /// no JS backend. Must run on the engine main thread, after Initialize().
+    static ScriptEnv* CreateIsolatedEnv(bool editorDomain, int debugPort = -1);
+
     /// Absolute path of <project>/Intermediate/Scripts/, or empty if no
     /// project is bound. Forward-slash form. Editor uses this to enumerate
     /// already-compiled .js files at startup.

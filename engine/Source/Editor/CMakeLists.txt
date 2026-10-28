@@ -267,6 +267,58 @@ target_link_libraries(${TARGET_NAME} PUBLIC stb)
 target_link_libraries(${TARGET_NAME} PUBLIC ZRuntime)
 target_link_libraries(${TARGET_NAME} PUBLIC tinyobjloader)
 
+# ---------------------------------------------------------------------------
+# Editor reflection (ZHeaderTool, Editor script domain).
+#
+# Same generator ZRuntime uses, run over the editor headers. SCRIPT_DOMAIN
+# editor stamps every generated ZClassScriptBinding / ZScriptEnum as
+# ZScriptDomain::Editor: they are published only into the editor-scripting VM
+# (EditorScriptingManager) and declared in zengine-editor.d.ts, never in the
+# zengine.d.ts that game scripts compile against -- the UnityEditor.dll /
+# UnityEngine.dll split. Annotate an editor class with ZCLASS / ZFUNCTION to
+# expose it to TypeScript editor scripts.
+# ---------------------------------------------------------------------------
+include(${CMAKE_SOURCE_DIR}/cmake/ZHeaderTool.cmake)
+zengine_header_tool(
+    MODULE        ZEditor
+    TARGETS       ${TARGET_NAME}
+    INCLUDE_ROOT  "${ENGINE_ROOT_DIR}/Source"
+    HEADERS       ${EDITOR_HEADERS}
+    SCRIPT_DOMAIN editor)
+
+# ---------------------------------------------------------------------------
+# Editor scripts (TypeScript editor layer).
+#
+# engine/EditorScripts/src/*.ts is compiled with tsc into
+# <bin>/<config>/EditorScripts/*.js, which EditorScriptingManager loads into
+# the editor VM at startup. Always-run target: tsc is incremental enough and a
+# stamp cannot be per-config. A missing tsc or a type error only warns -- the
+# editor boots without (or with the previous) script layer.
+#
+# Type-checking needs typings/zengine*.d.ts, which the editor itself writes on
+# every start; the very first build of a clean checkout therefore reports type
+# errors that disappear after the editor has run once.
+# ---------------------------------------------------------------------------
+find_program(ZENGINE_TSC NAMES tsc.cmd tsc
+    HINTS "${ENGINE_ROOT_DIR}/EditorScripts/node_modules/.bin")
+file(GLOB_RECURSE EDITOR_TS_SOURCES CONFIGURE_DEPENDS "${ENGINE_ROOT_DIR}/EditorScripts/src/*.ts")
+add_custom_target(ZEditorScripts
+    COMMAND ${CMAKE_COMMAND}
+        "-DTSC=${ZENGINE_TSC}"
+        "-DPROJECT_DIR=${ENGINE_ROOT_DIR}/EditorScripts"
+        "-DOUT_DIR=${BINARY_ROOT_DIR}/$<CONFIG>/EditorScripts"
+        -P "${CMAKE_SOURCE_DIR}/cmake/BuildEditorScripts.cmake"
+    SOURCES ${EDITOR_TS_SOURCES}
+            "${ENGINE_ROOT_DIR}/EditorScripts/tsconfig.json"
+    COMMENT "Compiling editor TypeScript (EditorScripts)"
+    VERBATIM)
+set_target_properties(ZEditorScripts PROPERTIES FOLDER "Engine/CodeGen")
+add_dependencies(${TARGET_NAME} ZEditorScripts)
+if(NOT ZENGINE_TSC)
+    message(WARNING "Editor: tsc not found; editor TypeScript layer will not be built "
+                    "(npm i -g typescript, or npm i inside engine/EditorScripts)")
+endif()
+
 # ufbx: single-file FBX reader (editor-only mesh import).
 set(ZENGINE_UFBX_DIR "${ENGINE_ROOT_DIR}/3rdparty/ufbx")
 if(EXISTS "${ZENGINE_UFBX_DIR}/ufbx.c")

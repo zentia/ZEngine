@@ -110,6 +110,19 @@ void ScriptingManager::Shutdown()
     }
 }
 
+ScriptEnv* ScriptingManager::CreateIsolatedEnv(bool editorDomain, int debugPort)
+{
+#if PAPI_QUICKJS
+    return new ScriptEnv(new BackendQuickJS(), debugPort, editorDomain);
+#elif PAPI_V8
+    return new ScriptEnv(new BackendV8(), debugPort, editorDomain);
+#else
+    (void)editorDomain;
+    (void)debugPort;
+    return nullptr;
+#endif
+}
+
 bool ScriptingManager::BindToProject(const ProjectInfo& project_info)
 {
     if (!m_ScriptEnv)

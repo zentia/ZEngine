@@ -7,6 +7,7 @@
 #include "Editor/EditorSceneManager/EditorSceneManager.h"
 #include "Editor/EditorUI/EditorUI.h"
 #include "Editor/FloatingPanel/FloatingPanelManager.h"
+#include "Editor/Scripting/EditorScriptingManager.h"
 #include "Editor/Scripting/TypeScriptCompiler.h"
 #include "Editor/Undo/EditorUndo.h"
 #include "Editor/ZSlate/Backend/EditorSlateHost.h"
@@ -826,6 +827,11 @@ void Editor::Run(float max_seconds)
                 Z_PROFILE_SCOPE("ScriptingManager::tick");
                 if (auto sm = GET_SYSTEM(ScriptingManager))
                     sm->Tick();
+            }
+            {
+                Z_PROFILE_SCOPE("EditorScriptingManager::tick");
+                if (auto esm = GET_SYSTEM(EditorScriptingManager))
+                    esm->Tick();
             }
             if (m_EditorUi)
             {

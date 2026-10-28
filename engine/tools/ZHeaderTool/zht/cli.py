@@ -235,7 +235,8 @@ def cmd_generate(args) -> int:
         produced.add(_key(_norm(h_path)))
         produced.add(_key(_norm(s_path)))
         written += write_if_changed(h_path, generate_header(info, script_enums))
-        written += write_if_changed(s_path, generate_source(info, type_headers, bound_classes, base_of, script_enums))
+        written += write_if_changed(s_path, generate_source(info, type_headers, bound_classes, base_of, script_enums,
+                                                            args.script_domain))
 
     pruned = 0
     for out_dir in (args.out_inc, args.out_src):
@@ -291,6 +292,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     p_gen.add_argument("--manifest", required=True)
     p_gen.add_argument("--stamp", required=True)
     p_gen.add_argument("--module", default="Module")
+    p_gen.add_argument("--script-domain", choices=("runtime", "editor"), default="runtime",
+                       help="which script VM the module's bindings are visible from")
     p_gen.add_argument("--dump-ir", default="")
     p_gen.add_argument("--verbose", action="store_true")
     p_gen.set_defaults(func=cmd_generate)

@@ -78,6 +78,20 @@ struct ZScriptPropertyEntry
 // Forward-declared: ScriptBindingRegistry (below) hands out pointers to it.
 struct ZSyntheticScriptClass;
 
+/// Which script VM a binding is visible from. Mirrors Unity's split between
+/// UnityEngine.dll (runtime, shipped in the player) and UnityEditor.dll
+/// (editor only): a class registered in the Editor domain is published only
+/// into the editor-scripting VM and is declared in zengine-editor.d.ts, never
+/// in the zengine.d.ts that game scripts compile against.
+///
+/// ZHeaderTool stamps the domain per module (ZRuntime -> Runtime, ZEditor ->
+/// Editor), so annotating an editor class needs no extra specifier.
+enum class ZScriptDomain : unsigned char
+{
+    Runtime = 0,
+    Editor = 1,
+};
+
 struct ZClassScriptBinding
 {
     const void* typeId = nullptr;
@@ -89,6 +103,7 @@ struct ZClassScriptBinding
     const ZScriptPropertyEntry* properties = nullptr;
     std::size_t propertyCount = 0;
     ZClassScriptBinding* next = nullptr;  // intrusive registry list
+    ZScriptDomain domain = ZScriptDomain::Runtime;  // must stay last: generated code aggregate-inits up to here
 };
 
 /// One enumerator of a ZENUM-annotated enum (phase 8).
@@ -105,6 +120,7 @@ struct ZScriptEnum
     const ZScriptEnumEntry* values = nullptr;
     std::size_t valueCount = 0;
     ZScriptEnum* next = nullptr;  // intrusive registry list
+    ZScriptDomain domain = ZScriptDomain::Runtime;
 };
 
 namespace ScriptBindingRegistry
@@ -147,13 +163,21 @@ namespace ScriptBindingRegistry
     ///
     /// Also publishes every ZENUM as a global object of `declare enum` shape,
     /// so `CameraMode.Free` evaluates to the same number the C++ side sees.
-    void InstallGlobals(pesapi_ffi* apis, pesapi_env env);
+    ///
+    /// `include_editor_domain` also publishes the Editor-domain classes and
+    /// enums. Only the editor-scripting VM passes true; the game VM never sees
+    /// editor bindings.
+    void InstallGlobals(pesapi_ffi* apis, pesapi_env env, bool include_editor_domain = false);
 
     /// Append `declare enum <Name> { ... }` for every registered enum, then
     /// `declare class <Name> [extends <Super>] { ... }` for every registered
     /// class. Super classes that have no binding of their own are declared
     /// empty so the emitted TypeScript still compiles.
-    void AppendTypeScriptDeclarations(std::string& out);
+    ///
+    /// Only bindings of `domain` are emitted. Runtime also emits the synthetic
+    /// (script-side) classes and the placeholder supers; Editor assumes the
+    /// Runtime file is part of the same TypeScript program.
+    void AppendTypeScriptDeclarations(std::string& out, ZScriptDomain domain = ZScriptDomain::Runtime);
 
     /// 完整的 `zengine.d.ts` 内容 = 手写前缀 + `AppendTypeScriptDeclarations`。
     ///
@@ -162,6 +186,11 @@ namespace ScriptBindingRegistry
     /// 是用户编译所依赖的 .d.ts 和运行时实际装的 global 悄悄漂移，而两边各自的
     /// 检查都还是绿的。
     std::string BuildTypeScriptDeclarationFile();
+
+    /// `zengine-editor.d.ts`: the Editor-domain bindings only. It is meant to be
+    /// compiled together with `zengine.d.ts` (editor scripts see both), the way
+    /// UnityEditor.dll references UnityEngine.dll.
+    std::string BuildEditorTypeScriptDeclarationFile();
 }  // namespace ScriptBindingRegistry
 
 struct ZClassScriptBindingRegistrar

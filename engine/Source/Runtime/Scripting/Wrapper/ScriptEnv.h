@@ -46,7 +46,10 @@ class ObjectPool;
 class ScriptEnv
 {
 public:
-    ScriptEnv(Backend* backend, int debugPort = -1);
+    /// `editorDomain` additionally publishes the Editor-domain bindings
+    /// (ZScriptDomain::Editor) into this VM's globals. Only the editor-scripting
+    /// VM passes true; the game VM stays free of editor API.
+    ScriptEnv(Backend* backend, int debugPort = -1, bool editorDomain = false);
     ~ScriptEnv();
 
     void Eval(std::string& chunk, const char* chunkName = "chunk");

@@ -28,9 +28,13 @@ get_filename_component(ZHT_TOOL_DIR "${ZHT_TOOL_DIR}" ABSOLUTE)
 set(ZHT_SCRIPT "${ZHT_TOOL_DIR}/ZHeaderTool.py")
 
 function(zengine_header_tool)
-    cmake_parse_arguments(ZHT "" "MODULE;INCLUDE_ROOT" "TARGETS;HEADERS;INCLUDE_CONSUMERS" ${ARGN})
+    cmake_parse_arguments(ZHT "" "MODULE;INCLUDE_ROOT;SCRIPT_DOMAIN" "TARGETS;HEADERS;INCLUDE_CONSUMERS" ${ARGN})
     if(NOT ZHT_MODULE OR NOT ZHT_TARGETS OR NOT ZHT_INCLUDE_ROOT)
         message(FATAL_ERROR "zengine_header_tool: MODULE, TARGETS and INCLUDE_ROOT are required")
+    endif()
+    # Which script VM the module's bindings are visible from (runtime|editor).
+    if(NOT ZHT_SCRIPT_DOMAIN)
+        set(ZHT_SCRIPT_DOMAIN runtime)
     endif()
 
     if(NOT Python3_EXECUTABLE)
@@ -79,6 +83,7 @@ function(zengine_header_tool)
         BYPRODUCTS ${gen_outputs}
         COMMAND "${Python3_EXECUTABLE}" "${ZHT_SCRIPT}" generate
                 --module "${ZHT_MODULE}"
+                --script-domain "${ZHT_SCRIPT_DOMAIN}"
                 --headers-file "${headers_file}"
                 --include-root "${ZHT_INCLUDE_ROOT}"
                 --out-inc "${inc_dir}"

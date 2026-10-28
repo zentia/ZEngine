@@ -322,7 +322,7 @@ namespace ScriptBindingRegistry
         }
     }
 
-    void InstallGlobals(pesapi_ffi* apis, pesapi_env env)
+    void InstallGlobals(pesapi_ffi* apis, pesapi_env env, bool include_editor_domain)
     {
         if (apis == nullptr || env == nullptr)
             return;
@@ -333,6 +333,8 @@ namespace ScriptBindingRegistry
 
         for (const ZClassScriptBinding* cls = g_Head; cls != nullptr; cls = cls->next)
         {
+            if (cls->domain == ZScriptDomain::Editor && !include_editor_domain)
+                continue;
             if (cls->scriptName == nullptr || cls->scriptName[0] == '\0')
                 continue;
             // Never shadow a JS built-in (see kReservedScriptNames).
@@ -349,6 +351,8 @@ namespace ScriptBindingRegistry
         // ambient declaration would type-check and then evaluate to undefined.
         for (const ZScriptEnum* script_enum = g_EnumHead; script_enum != nullptr; script_enum = script_enum->next)
         {
+            if (script_enum->domain == ZScriptDomain::Editor && !include_editor_domain)
+                continue;
             if (script_enum->scriptName == nullptr || script_enum->scriptName[0] == '\0')
                 continue;
             if (ScriptBindingRegistry::IsReservedScriptName(script_enum->scriptName))
@@ -367,11 +371,19 @@ namespace ScriptBindingRegistry
         }
     }
 
-    void AppendTypeScriptDeclarations(std::string& out)
+    void AppendTypeScriptDeclarations(std::string& out, ZScriptDomain domain)
     {
+        // `all` answers "does this name exist anywhere in the program" (an
+        // Editor class may extend a Runtime one); `classes` is what this call
+        // actually emits.
+        std::vector<const ZClassScriptBinding*> all;
         std::vector<const ZClassScriptBinding*> classes;
         for (const ZClassScriptBinding* cls = g_Head; cls != nullptr; cls = cls->next)
-            classes.push_back(cls);
+        {
+            all.push_back(cls);
+            if (cls->domain == domain)
+                classes.push_back(cls);
+        }
 
         // ZENUM first: class members declare their types with these names, and
         // a reader meeting `mode: CameraMode` before seeing what CameraMode is
@@ -380,6 +392,8 @@ namespace ScriptBindingRegistry
         // from the same ZScriptEnumEntry table.
         for (const ZScriptEnum* script_enum = g_EnumHead; script_enum != nullptr; script_enum = script_enum->next)
         {
+            if (script_enum->domain != domain)
+                continue;
             if (script_enum->scriptName == nullptr || script_enum->scriptName[0] == '\0')
                 continue;
             if (ScriptBindingRegistry::IsReservedScriptName(script_enum->scriptName))
@@ -404,14 +418,22 @@ namespace ScriptBindingRegistry
         if (classes.empty())
             return;
 
+        // Names an `extends` clause may legally refer to. A Runtime file only
+        // knows itself; an Editor file is compiled together with the Runtime
+        // one, so it may extend a Runtime class too.
+        const std::vector<const ZClassScriptBinding*>& known = (domain == ZScriptDomain::Runtime) ? classes : all;
+
         // A super class with no ZFUNCTION of its own still has to exist in the
         // .d.ts, otherwise `extends <Super>` does not compile. Two derived
         // classes sharing the same unbound super must only emit it once.
+        // Editor files never emit placeholders: that is the Runtime file's job.
         for (const ZClassScriptBinding* cls : classes)
         {
+            if (domain != ZScriptDomain::Runtime)
+                break;
             if (cls->superName == nullptr || cls->superName[0] == '\0')
                 continue;
-            if (IsDeclared(classes, cls->superName))
+            if (IsDeclared(known, cls->superName))
                 continue;
             if (IsPlaceholderEmitted(cls->superName))
                 continue;
@@ -437,7 +459,7 @@ namespace ScriptBindingRegistry
             // the emitted file: either the super has its own binding, or a
             // placeholder was emitted for it above. A reserved name (Object)
             // gets neither, so the class is emitted standalone.
-            const bool super_is_bound = cls->superName != nullptr && IsDeclared(classes, cls->superName);
+            const bool super_is_bound = cls->superName != nullptr && IsDeclared(known, cls->superName);
             const bool super_has_placeholder = cls->superName != nullptr && IsPlaceholderEmitted(cls->superName);
             if (cls->superName != nullptr && cls->superName[0] != '\0' && (super_is_bound || super_has_placeholder))
             {
@@ -473,8 +495,8 @@ namespace ScriptBindingRegistry
         }
 
         // Script-side classes last, so the reader sees the engine types their
-        // members refer to first.
-        for (const ZSyntheticScriptClass* cls = g_SyntheticHead; cls != nullptr; cls = cls->next)
+        // members refer to first. They belong to the Runtime file only.
+        for (const ZSyntheticScriptClass* cls = g_SyntheticHead; domain == ZScriptDomain::Runtime && cls != nullptr; cls = cls->next)
         {
             if (cls->scriptName == nullptr || cls->scriptName[0] == '\0')
                 continue;
@@ -515,6 +537,20 @@ namespace ScriptBindingRegistry
         std::string dts = kZEngineDtsTemplate;
         dts += "\n// ---- engine bindings (generated from ZFUNCTION / ZPROPERTY / ZENUM) ----\n\n";
         AppendTypeScriptDeclarations(dts);
+        return dts;
+    }
+
+    std::string BuildEditorTypeScriptDeclarationFile()
+    {
+        std::string dts =
+            "// =========================================================================\n"
+            "// AUTO-GENERATED by ZEngine. Do NOT edit -- regenerated on every editor start.\n"
+            "// Source of truth: ScriptBindingRegistry::BuildEditorTypeScriptDeclarationFile\n"
+            "// Editor-only API (the UnityEditor.dll equivalent). Compile together with\n"
+            "// zengine.d.ts; game scripts must never see this file.\n"
+            "// =========================================================================\n"
+            "\n";
+        AppendTypeScriptDeclarations(dts, ZScriptDomain::Editor);
         return dts;
     }
 }  // namespace ScriptBindingRegistry
