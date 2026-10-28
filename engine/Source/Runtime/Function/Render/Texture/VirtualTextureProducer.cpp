@@ -69,14 +69,13 @@ bool VirtualTextureProducer::EnsureManager(RHI* rhi, RenderResourceBase* render_
                                 (1024u * 1024u));
     m_Manager->SetConfig(config);
 
-    // 管理器的 Initialize 会拒绝非 Vulkan 的 RHI（Windows 默认是 DX12）。
+    // 管理器的 Initialize 只放行 Vulkan / DX12（Metal、WebGL2 没有 VT GPU 路径）。
     if (!m_Manager->Initialize(rhi, render_resource))
     {
 #if ZENGINE_VT_GPU
         LOG_ERROR(ZRender,
-                  "virtual texture producer: manager initialisation failed (virtual textures need the Vulkan "
-                  "backend -- on Windows pass --rhi vulkan -- and a pool that fits the device); streaming is "
-                  "disabled for this path");
+                  "virtual texture producer: manager initialisation failed (virtual textures need a Vulkan or "
+                  "DX12 backend and a pool that fits the device); streaming is disabled for this path");
 #endif
         return false;
     }
@@ -227,11 +226,14 @@ bool VirtualTextureProducer::TickCpu(bool enabled,
     if (log_now)
     {
         LOG_INFO(ZRender,
-                 "virtual texture producer: '{}' {}/{} pages resident (pending loads {})",
+                 "virtual texture producer: '{}' {}/{} pages resident (pending loads {}; GPU page uploads ok {} "
+                 "failed {})",
                  m_ActivePath,
                  resident,
                  total,
-                 m_Manager->getPendingLoadCount());
+                 m_Manager->getPendingLoadCount(),
+                 m_Manager->getPageUploadCount(),
+                 m_Manager->getPageUploadFailureCount());
     }
 #else
     (void)log_now;

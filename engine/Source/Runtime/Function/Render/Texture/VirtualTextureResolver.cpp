@@ -62,6 +62,13 @@ bool VirtualTextureResolver::Initialize(RHI* rhi)
     {
         return false;
     }
+    // compute 解析器只有 Vulkan 版：它把结果写进 STORAGE_BUFFER，而 DX12 RHI 里 STORAGE_BUFFER 描述符
+    // 一律建成 SRV（只读，见 ToDX12DescriptorRangeType），根本写不进去；加 UAV 需要改 RHI 的描述符模型，
+    // 不属于 VT 的范围。DX12 的 GPU 消费者验证由 VirtualTextureBlitter（fragment 阶段）承担。
+    if (!VirtualTextureUsesVulkanPath(rhi))
+    {
+        return false;
+    }
     m_Rhi = rhi;
 
     // 采样器：NEAREST + clamp。VT 查找只用 texelFetch，但 combined image sampler 描述符
@@ -83,7 +90,7 @@ bool VirtualTextureResolver::Initialize(RHI* rhi)
         return false;
     }
 
-    m_Rhi->CreateBuffer(sizeof(ResolveParams),
+    m_Rhi->CreateBuffer(256,  // 见 VirtualTextureBlitter 的 kParamsBufferBytes 注释（Vulkan 上无害）
                         RHI_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
                         kHostMemory,
                         m_ParamsBuffer,

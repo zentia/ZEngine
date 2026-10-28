@@ -18,6 +18,116 @@
 // PhysicalTexturePool Implementation
 //////////////////////////////////////////////////////////////////////////
 
+//////////////////////////////////////////////////////////////////////////
+// 后端中立的图像管理 —— 契约见 VirtualTextureTypes.h
+//////////////////////////////////////////////////////////////////////////
+
+bool VirtualTextureUsesVulkanPath(RHI* rhi)
+{
+#if ZENGINE_VT_GPU
+    return dynamic_cast<VulkanRHI*>(rhi) != nullptr;
+#else
+    (void)rhi;
+    return false;
+#endif
+}
+
+bool VirtualTextureBackendSupported(RHI* rhi)
+{
+#if ZENGINE_VT_GPU
+    if (rhi == nullptr)
+    {
+        return false;
+    }
+    return VirtualTextureUsesVulkanPath(rhi) || rhi->SupportsVirtualTextureUpload();
+#else
+    (void)rhi;
+    return false;
+#endif
+}
+
+bool VirtualTextureCreateGenericImage(RHI* rhi,
+                                      uint32_t width,
+                                      uint32_t height,
+                                      RHIFormat format,
+                                      RHIImage*& image,
+                                      RHIImageView*& view,
+                                      void*& backend_alloc)
+{
+    image = nullptr;
+    view = nullptr;
+    backend_alloc = nullptr;
+    if (rhi == nullptr || width == 0 || height == 0)
+    {
+        return false;
+    }
+
+    RHIDeviceMemory* memory = nullptr;
+    // TRANSFER_SRC 只为 A/B 验证（把图拷回 host 逐 texel 比对），同 Vulkan 路径。
+    rhi->CreateImage(width,
+                     height,
+                     format,
+                     RHIImageTiling::RHI_IMAGE_TILING_OPTIMAL,
+                     RHIImageUsageFlagBits::RHI_IMAGE_USAGE_SAMPLED_BIT |
+                         RHIImageUsageFlagBits::RHI_IMAGE_USAGE_TRANSFER_DST_BIT |
+                         RHIImageUsageFlagBits::RHI_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                     RHIMemoryPropertyFlagBits::RHI_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                     image,
+                     memory,
+                     0,
+                     1,
+                     1);
+    if (image == nullptr)
+    {
+        if (memory != nullptr)
+        {
+            rhi->FreeMemory(memory);
+        }
+        return false;
+    }
+
+    rhi->CreateImageView(image,
+                         format,
+                         RHIImageAspectFlagBits::RHI_IMAGE_ASPECT_COLOR_BIT,
+                         RHIImageViewType::RHI_IMAGE_VIEW_TYPE_2D,
+                         1,
+                         1,
+                         view);
+    if (view == nullptr)
+    {
+        rhi->DestroyImage(image);
+        image = nullptr;
+        if (memory != nullptr)
+        {
+            rhi->FreeMemory(memory);
+        }
+        return false;
+    }
+    backend_alloc = memory;
+    return true;
+}
+
+void VirtualTextureDestroyGenericImage(RHI* rhi, RHIImage* image, RHIImageView* view, void* backend_alloc)
+{
+    if (rhi == nullptr)
+    {
+        return;
+    }
+    if (view != nullptr)
+    {
+        rhi->DestroyImageView(view);
+    }
+    if (image != nullptr)
+    {
+        rhi->DestroyImage(image);
+    }
+    if (backend_alloc != nullptr)
+    {
+        RHIDeviceMemory* memory = static_cast<RHIDeviceMemory*>(backend_alloc);
+        rhi->FreeMemory(memory);
+    }
+}
+
 PhysicalTexturePool::PhysicalTexturePool()
     : m_Rhi(nullptr), m_PhysicalTexture(nullptr), m_PhysicalTextureView(nullptr), m_Allocation(nullptr),
       m_PoolWidthPages(0), m_PoolHeightPages(0), m_PageSize(0), m_Format(RHIFormat::RHI_FORMAT_R8G8B8A8_UNORM),
@@ -76,6 +186,44 @@ bool PhysicalTexturePool::Initialize(RHI* rhi,
     // 供下面 Vulkan 结构体的 uint32_t 字段使用。
     const uint32_t physical_width_px = static_cast<uint32_t>(physical_width);
     const uint32_t physical_height_px = static_cast<uint32_t>(physical_height);
+
+    // 槽位网格：两条后端路径共用。
+    auto init_slots = [this, pool_width_pages, pool_height_pages]() {
+        uint32_t total_slots = pool_width_pages * pool_height_pages;
+        m_Slots.resize(total_slots);
+        for (uint32_t i = 0; i < total_slots; ++i)
+        {
+            uint32_t x, y;
+            GetSlotCoordinates(i, x, y);
+            m_Slots[i].x = x;
+            m_Slots[i].y = y;
+            m_Slots[i].is_allocated = false;
+            m_Slots[i].last_access_time = 0;
+        }
+    };
+
+    // 非 Vulkan 后端（DX12）：走通用 RHI 路径，不碰 VMA。
+    if (!VirtualTextureUsesVulkanPath(rhi))
+    {
+        if (!VirtualTextureBackendSupported(rhi))
+        {
+            return false;
+        }
+        void* generic_alloc = nullptr;
+        if (!VirtualTextureCreateGenericImage(rhi,
+                                              physical_width_px,
+                                              physical_height_px,
+                                              format,
+                                              m_PhysicalTexture,
+                                              m_PhysicalTextureView,
+                                              generic_alloc))
+        {
+            return false;
+        }
+        m_Allocation = static_cast<VmaAllocation>(generic_alloc);
+        init_slots();
+        return true;
+    }
 
     // Create physical texture
     auto vulkan_rhi = static_cast<VulkanRHI*>(rhi);
@@ -169,18 +317,7 @@ bool PhysicalTexturePool::Initialize(RHI* rhi,
                          1,
                          m_PhysicalTextureView);
 
-    // Initialize slots
-    uint32_t total_slots = pool_width_pages * pool_height_pages;
-    m_Slots.resize(total_slots);
-    for (uint32_t i = 0; i < total_slots; ++i)
-    {
-        uint32_t x, y;
-        GetSlotCoordinates(i, x, y);
-        m_Slots[i].x = x;
-        m_Slots[i].y = y;
-        m_Slots[i].is_allocated = false;
-        m_Slots[i].last_access_time = 0;
-    }
+    init_slots();
 
     return true;
 #endif
@@ -221,6 +358,17 @@ bool PhysicalTexturePool::InitializeLogical(uint32_t pool_width_pages,
 
 void PhysicalTexturePool::Shutdown()
 {
+#if ZENGINE_VT_GPU
+    // 通用 RHI 路径（DX12）：图 / view / 内存都是 RHI 自己的对象，一把销毁，不走下面 Vulkan 专用的
+    // "RHI 销毁 + 自己 delete 包装" 双步。
+    if (m_Rhi && m_PhysicalTexture && !VirtualTextureUsesVulkanPath(m_Rhi))
+    {
+        VirtualTextureDestroyGenericImage(m_Rhi, m_PhysicalTexture, m_PhysicalTextureView, m_Allocation);
+        m_PhysicalTexture = nullptr;
+        m_PhysicalTextureView = nullptr;
+        m_Allocation = nullptr;
+    }
+#endif
     if (m_PhysicalTextureView)
     {
         // 旧注释写"Image view will be destroyed by RHI"——RHI 从不替调用方销毁 view，
@@ -404,6 +552,13 @@ bool UploadImageRegion(RHI* rhi,
 #if !ZENGINE_VT_GPU
     return false;
 #else
+    // 非 Vulkan 后端：整段"暂存 + barrier + 拷贝 + barrier"由 RHI 自己完成。
+    if (!VirtualTextureUsesVulkanPath(rhi))
+    {
+        return rhi->UploadImageRegionImmediate(
+            image, data, data_bytes, offset_x, offset_y, width, height, bytes_per_pixel, discard_prior_content);
+    }
+
     auto vulkan_rhi = static_cast<VulkanRHI*>(rhi);
     if (!vulkan_rhi)
     {

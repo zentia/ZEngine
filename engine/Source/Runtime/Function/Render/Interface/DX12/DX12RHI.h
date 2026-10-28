@@ -13,6 +13,7 @@
 #include <dxgi1_6.h>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <vector>
 
 class DX12Image;
@@ -134,6 +135,16 @@ public:
                                  uint32_t layout_count,
                                  uint32_t miplevels,
                                  RHIImageView*& image_view) override;
+    virtual bool SupportsVirtualTextureUpload() const override { return true; }
+    virtual bool UploadImageRegionImmediate(RHIImage* image,
+                                            const void* data,
+                                            size_t data_bytes,
+                                            uint32_t offset_x,
+                                            uint32_t offset_y,
+                                            uint32_t width,
+                                            uint32_t height,
+                                            uint32_t bytes_per_pixel,
+                                            bool discard_prior_content) override;
     virtual void CreateGlobalImage(RHIImage*& image,
                                    RHIImageView*& image_view,
                                    void* image_allocation,
@@ -637,6 +648,17 @@ private:
     ComPtr<ID3D12Resource> m_DepthStencil;
     ComPtr<ID3D12Fence> m_Fences[3];
     HANDLE m_FenceEvent {nullptr};
+    // True when there is no native window: no swapchain, no back-buffer views, no screen depth image.
+    bool m_Headless {false};
+    // Dedicated copy command list for UploadImageRegionImmediate. It must NOT reuse
+    // m_CommandLists[]: BeginSingleTimeCommands resets the *frame* allocator, which would
+    // destroy whatever the render thread has recorded so far this frame. A separate list
+    // on the same direct queue keeps queue-order semantics without touching frame state.
+    ComPtr<ID3D12CommandAllocator> m_UploadAllocator;
+    ComPtr<ID3D12GraphicsCommandList> m_UploadList;
+    ComPtr<ID3D12Fence> m_UploadFence;
+    uint64_t m_UploadFenceValue {0};
+    std::mutex m_UploadMutex;
     static constexpr uint8_t k_max_frames_in_flight {3};
     uint64_t m_FenceValues[3] {};
 

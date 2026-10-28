@@ -383,20 +383,36 @@ void VirtualTextureResource::UpdatePageTableTexture(RHI* rhi)
     const RHIFormat table_format = RHIFormat::RHI_FORMAT_R32G32_SFLOAT;
     constexpr uint32_t kTableBytesPerTexel = 8;  // 2 x float32
 
-    auto vulkan_rhi = static_cast<VulkanRHI*>(rhi);
-    if (!vulkan_rhi)
+    if (!VirtualTextureBackendSupported(rhi))
     {
         return;
     }
-
-    VmaAllocator allocator = vulkan_rhi->getVmaAllocator();
-    if (!allocator)
+    const bool vulkan_path = VirtualTextureUsesVulkanPath(rhi);
+    VmaAllocator allocator = nullptr;
+    if (vulkan_path)
     {
-        return;
+        allocator = static_cast<VulkanRHI*>(rhi)->getVmaAllocator();
+        if (!allocator)
+        {
+            return;
+        }
     }
 
     // ---- 首次调用时建图（mip 0 的页网格，一 texel 一个 PageTableEntry）----
-    if (m_PageTableTexture == nullptr)
+    if (m_PageTableTexture == nullptr && !vulkan_path)
+    {
+        // 非 Vulkan 后端（DX12）：通用 RHI 路径。
+        void* generic_alloc = nullptr;
+        if (!VirtualTextureCreateGenericImage(
+                rhi, m_PagesX, m_PagesY, table_format, m_PageTableTexture, m_PageTableTextureView, generic_alloc))
+        {
+            return;
+        }
+        m_PageTableAllocation = static_cast<VmaAllocation>(generic_alloc);
+        m_PageTableRhi = rhi;
+        m_PageTableHasContent = false;
+    }
+    else if (m_PageTableTexture == nullptr)
     {
         VkImageCreateInfo image_info {};
         image_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
@@ -503,6 +519,16 @@ void VirtualTextureResource::ReleasePageTableTexture()
     // 调用前提：没有 GPU 工作还在读这张页表。VT 的所有提交都是 single-time
     // （EndSingleTimeCommands 内 vkQueueWaitIdle），所以在本系统内成立；将来若有
     // 渲染帧把它绑进描述符集，这里要改成延迟到帧围栏之后再销毁。
+    if (m_PageTableRhi != nullptr && m_PageTableTexture != nullptr && !VirtualTextureUsesVulkanPath(m_PageTableRhi))
+    {
+        // 通用 RHI 路径（DX12）：一把销毁 view / 图 / 内存。
+        VirtualTextureDestroyGenericImage(
+            m_PageTableRhi, m_PageTableTexture, m_PageTableTextureView, m_PageTableAllocation);
+        m_PageTableTextureView = nullptr;
+        m_PageTableTexture = nullptr;
+        m_PageTableAllocation = nullptr;
+    }
+
     if (m_PageTableTextureView != nullptr)
     {
         if (m_PageTableRhi != nullptr)

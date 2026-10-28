@@ -150,6 +150,10 @@ public:
     //                               (back-pressure keeps it bounded).
     uint32_t getGpuThreadViolationCount() const { return m_GpuThreadViolations.load(); }
     uint32_t getAsyncPreparedCount() const { return m_AsyncPreparedCount.load(); }
+    // 页上传的成败计数。LoadPage 在上传失败时页状态仍是 Loaded（页表项驻留），所以"N/N 页驻留"只证明
+    // CPU 侧记账，不证明像素真进了显存；这两个计数才是 GPU 侧的证据。failures 应恒为 0。
+    uint32_t getPageUploadCount() const { return m_PageUploadCount.load(); }
+    uint32_t getPageUploadFailureCount() const { return m_PageUploadFailures.load(); }
     uint32_t getPreparedBacklogPeak() const { return m_PreparedBacklogPeak.load(); }
 
     // Requests still queued for the worker + pages the worker is preparing + pages
@@ -303,6 +307,8 @@ private:
     // Owner thread = the thread that called Initialize()/InitializeLogical().
     std::thread::id m_OwnerThread;
     std::atomic<uint32_t> m_GpuThreadViolations {0};
+    std::atomic<uint32_t> m_PageUploadCount {0};
+    std::atomic<uint32_t> m_PageUploadFailures {0};
     std::atomic<uint32_t> m_AsyncPreparedCount {0};
     std::atomic<uint32_t> m_PreparedBacklogPeak {0};
     // Pages the worker has popped from the request queue but not yet pushed to the

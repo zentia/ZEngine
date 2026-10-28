@@ -2139,7 +2139,18 @@ bool DX12RHI::Initialize()
         }
     }
 
-    std::array<int, 2> framebuffer_size = GET_SYSTEM(WindowSystem)->GetFramebufferSize();
+    // 无头判定：没有任何可用的原生窗口句柄（headless 测试 / 无窗口宿主）。此时跳过 swapchain /
+    // 后备缓冲 RTV / 屏幕深度图，只留 device + queue + 命令列表——离屏渲染与拷贝都不需要它们。
+    // 与 VulkanRHI::m_Headless 同一语义；Vulkan 侧以 GetMainWindow()==nullptr 判定，这里多看一眼
+    // 宿主推入的句柄（SetHostWindowHandle），有句柄就不是无头。
+    m_Headless = (GET_SYSTEM(WindowSystem)->GetNativeWindowHandle() == nullptr);
+    if (m_Headless)
+    {
+        LOG_INFO(ZRender, "DX12RHI: headless mode (no native window) -- skipping swapchain / back-buffer views");
+    }
+
+    std::array<int, 2> framebuffer_size =
+        m_Headless ? std::array<int, 2> {1, 1} : GET_SYSTEM(WindowSystem)->GetFramebufferSize();
     framebuffer_size[0] = std::max(framebuffer_size[0], 1);
     framebuffer_size[1] = std::max(framebuffer_size[1], 1);
 
@@ -2245,16 +2256,19 @@ bool DX12RHI::Initialize()
     m_GraphicsQueue = new RHIQueue();
     m_ComputeQueue = m_GraphicsQueue;
 
-    CreateSwapchain();
-    if (!m_Swapchain)
+    if (!m_Headless)
     {
-        return false;
-    }
-    LOG_INFO(ZRender, "DX12RHI: swapchain ready ({}x{})", m_SwapchainExtent.width, m_SwapchainExtent.height);
+        CreateSwapchain();
+        if (!m_Swapchain)
+        {
+            return false;
+        }
+        LOG_INFO(ZRender, "DX12RHI: swapchain ready ({}x{})", m_SwapchainExtent.width, m_SwapchainExtent.height);
 
-    CreateSwapchainImageViews();
-    CreateFramebufferImageAndView();
-    LOG_INFO(ZRender, "DX12RHI: swapchain RTVs + depth buffer ready");
+        CreateSwapchainImageViews();
+        CreateFramebufferImageAndView();
+        LOG_INFO(ZRender, "DX12RHI: swapchain RTVs + depth buffer ready");
+    }
 
     for (uint8_t i = 0; i < k_max_frames_in_flight; ++i)
     {
@@ -5835,6 +5849,10 @@ void DX12RHI::GetPhysicalDeviceProperties(RHIPhysicalDeviceProperties* pProperti
     pProperties->limits.minStorageBufferOffsetAlignment = 256;
     pProperties->limits.maxStorageBufferRange = 1u << 27;
     pProperties->limits.nonCoherentAtomSize = 256;
+    // D3D12 feature level 11_0+ guarantees Texture2D up to 16384 (D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION).
+    // Callers such as the virtual-texture pool size themselves against this; leaving it 0
+    // made every "does it fit the device" check fail.
+    pProperties->limits.maxImageDimension2D = D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION;
 }
 
 RHICommandBuffer* DX12RHI::GetCurrentCommandBuffer() const
@@ -5946,6 +5964,209 @@ void DX12RHI::EndSingleTimeCommands(RHICommandBuffer* command_buffer)
         m_FenceValues[m_CurrentFrameIndex] = next_fence_value;
         WaitForFences();
     }
+}
+
+bool DX12RHI::UploadImageRegionImmediate(RHIImage* image,
+                                         const void* data,
+                                         size_t data_bytes,
+                                         uint32_t offset_x,
+                                         uint32_t offset_y,
+                                         uint32_t width,
+                                         uint32_t height,
+                                         uint32_t bytes_per_pixel,
+                                         bool discard_prior_content)
+{
+    (void)discard_prior_content;  // D3D12 transitions preserve content; nothing to discard.
+
+    // Whatever way this function leaves (success, early failure, Close() rejected by the debug layer),
+    // flush the debug layer's messages into the log. They otherwise only reach the log on device removal
+    // or shutdown, so a rejected copy used to fail with no explanation. One GetNumStoredMessages() when
+    // the queue is empty.
+    struct DrainOnExit
+    {
+        const DX12RHI* rhi;
+        ~DrainOnExit() { rhi->DrainDebugLayerMessages(); }
+    } drain_on_exit {this};
+
+    DX12Image* dst_image = static_cast<DX12Image*>(image);
+    if (!m_Device || !m_CommandQueue || dst_image == nullptr || dst_image->getResource() == nullptr ||
+        data == nullptr || width == 0 || height == 0 || bytes_per_pixel == 0)
+    {
+        return false;
+    }
+    if (dst_image->getFormat() == DXGI_FORMAT_UNKNOWN || GetDXGIFormatBytesPerPixel(dst_image->getFormat()) != bytes_per_pixel)
+    {
+        LOG_ERROR(ZRender, "DX12 UploadImageRegionImmediate: bytes_per_pixel {} does not match the image format", bytes_per_pixel);
+        return false;
+    }
+    if (offset_x + width > dst_image->getWidth() || offset_y + height > dst_image->getHeight())
+    {
+        LOG_ERROR(ZRender, "DX12 UploadImageRegionImmediate: region exceeds the image");
+        return false;
+    }
+    const size_t needed = static_cast<size_t>(width) * height * bytes_per_pixel;
+    if (data_bytes < needed)
+    {
+        return false;
+    }
+
+    // ---- staging buffer: upload heap, rows padded to D3D12_TEXTURE_DATA_PITCH_ALIGNMENT ----
+    const uint32_t row_bytes = width * bytes_per_pixel;
+    const uint32_t row_pitch = AlignTo(row_bytes, D3D12_TEXTURE_DATA_PITCH_ALIGNMENT);
+    const uint64_t staging_size = static_cast<uint64_t>(row_pitch) * height;
+
+    D3D12_HEAP_PROPERTIES upload_heap = {};
+    upload_heap.Type = D3D12_HEAP_TYPE_UPLOAD;
+    upload_heap.CreationNodeMask = 1;
+    upload_heap.VisibleNodeMask = 1;
+
+    D3D12_RESOURCE_DESC buffer_desc = {};
+    buffer_desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    buffer_desc.Width = staging_size;
+    buffer_desc.Height = 1;
+    buffer_desc.DepthOrArraySize = 1;
+    buffer_desc.MipLevels = 1;
+    buffer_desc.Format = DXGI_FORMAT_UNKNOWN;
+    buffer_desc.SampleDesc.Count = 1;
+    buffer_desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+
+    ComPtr<ID3D12Resource> staging;
+    if (!CheckDX12(m_Device->CreateCommittedResource(&upload_heap,
+                                                     D3D12_HEAP_FLAG_NONE,
+                                                     &buffer_desc,
+                                                     D3D12_RESOURCE_STATE_GENERIC_READ,
+                                                     nullptr,
+                                                     IID_PPV_ARGS(&staging)),
+                   "DX12 UploadImageRegionImmediate: create staging buffer failed"))
+    {
+        return false;
+    }
+
+    uint8_t* mapped = nullptr;
+    D3D12_RANGE no_read = {0, 0};
+    if (!CheckDX12(staging->Map(0, &no_read, reinterpret_cast<void**>(&mapped)), "DX12 staging map failed") ||
+        mapped == nullptr)
+    {
+        return false;
+    }
+    const uint8_t* source = static_cast<const uint8_t*>(data);
+    for (uint32_t row = 0; row < height; ++row)
+    {
+        std::memcpy(mapped + static_cast<size_t>(row) * row_pitch, source + static_cast<size_t>(row) * row_bytes, row_bytes);
+    }
+    staging->Unmap(0, nullptr);
+
+    // ---- record on the dedicated list ----
+    std::lock_guard<std::mutex> lock(m_UploadMutex);
+    if (!m_UploadAllocator || !m_UploadList)
+    {
+        m_UploadAllocator.Reset();
+        m_UploadList.Reset();
+        if (!CheckDX12(m_Device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&m_UploadAllocator)),
+                       "DX12 upload allocator creation failed") ||
+            !CheckDX12(m_Device->CreateCommandList(0,
+                                                   D3D12_COMMAND_LIST_TYPE_DIRECT,
+                                                   m_UploadAllocator.Get(),
+                                                   nullptr,
+                                                   IID_PPV_ARGS(&m_UploadList)),
+                       "DX12 upload command list creation failed") ||
+            (!m_UploadFence &&
+             !CheckDX12(m_Device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&m_UploadFence)),
+                        "DX12 upload fence creation failed")))
+        {
+            m_UploadAllocator.Reset();
+            m_UploadList.Reset();
+            return false;
+        }
+        m_UploadList->Close();
+    }
+
+    // The previous upload was waited to completion before it returned, so the allocator is idle.
+    if (!CheckDX12(m_UploadAllocator->Reset(), "DX12 upload allocator reset failed") ||
+        !CheckDX12(m_UploadList->Reset(m_UploadAllocator.Get(), nullptr), "DX12 upload list reset failed"))
+    {
+        return false;
+    }
+
+    auto transition = [&](D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES after) {
+        D3D12_RESOURCE_BARRIER barrier = {};
+        barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        barrier.Transition.pResource = dst_image->getResource();
+        barrier.Transition.Subresource = 0;
+        barrier.Transition.StateBefore = before;
+        barrier.Transition.StateAfter = after;
+        m_UploadList->ResourceBarrier(1, &barrier);
+    };
+
+    const D3D12_RESOURCE_STATES read_state =
+        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+    const D3D12_RESOURCE_STATES tracked_before = dst_image->getState(0);
+    if (tracked_before != D3D12_RESOURCE_STATE_COPY_DEST)
+    {
+        transition(tracked_before, D3D12_RESOURCE_STATE_COPY_DEST);
+    }
+
+    D3D12_TEXTURE_COPY_LOCATION dst = {};
+    dst.pResource = dst_image->getResource();
+    dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    dst.SubresourceIndex = 0;
+
+    D3D12_TEXTURE_COPY_LOCATION src = {};
+    src.pResource = staging.Get();
+    src.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+    src.PlacedFootprint.Offset = 0;
+    src.PlacedFootprint.Footprint.Format = dst_image->getFormat();
+    src.PlacedFootprint.Footprint.Width = width;
+    src.PlacedFootprint.Footprint.Height = height;
+    src.PlacedFootprint.Footprint.Depth = 1;
+    src.PlacedFootprint.Footprint.RowPitch = row_pitch;
+
+    m_UploadList->CopyTextureRegion(&dst, offset_x, offset_y, 0, &src, nullptr);
+    transition(D3D12_RESOURCE_STATE_COPY_DEST, read_state);
+
+    if (!CheckDX12(m_UploadList->Close(), "DX12 upload list close failed"))
+    {
+        // Close() fails when the debug layer / runtime rejected something recorded above. The list is then
+        // stuck in an error state and every later Reset() on it fails with E_INVALIDARG (observed: 314 failed
+        // uploads in a row after one bad copy). Nothing was submitted, so it is safe to drop it; the next
+        // upload recreates allocator + list from scratch.
+        m_UploadList.Reset();
+        m_UploadAllocator.Reset();
+        return false;
+    }
+    // From here on the CPU-side state tracking must say what the GPU will see after this list.
+    dst_image->setState(0, read_state);
+
+    ID3D12CommandList* lists[] = {m_UploadList.Get()};
+    m_CommandQueue->ExecuteCommandLists(1, lists);
+    const uint64_t signal_value = ++m_UploadFenceValue;
+    if (!CheckDX12(m_CommandQueue->Signal(m_UploadFence.Get(), signal_value), "DX12 upload signal failed"))
+    {
+        return false;
+    }
+
+    // Wait on a short-lived event: this runs on the RHI thread and must not share m_FenceEvent
+    // with the per-frame fences.
+    if (m_UploadFence->GetCompletedValue() < signal_value)
+    {
+        HANDLE wait_event = CreateEvent(nullptr, FALSE, FALSE, nullptr);
+        if (wait_event == nullptr)
+        {
+            return false;
+        }
+        bool done = false;
+        if (CheckDX12(m_UploadFence->SetEventOnCompletion(signal_value, wait_event), "DX12 upload SetEventOnCompletion failed"))
+        {
+            done = (WaitForSingleObject(wait_event, 10000) == WAIT_OBJECT_0);
+        }
+        CloseHandle(wait_event);
+        if (!done)
+        {
+            LOG_ERROR(ZRender, "DX12 UploadImageRegionImmediate: GPU did not finish the copy within 10s");
+            return false;
+        }
+    }
+    return true;
 }
 
 bool DX12RHI::PrepareBeforePass(std::function<void()> passUpdateAfterRecreateSwapchain)
@@ -6331,6 +6552,11 @@ void DX12RHI::clear()
             }
         }
     }
+
+    // Flush whatever the debug layer collected during the session into the log. Before this,
+    // messages only ever reached the log on device removal (IsDeviceRemoved) or at init, so a
+    // session that hit validation errors but never lost the device looked perfectly clean.
+    DrainDebugLayerMessages();
 
     // PR4: tear down the bindless heap BEFORE m_Device is released.
     // The manager owns an ID3D12DescriptorHeap whose lifetime is

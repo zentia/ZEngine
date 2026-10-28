@@ -30,6 +30,9 @@
 #include "Runtime/Core/Base/SystemRegistry.h"
 #include "Runtime/Function/Render/Interface/RHI.h"
 #include "Runtime/Function/Render/Interface/Vulkan/VulkanRHI.h"
+#if defined(_WIN32)
+    #include "Runtime/Function/Render/Interface/DX12/DX12RHI.h"
+#endif
 #include "Runtime/Function/Render/RenderType.h"
 #include "Runtime/Function/Render/Texture/VirtualTextureBlitter.h"
 #include "Runtime/Function/Render/Texture/VirtualTextureManager.h"
@@ -43,6 +46,7 @@
 #include <cstdlib>
 #include <future>
 #include <memory>
+#include <string>
 #include <vector>
 
 namespace
@@ -288,15 +292,54 @@ namespace
     }
 }  // namespace
 
-int main()
+int main(int argc, char** argv)
 {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
-    std::printf("=== VirtualTexture fragment-stage page-table consumer A/B smoke test (Vulkan headless) ===\n");
+
+    // 后端选择：默认 Vulkan；`--rhi dx12`（仅 Windows）跑同一套 22 项检查在 DX12 无头设备上。
+    // 同一份源数据、同一个 CPU 参考，所以两个后端的绿是同一个判据下的绿。
+    bool use_dx12 = false;
+    for (int i = 1; i < argc; ++i)
+    {
+        if (std::string(argv[i]) == "--rhi" && i + 1 < argc)
+        {
+            use_dx12 = (std::string(argv[i + 1]) == "dx12");
+        }
+    }
+#if !defined(_WIN32)
+    if (use_dx12)
+    {
+        std::printf("--rhi dx12 is only available on Windows\n");
+        return 2;
+    }
+#endif
+    std::printf("=== VirtualTexture fragment-stage page-table consumer A/B smoke test (%s headless) ===\n",
+                use_dx12 ? "DX12" : "Vulkan");
 
     SystemRegistry::GetInstance().RegisterSystem(new WindowSystem());
-    VulkanRHI vulkan_rhi;
-    const bool vulkan_ready = vulkan_rhi.Initialize();
-    Check(vulkan_ready, "VulkanRHI::Initialize succeeds (headless)");
+    // RHI::Initialize/Shutdown 在基类里是 protected（IEngineSystem），只能经具体类型调用。
+    std::unique_ptr<VulkanRHI> vulkan_owner;
+#if defined(_WIN32)
+    std::unique_ptr<DX12RHI> dx12_owner;
+#endif
+    RHI* rhi_ptr = nullptr;
+    bool vulkan_ready = false;
+    if (use_dx12)
+    {
+#if defined(_WIN32)
+        dx12_owner = std::make_unique<DX12RHI>();
+        rhi_ptr = dx12_owner.get();
+        vulkan_ready = dx12_owner->Initialize();
+#endif
+    }
+    else
+    {
+        vulkan_owner = std::make_unique<VulkanRHI>();
+        rhi_ptr = vulkan_owner.get();
+        vulkan_ready = vulkan_owner->Initialize();
+    }
+    RHI& vulkan_rhi = *rhi_ptr;  // 名字沿用：下面 40 多处引用不动
+    Check(vulkan_ready, use_dx12 ? "DX12RHI::Initialize succeeds (headless)" : "VulkanRHI::Initialize succeeds (headless)");
     if (!vulkan_ready)
     {
         std::printf("\n%d checks, %d failures\n", g_Checks, g_Failures);
@@ -438,7 +481,68 @@ int main()
     blitter.Shutdown();
     RunWithWatchdog("VirtualTextureManager::Shutdown", [&] { manager->Shutdown(); });
     manager.reset();
-    vulkan_rhi.Shutdown();
+#if defined(_WIN32)
+    if (use_dx12)
+    {
+        // DX12 的"校验层一声不吭"判据：Vulkan 版靠捕获 std::cerr 里的 validation 输出；DX12 的
+        // debug layer 把消息存进 ID3D12InfoQueue，直接数 CORRUPTION / ERROR / WARNING 条数。
+        // 没装 Graphics Tools 时 InfoQueue 不存在——如实标注"未校验"，不假装通过。
+        Microsoft::WRL::ComPtr<ID3D12InfoQueue> info_queue;
+        if (dx12_owner->getDevice() != nullptr &&
+            SUCCEEDED(dx12_owner->getDevice()->QueryInterface(IID_PPV_ARGS(&info_queue))) && info_queue)
+        {
+            uint32_t bad = 0;
+            const UINT64 count = info_queue->GetNumStoredMessages();
+            for (UINT64 i = 0; i < count; ++i)
+            {
+                SIZE_T size = 0;
+                if (FAILED(info_queue->GetMessage(i, nullptr, &size)) || size == 0)
+                {
+                    continue;
+                }
+                std::vector<uint8_t> buffer(size);
+                auto* message = reinterpret_cast<D3D12_MESSAGE*>(buffer.data());
+                if (FAILED(info_queue->GetMessage(i, message, &size)))
+                {
+                    continue;
+                }
+                // 白名单（两条，都是 DX12RHI 对**所有**渲染目标 / 采样器的固有行为，与 VT 的正确性无关，
+                // 且都只是 WARNING；除它们以外任何 WARNING / ERROR / CORRUPTION 都算失败）：
+                //   #820  CLEARRENDERTARGETVIEW_MISMATCHINGCLEARVALUE —— CreateImage 不给 RT 带最优清屏值（性能提示）
+                //   #1361 CREATE_SAMPLER_COMPARISON_FUNC_IGNORED —— CreateSampler 对非比较采样器写 ComparisonFunc=ALWAYS
+                // 本轮已修掉的真问题（不在白名单里）：#649 CBV 越过资源末尾（参数缓冲只有 48 字节，CBV 按 256 对齐）。
+                auto is_known_rhi_wide_warning = [](const D3D12_MESSAGE& m) {
+                    return m.Severity == D3D12_MESSAGE_SEVERITY_WARNING &&
+                           (static_cast<int>(m.ID) == 820 || static_cast<int>(m.ID) == 1361);
+                };
+                if (message->Severity <= D3D12_MESSAGE_SEVERITY_WARNING && !is_known_rhi_wide_warning(*message))
+                {
+                    ++bad;
+                    std::printf("       [d3d12 debug layer] severity=%d id=%d: %s\n",
+                                static_cast<int>(message->Severity),
+                                static_cast<int>(message->ID),
+                                message->pDescription);
+                }
+            }
+            Check(bad == 0, "D3D12 debug layer recorded no corruption / error / warning for the whole run");
+        }
+        else
+        {
+            std::printf("       [note] D3D12 debug layer unavailable (Graphics Tools not installed): API validation NOT checked\n");
+        }
+    }
+#endif
+
+    if (use_dx12)
+    {
+#if defined(_WIN32)
+        dx12_owner->Shutdown();
+#endif
+    }
+    else
+    {
+        vulkan_owner->Shutdown();
+    }
 
     std::printf("\n%d checks, %d failures\n", g_Checks, g_Failures);
     return g_Failures == 0 ? 0 : 1;

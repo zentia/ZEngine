@@ -3,6 +3,9 @@
 #include "Runtime/Core/Math/Vector3.h"
 #include "Runtime/Function/Render/Interface/RHI.h"
 #include "Runtime/Function/Render/Interface/Vulkan/VulkanRHI.h"
+#if ZENGINE_VT_GPU
+    #include "Runtime/Core/Base/Macro.h"
+#endif
 
 #include <algorithm>
 #include <chrono>
@@ -30,12 +33,11 @@ VirtualTextureManager& VirtualTextureManager::Get()
 
 bool VirtualTextureManager::Initialize(RHI* rhi, RenderResourceBase* render_resource)
 {
-    // VT 的 GPU 路径（池图、页表纹理、页上传）全是 Vulkan 直连，内部多处
-    // static_cast<VulkanRHI*>(rhi)。Windows 的**默认** RHI 是 DX12（只有 --rhi vulkan 才用
-    // Vulkan），而 Z_HAS_VULKAN 在 Windows 上同样被定义——所以帧钩子在 DX12 运行时也会走到这里，
-    // 把一个 DX12RHI* 当成 VulkanRHI* 用就是未定义行为。必须在入口用类型检查挡住，而不是指望
-    // 各处 static_cast 碰巧不崩。仓库里 BindlessTextureBlitPipeline 用的是同一手法。
-    if (dynamic_cast<VulkanRHI*>(rhi) == nullptr)
+    // 只放行真正实现了 VT GPU 路径的后端：Vulkan（直连 VMA 路径），或声明了
+    // SupportsVirtualTextureUpload() 的后端（DX12：RHI 级 CreateImage + UploadImageRegionImmediate）。
+    // Metal / WebGL2 不放行——把它们当成已支持去 static_cast 是未定义行为。必须在入口挡住，
+    // 而不是指望各处碰巧不崩。
+    if (!VirtualTextureBackendSupported(rhi))
     {
         return false;
     }
@@ -1010,6 +1012,21 @@ void VirtualTextureManager::UploadPageToPhysicalPool(const VirtualTexturePageID&
                           discard_prior_content))
     {
         m_PhysicalPool->markContentUploaded();
+        ++m_PageUploadCount;
+    }
+    else
+    {
+        // 以前这里静默吞掉：页已被标成 Loaded、页表项驻留，但像素根本没进显存。
+        // 至少让它可见（计数 + 首次失败打一条 ERROR，避免逐页刷屏）。
+        if (m_PageUploadFailures.fetch_add(1) == 0)
+        {
+#if ZENGINE_VT_GPU
+            LOG_ERROR(ZRender,
+                      "virtual texture: a page upload failed (slot {}); the page is marked resident but its pixels "
+                      "are NOT in the physical pool -- further failures are only counted",
+                      page->physical_slot);
+#endif
+        }
     }
 }
 

@@ -322,6 +322,32 @@ public:
                                  uint32_t miplevels,
                                  RHIImageView*& image_view) = 0;
 
+    // ---- Virtual texture support (backend-neutral GPU path) -------------------------
+    // VT pages are uploaded as sub-rectangles of a big pool image. The RHI has no
+    // buffer->image copy primitive in any backend, so the whole "stage + barrier +
+    // copy + barrier" sequence is one synchronous RHI-level operation. Vulkan keeps its
+    // implementation inside VirtualTextureTypes.cpp (legacy, VMA based); every other
+    // backend that can host VT overrides these two.
+    //
+    // SupportsVirtualTextureUpload(): true if UploadImageRegionImmediate() is implemented.
+    virtual bool SupportsVirtualTextureUpload() const { return false; }
+    // Copies a tightly packed w*h*bytes_per_pixel block into `image` at (offset_x, offset_y),
+    // mip 0 / layer 0, then leaves the image readable by shaders. Blocks until the GPU has
+    // finished. `discard_prior_content` is true only for the very first write to a fresh
+    // image (Vulkan: oldLayout UNDEFINED); a backend that doesn't need it may ignore it.
+    virtual bool UploadImageRegionImmediate(RHIImage* image,
+                                            const void* data,
+                                            size_t data_bytes,
+                                            uint32_t offset_x,
+                                            uint32_t offset_y,
+                                            uint32_t width,
+                                            uint32_t height,
+                                            uint32_t bytes_per_pixel,
+                                            bool discard_prior_content)
+    {
+        return false;
+    }
+
     // DX12 editor overlay: sampled-image views created in the legacy
     // CBV/SRV/UAV heap are invisible once the bindless heap is bound.
     // Backends that need this relocate the SRV; default is a no-op.

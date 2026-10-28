@@ -356,3 +356,33 @@ bool UploadImageRegion(RHI* rhi,
                        uint32_t height,
                        uint32_t bytes_per_pixel,
                        bool discard_prior_content);
+
+// ---------------------------------------------------------------------------
+// 后端中立的 VT 图像管理（池图 / 页表纹理共用）。
+//
+// VT 的 GPU 路径最初是 Vulkan 直连（vmaCreateImage / static_cast<VulkanRHI*>）。DX12 后端没有
+// VMA，也没有"把 VkImage 包进 RHIImage"这回事——它的 RHIImage 本来就是 DX12Image，直接走
+// RHI::CreateImage 即可。所以：
+//   * Vulkan：保持原有 VMA 专用内存路径（已被大量测试和真实编辑器验证，不动）；
+//   * 其它后端（目前 DX12）：RHI::CreateImage / CreateImageView / DestroyImage / FreeMemory，
+//     上传走 RHI::UploadImageRegionImmediate。
+// 这三个函数把"选哪条路"收在一处，调用方不再出现 static_cast<VulkanRHI*>。
+// ---------------------------------------------------------------------------
+
+// 本后端能不能跑 VT 的 GPU 路径：Vulkan，或声明了 SupportsVirtualTextureUpload() 的后端。
+bool VirtualTextureBackendSupported(RHI* rhi);
+
+// true = Vulkan 直连路径；false = 通用 RHI 路径。
+bool VirtualTextureUsesVulkanPath(RHI* rhi);
+
+// 通用 RHI 路径下建一张"可采样 + 可拷出"的 2D 图和它的 view。backend_alloc 收 RHIDeviceMemory*。
+bool VirtualTextureCreateGenericImage(RHI* rhi,
+                                      uint32_t width,
+                                      uint32_t height,
+                                      RHIFormat format,
+                                      RHIImage*& image,
+                                      RHIImageView*& view,
+                                      void*& backend_alloc);
+
+// 与上面成对。三个指针允许为空（幂等）。调用前提：没有 GPU 工作还在用这张图。
+void VirtualTextureDestroyGenericImage(RHI* rhi, RHIImage* image, RHIImageView* view, void* backend_alloc);

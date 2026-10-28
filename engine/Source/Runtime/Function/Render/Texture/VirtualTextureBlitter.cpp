@@ -5,6 +5,8 @@
 #include "VirtualTextureResource.h"
 
 #include <cstring>
+#include <string>
+#include <vector>
 
 #if ZENGINE_VT_GPU && defined(__has_include)
     #if __has_include(<vt_blit_vert.h>) && __has_include(<vt_blit_frag.h>)
@@ -39,6 +41,8 @@ namespace
     constexpr uint32_t kBindingPageTable = 1;
     constexpr uint32_t kBindingPhysicalPool = 2;
     constexpr uint32_t kBindingCount = 3;
+    constexpr RHIDeviceSize kParamsBufferBytes = 256;  // >= sizeof(BlitParams)，且满足 D3D12 的 CBV 256 字节对齐
+    static_assert(sizeof(BlitParams) <= kParamsBufferBytes, "params must fit the CBV-aligned buffer");
 
     // UNORM 而不是 SRGB：页池是 R8G8B8A8_UNORM，texelFetch 得 k/255，写进 UNORM 目标
     // 再按最近取整还原成 k，整条链逐字节可比。SRGB 目标会做一次 linear→sRGB 编码，
@@ -47,6 +51,43 @@ namespace
 
     constexpr RHIMemoryPropertyFlags kHostMemory =
         RHI_MEMORY_PROPERTY_HOST_VISIBLE_BIT | RHI_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+
+    // 读回缓冲的行跨度（单位 texel）。D3D12 的 buffer<-texture 拷贝要求行距是 256 字节的倍数；
+    // 把行宽向上取整到 64 texel（= 256 字节），Vulkan 的 bufferRowLength（texel）和 D3D12 的行距就是
+    // 同一个数，两个后端用同一份读回布局。取整后行距恰好等于 row_texels * 4，D3D12 不再自己补尾巴。
+    uint32_t ReadbackRowTexels(uint32_t width)
+    {
+        return (width + 63u) & ~63u;
+    }
+
+    std::string VtShaderRoot()
+    {
+#ifdef ZENGINE_SHADER_ROOT
+        return ZENGINE_SHADER_ROOT;
+#else
+        return "e:/Engine/ZEngine/engine/shader";
+#endif
+    }
+
+    // Vulkan 吃预编译 SPIR-V；其它后端（DX12）由 RHI 在运行时用 DXC 编译 HLSL（hlsl/vt/*.hlsl）。
+    bool CreateBlitShaders(RHI* rhi, RHIShader*& vert, RHIShader*& frag)
+    {
+        vert = nullptr;
+        frag = nullptr;
+        if (VirtualTextureUsesVulkanPath(rhi))
+        {
+            vert = rhi->CreateShaderModule(Z::Shader::VT_BLIT_VERT);
+            frag = rhi->CreateShaderModule(Z::Shader::VT_BLIT_FRAG);
+        }
+        else
+        {
+            const std::string root = VtShaderRoot() + "/hlsl/vt/";
+            std::vector<uint8_t> binary;
+            vert = rhi->CreateShaderModuleFromFile(root + "vt_blit.vert.hlsl", ShaderStage::Vertex, {}, {}, binary);
+            frag = rhi->CreateShaderModuleFromFile(root + "vt_blit.frag.hlsl", ShaderStage::Fragment, {}, {}, binary);
+        }
+        return vert != nullptr && frag != nullptr;
+    }
 }  // namespace
 
 VirtualTextureBlitter::~VirtualTextureBlitter()
@@ -61,7 +102,9 @@ bool VirtualTextureBlitter::Initialize(RHI* rhi)
     return false;
 #else
     Shutdown();
-    if (rhi == nullptr || Z::Shader::VT_BLIT_VERT.empty() || Z::Shader::VT_BLIT_FRAG.empty())
+    // Vulkan 需要预编译的 SPIR-V；DX12 在运行时编译 HLSL，不依赖那两个数组。
+    if (rhi == nullptr || !VirtualTextureBackendSupported(rhi) ||
+        (VirtualTextureUsesVulkanPath(rhi) && (Z::Shader::VT_BLIT_VERT.empty() || Z::Shader::VT_BLIT_FRAG.empty())))
     {
         return false;
     }
@@ -84,8 +127,11 @@ bool VirtualTextureBlitter::Initialize(RHI* rhi)
         return false;
     }
 
+    // CBV 视图的大小按 256 字节对齐（D3D12 硬性要求），而 RHI 在 DX12 上建 CBV 时就是向上取整到 256；
+    // buffer 若只有 sizeof(BlitParams)=48 字节，CBV 范围会越过资源末尾（debug layer 报 ERROR #649）。
+    // 所以参数缓冲一律按 256 字节分配；Vulkan 无此要求，多出的字节无害。
     m_Rhi->CreateBuffer(
-        sizeof(BlitParams), RHI_BUFFER_USAGE_UNIFORM_BUFFER_BIT, kHostMemory, m_ParamsBuffer, m_ParamsMemory);
+        kParamsBufferBytes, RHI_BUFFER_USAGE_UNIFORM_BUFFER_BIT, kHostMemory, m_ParamsBuffer, m_ParamsMemory);
     if (m_ParamsBuffer == nullptr || m_ParamsMemory == nullptr)
     {
         Shutdown();
@@ -167,9 +213,9 @@ bool VirtualTextureBlitter::Initialize(RHI* rhi)
     }
 
     // ---- 图形管线 ----
-    RHIShader* vert = m_Rhi->CreateShaderModule(Z::Shader::VT_BLIT_VERT);
-    RHIShader* frag = m_Rhi->CreateShaderModule(Z::Shader::VT_BLIT_FRAG);
-    if (vert == nullptr || frag == nullptr)
+    RHIShader* vert = nullptr;
+    RHIShader* frag = nullptr;
+    if (!CreateBlitShaders(m_Rhi, vert, frag))
     {
         if (vert != nullptr)
         {
@@ -401,7 +447,7 @@ bool VirtualTextureBlitter::EnsureTarget(uint32_t width, uint32_t height)
         return false;
     }
 
-    const RHIDeviceSize readback_bytes = static_cast<RHIDeviceSize>(width) * height * 4u;
+    const RHIDeviceSize readback_bytes = static_cast<RHIDeviceSize>(ReadbackRowTexels(width)) * height * 4u;
     m_Rhi->CreateBuffer(readback_bytes, RHI_BUFFER_USAGE_TRANSFER_DST_BIT, kHostMemory, m_ReadbackBuffer, m_ReadbackMemory);
     if (m_ReadbackBuffer == nullptr || m_ReadbackMemory == nullptr)
     {
@@ -579,7 +625,7 @@ bool VirtualTextureBlitter::Render(VirtualTextureManager& manager,
                               &to_transfer_src);
 
     RHIBufferImageCopy region {};
-    region.bufferRowLength = 0;  // 0 = 紧凑打包；Vulkan 单位是 texel 不是字节
+    region.bufferRowLength = ReadbackRowTexels(out_width);  // texel 数，不是字节；见 ReadbackRowTexels
     region.bufferImageHeight = 0;
     region.imageSubresource.aspectMask = RHI_IMAGE_ASPECT_COLOR_BIT;
     region.imageSubresource.layerCount = 1;
@@ -593,13 +639,20 @@ bool VirtualTextureBlitter::Render(VirtualTextureManager& manager,
 
     // ---- 读回 ----
     void* result = nullptr;
-    const RHIDeviceSize bytes = static_cast<RHIDeviceSize>(pixel_count) * 4u;
+    const uint32_t row_texels = ReadbackRowTexels(out_width);
+    const RHIDeviceSize bytes = static_cast<RHIDeviceSize>(row_texels) * out_height * 4u;
     if (!m_Rhi->MapMemory(m_ReadbackMemory, 0, bytes, 0, &result) || result == nullptr)
     {
         return false;
     }
     const auto* pixels = static_cast<const uint32_t*>(result);
-    out_rgba.assign(pixels, pixels + pixel_count);
+    out_rgba.resize(pixel_count);
+    for (uint32_t row = 0; row < out_height; ++row)
+    {
+        std::memcpy(out_rgba.data() + static_cast<size_t>(row) * out_width,
+                    pixels + static_cast<size_t>(row) * row_texels,
+                    static_cast<size_t>(out_width) * sizeof(uint32_t));
+    }
     m_Rhi->UnmapMemory(m_ReadbackMemory);
     return true;
 #endif
