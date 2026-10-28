@@ -94,6 +94,7 @@ jobs:
           -DZENGINE_BUILD_AUDIO_SMOKE_TEST=ON
           -DZENGINE_BUILD_ANIMATION_SMOKE_TEST=ON
           -DZENGINE_BUILD_ANIMATOR_SMOKE_TEST=ON
+          -DZENGINE_BUILD_ANIMATION_PIPELINE_SMOKE_TEST=ON
           -DZENGINE_BUILD_TEXTURE_COMPRESSOR_SMOKE_TEST=ON
           -DZENGINE_BUILD_RENDERGRAPH_SMOKE_TEST=ON
           -DZENGINE_BUILD_RENDERGRAPH_EXECUTE_SMOKE_TEST=ON
@@ -127,6 +128,7 @@ jobs:
           AudioMixerSmokeTest
           AnimationSkinningSmokeTest
           AnimatorSmokeTest
+          AnimationPipelineSmokeTest
           TextureCompressorSmokeTest
           RenderGraphSmokeTest
           RenderGraphExecuteSmokeTest

@@ -637,6 +637,13 @@ list(REMOVE_ITEM SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/Animation/Test/AnimatorSmokeTest.cpp")
 list(REMOVE_ITEM REGULAR_SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/Animation/Test/AnimatorSmokeTest.cpp")
+# P0.2: animation sampling-pipeline smoke-test main. Same rationale; built only
+# when ZENGINE_BUILD_ANIMATION_PIPELINE_SMOKE_TEST=ON (see
+# Function/Animation/Test/CMakeLists.txt).
+list(REMOVE_ITEM SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Animation/Test/AnimationPipelineSmokeTest.cpp")
+list(REMOVE_ITEM REGULAR_SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Animation/Test/AnimationPipelineSmokeTest.cpp")
 # PR-SE2: SerializedFile schema-evolution smoke-test main. Same
 # exclusion rationale as the bindless smoke-tests above -- the smoke
 # test owns its own main() and must NOT be wholearchive'd into

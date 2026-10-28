@@ -9,6 +9,7 @@
 #
 #   cmake -B build -DZENGINE_BUILD_ANIMATION_SMOKE_TEST=ON   (PR-SK1)
 #   cmake -B build -DZENGINE_BUILD_ANIMATOR_SMOKE_TEST=ON    (PR-SK3)
+#   cmake -B build -DZENGINE_BUILD_ANIMATION_PIPELINE_SMOKE_TEST=ON  (P0.2)
 #   cmake --build build --target <name>
 #   ./build/.../<name>
 #
@@ -21,6 +22,9 @@ option(ZENGINE_BUILD_ANIMATION_SMOKE_TEST
        OFF)
 option(ZENGINE_BUILD_ANIMATOR_SMOKE_TEST
        "Build the animator state-machine smoke-test executable (PR-SK3)"
+       OFF)
+option(ZENGINE_BUILD_ANIMATION_PIPELINE_SMOKE_TEST
+       "Build the animation sampling-pipeline smoke-test executable (P0.2)"
        OFF)
 
 if(ZENGINE_BUILD_ANIMATION_SMOKE_TEST)
@@ -75,4 +79,30 @@ if(ZENGINE_BUILD_ANIMATOR_SMOKE_TEST)
     add_test(NAME AnimatorSmokeTest COMMAND AnimatorSmokeTest)
 
     message(STATUS "Configured animator smoke-test target: AnimatorSmokeTest")
+endif()
+
+if(ZENGINE_BUILD_ANIMATION_PIPELINE_SMOKE_TEST)
+    add_executable(AnimationPipelineSmokeTest AnimationPipelineSmokeTest.cpp)
+
+    set_target_properties(AnimationPipelineSmokeTest PROPERTIES
+        CXX_STANDARD 23
+        FOLDER "Engine/Tests"
+    )
+
+    target_link_libraries(AnimationPipelineSmokeTest PRIVATE ZRuntime)
+
+    if(TARGET ZEnginePCH)
+        target_link_libraries(AnimationPipelineSmokeTest PRIVATE ZEnginePCH)
+        target_include_directories(AnimationPipelineSmokeTest PRIVATE ${ENGINE_ROOT_DIR}/Source/CommonPCH)
+        add_dependencies(AnimationPipelineSmokeTest ZEnginePCH)
+        target_precompile_headers(AnimationPipelineSmokeTest REUSE_FROM ZEnginePCH)
+    endif()
+
+    if(MSVC)
+        target_compile_options(AnimationPipelineSmokeTest PRIVATE /W4)
+    endif()
+
+    add_test(NAME AnimationPipelineSmokeTest COMMAND AnimationPipelineSmokeTest)
+
+    message(STATUS "Configured animation pipeline smoke-test target: AnimationPipelineSmokeTest")
 endif()
