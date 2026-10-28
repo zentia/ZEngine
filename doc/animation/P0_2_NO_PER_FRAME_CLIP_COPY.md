@@ -3,6 +3,19 @@
 > 日期：2026-10-28 ｜ 状态：**方案稿，未动代码** ｜ 上游：`doc/animation/BLENDTREE_ROOTMOTION_ESTIMATE.md` §3 M0 / P0.2
 > 行号以本文写作时的 `main` 为准。
 
+> **落地记录（commit 2，2026-10-28）**：H1–H3 已消除。`blend_clip` 改为 `std::vector<const AnimationClip*>`、`TryLoad*` 改 `const eastl::string&`、新增四个 `FindOrLoad*` 把「先 TryLoad 再 find」的两次 `std::map` 查找并成一次。
+> **P7 哈希仍为 `17764afb96eb6b4b`（逐位不变，契约达成）**；三个动画测试全绿（pipeline 20 / skinning 46 / animator 50，共 116 项 0 失败）。
+> Debug 基准（60 骨 2 片段，与 commit 1 同一台机同一配置）：
+>
+> | 片段帧数 | commit 1（µs/次） | commit 2（µs/次） | 提速 |
+> |---|---|---|---|
+> | 30 | 142.736 | 55.257 | 2.58× |
+> | 120 | 153.994 | 55.743 | 2.76× |
+> | 600 | 217.946 | 57.180 | 3.81× |
+>
+> **C1（耗时与片段长度无关）达成**：30→600 帧只差 **3.5%**（改前 52.7%），门槛是 ≤15%。**C2（120 帧至少快 2 倍）达成**：比值 0.362。
+> 三组 bench 的 `sink` 校验值（`e4c036987d90826a` / `7d9aa20b97b37b4e` / `9332f1f95979c286`）改前改后完全相同，是数值逐位一致的又一条独立证据。
+>
 > **落地记录（commit 1，2026-10-28）**：`AnimationPipelineSmokeTest` 已实现并通过（14/14，跑在旧代码上全绿）。基线 P7 哈希 `17764afb96eb6b4b`（pipeline 与 component 两条路径一致）。Debug bench 基线（60 骨 2 片段）：30 帧 142.7 µs / 120 帧 154.0 µs / 600 帧 217.9 µs —— 已能看出随帧数增长（验证 H1）。Release 未测（`bin/Release/ZRuntimeShared.dll` 陈旧 5.8 MB @10:07，需先整库重建 Release 才能跑真 A/B，留到 commit 3）。
 >
 > **⚠️ 测试过程中发现一个既有 bug（不在 P0.2 范围内，未修）**：`Skeleton::ApplyAnimation` 的 blend 累加器用 `BonePose::Identity()`（scale=1）作零值，`AccumulateBlend` 在 1 之上再累加各片段 scale，`NormalizeBlendAccumulator` 除以 total_weight（单片段=1）。位置起点是 0、旋转经归一化自校正，**唯独 scale 错**：单片段 scale 变成 2，N 片段变 N 倍。测试用 `P0` 检查把它钉住（见测试注释），保证 P0.2 重构不会悄悄改变它；将来修复应是有意的独立提交。此 bug 会导致蒙皮角色等比放大（子骨骼偏移 ×2/×4/×8 累积）。

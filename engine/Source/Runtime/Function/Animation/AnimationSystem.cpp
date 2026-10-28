@@ -14,72 +14,87 @@ std::map<eastl::string, std::shared_ptr<AnimationClip>> AnimationSystem::m_Anima
 std::map<eastl::string, PPtr<AnimSkelMap>> AnimationSystem::m_AnimationSkeletonMapCache;
 std::map<eastl::string, BoneBlendMask*> AnimationSystem::m_SkeletonMaskCache;
 
-SkeletonData* AnimationSystem::TryLoadSkeleton(eastl::string file_path)
+// ---- single-lookup cache accessors (P0.2) ----------------------------------
+//
+// Each one does exactly ONE map lookup on the hot path. A failed load is cached
+// (as nullptr / a null PPtr) so a missing asset is not retried every frame --
+// the same contract the TryLoad* wrappers have always had.
+
+SkeletonData* AnimationSystem::FindOrLoadSkeleton(const eastl::string& file_path)
 {
-    SkeletonData* res;
-    AnimationLoader loader;
     auto found = m_SkeletonDefinitionCache.find(file_path);
     if (found == m_SkeletonDefinitionCache.end())
     {
-        res = loader.LoadSkeletonData(file_path);
-        m_SkeletonDefinitionCache.emplace(file_path, res);
+        AnimationLoader loader;
+        found = m_SkeletonDefinitionCache.emplace(file_path, loader.LoadSkeletonData(file_path)).first;
     }
-    else
-    {
-        res = found->second;
-    }
-    return res;
+    return found->second;
 }
 
-std::shared_ptr<AnimationClip> AnimationSystem::TryLoadAnimation(eastl::string file_path)
+const AnimationClip* AnimationSystem::FindOrLoadClip(const eastl::string& file_path)
 {
-    std::shared_ptr<AnimationClip> res;
-    AnimationLoader loader;
     auto found = m_AnimationDataCache.find(file_path);
     if (found == m_AnimationDataCache.end())
     {
-        res = loader.LoadAnimationClipData(file_path);
-        m_AnimationDataCache.emplace(file_path, res);
+        AnimationLoader loader;
+        found = m_AnimationDataCache.emplace(file_path, loader.LoadAnimationClipData(file_path)).first;
     }
-    else
-    {
-        res = found->second;
-    }
-    return res;
+    // The cache owns the clip; callers get a borrowed pointer and must not
+    // outlive the Tick (see BlendStateWithClipData's lifetime note).
+    return found->second.get();
 }
 
-AnimSkelMap* AnimationSystem::TryLoadAnimationSkeletonMap(eastl::string file_path)
+const PPtr<AnimSkelMap>& AnimationSystem::FindOrLoadSkelMap(const eastl::string& file_path)
 {
     auto found = m_AnimationSkeletonMapCache.find(file_path);
-    if (found != m_AnimationSkeletonMapCache.end())
+    if (found == m_AnimationSkeletonMapCache.end())
     {
-        return found->second;
+        AnimationLoader loader;
+        found = m_AnimationSkeletonMapCache.emplace(file_path, loader.LoadAnimSkelMap(file_path)).first;
     }
-
-    // Used to emplace the freshly loaded map and then `return nullptr`, so a
-    // first-time lookup always failed and every clip silently lost its bone
-    // mapping. Load once, cache, then return what we just cached.
-    AnimationLoader loader;
-    PPtr<AnimSkelMap> res = loader.LoadAnimSkelMap(file_path);
-    m_AnimationSkeletonMapCache.emplace(file_path, res);
-    return res;
+    return found->second;
 }
 
-BoneBlendMask* AnimationSystem::TryLoadSkeletonMask(eastl::string file_path)
+BoneBlendMask* AnimationSystem::FindOrLoadMask(const eastl::string& file_path)
 {
-    BoneBlendMask* res;
-    AnimationLoader loader;
     auto found = m_SkeletonMaskCache.find(file_path);
     if (found == m_SkeletonMaskCache.end())
     {
-        res = loader.LoadSkeletonMask(file_path);
-        m_SkeletonMaskCache.emplace(file_path, res);
+        AnimationLoader loader;
+        found = m_SkeletonMaskCache.emplace(file_path, loader.LoadSkeletonMask(file_path)).first;
     }
-    else
+    return found->second;
+}
+
+// ---- public wrappers --------------------------------------------------------
+
+SkeletonData* AnimationSystem::TryLoadSkeleton(const eastl::string& file_path)
+{
+    return FindOrLoadSkeleton(file_path);
+}
+
+std::shared_ptr<AnimationClip> AnimationSystem::TryLoadAnimation(const eastl::string& file_path)
+{
+    auto found = m_AnimationDataCache.find(file_path);
+    if (found == m_AnimationDataCache.end())
     {
-        res = found->second;
+        AnimationLoader loader;
+        found = m_AnimationDataCache.emplace(file_path, loader.LoadAnimationClipData(file_path)).first;
     }
-    return res;
+    return found->second;
+}
+
+AnimSkelMap* AnimationSystem::TryLoadAnimationSkeletonMap(const eastl::string& file_path)
+{
+    // Used to emplace the freshly loaded map and then `return nullptr`, so a
+    // first-time lookup always failed and every clip silently lost its bone
+    // mapping. Load once, cache, then return what we just cached.
+    return FindOrLoadSkelMap(file_path);
+}
+
+BoneBlendMask* AnimationSystem::TryLoadSkeletonMask(const eastl::string& file_path)
+{
+    return FindOrLoadMask(file_path);
 }
 
 namespace
@@ -97,43 +112,36 @@ namespace
 
 BlendStateWithClipData AnimationSystem::GetBlendStateWithClipData(const BlendState& blend_state)
 {
-    for (auto animation_file_path : blend_state.blend_clip_file_path)
-    {
-        TryLoadAnimation(animation_file_path);
-    }
-    for (auto anim_skel_map_path : blend_state.blend_anim_skel_map_path)
-    {
-        TryLoadAnimationSkeletonMap(anim_skel_map_path);
-    }
-    for (auto skeleton_mask_path : blend_state.blend_mask_file_path)
-    {
-        TryLoadSkeletonMask(skeleton_mask_path);
-    }
-
     BlendStateWithClipData blend_state_with_clip_data;
     blend_state_with_clip_data.blend_ratio = blend_state.blend_ratio;
 
+    // The separate "prime the cache" loops that used to sit here are gone: each
+    // path is now resolved once, by FindOrLoad*, at the point of use.
+    //
     // Assets are dropped instead of dereferenced: an empty path or a deleted
     // asset used to crash here every single frame.
-    for (const auto& iter : blend_state.blend_clip_file_path)
+    for (const eastl::string& clip_path : blend_state.blend_clip_file_path)
     {
-        auto found = m_AnimationDataCache.find(iter);
-        if (found == m_AnimationDataCache.end() || found->second == nullptr)
+        // Borrowed, not copied: this used to `push_back(*found->second)`, i.e.
+        // deep-copy the whole clip (every channel name, every position /
+        // rotation / scale key) once per clip per frame.
+        const AnimationClip* clip = FindOrLoadClip(clip_path);
+        if (clip == nullptr)
         {
-            LOG_ERROR(ZAnimation, "AnimationSystem: clip '{}' could not be loaded", iter.c_str());
+            LOG_ERROR(ZAnimation, "AnimationSystem: clip '{}' could not be loaded", clip_path.c_str());
             continue;
         }
-        blend_state_with_clip_data.blend_clip.push_back(*found->second);
+        blend_state_with_clip_data.blend_clip.push_back(clip);
     }
-    for (const auto& iter : blend_state.blend_anim_skel_map_path)
+    for (const eastl::string& map_path : blend_state.blend_anim_skel_map_path)
     {
-        auto found = m_AnimationSkeletonMapCache.find(iter);
-        if (found == m_AnimationSkeletonMapCache.end())
-        {
-            LOG_ERROR(ZAnimation, "AnimationSystem: anim-skeleton map '{}' could not be loaded", iter.c_str());
-            continue;
-        }
-        blend_state_with_clip_data.blend_anim_skel_map.push_back(found->second);
+        // Pushed unconditionally, including a null PPtr. FindOrLoadSkelMap
+        // always produces an entry, so the old "could not be loaded" branch
+        // here was unreachable; a null map is handled where it is dereferenced
+        // (Skeleton::ApplyAnimation skips that clip). Keeping this list the
+        // same length as the path list is what the clip_count floor below
+        // relies on.
+        blend_state_with_clip_data.blend_anim_skel_map.push_back(FindOrLoadSkelMap(map_path));
     }
 
     // A blend state is only usable when a clip AND its bone map are present.
@@ -158,17 +166,18 @@ BlendStateWithClipData AnimationSystem::GetBlendStateWithClipData(const BlendSta
     size_t skeleton_bone_count = 0;
     for (size_t clip_index = 0; clip_index < blend_state.blend_mask_file_path.size() && clip_index < clip_count; ++clip_index)
     {
-        auto found = m_SkeletonMaskCache.find(blend_state.blend_mask_file_path[clip_index]);
-        if (found == m_SkeletonMaskCache.end() || found->second == nullptr)
+        BoneBlendMask* mask = FindOrLoadMask(blend_state.blend_mask_file_path[clip_index]);
+        if (mask == nullptr)
         {
             continue;
         }
-        blend_masks[clip_index] = found->second;
-        TryLoadSkeleton(found->second->skeleton_file_path);
-        auto skeleton = m_SkeletonDefinitionCache.find(found->second->skeleton_file_path);
-        if (skeleton != m_SkeletonDefinitionCache.end() && skeleton->second != nullptr)
+        blend_masks[clip_index] = mask;
+        // One lookup: this used to call TryLoadSkeleton (which finds, then
+        // emplaces) and then find() the same key again.
+        const SkeletonData* skeleton = FindOrLoadSkeleton(mask->skeleton_file_path);
+        if (skeleton != nullptr)
         {
-            skeleton_bone_count = std::max(skeleton_bone_count, skeleton->second->bones_map.size());
+            skeleton_bone_count = std::max(skeleton_bone_count, skeleton->bones_map.size());
         }
     }
 

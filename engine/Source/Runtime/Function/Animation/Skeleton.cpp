@@ -99,7 +99,16 @@ void Skeleton::ApplyAnimation(const BlendStateWithClipData& blend_state)
             continue;
         }
 
-        const AnimationClip& animation_clip = blend_state.blend_clip[clip_index];
+        // Borrowed from AnimationSystem's cache (P0.2): the entry is valid for
+        // the duration of this Tick. Guarded anyway -- GetBlendStateWithClipData
+        // never pushes a null, but ApplyAnimation is public and a hand-built
+        // BlendStateWithClipData must not be able to fault here.
+        const AnimationClip* animation_clip_ptr = blend_state.blend_clip[clip_index];
+        if (animation_clip_ptr == nullptr)
+        {
+            continue;
+        }
+        const AnimationClip& animation_clip = *animation_clip_ptr;
         const float phase = (clip_index < blend_state.blend_ratio.size()) ? blend_state.blend_ratio[clip_index] : 0.0f;
 
         std::vector<AnimationSkinning::BonePose> poses;

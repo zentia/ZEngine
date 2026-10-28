@@ -52,6 +52,7 @@
 #include <cstring>
 #include <filesystem>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 namespace
@@ -429,6 +430,37 @@ int main(int argc, char** argv)
             EvaluatePipeline(MakeBlendState({clip_a, clip_b}, map_path, {1.0f, 1.0f}, {p, p}, {mask_a_path, mask_b_path}),
                              skeleton, result);
             CheckVec(BonePosition(skeleton, 0), Vector3(0, 2.0f * p, 0), 1.0e-5f, "P3: masked root takes only clip B's slide");
+        }
+
+        // ---- P5: the pipeline BORROWS clips, it does not copy them -----------
+        //
+        // The structural proof that the per-frame deep copy is gone. Counting
+        // heap allocations instead is not an option here: this test must link
+        // ZRuntime (it needs AssetManager), and an executable that overrides
+        // global new cannot link ZRuntime (LNK2005 on the allocator), while
+        // MSVC Debug containers add _Container_proxy noise on top.
+        {
+            static_assert(std::is_same_v<decltype(BlendStateWithClipData::blend_clip),
+                                         std::vector<const AnimationClip*>>,
+                          "blend_clip must borrow clips, not own copies");
+
+            const BlendStateWithClipData resolved =
+                AnimationSystem::GetBlendStateWithClipData(MakeBlendState({clip_a, clip_b}, map_path, {0.5f, 0.5f}, {0.0f, 0.0f}));
+            Check(resolved.clip_count == 2, "P5: both clips resolve");
+            Check(resolved.blend_clip.size() == 2u && resolved.blend_clip[0] != nullptr && resolved.blend_clip[1] != nullptr,
+                  "P5: both clip pointers are non-null");
+            Check(resolved.blend_clip[0] == AnimationSystem::TryLoadAnimation(clip_a).get(),
+                  "P5: clip 0 points AT the cached clip (no copy)");
+            Check(resolved.blend_clip[1] == AnimationSystem::TryLoadAnimation(clip_b).get(),
+                  "P5: clip 1 points AT the cached clip (no copy)");
+            Check(resolved.blend_clip[0] != resolved.blend_clip[1], "P5: two different clips stay distinct");
+
+            // Resolving again must hand back the SAME addresses: a fresh copy
+            // (or a reloaded clip) every frame is exactly what P0.2 removes.
+            const BlendStateWithClipData again =
+                AnimationSystem::GetBlendStateWithClipData(MakeBlendState({clip_a, clip_b}, map_path, {0.5f, 0.5f}, {0.5f, 0.5f}));
+            Check(again.blend_clip[0] == resolved.blend_clip[0] && again.blend_clip[1] == resolved.blend_clip[1],
+                  "P5: a second resolve reuses the same cached clips");
         }
 
         // ---- P4: a missing clip ----------------------------------------------

@@ -13,13 +13,27 @@ public:
     std::vector<float> blend_weight;
 };
 
+/// Resolved input for `Skeleton::ApplyAnimation`: one entry per clip that is
+/// actually usable this frame.
+///
+/// RUNTIME-ONLY and NEVER serialized. It used to carry `DECLARE_SERIALIZE`, but
+/// no `Transfer` was ever defined or instantiated for it, so the macro only
+/// suggested a persistence path that does not exist.
+///
+/// LIFETIME (P0.2): `blend_clip` holds NON-OWNING pointers into
+/// AnimationSystem's clip cache. It used to be a `std::vector<AnimationClip>`,
+/// which deep-copied every key of every blended clip EVERY FRAME (one
+/// AnimationComponent::Tick is one rebuild). The pointers are safe because
+///   * they are filled and consumed inside a single Tick, never read across
+///     frames, and
+///   * the cache never erases an entry.
+/// Anyone adding cache invalidation / hot-reload must keep the second property
+/// for the duration of a Tick, or hand out shared ownership instead.
 class BlendStateWithClipData
 {
 public:
-    DECLARE_SERIALIZE(BlendStateWithClipData)
-
-    int clip_count;
-    std::vector<AnimationClip> blend_clip;
+    int clip_count {0};
+    std::vector<const AnimationClip*> blend_clip;
     std::vector<PPtr<AnimSkelMap>> blend_anim_skel_map;
     std::vector<BoneBlendWeight> blend_weight;
     std::vector<float> blend_ratio;
