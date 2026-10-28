@@ -13,6 +13,7 @@
 #include <dxgi1_6.h>
 #include <functional>
 #include <memory>
+#include <string>
 #include <mutex>
 #include <vector>
 
@@ -44,6 +45,14 @@ struct DX12FloatingSurface
     UINT back_buffer_index {0};
     uint32_t width {0};
     uint32_t height {0};
+};
+
+// One message taken from the D3D12 debug layer (severity: D3D12_MESSAGE_SEVERITY value).
+struct DebugLayerRecord
+{
+    int severity {0};
+    int id {0};
+    std::string text;
 };
 
 class DX12RHI final : public RHI
@@ -136,6 +145,13 @@ public:
                                  uint32_t miplevels,
                                  RHIImageView*& image_view) override;
     virtual bool SupportsVirtualTextureUpload() const override { return true; }
+    // Test hook: copy of every non-INFO debug-layer message drained so far (bounded to the first 512).
+    void DrainDebugLayerMessagesForTest() const { DrainDebugLayerMessages(); }
+    std::vector<DebugLayerRecord> CopyDebugLayerHistory() const
+    {
+        std::lock_guard<std::mutex> lock(m_DebugHistoryMutex);
+        return m_DebugHistory;
+    }
     virtual bool UploadImageRegionImmediate(RHIImage* image,
                                             const void* data,
                                             size_t data_bytes,
@@ -630,6 +646,10 @@ private:
     ComPtr<ID3D12Device> m_Device;
     // mutable: drained from const contexts such as IsDeviceRemoved().
     mutable ComPtr<ID3D12InfoQueue> m_DebugInfoQueue;
+    // Every non-INFO message DrainDebugLayerMessages() has pulled out of the InfoQueue (it clears the queue
+    // afterwards, so anything that wants to inspect them later -- tests -- must read this, not the queue).
+    mutable std::mutex m_DebugHistoryMutex;
+    mutable std::vector<DebugLayerRecord> m_DebugHistory;
     ComPtr<IDXGISwapChain3> m_Swapchain;
     // Floating surfaces that recorded a draw this frame; presented (once each)
     // by SubmitRendering right after the main swapchain present, then cleared.

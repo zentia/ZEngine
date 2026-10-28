@@ -491,37 +491,30 @@ int main(int argc, char** argv)
         if (dx12_owner->getDevice() != nullptr &&
             SUCCEEDED(dx12_owner->getDevice()->QueryInterface(IID_PPV_ARGS(&info_queue))) && info_queue)
         {
+            // 通道健康度：limit==0 / mute 卡在 TRUE / allowed==0 说明 InfoQueue 是个收不到消息的空壳，
+            // 此时"0 条消息"毫无意义。把这三个值打出来，并作为一项检查。
+            std::printf("       [d3d12 InfoQueue] limit=%llu mute=%d allowed-by-filter=%llu stored=%llu\n",
+                        (unsigned long long)info_queue->GetMessageCountLimit(),
+                        (int)info_queue->GetMuteDebugOutput(),
+                        (unsigned long long)info_queue->GetNumMessagesAllowedByStorageFilter(),
+                        (unsigned long long)info_queue->GetNumStoredMessages());
+            Check(info_queue->GetMessageCountLimit() > 0 && !info_queue->GetMuteDebugOutput(),
+                  "D3D12 InfoQueue is functional (limit>0, not muted) -- otherwise 'no messages' below would prove nothing");
+            // 先把队列里剩下的消息也搬进 DX12RHI 的历史记录。DX12RHI 在每次上传出口都会 drain 并清空队列，
+            // 所以只读队列会漏掉整个运行期间的消息（上一版测试的盲点）；判据读历史记录。
+            dx12_owner->DrainDebugLayerMessagesForTest();
             uint32_t bad = 0;
-            const UINT64 count = info_queue->GetNumStoredMessages();
-            for (UINT64 i = 0; i < count; ++i)
+            for (const DebugLayerRecord& record : dx12_owner->CopyDebugLayerHistory())
             {
-                SIZE_T size = 0;
-                if (FAILED(info_queue->GetMessage(i, nullptr, &size)) || size == 0)
-                {
-                    continue;
-                }
-                std::vector<uint8_t> buffer(size);
-                auto* message = reinterpret_cast<D3D12_MESSAGE*>(buffer.data());
-                if (FAILED(info_queue->GetMessage(i, message, &size)))
-                {
-                    continue;
-                }
                 // 白名单（两条，都是 DX12RHI 对**所有**渲染目标 / 采样器的固有行为，与 VT 的正确性无关，
                 // 且都只是 WARNING；除它们以外任何 WARNING / ERROR / CORRUPTION 都算失败）：
                 //   #820  CLEARRENDERTARGETVIEW_MISMATCHINGCLEARVALUE —— CreateImage 不给 RT 带最优清屏值（性能提示）
                 //   #1361 CREATE_SAMPLER_COMPARISON_FUNC_IGNORED —— CreateSampler 对非比较采样器写 ComparisonFunc=ALWAYS
-                // 本轮已修掉的真问题（不在白名单里）：#649 CBV 越过资源末尾（参数缓冲只有 48 字节，CBV 按 256 对齐）。
-                auto is_known_rhi_wide_warning = [](const D3D12_MESSAGE& m) {
-                    return m.Severity == D3D12_MESSAGE_SEVERITY_WARNING &&
-                           (static_cast<int>(m.ID) == 820 || static_cast<int>(m.ID) == 1361);
-                };
-                if (message->Severity <= D3D12_MESSAGE_SEVERITY_WARNING && !is_known_rhi_wide_warning(*message))
+                const bool known = record.severity == D3D12_MESSAGE_SEVERITY_WARNING && (record.id == 820 || record.id == 1361);
+                if (record.severity <= D3D12_MESSAGE_SEVERITY_WARNING && !known)
                 {
                     ++bad;
-                    std::printf("       [d3d12 debug layer] severity=%d id=%d: %s\n",
-                                static_cast<int>(message->Severity),
-                                static_cast<int>(message->ID),
-                                message->pDescription);
+                    std::printf("       [d3d12 debug layer] severity=%d id=%d: %s\n", record.severity, record.id, record.text.c_str());
                 }
             }
             Check(bad == 0, "D3D12 debug layer recorded no corruption / error / warning for the whole run");

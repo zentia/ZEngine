@@ -822,6 +822,30 @@ commit `1841dc71`。**上一节"最小生产者"的接线在真实 Vulkan 编辑
 
 ---
 
+### 落地记录 · 2.6 VT 的 DX12 验证缺口收口（2026-10-28，接上一节"仍未验证"）
+
+上一节留了两个"证据弱"的口子，这一轮逐个查了，**两个都是我自己的盲点，不是驱动宽容**：
+
+1. **"缺 barrier 的变异没红"是测试盲点**。我上一轮给 `UploadImageRegionImmediate` 的出口加了 `DrainDebugLayerMessages()`，它读完会 `ClearStoredMessages`；
+   而 headless 测试最后才去读 InfoQueue，读到的永远是被清空后的——整个运行期间的消息全被我自己吃了。→ `DX12RHI` 现在把每条非 INFO 消息存进 `m_DebugHistory`
+   （上限 512，`CopyDebugLayerHistory()` / `DrainDebugLayerMessagesForTest()` 测试钩子），测试读历史而不是队列。
+   改完后重跑原来两个没红的变异：**去掉 →COPY_DEST 的 barrier → 红（#538 CopyTextureRegion 时资源状态不对 + #527）；状态记录撒谎（当 COMMON）→ 红（#527）**。
+   barrier 的正确性现在**有测试能证伪**了。基线 24/24，连跑 10/10。
+2. **编辑器里"0 条 debug layer 消息"是通道坏了**。实测编辑器进程里 `ID3D12InfoQueue` 是个空壳：`GetMessageCountLimit()==0`、`GetMuteDebugOutput()==1`、
+   `GetNumMessagesAllowedByStorageFilter()==0`，且 `SetMuteDebugOutput(FALSE)` / `ClearStorageFilter` / `SetMessageCountLimit` 都改不动它；headless 测试里同一接口是
+   `limit=1024 mute=0 allowed=8`（正常）。我先猜"队列被每帧的 #820 灌满"——**错的**（discarded=0），已验证后丢弃这个假设。
+   **没查出**编辑器进程里是谁把 InfoQueue 换成空壳（引擎代码里没有任何 `SetMuteDebugOutput` / 过滤器调用；`bin/Release` 没有自带的 D3D12 运行时），留作未解。
+   处理：`DX12RHI::Initialize` 发现 `limit==0 || mute` 时打 WARNING（"InfoQueue 存在但不可用，日志里没有校验消息什么也证明不了"）；headless 测试把
+   "InfoQueue 健康（limit>0 且未静音）"作为前置检查项（24 项里的第 23 项），否则下面的"零错误"不成立。
+3. 上传出口无论成功 / 失败（含 `Close()` 被拒）都会 drain debug layer，失败时错误文本现在能进日志（headless 实测）。
+
+**结论的准确边界**：DX12 上 VT 上传路径的 barrier / 状态跟踪 / 行距现在有 headless 变异测试兜底（barrier 缺失、状态撒谎、偏移丢失、行距错位都会红）。
+**编辑器进程内**依然观测不到 D3D12 校验消息（InfoQueue 空壳，原因未明）——编辑器里的"正确"只能靠 `GPU page uploads ok 16 failed 0` 这类计数，不是校验层。
+
+**回归**：16 个原生套件 0 失败，WASM 15/15，DX12 编辑器 `ok 16 failed 0` 干净退出。
+
+---
+
 ### 落地记录 · 2.7 Lumen（2026-10-25，复核：CPU 侧已完整，无需动手）
 
 **结论**：本步骤的 CPU 侧工作在进入前**就已经全部落地并有测试**。计划表里那句"部分实现（CPU 探针网格

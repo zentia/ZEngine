@@ -1754,6 +1754,21 @@ void DX12RHI::DrainDebugLayerMessages() const
     }
 
     const UINT64 message_count = m_DebugInfoQueue->GetNumStoredMessages();
+    // InfoQueue keeps at most MessageCountLimit (default 1024) messages and silently discards the rest.
+    // If something spams it (every frame), later real errors never get stored and the log looks clean.
+    // Say so, once per growth, instead of staying silent.
+    {
+        static thread_local UINT64 s_last_reported_discard = 0;
+        const UINT64 discarded = m_DebugInfoQueue->GetNumMessagesDiscardedByMessageCountLimit();
+        if (discarded > s_last_reported_discard)
+        {
+            LOG_WARNING(ZRender,
+                        "DX12 debug layer: {} message(s) were discarded because the InfoQueue was full "
+                        "(stored now {}); errors after that point are NOT visible in this log",
+                        discarded, message_count);
+            s_last_reported_discard = discarded;
+        }
+    }
     for (UINT64 i = 0; i < message_count; ++i)
     {
         SIZE_T message_size = 0;
@@ -1775,6 +1790,13 @@ void DX12RHI::DrainDebugLayerMessages() const
         }
 
         const char* description = message->pDescription != nullptr ? message->pDescription : "<no description>";
+        {
+            std::lock_guard<std::mutex> lock(m_DebugHistoryMutex);
+            if (m_DebugHistory.size() < 512)
+            {
+                m_DebugHistory.push_back({static_cast<int>(message->Severity), static_cast<int>(message->ID), description});
+            }
+        }
         if (message->Severity == D3D12_MESSAGE_SEVERITY_ERROR ||
             message->Severity == D3D12_MESSAGE_SEVERITY_CORRUPTION)
         {
@@ -2235,6 +2257,18 @@ bool DX12RHI::Initialize()
         if (SUCCEEDED(m_Device->QueryInterface(IID_PPV_ARGS(&info_queue))) && info_queue)
         {
             m_DebugInfoQueue = info_queue;
+            // A healthy queue reports a non-zero MessageCountLimit (default 1024) and is not muted. In the
+            // editor process we have observed limit=0 / mute=1 / zero messages ever allowed -- an InfoQueue
+            // that exists but can never deliver anything, and SetMuteDebugOutput(FALSE) does not change it.
+            // In that state "no debug-layer messages in the log" means nothing, so say it loudly.
+            if (info_queue->GetMessageCountLimit() == 0 || info_queue->GetMuteDebugOutput())
+            {
+                LOG_WARNING(ZRender,
+                            "DX12RHI: ID3D12InfoQueue is present but non-functional (limit={} mute={}); D3D12 "
+                            "validation errors will NOT appear in this log -- an empty debug-layer section proves nothing",
+                            static_cast<unsigned long long>(info_queue->GetMessageCountLimit()),
+                            static_cast<int>(info_queue->GetMuteDebugOutput()));
+            }
             DrainDebugLayerMessages();
         }
         else
