@@ -4,7 +4,9 @@
 
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <string>
+#include <vector>
 
 class RHI;
 class RenderResourceBase;
@@ -31,8 +33,25 @@ class Vector3;
 /// yet. "Streaming works" is observable through residency (GetStats / the periodic log
 /// line / the test), not through pixels. Wiring a real material is a separate step.
 ///
-/// Threading: every method runs on the render-system owner thread (the one that calls
-/// Update), matching VirtualTextureManager's owner-thread contract.
+/// THREADING -- two threads, one writer per field.
+///
+/// On the Vulkan parallel-rendering path (the editor's default) the render thread and the
+/// RHI thread are different threads, and GPU work may ONLY run on the RHI thread: Vulkan's
+/// "current command buffer" and the graphics queue belong to it, and every VT upload is a
+/// single-time submit that does vkQueueSubmit + vkQueueWaitIdle (RenderSystemFrameCommands.cpp
+/// documents the crash and the double-recording that putting GPU work on the render thread
+/// causes). So the work is split by what it touches:
+///
+///   TickCpu  (RENDER thread): read CVars/camera, load the source image (disk IO + decode),
+///            RegisterVirtualTexture, RequestPages. CPU only. Owns m_Handle / m_ActivePath /
+///            m_FailedPath. Never calls anything that creates or destroys a GPU object.
+///   TickGpu  (RHI thread):    bring the manager (and pool) up, release retired textures,
+///            then PumpLoads + Update (page upload, page-table flush). Owns the pool.
+///
+/// The only things that cross are (a) m_Retired: handles the render thread no longer wants,
+/// destroyed on the RHI thread (a texture's page table is a GPU image the RHI thread may be
+/// using, so the render thread must not free it), and (b) m_WantPool. Both are guarded. Tick()
+/// runs TickCpu then TickGpu back to back for single-threaded callers (and the tests).
 /// </summary>
 class VirtualTextureProducer
 {
@@ -82,6 +101,25 @@ public:
               const Vector3& camera_position,
               const Vector3& camera_forward);
 
+    /// RENDER thread half of Tick: CPU only (see the threading note above).
+    bool TickCpu(bool enabled,
+                 const std::string& source_path,
+                 const Vector3& camera_position,
+                 const Vector3& camera_forward);
+
+    /// RHI thread half of Tick: every GPU operation. `camera_*`/`fov`/`aspect`/screen size
+    /// feed VirtualTextureManager::Update's priority pass; they are plain values the render
+    /// thread captured, so this never reads render-thread-owned objects.
+    void TickGpu(RHI* rhi,
+                 RenderResourceBase* render_resource,
+                 const Vector3& camera_position,
+                 const Vector3& camera_forward,
+                 float fov_radians,
+                 float aspect,
+                 uint32_t screen_width,
+                 uint32_t screen_height,
+                 float delta_time);
+
     /// Release the texture and, if this producer brought the manager up, the manager.
     /// Must be called while the RHI is still alive. Safe to call repeatedly.
     void Shutdown();
@@ -96,7 +134,16 @@ public:
 
 private:
     void ReleaseTexture();
+    // RHI thread. Builds the pool on first need; reports failure back through m_PoolFailed.
     bool EnsureManager(RHI* rhi, RenderResourceBase* render_resource);
+    // RENDER thread: hand a handle to the RHI thread instead of unregistering it here.
+    void RetireHandle(uint64_t handle);
+
+    // ---- the only state that crosses threads ----
+    std::mutex m_HandoffMutex;
+    std::vector<uint64_t> m_Retired;    // handles for the RHI thread to unregister (guarded)
+    bool m_WantPool {false};            // the render thread has a texture that needs the pool (guarded)
+    bool m_PoolFailed {false};          // the RHI thread could not build the pool (guarded)
 
     VirtualTextureManager* m_Manager {nullptr};
     TextureLoader m_Loader {nullptr};

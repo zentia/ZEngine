@@ -262,6 +262,57 @@ struct RHIPrepareContextCmd final : IRenderCommand
     const char* GetDebugName() const override { return "RHIPrepareContext"; }
 };
 
+// ---------------------------------------------------------------------------------------------
+// VirtualTexture 的两条命令（只在 Vulkan 并行路径上排——DX12 分支与单线程路径走
+// UpdateVirtualTextureForFrame）。
+//
+// 为什么拆成两条、分别排在两个线程上：VT 的 GPU 工作（页上传、页表刷新、建池、销毁页表纹理）全是
+// "一次性命令缓冲 + vkQueueSubmit + vkQueueWaitIdle"，而 Vulkan 的图形队列和"当前命令缓冲"归
+// **RHI 线程**所有。把它放到渲染线程会和 RHI 线程并发提交同一个队列——这正是下面那段注释里
+// Nanite 在 Vulkan 上第一帧崩溃的同一类问题。所以：
+//   * 渲染线程命令：读 CVar / 相机、加载源图（磁盘 IO，不该堵 RHI 线程）、注册纹理、请求页——纯 CPU；
+//   * RHI 线程命令：建池、销毁退役纹理、页上传 / 页表刷新——所有 GPU 工作，和帧提交在同一线程上
+//     天然串行，不存在并发提交。
+// ---------------------------------------------------------------------------------------------
+struct RenderVirtualTextureCpuCmd final : IRenderCommand
+{
+    RenderSystem* system {nullptr};
+    float delta_time {0.0f};
+
+    RenderVirtualTextureCpuCmd(RenderSystem* in_system, float in_delta_time)
+        : system(in_system), delta_time(in_delta_time)
+    {
+    }
+
+    void Execute() override
+    {
+        if (system != nullptr)
+        {
+            system->UpdateVirtualTextureCpu(delta_time);
+        }
+    }
+
+    const char* GetDebugName() const override { return "RenderVirtualTextureCpu"; }
+};
+
+struct RHIVirtualTextureGpuCmd final : IRenderCommand
+{
+    RenderSystem* system {nullptr};
+
+    explicit RHIVirtualTextureGpuCmd(RenderSystem* in_system)
+        : system(in_system) {}
+
+    void Execute() override
+    {
+        if (system != nullptr)
+        {
+            system->UpdateVirtualTextureGpu();
+        }
+    }
+
+    const char* GetDebugName() const override { return "RHIVirtualTextureGpu"; }
+};
+
 struct RHISubmitDrawListsCmd final : IRenderCommand
 {
     RenderSystem* system {nullptr};
@@ -299,6 +350,13 @@ struct RenderDispatchRHICommandsCmd final : IRenderCommand
         if (system != nullptr)
         {
             RenderingThread::EnqueueRHICommand(std::make_unique<RHIPrepareContextCmd>(system));
+#if defined(Z_HAS_VULKAN)
+            // VT 的 GPU 工作：排在 PrepareContext 之后、SubmitDrawLists 之前。它用自己的一次性命令
+            // 缓冲，不碰"当前命令缓冲"，所以不依赖 PrepareContext；放在这里只是为了和帧提交同在
+            // RHI 线程、同一个批里串行执行（不会和 SubmitDrawLists 的提交交错）。DX12 不走这条批
+            // 的 VT 路径：VT 在 DX12 下被 Initialize 的 RHI 类型检查拒绝，命令本身是 no-op。
+            RenderingThread::EnqueueRHICommand(std::make_unique<RHIVirtualTextureGpuCmd>(system));
+#endif
             RenderingThread::EnqueueRHICommand(
                 std::make_unique<RHISubmitDrawListsCmd>(system, frame_draw_list_slot));
             RenderingThread::SubmitRHICommandBatch();
@@ -339,6 +397,12 @@ void BuildRenderSystemFrameCommands(RenderSystem& render_system, float delta_tim
     // 阶段 58（3d41c982）把它补进来时 Vulkan 编辑器一启动就崩。要在 Vulkan 并行路径上跑
     // Nanite，得把它挪成 RHI 命令（排在 PrepareContext 之后、且命令缓冲已 Begin），
     // 那是另一件事；在那之前这里保持阶段 58 之前的样子。
+    //
+    // VT 不同：它不用"当前命令缓冲"，GPU 工作全是自带的一次性命令缓冲，所以可以安全地放到 RHI
+    // 线程（RHIVirtualTextureGpuCmd，见 RenderDispatchRHICommandsCmd）。这里只排它的 CPU 半边。
+#if defined(Z_HAS_VULKAN)
+    ENQUEUE_RENDER_COMMAND(RenderVirtualTextureCpuCmd, &render_system, delta_time);
+#endif
     ENQUEUE_RENDER_COMMAND(RenderPreparePassDataCmd, &render_system);
     ENQUEUE_RENDER_COMMAND(RenderBuildDrawListsCmd, &render_system, frame_draw_list_slot);
     ENQUEUE_RENDER_COMMAND(RenderDispatchRHICommandsCmd, &render_system, frame_draw_list_slot);

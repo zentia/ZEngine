@@ -1960,20 +1960,25 @@ void RenderSystem::UpdateNaniteForFrame(float delta_time)
 // 默认由 r.VirtualTexture.Enable 门控（默认关）：VT 此前是完全休眠的孤岛（没有任何
 // 渲染路径调用 Update/RequestPages），所以即便编译进来，不显式打开也零开销、零回归。
 // ===========================================================================
-void RenderSystem::UpdateVirtualTextureForFrame(float delta_time)
+void RenderSystem::UpdateVirtualTextureCpu(float delta_time)
 {
 #if defined(Z_HAS_VULKAN)
+    // RENDER 线程（并行路径）或 RENDER+RHI 同一线程（单线程路径）。只做 CPU 活，见
+    // VirtualTextureProducer 的线程说明。
     if (!VirtualTextureSettings::IsEnabled())
     {
         // 关掉开关时，已经在流送的纹理要被释放（否则 Enable 1 -> 0 后池和页一直占着显存）。
-        // 只在生产者已经存在时才通知：从没开过的工程不为它构造任何东西。
+        // 渲染线程只"退役"句柄，由 RHI 线程销毁。只在生产者已存在时才通知：从没开过的工程不为它
+        // 构造任何东西。
         if (m_VirtualTextureProducer && m_VirtualTextureProducer->isStreaming())
         {
-            m_VirtualTextureProducer->Tick(m_Rhi, m_RenderResource.get(), false, "", Vector3(), Vector3());
+            m_VirtualTextureProducer->TickCpu(false, std::string(), Vector3(), Vector3());
         }
+        std::lock_guard<std::mutex> lock(m_VirtualTextureViewMutex);
+        m_VirtualTextureView.valid = false;
         return;
     }
-    if (m_RenderScene == nullptr)
+    if (m_RenderScene == nullptr || m_Rhi == nullptr)
     {
         return;
     }
@@ -1985,31 +1990,85 @@ void RenderSystem::UpdateVirtualTextureForFrame(float delta_time)
     }
 
     auto swapchain_info = m_Rhi->GetSwapchainInfo();
-    Vector3 camera_pos = camera->position();
-    Vector3 camera_forward = camera->forward();
-    float fov_deg = camera->getFOV().y;
+    VirtualTextureFrameView view;
+    view.camera_position = camera->position();
+    view.camera_forward = camera->forward();
     // 相机的 getFOV() 返回**度**（DX12 pass 里用 Degree() 转弧度）；VT 的
     // CalculatePageScreenSize 用的是针孔模型的 tan(fov/2)，必须转成弧度。
-    float fov_rad = fov_deg * 3.14159265358979323846f / 180.0f;
-    float aspect = camera->getAspect();
+    view.fov_radians = camera->getFOV().y * 3.14159265358979323846f / 180.0f;
+    view.aspect = camera->getAspect();
+    view.screen_width = swapchain_info.extent.width;
+    view.screen_height = swapchain_info.extent.height;
+    view.delta_time = delta_time;
+    view.valid = true;
 
     // 最小生产者：没有它，Enable=1 推进的是一个没池、没纹理、没人请求页的管理器——什么都不会
-    // 发生。它先于 Update 运行，所以本帧请求的页本帧就能提交。r.VirtualTexture.Source 为空时它
-    // 什么都不注册（保持 Enable=1 的旧行为：只推进，不流送）。
+    // 发生。r.VirtualTexture.Source 为空时它什么都不注册（保持 Enable=1 的旧行为：只推进，不流送）。
     if (!m_VirtualTextureProducer)
     {
-        m_VirtualTextureProducer.reset(new VirtualTextureProducer());
-        m_VirtualTextureProducer->Bind(
-            &VirtualTextureManager::Get(), &RenderSystem::LoadVirtualTextureSource, this, VirtualTextureProducer::Config {});
+        auto producer = std::unique_ptr<VirtualTextureProducer, VirtualTextureProducerDeleter>(new VirtualTextureProducer());
+        producer->Bind(&VirtualTextureManager::Get(),
+                       &RenderSystem::LoadVirtualTextureSource,
+                       this,
+                       VirtualTextureProducer::Config {});
+        // 构造完成后才发布给 RHI 线程（同一把锁），RHI 线程读到的永远是完整对象。
+        std::lock_guard<std::mutex> lock(m_VirtualTextureViewMutex);
+        m_VirtualTextureProducer = std::move(producer);
+        m_VirtualTextureProducerPublished = m_VirtualTextureProducer.get();
     }
-    m_VirtualTextureProducer->Tick(
-        m_Rhi, m_RenderResource.get(), true, VirtualTextureSettings::GetSource(), camera_pos, camera_forward);
+    m_VirtualTextureProducer->TickCpu(true, VirtualTextureSettings::GetSource(), view.camera_position, view.camera_forward);
 
-    VirtualTextureManager::Get().Update(camera_pos, camera_forward, fov_rad, aspect,
-                                        swapchain_info.extent.width, swapchain_info.extent.height, delta_time);
+    // 把相机抓成纯值交给 RHI 线程：RHI 线程绝不读 m_Cameras / m_RenderScene。
+    {
+        std::lock_guard<std::mutex> lock(m_VirtualTextureViewMutex);
+        m_VirtualTextureView = view;
+    }
 #else
     (void)delta_time;
 #endif
+}
+
+void RenderSystem::UpdateVirtualTextureGpu()
+{
+#if defined(Z_HAS_VULKAN)
+    // RHI 线程（并行路径）或 RENDER+RHI 同一线程（单线程路径）。所有 GPU 工作都在这里。
+    // 生产者不存在 = 从没开过 VT（TickCpu 是唯一创建它的地方）：什么都不做，零开销。
+    VirtualTextureFrameView view;
+    VirtualTextureProducer* producer = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(m_VirtualTextureViewMutex);
+        view = m_VirtualTextureView;
+        producer = m_VirtualTextureProducerPublished;
+    }
+    if (producer == nullptr || m_Rhi == nullptr)
+    {
+        return;
+    }
+    if (!view.valid)
+    {
+        // 开关刚关掉：仍要让 TickGpu 跑一次，销毁渲染线程刚退役的纹理。给它一个无害的默认视图。
+        producer->TickGpu(m_Rhi, m_RenderResource.get(), Vector3(), Vector3(0.0f, 0.0f, -1.0f),
+                          1.0471975f, 1.7777778f, 1, 1, 0.0f);
+        return;
+    }
+    producer->TickGpu(m_Rhi,
+                                      m_RenderResource.get(),
+                                      view.camera_position,
+                                      view.camera_forward,
+                                      view.fov_radians,
+                                      view.aspect,
+                                      view.screen_width,
+                                      view.screen_height,
+                                      view.delta_time);
+#endif
+}
+
+void RenderSystem::UpdateVirtualTextureForFrame(float delta_time)
+{
+    // 单线程调用者（Apple Tick、DX12 分支、单线程尾部）：两半背靠背。Vulkan 并行路径**不**走这里，
+    // 而是由 RenderSystemFrameCommands 把两半分别排到渲染线程和 RHI 线程。
+    UpdateVirtualTextureCpu(delta_time);
+    UpdateVirtualTextureGpu();
 }
 
 std::shared_ptr<TextureData> RenderSystem::LoadVirtualTextureSource(void* render_system, const std::string& path)
@@ -2031,6 +2090,8 @@ void RenderSystem::ShutdownVirtualTexture()
     if (m_VirtualTextureProducer)
     {
         m_VirtualTextureProducer->Shutdown();  // 卸纹理 + 拆它拉起来的管理器（此刻 RHI 还活着）
+        std::lock_guard<std::mutex> lock(m_VirtualTextureViewMutex);
+        m_VirtualTextureProducerPublished = nullptr;
         m_VirtualTextureProducer.reset();
     }
 #endif

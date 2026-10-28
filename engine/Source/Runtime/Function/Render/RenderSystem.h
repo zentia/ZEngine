@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Runtime/Core/Base/EngineSystem.h"
+#include "Runtime/Core/Math/Vector3.h"
 #include "Runtime/Function/Render/RenderEntity.h"
 #include "Runtime/Function/Render/RenderFramePipeline.h"
 #include "Runtime/Function/Render/RenderGuidAllocator.h"
@@ -16,6 +17,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <vector>
@@ -156,6 +158,30 @@ private:
         void operator()(VirtualTextureProducer* producer) const;
     };
     std::unique_ptr<VirtualTextureProducer, VirtualTextureProducerDeleter> m_VirtualTextureProducer;
+    // 渲染线程把"这一帧相机在哪"抓成**纯值**存进下面这个结构，RHI 线程只读它：RHI 线程绝不碰
+    // m_Cameras / m_RenderScene（那是渲染线程的数据）。必须定义在使用它的成员之前（类内成员的类型
+    // 要先声明），所以放在这里而不是挨着 UpdateVirtualTextureCpu。
+    struct VirtualTextureFrameView
+    {
+        Vector3 camera_position {0.0f, 0.0f, 0.0f};
+        Vector3 camera_forward {0.0f, 0.0f, -1.0f};
+        float fov_radians {1.0471975f};
+        float aspect {1.7777778f};
+        uint32_t screen_width {0};
+        uint32_t screen_height {0};
+        float delta_time {0.0f};
+        bool valid {false};
+    };
+    // 渲染线程写、RHI 线程读，互斥保护（只是几个标量，拷贝一次的事）。
+    //
+    // 它**同时**保护 m_VirtualTextureProducer 这个指针本身：渲染线程在第一次 TickCpu 时创建它，
+    // RHI 线程在 TickGpu 里读它——指针的发布必须有 happens-before，不然 RHI 线程可能读到一个
+    // 构造到一半的对象。创建 / 读取指针都在这把锁里；生产者**内部**的状态另有自己的交接锁。
+    mutable std::mutex m_VirtualTextureViewMutex;
+    VirtualTextureFrameView m_VirtualTextureView;
+    // RHI 线程拿到的是裸指针副本（生产者的生命周期由 RenderSystem::Shutdown 收尾，那时两个线程
+    // 都已排空）。
+    VirtualTextureProducer* m_VirtualTextureProducerPublished {nullptr};
     CameraPreviewRequest m_CameraPreviewRequest;
 
     RHIViewport m_RenderThreadSceneViewport {};
@@ -206,6 +232,13 @@ private:
     // 也不捕获状态。
     static std::shared_ptr<TextureData> LoadVirtualTextureSource(void* render_system, const std::string& path);
 
+    // ---- VT 在 Vulkan 并行渲染路径上的两个入口（见 VirtualTextureProducer 的线程说明）----
+    //
+    // RENDER 线程：读 CVar / 相机，TickCpu（加载源图、注册纹理、请求页），抓取 VirtualTextureFrameView。
+    void UpdateVirtualTextureCpu(float delta_time);
+    // RHI 线程：TickGpu（建池、销毁退役纹理、页上传 / 页表刷新）。
+    void UpdateVirtualTextureGpu();
+
     // 释放 VT 生产者（卸掉纹理、拆它拉起来的管理器）。必须在 RHI 还活着时调用——
     // RenderSystem 依赖 RHI，所以在 RenderSystem::Shutdown 里调用是安全的。
     // 同样无条件声明、定义里用 Z_HAS_VULKAN 包住，非 Vulkan 构建下是 no-op。
@@ -230,4 +263,6 @@ private:
     friend struct RenderDispatchRHICommandsCmd;
     friend struct RHIPrepareContextCmd;
     friend struct RHISubmitDrawListsCmd;
+    friend struct RenderVirtualTextureCpuCmd;
+    friend struct RHIVirtualTextureGpuCmd;
 };

@@ -53,8 +53,6 @@ bool VirtualTextureProducer::EnsureManager(RHI* rhi, RenderResourceBase* render_
     {
         return true;  // 已经有人（本类或别人）把它拉起来了
     }
-    // 管理器的 Initialize 会拒绝非 Vulkan 的 RHI（Windows 默认是 DX12）。这里不必再判，但失败要
-    // 被识别成"这个后端不支持 VT"而不是"配置错了"——见下方的日志措辞。
 
     // 默认 VirtualTextureConfig 要 2048x2048 页 = 262144x262144 px = 256 GiB 的池图，任何设备都
     // 放不下。生产者给一个量得出来的小池（默认 16x16 页 = 2048 px = 16 MiB）。
@@ -71,6 +69,7 @@ bool VirtualTextureProducer::EnsureManager(RHI* rhi, RenderResourceBase* render_
                                 (1024u * 1024u));
     m_Manager->SetConfig(config);
 
+    // 管理器的 Initialize 会拒绝非 Vulkan 的 RHI（Windows 默认是 DX12）。
     if (!m_Manager->Initialize(rhi, render_resource))
     {
 #if ZENGINE_VT_GPU
@@ -85,23 +84,30 @@ bool VirtualTextureProducer::EnsureManager(RHI* rhi, RenderResourceBase* render_
     return true;
 }
 
+void VirtualTextureProducer::RetireHandle(uint64_t handle)
+{
+    if (handle == 0)
+    {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(m_HandoffMutex);
+    m_Retired.push_back(handle);
+}
+
 void VirtualTextureProducer::ReleaseTexture()
 {
-    if (m_Handle != 0 && m_Manager != nullptr)
-    {
-        m_Manager->UnregisterVirtualTexture(m_Handle);
-    }
+    // RENDER 线程：不能在这里 Unregister——它会销毁页表纹理（GPU 图），而 RHI 线程可能正在用它做
+    // Update。只把句柄交给 RHI 线程，由 TickGpu 销毁。
+    RetireHandle(m_Handle);
     m_Handle = 0;
     m_ActivePath.clear();
     m_Settled = false;
 }
 
-bool VirtualTextureProducer::Tick(RHI* rhi,
-                                  RenderResourceBase* render_resource,
-                                  bool enabled,
-                                  const std::string& source_path,
-                                  const Vector3& camera_position,
-                                  const Vector3& camera_forward)
+bool VirtualTextureProducer::TickCpu(bool enabled,
+                                     const std::string& source_path,
+                                     const Vector3& camera_position,
+                                     const Vector3& camera_forward)
 {
     if (m_Manager == nullptr)
     {
@@ -125,6 +131,16 @@ bool VirtualTextureProducer::Tick(RHI* rhi,
         ReleaseTexture();
     }
 
+    // ---- RHI 线程报告池建不起来：这是配置问题，换路径也不会好，记忆住别每帧重试 ----
+    {
+        std::lock_guard<std::mutex> lock(m_HandoffMutex);
+        if (m_PoolFailed && m_Handle == 0 && source_path != m_FailedPath)
+        {
+            m_FailedPath = source_path;
+            ++m_FailureCount;
+        }
+    }
+
     // ---- 这个路径之前失败过：不再每帧重试（每帧重读磁盘 + 刷日志）----
     if (m_Handle == 0 && source_path == m_FailedPath)
     {
@@ -133,19 +149,6 @@ bool VirtualTextureProducer::Tick(RHI* rhi,
 
     if (m_Handle == 0)
     {
-        // RHI 还没就绪不是"这个路径坏了"：不记忆、不计失败，下一帧再来。
-        if (rhi == nullptr)
-        {
-            return false;
-        }
-        if (!EnsureManager(rhi, render_resource))
-        {
-            // 管理器起不来（例如池配置超出设备上限）是配置问题，换路径也不会好：记忆住，别每帧重试。
-            m_FailedPath = source_path;
-            ++m_FailureCount;
-            return false;
-        }
-
         std::shared_ptr<TextureData> texture = m_Loader ? m_Loader(m_LoaderUser, source_path) : nullptr;
         if (!texture || !IsPageableFormat(*texture))
         {
@@ -160,6 +163,8 @@ bool VirtualTextureProducer::Tick(RHI* rhi,
             return false;
         }
 
+        // RegisterVirtualTexture 是纯 CPU（只建资源 + 页表项 + 登记，管理器内部有锁），所以可以在
+        // 池还没建的时候就做；页会留在队列里，等 RHI 线程建好池后被提交。
         m_Handle = m_Manager->RegisterVirtualTexture(texture, m_Config.page_size);
         if (m_Handle == 0)
         {
@@ -171,6 +176,10 @@ bool VirtualTextureProducer::Tick(RHI* rhi,
         m_FailedPath.clear();
         m_FrameCounter = 0;
         m_Settled = false;
+        {
+            std::lock_guard<std::mutex> lock(m_HandoffMutex);
+            m_WantPool = true;  // 告诉 RHI 线程：有纹理要流送了，需要池
+        }
 #if ZENGINE_VT_GPU
         auto resource = m_Manager->GetVirtualTexture(m_Handle);
         if (resource)
@@ -230,6 +239,97 @@ bool VirtualTextureProducer::Tick(RHI* rhi,
     return true;
 }
 
+void VirtualTextureProducer::TickGpu(RHI* rhi,
+                                     RenderResourceBase* render_resource,
+                                     const Vector3& camera_position,
+                                     const Vector3& camera_forward,
+                                     float fov_radians,
+                                     float aspect,
+                                     uint32_t screen_width,
+                                     uint32_t screen_height,
+                                     float delta_time)
+{
+    if (m_Manager == nullptr || rhi == nullptr)
+    {
+        return;
+    }
+
+    // ---- 1. 销毁渲染线程不要了的纹理（含它的页表 GPU 图）----
+    std::vector<uint64_t> retired;
+    bool want_pool = false;
+    {
+        std::lock_guard<std::mutex> lock(m_HandoffMutex);
+        retired.swap(m_Retired);
+        want_pool = m_WantPool;
+    }
+    for (uint64_t handle : retired)
+    {
+        m_Manager->UnregisterVirtualTexture(handle);
+    }
+
+    // ---- 2. 需要时建池（只尝试一次，失败回报给渲染线程）----
+    if (want_pool && m_Manager->getPhysicalTexturePool() == nullptr)
+    {
+        bool already_failed = false;
+        {
+            std::lock_guard<std::mutex> lock(m_HandoffMutex);
+            already_failed = m_PoolFailed;
+        }
+        if (!already_failed && !EnsureManager(rhi, render_resource))
+        {
+            std::lock_guard<std::mutex> lock(m_HandoffMutex);
+            m_PoolFailed = true;
+        }
+    }
+
+    // ---- 3. 池就绪后提交页（上传 + 页表刷新），并推进优先级 / 驱逐 ----
+    if (m_Manager->getPhysicalTexturePool() != nullptr)
+    {
+        m_Manager->Update(camera_position, camera_forward, fov_radians, aspect, screen_width, screen_height, delta_time);
+    }
+}
+
+bool VirtualTextureProducer::Tick(RHI* rhi,
+                                  RenderResourceBase* render_resource,
+                                  bool enabled,
+                                  const std::string& source_path,
+                                  const Vector3& camera_position,
+                                  const Vector3& camera_forward)
+{
+    // 单线程调用者（测试、单线程渲染路径）：两半背靠背，语义与拆分前一致——纹理在 Tick 返回前就
+    // 已注册且池已建（旧实现先建池再注册；这里先注册再建池，但同一次调用内两者都完成）。
+    //
+    // 注意这里**不**调用 Manager.Update：旧 Tick 也不调，Update 由调用方（渲染系统的帧钩子 / 测试
+    // 的 Frame::Run）自己调。只有 TickGpu 在 RHI 线程路径上替调用方做这件事。
+    const bool streaming = TickCpu(enabled, source_path, camera_position, camera_forward);
+
+    std::vector<uint64_t> retired;
+    bool want_pool = false;
+    {
+        std::lock_guard<std::mutex> lock(m_HandoffMutex);
+        retired.swap(m_Retired);
+        want_pool = m_WantPool;
+    }
+    for (uint64_t handle : retired)
+    {
+        m_Manager->UnregisterVirtualTexture(handle);
+    }
+    if (want_pool && m_Manager->getPhysicalTexturePool() == nullptr && rhi != nullptr)
+    {
+        bool already_failed = false;
+        {
+            std::lock_guard<std::mutex> lock(m_HandoffMutex);
+            already_failed = m_PoolFailed;
+        }
+        if (!already_failed && !EnsureManager(rhi, render_resource))
+        {
+            std::lock_guard<std::mutex> lock(m_HandoffMutex);
+            m_PoolFailed = true;
+        }
+    }
+    return streaming;
+}
+
 void VirtualTextureProducer::GetResidency(uint32_t& resident, uint32_t& total) const
 {
     resident = 0;
@@ -258,7 +358,24 @@ void VirtualTextureProducer::GetResidency(uint32_t& resident, uint32_t& total) c
 
 void VirtualTextureProducer::Shutdown()
 {
+    // 调用约定：此时渲染线程已不会再 TickCpu、RHI 线程已不会再 TickGpu（关停路径上两者都已排空），
+    // 所以这里可以同时碰两边的状态。ReleaseTexture 现在只是把句柄入队，必须随后**自己**把队列
+    // 排空——否则下面拆池之后，这些句柄的页表纹理就泄漏了（没人再会 Unregister 它们）。
     ReleaseTexture();
+    std::vector<uint64_t> retired;
+    {
+        std::lock_guard<std::mutex> lock(m_HandoffMutex);
+        retired.swap(m_Retired);
+        m_WantPool = false;
+        m_PoolFailed = false;
+    }
+    if (m_Manager != nullptr)
+    {
+        for (uint64_t handle : retired)
+        {
+            m_Manager->UnregisterVirtualTexture(handle);
+        }
+    }
     m_FailedPath.clear();
     if (m_BroughtUpManager && m_Manager != nullptr)
     {

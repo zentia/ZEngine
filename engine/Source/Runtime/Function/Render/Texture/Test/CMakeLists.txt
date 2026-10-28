@@ -247,3 +247,42 @@ if(ZENGINE_BUILD_VT_PRODUCER_AB_SMOKE_TEST)
         message(STATUS "Configured VT producer A/B smoke test: VirtualTextureProducerABSmokeTest")
     endif()
 endif()
+
+# =============================================================================
+# VirtualTextureProducerThreadedABSmokeTest — 渲染线程 / RHI 线程拆分 A/B（Vulkan headless，真两线程）
+# -----------------------------------------------------------------------------
+# 真实引擎里 Vulkan 编辑器走并行渲染，GPU 工作只能在 RHI 线程。生产者因此拆成 TickCpu（渲染线程）和
+# TickGpu（RHI 线程）。之前的测试在同一线程背靠背调 Tick，测不到任何跨线程问题；本测试让两个线程真并发，
+# 钉住：GPU 活零次出现在 RHI 线程之外；并发下纹理完整驻留且逐 texel 读回正确；路径切换风暴 / 关掉再打开期间
+# 无崩溃、无校验错误、无泄漏（渲染线程只"退役"句柄，由 RHI 线程销毁）。
+#
+#   cmake -B build -DZENGINE_BUILD_VT_PRODUCER_THREADED_AB_SMOKE_TEST=ON
+#   cmake --build build --target VirtualTextureProducerThreadedABSmokeTest
+# =============================================================================
+option(ZENGINE_BUILD_VT_PRODUCER_THREADED_AB_SMOKE_TEST
+       "Build the VirtualTexture producer two-thread split A/B (Vulkan headless) smoke-test executable"
+       OFF)
+
+if(ZENGINE_BUILD_VT_PRODUCER_THREADED_AB_SMOKE_TEST)
+    if(NOT WIN32 AND NOT (UNIX AND NOT APPLE))
+        message(STATUS "VT producer threaded A/B smoke test needs the Vulkan backend (Windows/Linux); skipping")
+    else()
+        add_executable(VirtualTextureProducerThreadedABSmokeTest VirtualTextureProducerThreadedABSmokeTest.cpp)
+        set_target_properties(VirtualTextureProducerThreadedABSmokeTest PROPERTIES
+            CXX_STANDARD 23
+            FOLDER "Engine/Tests"
+        )
+        target_link_libraries(VirtualTextureProducerThreadedABSmokeTest PRIVATE ZRuntime)
+        if(TARGET ZEnginePCH)
+            target_link_libraries(VirtualTextureProducerThreadedABSmokeTest PRIVATE ZEnginePCH)
+            target_include_directories(VirtualTextureProducerThreadedABSmokeTest PRIVATE ${ENGINE_ROOT_DIR}/Source/CommonPCH)
+            add_dependencies(VirtualTextureProducerThreadedABSmokeTest ZEnginePCH)
+            target_precompile_headers(VirtualTextureProducerThreadedABSmokeTest REUSE_FROM ZEnginePCH)
+        endif()
+        if(MSVC)
+            target_compile_options(VirtualTextureProducerThreadedABSmokeTest PRIVATE /W4)
+        endif()
+        add_test(NAME VirtualTextureProducerThreadedABSmokeTest COMMAND VirtualTextureProducerThreadedABSmokeTest)
+        message(STATUS "Configured VT producer threaded A/B smoke test: VirtualTextureProducerThreadedABSmokeTest")
+    endif()
+endif()
