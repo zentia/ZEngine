@@ -144,6 +144,11 @@ namespace FbxAnimation
         const int frame_count = std::clamp(static_cast<int>(duration * fps) + 1, 2, cap);
 
         out_clip.clip.total_frame = frame_count;
+        // P0.1: the clip's length in seconds, straight from the FBX. Correct
+        // even when `frame_count` was clamped by `cap`, because the sample loop
+        // below always spans the whole `duration` -- clamping lowers the sample
+        // RATE, it does not shorten the clip.
+        out_clip.clip.duration = static_cast<float>(duration);
         out_clip.clip.node_count = static_cast<int>(in_bone_nodes.size());
         out_clip.clip.node_channels.clear();
         out_clip.bone_for_channel.clear();
@@ -249,10 +254,16 @@ namespace FbxAnimation
             const std::vector<int> bone_for_channel = baked.bone_for_channel;
             const std::vector<AnimationChannel>& channels = clip_copy.node_channels;
 
-            const bool clip_ok = WriteAsset<AnimationAsset>(clip_path, [&channels](AnimationAsset& out_asset) {
+            const float clip_duration = clip_copy.duration;
+            const bool clip_ok = WriteAsset<AnimationAsset>(clip_path, [&channels, clip_duration](AnimationAsset& out_asset) {
                 out_asset.clip_data.node_count = static_cast<int>(channels.size());
                 out_asset.clip_data.node_channels = channels;
                 out_asset.clip_data.total_frame = channels.empty() ? 0 : static_cast<int>(channels[0].position_keys.size());
+                // P0.1: carried through from BakeStack. This lambda rebuilds the
+                // clip field by field, so a field not copied here is silently
+                // dropped -- which is exactly what happened to `duration` until
+                // this line existed.
+                out_asset.clip_data.duration = clip_duration;
                 out_asset.node_map.convert.resize(channels.size());
                 for (size_t channel_i = 0; channel_i < channels.size(); ++channel_i)
                 {

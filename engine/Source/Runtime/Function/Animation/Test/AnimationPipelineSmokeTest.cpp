@@ -89,6 +89,17 @@ namespace
         Check(ok, in_message);
     }
 
+    void CheckNear(float in_actual, float in_expected, float in_tolerance, const char* in_message)
+    {
+        const bool ok = std::fabs(in_actual - in_expected) <= in_tolerance;
+        if (!ok)
+        {
+            std::printf("       (got %.6f, want %.6f)\n", static_cast<double>(in_actual),
+                        static_cast<double>(in_expected));
+        }
+        Check(ok, in_message);
+    }
+
     // ---- hashing (P7) ---------------------------------------------------------
 
     struct Fnv1a64
@@ -626,6 +637,87 @@ int main(int argc, char** argv)
             }
             Check(component->GetResult().node.size() == static_cast<size_t>(kBones), "P7b: component produces a palette");
             std::printf("P7b component hash: %016llx\n", static_cast<unsigned long long>(hash.value));
+        }
+
+        // ---- P8: clip duration is persisted and drives timing (P0.1) ---------
+        //
+        // Before this, AnimatorState::clip_length was the ONLY source of a
+        // clip's duration and had to be hand-authored per state. The clip now
+        // carries its own baked length, and a state left unfilled takes it.
+        {
+            constexpr float kDuration = 0.8f;
+
+            // Round-trip through the REAL serializer: a field that only lives
+            // in memory would not help the importer at all.
+            AnimationAsset* timed = MakeClipAsset(std::vector<AnimationChannel>(kBones, MakeStillChannel(kFrames)), kFrames);
+            timed->clip_data.duration = kDuration;
+            const eastl::string timed_path = WriteAsset(*timed, "pipeline_timed.anim.zasset");
+            const std::shared_ptr<AnimationClip> reloaded = AnimationSystem::TryLoadAnimation(timed_path);
+            Check(reloaded != nullptr, "P8: the timed clip reloads");
+            if (reloaded != nullptr)
+            {
+                CheckNear(reloaded->duration, kDuration, 1.0e-6f, "P8: duration survives the serializer");
+                Check(reloaded->total_frame == kFrames, "P8: appending duration did not disturb total_frame");
+                Check(reloaded->node_channels.size() == static_cast<size_t>(kBones),
+                      "P8: appending duration did not disturb the channels");
+            }
+
+            // A state with clip_length UNFILLED (0) must take the clip's length.
+            AnimatorController* unfilled = Produce<AnimatorController>();
+            AnimatorState only;
+            only.name = "timed";
+            only.clip_file_path = timed_path;
+            only.anim_skel_map_path = map_path;
+            only.clip_length = 0.0f;  // deliberately unfilled
+            unfilled->states.push_back(only);
+            const eastl::string unfilled_path = WriteAsset(*unfilled, "pipeline_unfilled.controller.zasset");
+
+            AnimationComponent* component = Produce<AnimationComponent>();
+            component->SetSkeletonPath(skeleton_path.c_str());
+            component->SetControllerPath(unfilled_path.c_str());
+            component->PostLoadResource(nullptr);
+            Check(component->HasController(), "P8: the unfilled controller loads");
+            CheckNear(component->GetAnimator().GetStateClipLength(0), kDuration, 1.0e-6f,
+                      "P8: the unfilled state took its length from the clip");
+
+            // 200 frames at 1/60 = 10/3 s. Over a 0.8 s loop that is
+            // 4 + 1/6 passes, so the playhead must land on 1/6.
+            for (int frame = 0; frame < kHashFrames; ++frame)
+            {
+                component->Tick(kDt);
+            }
+            const float elapsed = static_cast<float>(kHashFrames) * kDt;
+            const float expected_phase = (elapsed / kDuration) - std::floor(elapsed / kDuration);
+            CheckNear(component->GetNormalizedTime(), expected_phase, 2.0e-3f,
+                      "P8: 200 frames of a 0.8s clip land on the right phase");
+            std::printf("       (200 frames = %.4fs over a %.1fs loop -> phase %.4f, want %.4f)\n",
+                        static_cast<double>(elapsed), static_cast<double>(kDuration),
+                        static_cast<double>(component->GetNormalizedTime()), static_cast<double>(expected_phase));
+
+            // Backward compatibility against a REAL asset written long before
+            // this field existed. This is the check that a hand-made fixture
+            // cannot give: it proves SafeBinaryRead tolerates the missing node
+            // on bytes that are actually on disk in the repo.
+            const eastl::string legacy =
+                "E:/Engine/ZEngine/engine/asset/objects/character/player/components/animation/data/"
+                "W2_CrouchWalk_Aim_F_Loop_IP.animation_clip.zasset";
+            if (std::filesystem::exists(legacy.c_str()))
+            {
+                const std::shared_ptr<AnimationClip> old_clip = AnimationSystem::TryLoadAnimation(legacy);
+                Check(old_clip != nullptr, "P8: a clip written before `duration` existed still loads");
+                if (old_clip != nullptr)
+                {
+                    Check(old_clip->node_channels.size() > 0u, "P8: the legacy clip's channels are intact");
+                    CheckNear(old_clip->duration, 0.0f, 1.0e-6f, "P8: a legacy clip reports duration 0 (unknown)");
+                    std::printf("       (legacy clip: %d frames, %zu channels, duration %.3f)\n",
+                                old_clip->total_frame, old_clip->node_channels.size(),
+                                static_cast<double>(old_clip->duration));
+                }
+            }
+            else
+            {
+                std::printf("[skip] P8: legacy clip asset not present, backward-compat unchecked\n");
+            }
         }
 
         std::printf("\nAnimation pipeline smoke test: %d check(s), %d failure(s)\n", g_Checks, g_Failures);

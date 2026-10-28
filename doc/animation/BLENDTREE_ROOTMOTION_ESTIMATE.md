@@ -82,9 +82,17 @@
 
 | ID | 任务 | 人日 | 验收 |
 |---|---|---|---|
-| P0.1 | `AnimationClip` 加 `duration`（秒）字段；导入器写入；`AnimatorState.clip_length <= 0` 时回落到片段时长 | 0.5 – 1 | 旧 .zasset 照常加载；新导入片段时长与 FBX 一致 |
+| P0.1 | ~~`AnimationClip` 加 `duration`（秒）字段；导入器写入；`AnimatorState.clip_length <= 0` 时回落到片段时长~~ | ~~0.5 – 1~~ | **✅ 已落地 2026-10-28**，见下 |
 | P0.2 | `BlendStateWithClipData.blend_clip` 改存 `const AnimationClip*`；`Skeleton::ApplyAnimation` 的 3 个 vector 改成员 scratch（入口先 `clear()`）；`AnimatorInstance` 初始化时把路径解析成指针，帧内不再查 `std::map<eastl::string>` | 1 – 1.5 | `AnimationSkinningSmokeTest` + `AnimatorSmokeTest` 全绿；姿势逐位不变 |
 | P0.3 | 测试资产：一套 CC0 角色（Quaternius / Kenney 等），至少 idle / walk / run（原地）+ walk_forward（带根位移）+ 一个转身；导入 → skeleton / skel map 检查 | 1 – 2 | 编辑器里能单独播放每个片段；**注意授权，别用不能进仓库的素材** |
+
+### 落地记录 · P0.1 片段时长落盘（2026-10-28）
+
+- `AnimationClip::duration`（秒）**追加在 Transfer 末尾**。必须追加而非插入：序列化器的位置式读取按写入顺序走，插在 `node_channels` 之前会让每一份既有资产错位。旧片段无此节点 ⇒ SafeBinaryRead 返回 kNotFound ⇒ 保持 0。**0 的语义是"未知"，不是"零长"**，消费方必须回落到作者填的长度。
+- 导入器：`BakeStack` 取 `baked->playback_duration`（帧数被 `cap` 截断时秒数依然正确 —— 截断降的是采样率，不是时长）。**写 asset 的 lambda 是逐字段重建 `clip_data` 的，不显式拷贝就会被静默丢掉** —— `duration` 一开始就是这么丢的。
+- 消费方分两层：`AnimatorInstance` 新增 `m_StateLength`（6 处 `clip_length` 读取全部改走它）+ `SetStateClipLength`，**本身仍然不碰资产**（一个控制器被多个实例共享，且要能 headless 驱动）；`AnimationComponent::PostLoadResource` 才去加载片段补齐。**作者填的长度优先** —— 那是有意的改时长覆盖，用资产悄悄顶掉会让 Inspector 字段变成谎话。
+- 验证（测试 P8，10 项）：时长过真实序列化器往返；`total_frame` 与通道未受扰动；未填长度的状态确实从片段取到 0.8s；**200 帧 @1/60 = 3.3333s 跑在 0.8s 循环上，相位落在 0.1667（期望 0.1667）**；并且拿仓库里真实的旧资产 `W2_CrouchWalk_Aim_F_Loop_IP`（23 帧 58 通道，写于本字段之前）证明向后兼容 —— 这是手搓夹具给不了的证据。
+- 回归：pipeline 39 / skinning 46 / animator 50 全绿，**P7 哈希仍 `17764afb96eb6b4b`**（Debug 与 Release 皆是），ZEditor 编译通过。
 
 ### M1-A BlendTree 运行时 — 6 – 8.5 人日
 

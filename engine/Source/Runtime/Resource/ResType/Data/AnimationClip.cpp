@@ -23,6 +23,11 @@ void AnimationClip::Transfer(TransferFunction& transfer)
     transfer.Transfer(total_frame, "total_frame");
     transfer.Transfer(node_count, "node_count");
     transfer.Transfer(node_channels, "node_channels");
+    // APPEND-ONLY (P0.1). Must stay last: positional readers follow the
+    // writer's sequence, so inserting a field above `node_channels` would
+    // misalign every clip written before this existed. Those clips simply have
+    // no "duration" node and read back as 0.
+    transfer.Transfer(duration, "duration");
 }
 
 INSTANTIATE_TEMPLATE_TRANSFER_WITH_DECL(AnimNodeMap, , Transfer, void)

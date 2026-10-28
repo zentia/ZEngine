@@ -41,6 +41,22 @@ public:
     int GetInt(const char* name) const;
     bool GetBool(const char* name) const;
 
+    // ---- Clip lengths (P0.1) ------------------------------------------------
+    //
+    // Initialize() seeds these from each state's authored `clip_length`. A state
+    // whose length is unfilled (<= 0) can be completed here from the CLIP's own
+    // baked `AnimationClip::duration` -- see AnimationComponent, which is the
+    // layer that may touch assets. This class deliberately stays asset-free:
+    // one controller is shared by every instance, and an evaluator that loaded
+    // assets could not be driven headless.
+    //
+    /// Overrides state `state_index`'s length, in seconds. Ignored for an
+    /// out-of-range index or a non-positive length.
+    void SetStateClipLength(int state_index, float seconds);
+    /// Effective length of `state_index` in seconds (authored, or whatever
+    /// SetStateClipLength resolved). 0 means "still unknown".
+    float GetStateClipLength(int state_index) const;
+
     // ---- Driving ------------------------------------------------------------
     void Tick(float delta_time);
 
@@ -96,6 +112,13 @@ private:
     const AnimatorController* m_Controller {nullptr};
 
     std::vector<ParameterValue> m_Values;
+
+    /// Effective clip length per state, in seconds (P0.1). Seeded from the
+    /// authored `AnimatorState::clip_length`; an unfilled entry may be resolved
+    /// from the clip asset via SetStateClipLength. Every timing read goes
+    /// through this rather than the controller, so the asset-derived length and
+    /// the authored one cannot disagree at runtime.
+    std::vector<float> m_StateLength;
 
     int m_CurrentState {-1};
     int m_TransitionTarget {-1};

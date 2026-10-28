@@ -71,6 +71,35 @@ void AnimationComponent::PostLoadResource(GameObject* parent_object)
         return;
     }
     m_Controller = controller;
+
+    // P0.1: complete any state whose length was left unfilled from the clip's
+    // own baked duration. This is the only layer that may touch assets --
+    // AnimatorInstance stays asset-free so it remains headless-drivable and
+    // shareable across instances.
+    //
+    // The authored length still WINS when it is set: it is the artist's
+    // deliberate override (retimed state, or a clip authored at the wrong
+    // length), and silently replacing it from the asset would make the
+    // Inspector field a lie.
+    for (size_t state_index = 0; state_index < controller->states.size(); ++state_index)
+    {
+        const AnimatorState& state = controller->states[state_index];
+        if (state.clip_length > 0.0f || state.clip_file_path.empty())
+        {
+            continue;
+        }
+        const std::shared_ptr<AnimationClip> clip = AnimationSystem::TryLoadAnimation(state.clip_file_path);
+        if (clip == nullptr || !(clip->duration > 0.0f))
+        {
+            // Clips baked before `duration` existed read back as 0. The state
+            // keeps length 0, i.e. "hold at time 0" -- exactly the behaviour
+            // before P0.1, so an un-reimported project does not change.
+            continue;
+        }
+        m_Animator.SetStateClipLength(static_cast<int>(state_index), clip->duration);
+        LOG_INFO(ZAnimation, "AnimationComponent: state '{}' took its {}s length from clip '{}'",
+                 state.name.c_str(), clip->duration, state.clip_file_path.c_str());
+    }
 }
 
 void AnimationComponent::Tick(float delta_time)

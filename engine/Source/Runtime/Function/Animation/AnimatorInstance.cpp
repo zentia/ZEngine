@@ -18,6 +18,7 @@ bool AnimatorInstance::Initialize(const AnimatorController& controller, std::str
     m_Controller = nullptr;
     m_Values.clear();
     m_StateRuntime.clear();
+    m_StateLength.clear();
     m_CurrentState = -1;
     m_TransitionTarget = -1;
     m_TransitionTime = 0.0f;
@@ -43,9 +44,13 @@ bool AnimatorInstance::Initialize(const AnimatorController& controller, std::str
     }
 
     m_StateRuntime.assign(controller.states.size(), StateRuntime {});
+    m_StateLength.assign(controller.states.size(), 0.0f);
     for (size_t state_index = 0; state_index < controller.states.size(); ++state_index)
     {
         m_StateRuntime[state_index].fired.assign(controller.states[state_index].events.size(), false);
+        // Seeded from the authored length (P0.1). Left at 0 when unfilled, which
+        // AnimationComponent may then resolve from the clip's baked duration.
+        m_StateLength[state_index] = std::max(0.0f, controller.states[state_index].clip_length);
     }
 
     m_CurrentState = std::clamp(controller.default_state, 0, static_cast<int>(controller.states.size()) - 1);
@@ -77,13 +82,31 @@ float AnimatorInstance::GetNormalizedTime(int state_index) const
     {
         return 0.0f;
     }
-    const AnimatorState& state = m_Controller->states[static_cast<size_t>(state_index)];
-    if (state.clip_length <= 0.0f)
+    const float length = m_StateLength[static_cast<size_t>(state_index)];
+    if (length <= 0.0f)
     {
         return 0.0f;
     }
-    const float normalized = m_StateRuntime[static_cast<size_t>(state_index)].time / state.clip_length;
+    const float normalized = m_StateRuntime[static_cast<size_t>(state_index)].time / length;
     return std::clamp(normalized, 0.0f, 1.0f);
+}
+
+void AnimatorInstance::SetStateClipLength(int state_index, float seconds)
+{
+    if (state_index < 0 || state_index >= static_cast<int>(m_StateLength.size()) || !(seconds > 0.0f))
+    {
+        return;
+    }
+    m_StateLength[static_cast<size_t>(state_index)] = seconds;
+}
+
+float AnimatorInstance::GetStateClipLength(int state_index) const
+{
+    if (state_index < 0 || state_index >= static_cast<int>(m_StateLength.size()))
+    {
+        return 0.0f;
+    }
+    return m_StateLength[static_cast<size_t>(state_index)];
 }
 
 // ---- Parameters -------------------------------------------------------------
@@ -186,7 +209,7 @@ void AnimatorInstance::AdvanceState(int state_index, float delta_time)
 {
     const AnimatorState& state = m_Controller->states[static_cast<size_t>(state_index)];
     StateRuntime& runtime = m_StateRuntime[static_cast<size_t>(state_index)];
-    const float length = state.clip_length;
+    const float length = m_StateLength[static_cast<size_t>(state_index)];
     if (length <= 0.0f)
     {
         return;  // Unfilled state: hold at time 0 rather than dividing by zero.
@@ -386,8 +409,7 @@ void AnimatorInstance::EnterState(int state_index, float normalized_time)
         return;
     }
     StateRuntime& runtime = m_StateRuntime[static_cast<size_t>(state_index)];
-    const AnimatorState& state = m_Controller->states[static_cast<size_t>(state_index)];
-    runtime.time = std::clamp(normalized_time, 0.0f, 1.0f) * std::max(0.0f, state.clip_length);
+    runtime.time = std::clamp(normalized_time, 0.0f, 1.0f) * m_StateLength[static_cast<size_t>(state_index)];
     runtime.direction = 1;
     std::fill(runtime.fired.begin(), runtime.fired.end(), false);
 }
@@ -486,7 +508,7 @@ void AnimatorInstance::RebuildBlendState()
 
     output.blend_clip_file_path.push_back(from.clip_file_path);
     output.blend_anim_skel_map_path.push_back(from.anim_skel_map_path);
-    output.blend_clip_file_length.push_back(from.clip_length);
+    output.blend_clip_file_length.push_back(m_StateLength[static_cast<size_t>(m_CurrentState)]);
     output.blend_weight.push_back(1.0f - fade);
     output.blend_ratio.push_back(GetNormalizedTime(m_CurrentState));
 
@@ -495,7 +517,7 @@ void AnimatorInstance::RebuildBlendState()
         const AnimatorState& to = m_Controller->states[static_cast<size_t>(m_TransitionTarget)];
         output.blend_clip_file_path.push_back(to.clip_file_path);
         output.blend_anim_skel_map_path.push_back(to.anim_skel_map_path);
-        output.blend_clip_file_length.push_back(to.clip_length);
+        output.blend_clip_file_length.push_back(m_StateLength[static_cast<size_t>(m_TransitionTarget)]);
         output.blend_weight.push_back(fade);
         output.blend_ratio.push_back(GetNormalizedTime(m_TransitionTarget));
     }
