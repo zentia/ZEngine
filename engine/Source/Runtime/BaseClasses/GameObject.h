@@ -208,13 +208,16 @@ public:
     /// 只由 SetActive 调用。
     void NotifyActiveChanged();
 
-    void addComponent(Component* component)
-    {
-        if (component != nullptr)
-        {
-            m_Components.emplace_back(component);
-        }
-    }
+    /// 挂一个组件上来。
+    ///
+    /// Unity 的不变式（AddFirstTransformComponentInternal / EnsureUniqueTransform）：
+    /// Transform 必须是 m_Components[0]，GameObject 创建时就挂上、且不允许第二个。
+    /// 所以这里对 Transform 特殊处理 —— 插到最前而不是追加到末尾，否则后来补挂的
+    /// Transform 会把索引 0 让给别人，GetTransform() 的 O(1) 快路径就废了。
+    ///
+    /// 实现在 .cpp：要靠 Cast<Transform> 判断，而 Transform.h 反向 include 了
+    /// 本文件，头文件里拿不到完整类型（同 GetTransform 的理由）。
+    void addComponent(Component* component);
 
     std::vector<ImmediatePtr<Component>> getComponents() { return m_Components; }
 
@@ -292,6 +295,10 @@ protected:
 private:
     template<typename TransferFunction>
     void TransferComponents(TransferFunction& transfer);
+
+    /// 把主 Transform 归位到 m_Components[0]（理由与实现见 .cpp）。
+    /// 读进来的组件顺序由文件决定，不能假设它本来就在第一个。
+    void EnsureTransformIsFirst();
 
     Container m_Component;
 };

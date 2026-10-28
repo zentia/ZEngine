@@ -14,6 +14,7 @@
 #include <filesystem>
 #include <typeinfo>
 #include <unordered_set>
+#include <utility>
 
 IMPLEMENT_OBJECT_SERIALIZE(GameObject);
 
@@ -99,9 +100,87 @@ bool GameObject::HasComponent(const std::string& component_type_name) const
     return GetComponentByTypeName(component_type_name) != nullptr;
 }
 
+// Unity 的约定：`Scripting::ScriptingWrapperForTransformComponentOf` 直接取
+// `go.GetComponentAtIndex(0)` 再 `DebugAssert(firstComponent.Is<Transform>())`，
+// `GameObject::ReplaceTransformComponentInternal` 取 `QueryComponentAtIndex<Transform>(0)`
+// —— Transform 永远是第一个组件，不需要按类型查。
+//
+// 原来这里是 `GetComponentByTypeName("Transform")`：TypeManager 查表 + 逐组件
+// IsBaseOf 扫描，而 GetTransform 是热路径（渲染提交 / AI / 物理每帧都调它），
+// 那份开销是纯浪费。改成按索引取，O(1)。
+//
+// 不变式由三处共同保证：
+//   * addComponent()                —— Transform 插到最前；
+//   * RebuildRuntimeComponents()    —— 反序列化顺序由文件决定，归位一次；
+//   * load()                        —— prefab 展开是追加在末尾的，也要归位。
 Transform* GameObject::GetTransform() const
 {
-    return Cast<Transform>(GetComponentByTypeName("Transform"));
+    if (!m_Components.empty())
+    {
+        Component* first = static_cast<Component*>(m_Components.front());
+        if (Transform* transform = Cast<Transform>(first))
+        {
+            return transform;
+        }
+    }
+
+    // 兜底：老文件 / 直接改 EditorGetComponentsRef() 的路径仍可能破坏顺序，这时
+    // 退化成线性扫描 —— 宁可慢，也不能返回 nullptr 让调用方以为"没有 Transform"。
+    for (const ImmediatePtr<Component>& component : m_Components)
+    {
+        if (Transform* transform = Cast<Transform>(static_cast<Component*>(component)))
+        {
+            return transform;
+        }
+    }
+
+    return nullptr;
+}
+
+void GameObject::addComponent(Component* component)
+{
+    if (component == nullptr)
+    {
+        return;
+    }
+
+    // Transform 永远是 m_Components[0]（见 GetTransform 的说明）。后挂上来的
+    // Transform —— 脚本 AddComponent、迁移工具给无空间放置的定义补的根
+    // Transform —— 也必须插到最前，不能 push_back。
+    if (Cast<Transform>(component) != nullptr)
+    {
+        m_Components.insert(m_Components.begin(), component);
+        return;
+    }
+
+    m_Components.emplace_back(component);
+}
+
+void GameObject::EnsureTransformIsFirst()
+{
+    // 只交换，不重排：把主 Transform 与 index 0 对调，其余组件的相对顺序保持
+    // 原样，免得影响任何按索引读组件的旧代码。
+    if (m_Components.size() < 2)
+    {
+        return;
+    }
+
+    Component* first = static_cast<Component*>(m_Components.front());
+    if (Cast<Transform>(first) != nullptr)
+    {
+        return;
+    }
+
+    for (auto it = m_Components.begin() + 1; it != m_Components.end(); ++it)
+    {
+        if (Cast<Transform>(static_cast<Component*>(*it)) == nullptr)
+        {
+            continue;
+        }
+
+        std::swap(m_Components.front(), *it);
+        return;
+    }
 }
 
 void GameObject::SetActive(bool active)
@@ -336,7 +415,7 @@ Component* GameObject::AddComponentByTypeName(const std::string& component_type_
         return nullptr;
     }
 
-    // Transform 是每个 GameObject 有且仅有一个的（GetTransform() 只返回第一个，
+    // Transform 是每个 GameObject 有且仅有一个的（GetTransform() 取 m_Components[0]，
     // 编辑器也因此把它从可添加列表里藏起来）。脚本绕过编辑器直接加第二个会让
     // 层级关系变得不确定，这里挡掉并返回已有的那个 —— 与 Unity 抛异常不同，
     // 脚本侧更希望拿到能用的东西而不是崩。
@@ -405,6 +484,11 @@ bool GameObject::load(const GameObject& object_instance_res)
     // full component set. See ExpandDefinition for the merge rules.
     m_DefinitionUrl = object_instance_res.m_DefinitionUrl;
     ExpandDefinition();
+
+    // ExpandDefinition 是往末尾追加的，源文件里的顺序也未必是 Transform 打头
+    // （老场景 / 老 prefab）。PostLoadResource 之前归位，组件初始化时看到的
+    // 就已经是最终顺序。
+    EnsureTransformIsFirst();
 
     for (auto component : m_Components)
     {
@@ -549,6 +633,11 @@ void GameObject::RebuildRuntimeComponents()
             m_Components.emplace_back(component);
         }
     }
+
+    // 文件里组件的顺序不受我们控制（Unity 的 EnsureUniqueTransform 也是在这个
+    // 阶段收口）。归位一次，让 GetTransform() 的 index-0 快路径对读进来的对象
+    // 也成立。
+    EnsureTransformIsFirst();
 }
 
 template<typename TransferFunction>
