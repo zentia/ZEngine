@@ -46,7 +46,7 @@
 | C1 | **RenderGraph 接管流水线** | 帧图编译器：自动屏障、瞬态 RT 别名、剔除 | **✅ 已默认开·真机验证 PASS**（165 编译+92 执行断言；RP2 图路径 2026-10-26 翻默认开 `c0d1bcfc`，同帧 A/B 逐位等价 + soak 无异常，见 §2 落地记录·2.6） | 阶段一 RHI 注册表 | ★★★ 高价值/低风险 |
 | C2 | **RenderGraph → RP1**（`render_pass_refactor`） | RP1 三子pass 拆成 3 独立 pass，纳入图管理 | **✅ 已默认开·真机验证 PASS**（2.3 三分已在代码：3 独立 render pass/subpass 恒 0；2.4 compiler 200/200 + executor 121/121 已验。`DrawRP1WithGraph` 2026-10-26 翻默认开 `871878e3`，同帧 A/B `rp1.backup_odd` 逐位 IDENTICAL + soak 无异常，见 §2 落地记录·2.6） | **必须在 C1 之后** | ★★ 高价值/中风险 |
 | C3 | **Nanite 收尾** | 流送 → 几何压缩 → HiZ 遮挡 → 页池 | **大部分实现**（真 GPU dispatch 已有；几何压缩✅ + streaming✅ + **页池簿记层✅ 已落地 2026-10-26**（opt-in，`streaming_pool_budget_bytes>0`；显存上传待真机），见 §2 落地记录·2.5 页池；**HiZ CPU 侧✅ 已落地 2026-10-26**，见 §2 落地记录·2.5 HiZ；**HiZ GPU 侧✅ 已落地 2026-10-27**：切法一 compute 生成金字塔 14/14、切法二 GPU 遮挡剔除 16/16，见 `doc/PHASE2_STEP2.5_HIZ_GPU.md` §6/§7；**页池 GPU 路径✅ 逐像素一致 13/13**。剩切法三（device-local+真 mip 纹理，可选打磨）与顶点去重（回归面>收益，主动推迟）） | C1/C2 给其 RG 管理的目标 | ★★★ 高价值/中风险 |
-| C4 | **Virtual Texture 接线** | 分页纹理虚拟化，从"孤儿"到可用 | **CPU 侧✅ + GPU 侧✅ 2026-10-27**（页上传进物理页池 + 页表纹理上传，headless A/B 18/18 全绿、逐字节比对 0 失配，见 §2 落地记录·2.6 VirtualTexture GPU 侧）。页表间接寻址 shader（`vt_common.h` + `vt_resolve.comp`）2026-10-27 已落地并 A/B 22/22（见 §2 落地记录·2.6 VT 页表间接寻址 shader）。片元阶段消费者（`vt_blit.frag`，离屏全屏三角形）2026-10-27 也已落地并 A/B 22/22（见 §2 落地记录·2.6 VT 片元阶段页表消费者）。**仍未接进真实材质 / 主相机 pass**（需 2.4 的 RG 资源注册与描述符绑定），。**最小生产者 2026-10-27 已落地**（`r.VirtualTexture.Source`，A/B 48/48，见 §2 落地记录·2.6 VT 最小生产者），但接线未在真实引擎里端到端验证 | C1/C2 的 RG 资源注册 | ★★ 高价值/中高风险 |
+| C4 | **Virtual Texture 接线** | 分页纹理虚拟化，从"孤儿"到可用 | **CPU 侧✅ + GPU 侧✅ 2026-10-27**（页上传进物理页池 + 页表纹理上传，headless A/B 18/18 全绿、逐字节比对 0 失配，见 §2 落地记录·2.6 VirtualTexture GPU 侧）。页表间接寻址 shader（`vt_common.h` + `vt_resolve.comp`）2026-10-27 已落地并 A/B 22/22（见 §2 落地记录·2.6 VT 页表间接寻址 shader）。片元阶段消费者（`vt_blit.frag`，离屏全屏三角形）2026-10-27 也已落地并 A/B 22/22（见 §2 落地记录·2.6 VT 片元阶段页表消费者）。**仍未接进真实材质 / 主相机 pass**（需 2.4 的 RG 资源注册与描述符绑定），。**最小生产者 2026-10-27 已落地**（`r.VirtualTexture.Source`，A/B 48/48，见 §2 落地记录·2.6 VT 最小生产者），；**接线 2026-10-28 已在真实 Vulkan 编辑器里验证**（见 §2 落地记录·2.6 VT 生产者拆成渲染线程 / RHI 线程两半，附未验证清单） | C1/C2 的 RG 资源注册 | ★★ 高价值/中高风险 |
 | C5 | ~~**Vulkan `MainCameraPass` 崩溃根因修复**~~ | 跨切面阻塞：解除 Vulkan 侧验证能力 | **✅ 已被 `7e5d2521` 修掉（2026-10-25 复核关闭）** | — | ★★★ 已关闭（见 §2 step 2.0） |
 | C6 | **Lumen 收尾（SSR → GPU 化）** | 动态 GI + 反射；取 SSR 一半 + 首个 Lumen shader | **✅ CPU 侧已完整**（GI/反射/接线/CVar/发布桥全落地 + 7 smoke test；2026-10-25 复核，见 §2 落地记录·2.7）。剩 SSR/HWRT/首个 shader 全 GPU 侧 | C2 的 GBuffer/depth 声明 | ★★ 中价值/高风险（CPU 侧无活，剩 GPU 放最后） |
 | C7 | **编辑器/内容管线填充**（低风险稳态轨） | 平台窗口化收尾 / Timeline 四片段 / Prefab §9.4 | 各为**部分实现·机械收尾**（**Timeline 四片段 2026-10-25 已落地**，见 `doc/timeline/TIMELINE_IMPLEMENTATION.md`“片段语义”；**Prefab §9.4 第 1 条落地、第 2 条对象图层已验**，见 `doc/PrefabSystem_Design.md` §9.4.1，顺带修 7 个真 bug；平台窗口化未动；**平台窗口化 2026-10-25 对代码核对**：Step 1-5 早已兑现（零 GLFW 引用），计划文档勾选已按代码更新；核对时修了 Win32 修饰键恒 0 / 拖放不派发 / Linux 原生 #error / Web 启动空指针等，见 `doc/platform_windowing_plan.md`；剩 Linux X11 窗口层与多显示器枚举） | — | ★★ 低风险填缝 |
@@ -725,6 +725,44 @@ commit `09c31b1c`。此前 `r.VirtualTexture.Enable 1` 是**空操作**：引擎
 测试里的 `Frame::Run()` 是**对渲染系统行为的模拟**，不是渲染系统本身。**下一步务必在真实引擎里跑一遍**（需 `--rhi vulkan`）。
 
 **剩**：接进真实材质 / 主相机 pass（需 RG 资源注册与描述符绑定）；双线性（需页 gutter）；mip 链；**引擎端到端验证**（上条）。
+
+---
+
+### 落地记录 · 2.6 VT 生产者拆成渲染线程 / RHI 线程两半（2026-10-28，真实引擎验证通过）
+
+commit `1841dc71`。**上一节"最小生产者"的接线在真实 Vulkan 编辑器里根本不运行**——这条是重编编辑器真跑一遍才暴露的：
+
+- 钩子加在 `TickRenderThread` 里，而 **Vulkan 并行渲染路径（编辑器默认）的 `BuildRenderSystemFrameCommands` 非 DX12 分支不入队
+  `TickRenderThread`**（该处注释：Vulkan 的"当前命令缓冲"归 RHI 线程所有，在渲染线程推进 Nanite 第一帧就崩，实测 `0x28`）。
+  我加钩子时只静态核对了"钩子被谁调用"，**没核对"调用它的函数在 Vulkan 编辑器里会不会被调用"**。测试里的 `Frame::Run()` 只是模拟。
+- 临时在钩子加诊断重跑：连钩子函数本身都没被调用过。
+
+**线程契约（选项 A：按"碰什么"拆分，每个字段只有一个写者线程）**：VT 的 GPU 工作（页上传、页表刷新、建池、销毁页表纹理）全是
+"自带一次性命令缓冲 + `vkQueueSubmit` + `vkQueueWaitIdle`"，图形队列归 RHI 线程。
+- `TickCpu`（渲染线程）：读 CVar/相机、加载源图（磁盘 IO 不该堵 RHI 线程）、`RegisterVirtualTexture`、`RequestPages`。纯 CPU。
+- `TickGpu`（RHI 线程）：建池、销毁退役纹理、`PumpLoads`/`Update`。全部 GPU 工作，与帧提交同线程串行。
+- 跨线程只有加锁的 `m_Retired`（渲染线程"不要了"的句柄，**由 RHI 线程销毁**——页表是 GPU 图，RHI 线程可能正在 `Update` 它，渲染线程
+  直接销毁就是 use-after-free）和 `m_WantPool`/`m_PoolFailed`。RHI 线程**绝不读** `m_Cameras`/`m_RenderScene`：渲染线程把相机抓成
+  纯值 `VirtualTextureFrameView` 交接；生产者指针与相机视图共用一把锁发布（happens-before）。
+- `Shutdown` 必须先排空 `m_Retired` 再拆池，否则这些句柄的页表纹理泄漏。
+- `RenderSystemFrameCommands`：Vulkan 分支入队 `RenderVirtualTextureCpuCmd`（渲染线程）；`RHI` 批里 `PrepareContext` 之后入队
+  `RHIVirtualTextureGpuCmd`。DX12 分支不变。
+
+**验证** `VirtualTextureProducerThreadedABSmokeTest`（选项 `ZENGINE_BUILD_VT_PRODUCER_THREADED_AB_SMOKE_TEST`，真两线程并发 + async worker）：
+流送 700×500 逐 texel 读回；loader 确在渲染线程；60 次路径切换风暴期间 RHI 线程持续运转；关掉再打开；VMA 回到基线；进程内接管
+`std::cerr` 断言校验层全程零输出。**21/21，连跑 20/20**。红绿：渲染线程直接 `Unregister` → **段错误**；`TickGpu` 不排空退役队列 → 2 项红；
+渲染线程做 GPU 工作 → 7 项红 + 9 条校验层错误。**第一版"渲染线程自己建池"的变异写错了**（`Initialize(nullptr)` 被 RHI 类型检查直接
+拒绝，根本没做 GPU 工作所以没红）——是变异无效不是测试盲点；改成让渲染线程真的 `PumpLoads` 后才红。
+
+**真实引擎验证（这次是真的）**：`bin/Release/ZEditor.exe`，`--rhi vulkan --cvar r.VirtualTexture.Enable=1 --cvar r.VirtualTexture.Source=spineboy.png`，
+`exec.after 600 quit`。日志：`[RenderThread]` 加载并注册（1024×256，8×2 页），约 30 ms 后 **16/16 页驻留**，600 帧后干净退出（退出码 0），引擎日志
+**校验层 0 条**；基线（VT 关）0 条 VT 输出、0 条校验层，VT 关闭时完全惰性。
+
+**⚠️ 仍未验证的**：①日志里的"16/16"是 **CPU 侧页表项**，真实引擎里没法读回 GPU 像素——像素正确性只在 headless 测试里验证过，**不是在编辑器进程里**；
+②**DX12 下被拒绝**仍没真跑过（需 `--rhi dx12` 跑一次，预期一条 ERROR 日志且不崩）；③跑的是 Release，Debug 构建的校验层行为可能不同；
+④只跑了 600 帧，没做长时间稳定性（泄漏、峰值内存）。
+
+**剩**：接进真实材质 / 主相机 pass；双线性（需页 gutter）；mip 链；上面四条未验证项。
 
 ---
 
