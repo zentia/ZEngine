@@ -18,7 +18,13 @@ namespace Runtime
             m_ParticleRes.m_LocalTranslation, Vector3::UNIT_SCALE, m_ParticleRes.m_LocalRotation);
         ComputeGlobalTransform();
 
-        GET_SYSTEM(ParticleManager)->CreateParticleEmitter(m_ParticleRes, m_TransformDesc);
+        // Without a ParticleManager (editor tools, headless tests) there is nowhere to
+        // create the emitter. The component still loads; it just has no emitter -- the
+        // same state it is in when the manager exists but emitter creation fails.
+        if (ParticleManager* particle_manager = GET_SYSTEM(ParticleManager))
+        {
+            particle_manager->CreateParticleEmitter(m_ParticleRes, m_TransformDesc);
+        }
     }
 
     void ParticleComponent::ComputeGlobalTransform()
@@ -39,7 +45,14 @@ namespace Runtime
 
     void ParticleComponent::Tick(float delta_time)
     {
-        RenderSwapContext& swap_context = GET_SYSTEM(RenderSystem)->GetSwapContext();
+        // Emitters are only ever ticked through the render thread's swap data: with no
+        // RenderSystem there is nothing to hand the tick to.
+        RenderSystem* render_system = GET_SYSTEM(RenderSystem);
+        if (render_system == nullptr)
+        {
+            return;
+        }
+        RenderSwapContext& swap_context = render_system->GetSwapContext();
 
         RenderSwapData& logic_swap_data = swap_context.GetLogicSwapData();
 

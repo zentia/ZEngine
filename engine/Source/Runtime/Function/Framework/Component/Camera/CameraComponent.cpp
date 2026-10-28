@@ -33,6 +33,21 @@ namespace
     }
 }  // namespace
 
+namespace
+{
+    /// The render swap context, or null in a process without a RenderSystem (editor tools,
+    /// headless tests, a server). A camera still has to LOAD there -- PostLoadResource and
+    /// OnSerializedFieldsUpdated run when a prefab holding one is instantiated or an
+    /// Inspector field is committed. Dereferencing GET_SYSTEM(RenderSystem) unguarded
+    /// crashes natively (SIGSEGV at the swap-data offset) while wasm, which does not trap
+    /// on low addresses, silently writes through it -- so only a native run shows it.
+    RenderSwapContext* TryGetSwapContext()
+    {
+        RenderSystem* render_system = GET_SYSTEM(RenderSystem);
+        return render_system != nullptr ? &render_system->GetSwapContext() : nullptr;
+    }
+}  // namespace
+
 void CameraComponent::Initialize(CameraMode mode, CameraParameter* parameter)
 {
     m_CameraMode = mode;
@@ -81,15 +96,20 @@ void CameraComponent::OnSerializedFieldsUpdated()
 
     if (parameter != nullptr)
     {
-        RenderSwapContext& swap_context = GET_SYSTEM(RenderSystem)->GetSwapContext();
-        CameraSwapData camera_swap_data;
-        camera_swap_data.m_FovX = parameter->m_Fov;
-        swap_context.GetLogicSwapData().m_CameraSwapData = camera_swap_data;
+        if (RenderSwapContext* swap_context = TryGetSwapContext())
+        {
+            CameraSwapData camera_swap_data;
+            camera_swap_data.m_FovX = parameter->m_Fov;
+            swap_context->GetLogicSwapData().m_CameraSwapData = camera_swap_data;
+        }
     }
 
     if (m_IsMainCamera && m_ParentObject != nullptr)
     {
-        Level* current_level = GET_SYSTEM(WorldManager)->getCurrentActiveLevel();
+        // Same null story as the render system: the code already tolerates "no active
+        // level", it just forgot "no WorldManager at all" (headless prefab instantiate).
+        WorldManager* world_manager = GET_SYSTEM(WorldManager);
+        Level* current_level = world_manager != nullptr ? world_manager->getCurrentActiveLevel() : nullptr;
         if (current_level != nullptr)
         {
             current_level->SetMainCamera(m_ParentObject->GetID());
@@ -117,10 +137,12 @@ void CameraComponent::PostLoadResource(GameObject* parent_object)
         return;
     }
 
-    RenderSwapContext& swap_context = GET_SYSTEM(RenderSystem)->GetSwapContext();
-    CameraSwapData camera_swap_data;
-    camera_swap_data.m_FovX = m_CameraRes.m_Parameter->m_Fov;
-    swap_context.GetLogicSwapData().m_CameraSwapData = camera_swap_data;
+    if (RenderSwapContext* swap_context = TryGetSwapContext())
+    {
+        CameraSwapData camera_swap_data;
+        camera_swap_data.m_FovX = m_CameraRes.m_Parameter->m_Fov;
+        swap_context->GetLogicSwapData().m_CameraSwapData = camera_swap_data;
+    }
 }
 
 void CameraComponent::Tick(float delta_time)
@@ -235,11 +257,15 @@ void CameraComponent::TickFirstPersonCamera(float delta_time)
 
     Matrix4x4 desired_mat = Math::MakeLookAtMatrix(m_Position, m_Position + m_Forward, m_Up);
 
-    RenderSwapContext& swap_context = GET_SYSTEM(RenderSystem)->GetSwapContext();
-    CameraSwapData camera_swap_data;
-    camera_swap_data.m_CameraType = RenderCameraType::Game;
-    camera_swap_data.m_ViewMatrix = desired_mat;
-    swap_context.GetLogicSwapData().m_CameraSwapData = camera_swap_data;
+    // Only the hand-off to the renderer is optional; the camera's own state above and the
+    // character rotation below must still update.
+    if (RenderSwapContext* swap_context = TryGetSwapContext())
+    {
+        CameraSwapData camera_swap_data;
+        camera_swap_data.m_CameraType = RenderCameraType::Game;
+        camera_swap_data.m_ViewMatrix = desired_mat;
+        swap_context->GetLogicSwapData().m_CameraSwapData = camera_swap_data;
+    }
 
     Vector3 object_facing = m_Forward - m_Forward.dotProduct(Vector3::UNIT_Z) * Vector3::UNIT_Z;
     Vector3 object_left = Vector3::UNIT_Z.crossProduct(object_facing);
@@ -280,11 +306,15 @@ void CameraComponent::TickThirdPersonCamera(float delta_time)
 
     Matrix4x4 desired_mat = Math::MakeLookAtMatrix(m_Position, m_Position + m_Forward, m_Up);
 
-    RenderSwapContext& swap_context = GET_SYSTEM(RenderSystem)->GetSwapContext();
-    CameraSwapData camera_swap_data;
-    camera_swap_data.m_CameraType = RenderCameraType::Game;
-    camera_swap_data.m_ViewMatrix = desired_mat;
-    swap_context.GetLogicSwapData().m_CameraSwapData = camera_swap_data;
+    // Only the hand-off to the renderer is optional; the camera's own state above and the
+    // character rotation below must still update.
+    if (RenderSwapContext* swap_context = TryGetSwapContext())
+    {
+        CameraSwapData camera_swap_data;
+        camera_swap_data.m_CameraType = RenderCameraType::Game;
+        camera_swap_data.m_ViewMatrix = desired_mat;
+        swap_context->GetLogicSwapData().m_CameraSwapData = camera_swap_data;
+    }
 }
 
 void CameraComponent::TickFreeCamera(float delta_time)
@@ -339,9 +369,13 @@ void CameraComponent::TickFreeCamera(float delta_time)
 
     Matrix4x4 desired_mat = Math::MakeLookAtMatrix(m_Position, m_Position + m_Forward, m_Up);
 
-    RenderSwapContext& swap_context = GET_SYSTEM(RenderSystem)->GetSwapContext();
-    CameraSwapData camera_swap_data;
-    camera_swap_data.m_CameraType = RenderCameraType::Game;
-    camera_swap_data.m_ViewMatrix = desired_mat;
-    swap_context.GetLogicSwapData().m_CameraSwapData = camera_swap_data;
+    // Only the hand-off to the renderer is optional; the camera's own state above and the
+    // character rotation below must still update.
+    if (RenderSwapContext* swap_context = TryGetSwapContext())
+    {
+        CameraSwapData camera_swap_data;
+        camera_swap_data.m_CameraType = RenderCameraType::Game;
+        camera_swap_data.m_ViewMatrix = desired_mat;
+        swap_context->GetLogicSwapData().m_CameraSwapData = camera_swap_data;
+    }
 }

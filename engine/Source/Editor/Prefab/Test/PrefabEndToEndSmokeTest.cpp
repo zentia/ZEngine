@@ -86,8 +86,13 @@
 #include "Runtime/Core/Serialize/SerializationCaching/CachedReader.h"
 #include "Runtime/Core/Serialize/SerializationCaching/MemoryCacheReader.h"
 #include "Runtime/Core/Serialize/TransferFunctions/StreamedBinaryRead.h"
+#include "Runtime/Function/Framework/Component/Camera/CameraComponent.h"
 #include "Runtime/Function/Framework/Component/Mesh/MeshRenderer.h"
+#include "Runtime/Function/Framework/Component/Particle/ParticleComponent.h"
 #include "Runtime/Function/Framework/Level/Level.h"
+#include "Runtime/Function/Framework/World/WorldManager.h"
+#include "Runtime/Function/Particle/ParticleManager.h"
+#include "Runtime/Function/Render/RenderSystem.h"
 #include "Runtime/Function/Framework/Component/Transform/Transform.h"
 #include "Runtime/RegisterRuntime.h"
 #include "Runtime/Resource/Asset/AssetManager.h"
@@ -2433,6 +2438,88 @@ static void scenario_P20_structure_undo()
     std::filesystem::remove(variant_path, ec);
 }
 
+// A component that submits to a system (renderer, particle manager, world) must still LOAD in
+// a process that has none of them: an editor tool, a headless test, a server -- and a prefab
+// instantiate runs PostLoadResource / OnSerializedFieldsUpdated on every component it clones.
+// BaseRenderer was the first one found (P18 on the native track); Camera and Particle had
+// the same unguarded GET_SYSTEM(...)->. wasm does not trap on low addresses, so the web
+// track writes through the null and passes; only this native run can see it.
+static void scenario_P21_load_without_systems()
+{
+    std::fprintf(stderr, "[P21] components load without Render / World / Particle systems\n");
+    ObjectManager* om = GET_SYSTEM(ObjectManager);
+
+    // Premise: if any of these systems exists the test proves nothing (a crash that needs
+    // the system to be absent cannot happen). Assert it instead of assuming it.
+    Check(GET_SYSTEM(RenderSystem) == nullptr, "P21", "premise: no RenderSystem in this process");
+    Check(GET_SYSTEM(WorldManager) == nullptr, "P21", "premise: no WorldManager in this process");
+    Check(GET_SYSTEM(ParticleManager) == nullptr, "P21", "premise: no ParticleManager in this process");
+
+    if (TypeManager::GetInstance().ClassNameToType("CameraComponent") == nullptr ||
+        TypeManager::GetInstance().ClassNameToType("ParticleComponent") == nullptr)
+    {
+        // The default `e2e` run links ~9 types; Camera / Particle are only registered in the
+        // `types` run (scripts/verify_prefab_native.sh types). Say so, loudly, and let the
+        // wrapper script insist on the `types` run being part of `all`.
+        std::fprintf(stderr, "    (P21 skipped: CameraComponent / ParticleComponent are not registered in this link -- run `verify_prefab_native.sh types`)\n");
+        return;
+    }
+
+    // ---- CameraComponent ----
+    // The camera's render hand-off (TryGetSwapContext) is only REACHED when the component
+    // holds a parameter: PostLoadResource returns early on a null one, and
+    // OnSerializedFieldsUpdated skips the branch. createDefaultCameraParameter() builds the
+    // default with MemoryManager::CreateObject, which assigns no instance ID, and
+    // PPtr<CameraParameter>(ptr) keys on the instance ID -- so that default reads back NULL
+    // even in a full engine, and the hand-off was dead code behind it (found here: guarding
+    // the dereference survived its own mutation test until the parameter had an identity).
+    // So give the camera a parameter that has one, via ObjectManager like every other object.
+    GameObject* cam_go = MakeGameObject(om, "P21Camera");
+    auto* camera = cam_go != nullptr ? static_cast<CameraComponent*>(om->Produce(TypeOf<CameraComponent>(), 0)) : nullptr;
+    auto* cam_param = static_cast<FirstPersonCameraParameter*>(om->Produce(TypeOf<FirstPersonCameraParameter>(), 0));
+    Check(camera != nullptr && cam_param != nullptr, "P21/camera", "producing a CameraComponent and its parameter");
+    if (camera != nullptr && cam_param != nullptr)
+    {
+        om->AllocateAndAssignInstanceID(camera);
+        om->AllocateAndAssignInstanceID(cam_param);
+        cam_go->addComponent(camera);
+        camera->Initialize(CameraMode::first_person, cam_param);
+        Check(camera->GetCameraParameter() == cam_param, "P21/camera",
+              "premise: the parameter has an identity, so the PPtr resolves and the hand-off branch is reachable");
+
+        camera->PostLoadResource(cam_go);  // used to dereference the null RenderSystem
+        Check(camera->GetCameraParameter() == cam_param, "P21/camera",
+              "PostLoadResource got past its early-out and kept the parameter");
+
+        camera->SetMainCamera(true);
+        camera->OnSerializedFieldsUpdated();  // render system AND (main camera) world manager
+        Check(camera->isMainCamera() && camera->GetCameraParameter() == cam_param, "P21/camera",
+              "OnSerializedFieldsUpdated as the main camera survives without render system / world manager");
+
+        // A mode switch rebuilds the parameter (the default one, identity-less -- so the
+        // PPtr ends up null; only "does not crash" is claimed).
+        camera->setCameraMode(CameraMode::third_person);
+        camera->OnSerializedFieldsUpdated();
+        Check(camera->getCameraMode() == CameraMode::third_person, "P21/camera",
+              "a mode-change OnSerializedFieldsUpdated also survives");
+    }
+
+    // ---- ParticleComponent ----
+    GameObject* par_go = MakeGameObject(om, "P21Particle");
+    auto* particle = par_go != nullptr
+                         ? static_cast<Runtime::ParticleComponent*>(om->Produce(TypeOf<Runtime::ParticleComponent>(), 0))
+                         : nullptr;
+    Check(particle != nullptr, "P21/particle", "producing a ParticleComponent");
+    if (particle != nullptr)
+    {
+        om->AllocateAndAssignInstanceID(particle);
+        par_go->addComponent(particle);
+        particle->PostLoadResource(par_go);  // used to dereference the null ParticleManager
+        particle->Tick(0.016f);              // used to dereference the null RenderSystem
+        Check(true, "P21/particle", "PostLoadResource + Tick complete without ParticleManager / RenderSystem");
+    }
+}
+
 int main()
 {
     std::fprintf(stderr, "ZEngine prefab end-to-end smoke test\n====================================\n");
@@ -2468,6 +2555,7 @@ int main()
     scenario_P18_positional_stream_symmetry();
     scenario_P19_variant_structure();
     scenario_P20_structure_undo();
+    scenario_P21_load_without_systems();
 
     std::error_code ec;
     for (const auto& p : {kPrefabPath, kAppliedPath, kSceneBinaryPath, kSceneYamlPath, kLevelYamlPath, kLevelDeletedPath,

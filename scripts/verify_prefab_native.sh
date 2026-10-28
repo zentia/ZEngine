@@ -67,6 +67,8 @@ e2e_args() {
       --extra-source engine/Source/Runtime/Function/Framework/Component/Mesh/BaseRenderer.cpp
       --extra-source engine/Source/Runtime/Function/Framework/Component/Mesh/MeshRenderer.cpp
       --extra-source engine/Source/Runtime/Function/Framework/Component/Mesh/MaterialCustomParamNames.cpp
+      --extra-source engine/Source/Runtime/Function/Framework/Component/Camera/CameraComponent.cpp
+      --extra-source engine/Source/Runtime/Function/Framework/Component/Particle/ParticleComponent.cpp
       --extra-source "${G}/GameObject.gen.cpp"
       --extra-source "${G}/Transform.gen.cpp"
       --extra-source "${G}/Behaviour.gen.cpp"
@@ -85,6 +87,7 @@ e2e_args() {
       --exclude-archive-member Level.gen.cpp.o --exclude-archive-member BaseRenderer.cpp.o
       --exclude-archive-member MeshRenderer.cpp.o --exclude-archive-member MeshRenderer.gen.cpp.o
       --exclude-archive-member BaseRenderer.gen.cpp.o
+      --exclude-archive-member CameraComponent.cpp.o --exclude-archive-member ParticleComponent.cpp.o
     )
 }
 
@@ -125,6 +128,11 @@ run_e2e() {
     fi
     if [ "${real_failures}" -gt "${floor_only}" ]; then status=1; fi
     if ! echo "${out}" | grep -q "checks,"; then echo "(no result line — the test crashed or did not link)"; status=1; fi
+    # In `types` mode every runtime type is registered, so a skipped P21 means the link line
+    # lost Camera / Particle -- and the null-system regression guard would silently vanish.
+    if [ "${1:-}" = "types" ] && echo "${out}" | grep -q "P21 skipped"; then
+        echo "(P21 was skipped in types mode: CameraComponent / ParticleComponent are not registered)"; status=1
+    fi
 }
 
 run_runtime() {
