@@ -720,6 +720,128 @@ int main(int argc, char** argv)
             }
         }
 
+        // ---- P9: the scale-doubling bug, pinned exactly ----------------------
+        //
+        // Skeleton::ApplyAnimation seeds the blend accumulator with
+        // BonePose::Identity(), whose scale is 1, then AccumulateBlend ADDS each
+        // clip's scale on top and NormalizeBlendAccumulator divides by
+        // total_weight. Position starts at 0 and rotation self-corrects through
+        // the normalise, so only SCALE is wrong, by exactly:
+        //
+        //     scale = (1 + sum(w_i * s_i)) / sum(w_i)
+        //
+        // With the engine's own per-bone weights that is 1 + 1/total_weight.
+        // BuildBlendStateWithClipData normalises the per-bone weights to sum to
+        // 1, so in practice it is ALWAYS 2 -- regardless of clip count.
+        //
+        // This corrects an unverified claim in the P0.2 commit messages that N
+        // clips scale by N. They do not: the clip count cancels out in the
+        // normalisation. The error is a flat 2x.
+        //
+        // Pinned, not fixed: P0.2's contract was "pose bit-identical", and a fix
+        // changes every skinned pose in the project. The point of this group is
+        // that a future fix is a deliberate, visible change -- and that the
+        // magnitude is on record for whoever sizes that work.
+        {
+            const float p = 0.5f;
+
+            auto ScaleOf = [&skeleton](int bone) { return skeleton.GetBones()[bone].GetScale().x; };
+            auto DerivedScaleOf = [&skeleton](int bone) { return skeleton.GetBones()[bone]._getDerivedScale().x; };
+
+            // --- one clip, weight 1 -> total_weight 1 -> scale 2
+            EvaluatePipeline(MakeBlendState({clip_a}, map_path, {1.0f}, {0.0f}), skeleton, result);
+            CheckNear(ScaleOf(0), 2.0f, 1.0e-5f, "P9: 1 clip  -> local scale 2 (want 1)");
+            CheckNear(ScaleOf(1), 2.0f, 1.0e-5f, "P9: 1 clip  -> every bone is affected, not just the root");
+            CheckNear(ScaleOf(2), 2.0f, 1.0e-5f, "P9: 1 clip  -> tip bone too");
+
+            // --- two clips, 0.5/0.5 -> weights still normalise to 1 -> scale 2
+            EvaluatePipeline(MakeBlendState({clip_a, clip_b}, map_path, {0.5f, 0.5f}, {p, p}), skeleton, result);
+            CheckNear(ScaleOf(0), 2.0f, 1.0e-5f, "P9: 2 clips 0.5/0.5 -> still exactly 2, NOT 3 (clip count cancels)");
+
+            // --- two clips, 1.0/1.0 -> normalised to 0.5/0.5 -> still 2
+            EvaluatePipeline(MakeBlendState({clip_a, clip_b}, map_path, {1.0f, 1.0f}, {p, p}), skeleton, result);
+            CheckNear(ScaleOf(0), 2.0f, 1.0e-5f, "P9: 2 clips 1.0/1.0 -> still exactly 2 (authored weights normalise)");
+
+            // --- masked: each clip drives a different bone, weights still sum to 1
+            EvaluatePipeline(MakeBlendState({clip_a, clip_b}, map_path, {1.0f, 1.0f}, {p, p}, {mask_a_path, mask_b_path}),
+                             skeleton, result);
+            CheckNear(ScaleOf(0), 2.0f, 1.0e-5f, "P9: masked blend -> still exactly 2");
+
+            // --- the damage: derived scale COMPOUNDS down the hierarchy -------
+            // Each bone multiplies its parent's derived scale, so a flat 2x
+            // local error becomes 2 / 4 / 8 by depth. This is what makes the bug
+            // worth fixing: a 3-bone chain is already 8x at the tip, and a real
+            // skeleton is 10+ deep.
+            EvaluatePipeline(MakeBlendState({clip_a}, map_path, {1.0f}, {0.0f}), skeleton, result);
+            CheckNear(DerivedScaleOf(0), 2.0f, 1.0e-5f, "P9: derived scale at depth 0 = 2");
+            CheckNear(DerivedScaleOf(1), 4.0f, 1.0e-5f, "P9: derived scale at depth 1 = 4 (compounds)");
+            CheckNear(DerivedScaleOf(2), 8.0f, 1.0e-5f, "P9: derived scale at depth 2 = 8 (compounds again)");
+
+            // --- and it displaces every child, cumulatively -------------------
+            // A child's world offset is scaled by its PARENT's derived scale, so
+            // the authored 1-unit bone spacing comes out as 2 then 4: the tip
+            // sits at 6 instead of 2. Phase 0 keeps the rotation identity so
+            // these are closed-form.
+            CheckVec(BonePosition(skeleton, 0), Vector3(0, 0, 0), 1.0e-5f, "P9: root is unaffected (nothing above it)");
+            CheckVec(BonePosition(skeleton, 1), Vector3(2.0f, 0, 0), 1.0e-5f,
+                     "P9: depth-1 bone sits at 2 instead of 1 (parent scale 2 x 1 unit)");
+            CheckVec(BonePosition(skeleton, 2), Vector3(6.0f, 0, 0), 1.0e-5f,
+                     "P9: depth-2 bone sits at 6 instead of 2 (2 + parent scale 4 x 1 unit)");
+
+            std::printf("       (scale bug: flat 2x local; derived 2/4/8 by depth; tip displaced 2 -> 6)\n");
+        }
+
+        // ---- P10: a legacy clip degrades instead of engaging the fallback ----
+        //
+        // The other half of P0.1's backward-compatibility story. P8 proved a
+        // pre-`duration` asset still LOADS; this proves what the animator then
+        // DOES with it over a long run: duration 0 means "unknown", so an
+        // unfilled state must keep length 0 and hold at time 0 -- exactly the
+        // pre-P0.1 behaviour -- rather than divide by zero, jump, or drift.
+        {
+            const eastl::string legacy =
+                "E:/Engine/ZEngine/engine/asset/objects/character/player/components/animation/data/"
+                "W2_CrouchWalk_Aim_F_Loop_IP.animation_clip.zasset";
+            if (!std::filesystem::exists(legacy.c_str()))
+            {
+                std::printf("[skip] P10: legacy clip asset not present, degradation unchecked\n");
+            }
+            else
+            {
+                AnimatorController* legacy_controller = Produce<AnimatorController>();
+                AnimatorState state;
+                state.name = "legacy";
+                state.clip_file_path = legacy;
+                state.anim_skel_map_path = map_path;
+                state.clip_length = 0.0f;  // unfilled, and the clip cannot fill it
+                legacy_controller->states.push_back(state);
+                const eastl::string legacy_controller_path =
+                    WriteAsset(*legacy_controller, "pipeline_legacy.controller.zasset");
+
+                AnimationComponent* component = Produce<AnimationComponent>();
+                component->SetSkeletonPath(skeleton_path.c_str());
+                component->SetControllerPath(legacy_controller_path.c_str());
+                component->PostLoadResource(nullptr);
+                Check(component->HasController(), "P10: a controller over a legacy clip loads");
+                CheckNear(component->GetAnimator().GetStateClipLength(0), 0.0f, 1.0e-6f,
+                          "P10: the fallback does NOT engage -- a duration-less clip leaves the length unknown");
+
+                for (int frame = 0; frame < kHashFrames; ++frame)
+                {
+                    component->Tick(kDt);
+                }
+                CheckNear(component->GetNormalizedTime(), 0.0f, 1.0e-6f,
+                          "P10: 200 frames later the playhead is still held at 0 (pre-P0.1 behaviour)");
+                Check(component->GetResult().node.size() == static_cast<size_t>(kBones),
+                      "P10: it still produces a full palette rather than bailing out");
+                Check(std::isfinite(component->GetNormalizedTime()),
+                      "P10: no divide-by-zero leaked a NaN into the playhead");
+                std::printf("       (legacy clip + unfilled length: length %.3f, phase after 200 frames %.6f)\n",
+                            static_cast<double>(component->GetAnimator().GetStateClipLength(0)),
+                            static_cast<double>(component->GetNormalizedTime()));
+            }
+        }
+
         std::printf("\nAnimation pipeline smoke test: %d check(s), %d failure(s)\n", g_Checks, g_Failures);
         exit_code = g_Failures == 0 ? 0 : 1;
     }
