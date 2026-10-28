@@ -83,6 +83,9 @@
 #include "Runtime/Core/YamlSerialize/YamlObjectGraph.h"
 #include "Runtime/Core/Base/SystemRegistry.h"
 #include "Runtime/Core/Serialize/TransferUtility.h"
+#include "Runtime/Core/Serialize/SerializationCaching/CachedReader.h"
+#include "Runtime/Core/Serialize/SerializationCaching/MemoryCacheReader.h"
+#include "Runtime/Core/Serialize/TransferFunctions/StreamedBinaryRead.h"
 #include "Runtime/Function/Framework/Component/Mesh/MeshRenderer.h"
 #include "Runtime/Function/Framework/Level/Level.h"
 #include "Runtime/Function/Framework/Component/Transform/Transform.h"
@@ -92,6 +95,8 @@
 #include "Runtime/Resource/Prefab/PrefabAsset.h"
 #include "Runtime/Resource/Prefab/PrefabUtility.h"
 #include "Runtime/Resource/Prefab/PropertyModification.h"
+#include "Runtime/Resource/Prefab/PropertyPathResolver.h"
+#include "Runtime/Resource/Prefab/PropertyValueLocator.h"
 
 #include <algorithm>
 #include <cmath>
@@ -1230,6 +1235,122 @@ static void scenario_P17_inspector_override_model()
     std::filesystem::remove(copy, ec);
 }
 
+// ---- P18 helpers: field-VALUE symmetry ------------------------------------------------
+namespace
+{
+    struct ScalarLeaf
+    {
+        std::string path;   ///< dotted field path from the object root (no array descent)
+        std::string type;   ///< TypeTree type name ("float", "bool", "int", ...)
+        size_t offset = 0;
+        size_t size = 0;
+    };
+
+    /// Every fixed-size scalar field reachable from `node` WITHOUT entering an array.
+    /// (A default-constructed object has empty arrays, so there is nothing to patch in
+    /// there; and the locator cannot index variable-size elements anyway.)
+    void CollectScalarLeaves(const TypeTreeIterator& node, const std::string& prefix, std::vector<ScalarLeaf>& out)
+    {
+        for (TypeTreeIterator c = node.Children(); !c.IsNull(); c = c.Next())
+        {
+            if (c->IsArray())
+                continue;
+            const std::string path = prefix.empty() ? std::string(c.Name().c_str()) : prefix + "." + c.Name().c_str();
+            if (!c.Children().IsNull())
+            {
+                CollectScalarLeaves(c, path, out);
+                continue;
+            }
+            const int32_t sz = c->m_ByteSize;
+            if (sz == 1 || sz == 2 || sz == 4 || sz == 8)
+            {
+                ScalarLeaf leaf;
+                leaf.path = path;
+                leaf.type = c.Type().c_str();
+                leaf.size = static_cast<size_t>(sz);
+                out.push_back(std::move(leaf));
+            }
+        }
+    }
+
+    /// A distinct, harmless, non-zero value for leaf number `index`: floats / doubles
+    /// stay finite (no NaN -- a NaN would compare unequal to itself in some readers),
+    /// bools stay 0/1, integers stay small so an enum-ish field is not driven wildly
+    /// out of range.
+    void FillLeafValue(const ScalarLeaf& leaf, size_t index, uint8_t* dst)
+    {
+        const int64_t v = static_cast<int64_t>(index) + 2;  // never 0 or 1: 1 is also what a bool becomes
+        if (leaf.type == "float" && leaf.size == 4)
+        {
+            const float f = static_cast<float>(v) * 1.5f;
+            std::memcpy(dst, &f, 4);
+        }
+        else if (leaf.type == "double" && leaf.size == 8)
+        {
+            const double d = static_cast<double>(v) * 1.5;
+            std::memcpy(dst, &d, 8);
+        }
+        else if (leaf.type == "bool" && leaf.size == 1)
+        {
+            dst[0] = 1;
+        }
+        else
+        {
+            const uint64_t u = static_cast<uint64_t>(v);
+            std::memcpy(dst, &u, leaf.size);  // little-endian host: low bytes first
+        }
+    }
+
+    /// A position is serialised twice: a double `<name>D.<axis>` and a legacy float copy
+    /// `<name>.<axis>` that the WRITER regenerates from the double (Transform.cpp and
+    /// TransformTRS.h: `legacy = m_Position.ToVector3()`). For a double leaf of that
+    /// shape this returns the path of its float partner, else "". The shape is checked
+    /// structurally (a `D` suffix on the parent segment, double/float widths) instead
+    /// of by type name, so a new TRS-bearing struct is covered without a list to update.
+    std::string DerivedFloatPartnerOfDouble(const ScalarLeaf& leaf)
+    {
+        if (leaf.type != "double" || leaf.size != 8)
+            return "";
+        const size_t axis_dot = leaf.path.rfind('.');
+        if (axis_dot == std::string::npos)
+            return "";
+        const std::string parent = leaf.path.substr(0, axis_dot);   // e.g. "global_transform.m_positionD"
+        if (parent.empty() || parent.back() != 'D')
+            return "";
+        return parent.substr(0, parent.size() - 1) + leaf.path.substr(axis_dot);  // "....m_position.x"
+    }
+
+    /// The float side of that pair: its double partner exists in `all`, so the planted
+    /// float is overwritten on write.
+    bool IsDerivedFloatCopy(const ScalarLeaf& leaf, const std::vector<ScalarLeaf>& all)
+    {
+        if (leaf.type != "float" || leaf.size != 4)
+            return false;
+        const size_t axis_dot = leaf.path.rfind('.');
+        if (axis_dot == std::string::npos)
+            return false;
+        const std::string double_path = leaf.path.substr(0, axis_dot) + "D" + leaf.path.substr(axis_dot);
+        for (const ScalarLeaf& other : all)
+            if (other.path == double_path && other.type == "double")
+                return true;
+        return false;
+    }
+
+    /// True for a leaf we must leave alone: object references. PPtr / ImmediatePtr
+    /// serialise as a struct {m_FileID, m_PathID} whose members are plain ints, so the
+    /// TYPE name of the leaf does not say "pointer" -- the PARENT path does. (The first
+    /// version tested only the leaf's type name and reported six `m_FileID` mismatches
+    /// that were the reader resolving a planted id, not a misread field.)
+    bool IsReferenceLeaf(const ScalarLeaf& leaf)
+    {
+        if (leaf.type.find("Ptr") != std::string::npos)
+            return true;
+        const size_t dot = leaf.path.rfind('.');
+        const std::string last = dot == std::string::npos ? leaf.path : leaf.path.substr(dot + 1);
+        return last == "m_FileID" || last == "m_PathID";
+    }
+}  // namespace
+
 static void scenario_P18_positional_stream_symmetry()
 {
     std::fprintf(stderr, "[P18] positional stream symmetry (prefab clone of a MeshRenderer, every type)\n");
@@ -1285,6 +1406,10 @@ static void scenario_P18_positional_stream_symmetry()
     //      the writer emitted (write -> read into a fresh object -> write again) ----
     RuntimeTypeArray& types = TypeManager::GetInstance().GetRuntimeTypes();
     int checked = 0;
+    int value_types_checked = 0;
+    size_t value_leaves_checked = 0;
+    int derived_leaves = 0;
+    std::vector<std::string> derived_names;
     for (uint32_t i = 0; i < types.count; ++i)
     {
         const Type* type = types.types[i];
@@ -1296,21 +1421,175 @@ static void scenario_P18_positional_stream_symmetry()
             continue;
         std::vector<uint8_t> first;
         TransferUtility::WriteObjectToVector(*a, first);
+
+        // Positional read, done by hand so the CONSUMED byte count is observable
+        // (ReadObjectFromVector throws it away). A reader that skips, repeats or adds
+        // one field consumes a different number of bytes than the writer emitted --
+        // whatever the values are. Comparing only write -> read -> write misses that
+        // for a default-constructed object: its payload is almost all zeros, so a
+        // stream shifted by one byte still reads (and re-writes) the same zeros.
+        // (Found by mutation: a reader consuming one extra byte survived the old check.)
         std::vector<uint8_t> copy = first;
-        TransferUtility::ReadObjectFromVector(*b, copy);
+        // Positional read of `bytes` into `target`; returns the bytes it consumed.
+        auto ReadPositional = [](Object& target, std::vector<uint8_t>& bytes) -> size_t {
+            if (bytes.empty())
+                return 0;
+            MemoryCacheReader memory_cache(bytes);
+            StreamedBinaryRead read_stream;
+            CachedReader& read_cache = read_stream.Init(kNoTransferInstructionFlags);
+            read_cache.InitRead(memory_cache, /*position=*/0, /*readSize=*/bytes.size());
+            target.VirtualRedirectTransfer(read_stream);
+            return read_cache.End();
+        };
+        const size_t consumed = ReadPositional(*b, copy);
         std::vector<uint8_t> second;
         TransferUtility::WriteObjectToVector(*b, second);
+        if (consumed != first.size() && !first.empty())
+        {
+            std::fprintf(stderr, "    misaligned: %s (wrote %zu bytes, positional read consumed %zu)\n", type->GetName(),
+                         first.size(), consumed);
+            Check(false, "P18/types", "the positional reader must consume exactly the bytes the writer emitted");
+        }
         if (first != second)
         {
             std::fprintf(stderr, "    asymmetric: %s (%zu -> %zu bytes)\n", type->GetName(), first.size(), second.size());
             Check(false, "P18/types", "write -> positional read -> write changed the bytes");
         }
+
+        // ---- field VALUES: does each field come back from the field it was written to? ----
+        // The two checks above cannot see a reader that consumes the right NUMBER of bytes
+        // but puts them in the wrong field, drops one, or widens/narrows it: a default
+        // object is nearly all zeros, so every such mistake re-writes the same zeros.
+        // So overwrite every fixed-size scalar with a distinct non-zero value, read that
+        // stream back, write it again, and demand the bytes are exactly what we planted.
+        // (Skips object references -- a planted InstanceID is something the reader may
+        // try to resolve -- and array contents, which are empty on a default object.)
+        {
+            prefab::SerialisedObject tree;
+            std::vector<ScalarLeaf> leaves;
+            if (prefab::SerialiseObject(a, tree) && !tree.type_tree.Root().IsNull())
+                CollectScalarLeaves(tree.type_tree.Root(), "", leaves);
+
+            std::vector<uint8_t> planted = first;
+            std::vector<ScalarLeaf> placed;
+            for (ScalarLeaf& leaf : leaves)
+            {
+                if (IsReferenceLeaf(leaf))
+                    continue;
+                prefab::PropertyLocation loc;
+                if (!prefab::LocatePropertyInStream(tree.type_tree, first, eastl::string(leaf.path.c_str()), loc) ||
+                    !loc.valid() || static_cast<size_t>(loc.byte_size) != leaf.size ||
+                    loc.byte_offset + leaf.size > planted.size())
+                    continue;
+                leaf.offset = loc.byte_offset;
+                FillLeafValue(leaf, placed.size(), planted.data() + leaf.offset);
+                placed.push_back(leaf);
+            }
+
+            if (!placed.empty() && first != second)
+            {
+                // The DEFAULT object already fails the symmetry check above. Then every
+                // planted leaf would "fail" too, at the same bytes, and the report would
+                // be N identical lines hiding the one real defect. Attribute it once
+                // (the asymmetric line above) and skip the value pass for this type.
+                std::fprintf(stderr, "    (value pass skipped for %s: its default object is not symmetric)\n", type->GetName());
+            }
+            else if (!placed.empty())
+            {
+                ++value_types_checked;
+                value_leaves_checked += placed.size();
+
+                // Plant ONE leaf at a time. Planting all of them together cannot tell a
+                // misread field from a field the object legitimately re-derives on write
+                // (Transform / TransformTRS write the float position copy FROM the
+                // double: m_LocalPosition = m_LocalPositionD.ToVector3()). Alone, the two
+                // look different:
+                //   * a correct leaf comes back byte-for-byte;
+                //   * a DERIVED leaf comes back as something else but nothing ELSE moves;
+                //   * a MISREAD leaf (wrong field / wrong width / dropped) changes bytes
+                //     somewhere it was not planted, or changes the stream length.
+                for (size_t li = 0; li < placed.size(); ++li)
+                {
+                    const ScalarLeaf& leaf = placed[li];
+                    std::vector<uint8_t> one = first;
+                    FillLeafValue(leaf, li, one.data() + leaf.offset);
+                    std::vector<uint8_t> one_in = one;
+
+                    Object* c = om->Produce(type, 0);
+                    if (c == nullptr)
+                        continue;
+                    ReadPositional(*c, one_in);
+                    std::vector<uint8_t> echoed;
+                    TransferUtility::WriteObjectToVector(*c, echoed);
+                    om->Destroy(c);
+
+                    // What SHOULD the stream look like after read -> write? Exactly what we
+                    // planted -- except for the one derivation the engine really does:
+                    // a position is stored twice, a double (m_positionD / m_LocalPositionD)
+                    // and a legacy float copy, and the writer always regenerates the float
+                    // from the double. So:
+                    //   * plant the DOUBLE   -> the float copy next to it becomes float(double);
+                    //   * plant the FLOAT    -> discarded: the double (still default) wins.
+                    // Everything else must come back bit for bit. (A first version allowed a
+                    // budget of "leaves rewritten on write" instead; that would also have
+                    // waved through a reader that silently drops a field.)
+                    std::vector<uint8_t> expected = one;
+                    const std::string partner = DerivedFloatPartnerOfDouble(leaf);
+                    bool derived_rule_applies = false;
+                    if (!partner.empty())
+                    {
+                        for (const ScalarLeaf& other : placed)
+                        {
+                            if (other.path == partner && other.size == 4)
+                            {
+                                double d = 0;
+                                std::memcpy(&d, one.data() + leaf.offset, sizeof(d));
+                                const float f = static_cast<float>(d);
+                                std::memcpy(expected.data() + other.offset, &f, sizeof(f));
+                                derived_rule_applies = true;
+                                break;
+                            }
+                        }
+                    }
+                    else if (IsDerivedFloatCopy(leaf, placed))
+                    {
+                        expected = first;  // the planted float is thrown away
+                        derived_rule_applies = true;
+                    }
+
+                    if (echoed == expected)
+                    {
+                        if (derived_rule_applies)
+                            ++derived_leaves;
+                        continue;
+                    }
+
+                    std::string why = "stream length changed";
+                    if (echoed.size() == expected.size())
+                    {
+                        why = "bytes differ at";
+                        for (size_t k = 0; k < expected.size() && why.size() < 60; ++k)
+                            if (echoed[k] != expected[k])
+                                why += " +" + std::to_string(k);
+                    }
+                    std::fprintf(stderr, "    value mismatch: %s field %s (%s, %zu bytes at +%zu)%s: %s\n", type->GetName(),
+                                 leaf.path.c_str(), leaf.type.c_str(), leaf.size, leaf.offset,
+                                 derived_rule_applies ? " [derived-pair rule]" : "", why.c_str());
+                    Check(false, "P18/values", "a planted field value did not come back from the field it was written to");
+                }
+            }
+        }
         ++checked;
         om->Destroy(a);
         om->Destroy(b);
     }
-    std::fprintf(stderr, "    %d types round-tripped\n", checked);
+    std::fprintf(stderr, "    %d types round-tripped; field values planted in %d types (%zu scalar fields, %d via the double->float position rule)\n",
+                 checked, value_types_checked, value_leaves_checked, derived_leaves);
     Check(checked > 20, "P18/types", "expected to round-trip the registered runtime types");
+    // Premise of the value check: it must actually have had something to plant, or every
+    // mutation of it "passes" vacuously (a mutation survived once exactly like that).
+    Check(value_types_checked >= 3 && value_leaves_checked >= 6, "P18/values",
+          "the value check planted almost nothing -- its premise (scalar leaves reachable) did not hold");
 }
 
 // ---- P19 helpers --------------------------------------------------------------------
