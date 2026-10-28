@@ -46,7 +46,7 @@
 | C1 | **RenderGraph 接管流水线** | 帧图编译器：自动屏障、瞬态 RT 别名、剔除 | **✅ 已默认开·真机验证 PASS**（165 编译+92 执行断言；RP2 图路径 2026-10-26 翻默认开 `c0d1bcfc`，同帧 A/B 逐位等价 + soak 无异常，见 §2 落地记录·2.6） | 阶段一 RHI 注册表 | ★★★ 高价值/低风险 |
 | C2 | **RenderGraph → RP1**（`render_pass_refactor`） | RP1 三子pass 拆成 3 独立 pass，纳入图管理 | **✅ 已默认开·真机验证 PASS**（2.3 三分已在代码：3 独立 render pass/subpass 恒 0；2.4 compiler 200/200 + executor 121/121 已验。`DrawRP1WithGraph` 2026-10-26 翻默认开 `871878e3`，同帧 A/B `rp1.backup_odd` 逐位 IDENTICAL + soak 无异常，见 §2 落地记录·2.6） | **必须在 C1 之后** | ★★ 高价值/中风险 |
 | C3 | **Nanite 收尾** | 流送 → 几何压缩 → HiZ 遮挡 → 页池 | **大部分实现**（真 GPU dispatch 已有；几何压缩✅ + streaming✅ + **页池簿记层✅ 已落地 2026-10-26**（opt-in，`streaming_pool_budget_bytes>0`；显存上传待真机），见 §2 落地记录·2.5 页池；**HiZ CPU 侧✅ 已落地 2026-10-26**，见 §2 落地记录·2.5 HiZ；**HiZ GPU 侧✅ 已落地 2026-10-27**：切法一 compute 生成金字塔 14/14、切法二 GPU 遮挡剔除 16/16，见 `doc/PHASE2_STEP2.5_HIZ_GPU.md` §6/§7；**页池 GPU 路径✅ 逐像素一致 13/13**。剩切法三（device-local+真 mip 纹理，可选打磨）与顶点去重（回归面>收益，主动推迟）） | C1/C2 给其 RG 管理的目标 | ★★★ 高价值/中风险 |
-| C4 | **Virtual Texture 接线** | 分页纹理虚拟化，从"孤儿"到可用 | **CPU 侧✅ + GPU 侧✅ 2026-10-27**（页上传进物理页池 + 页表纹理上传，headless A/B 18/18 全绿、逐字节比对 0 失配，见 §2 落地记录·2.6 VirtualTexture GPU 侧）。页表间接寻址 shader（`vt_common.h` + `vt_resolve.comp`）2026-10-27 已落地并 A/B 22/22（见 §2 落地记录·2.6 VT 页表间接寻址 shader）。片元阶段消费者（`vt_blit.frag`，离屏全屏三角形）2026-10-27 也已落地并 A/B 22/22（见 §2 落地记录·2.6 VT 片元阶段页表消费者）。**仍未接进真实材质 / 主相机 pass**（需 2.4 的 RG 资源注册与描述符绑定），。**最小生产者 2026-10-27 已落地**（`r.VirtualTexture.Source`，A/B 48/48，见 §2 落地记录·2.6 VT 最小生产者），；**接线 2026-10-28 已在真实 Vulkan 编辑器里验证**（见 §2 落地记录·2.6 VT 生产者拆成渲染线程 / RHI 线程两半，附未验证清单） | C1/C2 的 RG 资源注册 | ★★ 高价值/中高风险 |
+| C4 | **Virtual Texture 接线** | 分页纹理虚拟化，从"孤儿"到可用 | **CPU 侧✅ + GPU 侧✅ 2026-10-27**（页上传进物理页池 + 页表纹理上传，headless A/B 18/18 全绿、逐字节比对 0 失配，见 §2 落地记录·2.6 VirtualTexture GPU 侧）。页表间接寻址 shader（`vt_common.h` + `vt_resolve.comp`）2026-10-27 已落地并 A/B 22/22（见 §2 落地记录·2.6 VT 页表间接寻址 shader）。片元阶段消费者（`vt_blit.frag`，离屏全屏三角形）2026-10-27 也已落地并 A/B 22/22（见 §2 落地记录·2.6 VT 片元阶段页表消费者）。**仍未接进真实材质 / 主相机 pass**（需 2.4 的 RG 资源注册与描述符绑定），。**最小生产者 2026-10-27 已落地**（`r.VirtualTexture.Source`，A/B 48/48，见 §2 落地记录·2.6 VT 最小生产者），；**接线 2026-10-28 已在真实 Vulkan 编辑器里验证**（见 §2 落地记录·2.6 VT 生产者拆成渲染线程 / RHI 线程两半，附未验证清单）。**DX12 后端 2026-10-28 已落地**（RHI 新增 `UploadImageRegionImmediate`，HLSL 消费者 + DX12 无头模式，blit A/B 在 DX12 上 23/23，真实 DX12 编辑器 `GPU page uploads ok 16 failed 0`；compute resolver 仍仅 Vulkan，见 §2 落地记录·2.6 VT 的 DX12 后端） | C1/C2 的 RG 资源注册 | ★★ 高价值/中高风险 |
 | C5 | ~~**Vulkan `MainCameraPass` 崩溃根因修复**~~ | 跨切面阻塞：解除 Vulkan 侧验证能力 | **✅ 已被 `7e5d2521` 修掉（2026-10-25 复核关闭）** | — | ★★★ 已关闭（见 §2 step 2.0） |
 | C6 | **Lumen 收尾（SSR → GPU 化）** | 动态 GI + 反射；取 SSR 一半 + 首个 Lumen shader | **✅ CPU 侧已完整**（GI/反射/接线/CVar/发布桥全落地 + 7 smoke test；2026-10-25 复核，见 §2 落地记录·2.7）。剩 SSR/HWRT/首个 shader 全 GPU 侧 | C2 的 GBuffer/depth 声明 | ★★ 中价值/高风险（CPU 侧无活，剩 GPU 放最后） |
 | C7 | **编辑器/内容管线填充**（低风险稳态轨） | 平台窗口化收尾 / Timeline 四片段 / Prefab §9.4 | 各为**部分实现·机械收尾**（**Timeline 四片段 2026-10-25 已落地**，见 `doc/timeline/TIMELINE_IMPLEMENTATION.md`“片段语义”；**Prefab §9.4 第 1 条落地、第 2 条对象图层已验**，见 `doc/PrefabSystem_Design.md` §9.4.1，顺带修 7 个真 bug；平台窗口化未动；**平台窗口化 2026-10-25 对代码核对**：Step 1-5 早已兑现（零 GLFW 引用），计划文档勾选已按代码更新；核对时修了 Win32 修饰键恒 0 / 拖放不派发 / Linux 原生 #error / Web 启动空指针等，见 `doc/platform_windowing_plan.md`；剩 Linux X11 窗口层与多显示器枚举） | — | ★★ 低风险填缝 |
@@ -763,6 +763,62 @@ commit `1841dc71`。**上一节"最小生产者"的接线在真实 Vulkan 编辑
 ④只跑了 600 帧，没做长时间稳定性（泄漏、峰值内存）。
 
 **剩**：接进真实材质 / 主相机 pass；双线性（需页 gutter）；mip 链；上面四条未验证项。
+
+---
+
+### 落地记录 · 2.6 VT 的 DX12 后端（2026-10-28）
+
+**用户要求**：VT 此前只能跑在 Vulkan 上（GPU 路径直连 VMA / `static_cast<VulkanRHI*>`，91 处 Vulkan 直接引用），Windows 默认 RHI 却是 DX12——
+"实现 dx12 版本的 vt"。
+
+**改了什么**
+- **RHI 新增两个虚函数**（`RHI.h`）：`SupportsVirtualTextureUpload()` / `UploadImageRegionImmediate(image, data, bytes, ox, oy, w, h, bpp, discard)`。
+  RHI 在任何后端都没有 buffer→image 拷贝或子矩形上传原语，所以整段"暂存 + barrier + 拷贝 + barrier"收成一个同步 RHI 操作。Vulkan 保持原 VMA 实现不动
+  （已被大量验证），其余后端覆写。
+- **DX12 实现**（`DX12RHI::UploadImageRegionImmediate`）：upload 堆暂存（行距按 256 字节对齐）→ **专用 copy 命令列表 + 专用 fence**（不复用帧命令列表：
+  `BeginSingleTimeCommands` 会 reset 帧 allocator，渲染线程已录的内容会被毁）→ `CopyTextureRegion`（PLACED_FOOTPRINT）→ 同步等待。CPU 侧
+  `DX12Image` 状态跟踪随之更新。
+- **VT 去 Vulkan 独占**：`VirtualTextureTypes.{h,cpp}` 新增 `VirtualTextureBackendSupported / UsesVulkanPath / CreateGenericImage / DestroyGenericImage`，
+  池图、页表纹理、上传、销毁都按后端分流（Vulkan 走原路，DX12 走 `RHI::CreateImage/CreateImageView/DestroyImage/FreeMemory`）。`Manager::Initialize` 不再只认
+  `dynamic_cast<VulkanRHI*>`，改认 `BackendSupported`。
+- **HLSL 消费者**：`shader/hlsl/common/vt_common.hlsli`（`vt_common.h` 的 HLSL 孪生，同一份采样契约）、`hlsl/vt/vt_blit.{vert,frag}.hlsl`。运行时由 DX12RHI 用 DXC
+  编译（`CreateShaderModuleFromFile`）。VS 的 y 映射与 GLSL 版相反（D3D NDC y 向上），否则图上下颠倒。
+- **DX12 无头模式**：`DX12RHI::Initialize` 在没有原生窗口句柄时跳过 swapchain / 后备缓冲 RTV / 屏幕深度图（同 `VulkanRHI::m_Headless`），A/B 测试才能脱离窗口跑。
+- **接线**：`RenderSystemFrameCommands` 的 DX12 分支补入 `RenderVirtualTextureCpuCmd`。**此前 DX12 分支只有 RHI 线程那一半在跑，生产者从不创建**——
+  上一轮"补跑 dx12"看到的"没被拒绝"其实是休眠，不是支持。
+- `DX12RHI::GetPhysicalDeviceProperties` 补 `maxImageDimension2D`（原为 0，任何"能否放进设备"的检查都会失败）。
+- **Resolver（compute）仍只有 Vulkan 版**：DX12 RHI 里 `STORAGE_BUFFER` 描述符一律建成 SRV（只读，`ToDX12DescriptorRangeType`），写不进去；加 UAV 要改 RHI 描述符模型，
+  不属于 VT。`VirtualTextureResolver::Initialize` 在非 Vulkan 上明确返回 false。DX12 的 GPU 消费者验证由 fragment 阶段的 Blitter 承担。
+
+**验证**
+- `VirtualTextureBlitABSmokeTest --rhi dx12`（同一份 22 项检查 + 1 项 D3D12 debug layer 零错误）：**23/23，连跑 20/20、10/10**。像素逐字节等于源纹理（1:1 严格；放大 / 缩小
+  只容忍真正的 texel 边界像素）。Vulkan 版 22/22 不变。
+- **变异**：HLSL `slot_xy` 分量互换 → 10 红；VS y 翻转 → 12 红；上传偏移被忽略（`CopyTextureRegion(…,0,0,…)`）→ 13 红。全部已还原。
+- **回归门**：原生 16 个 Nanite + VT 套件全 0 失败；`verify_vt_wasm.sh` 15/15。
+- **真实引擎**：`ZEditor.exe -p …/ZGameSmoke.zproject --rhi dx12 --cvar r.VirtualTexture.Enable=1 --cvar r.VirtualTexture.Source=<绝对路径>`，600 帧：约 100 ms 后 16/16 页驻留，
+  **`GPU page uploads ok 16 failed 0`**，干净退出（0）；VT 关基线 0 条 VT 输出；Vulkan 编辑器同参数回归 `ok 16 failed 0`、0 校验层。
+
+**调试期间抓到的真问题（都已修）**
+1. **#649 CBV 越过资源末尾**：参数缓冲只有 48 字节，而 DX12 RHI 建 CBV 时把大小向上取整到 256。→ Blitter / Resolver 参数缓冲一律按 256 字节分配。
+2. **读回行距**：D3D12 的 buffer←texture 拷贝要求行距为 256 字节倍数，Vulkan 版用 `bufferRowLength=0`（紧凑）。→ 读回改成"行宽向上取整到 64 texel"，两个后端同一布局。
+3. **页上传失败被静默吞掉**（`LoadPage` 里 `UploadImageRegion` 的返回值只在成功时用）：页已标 Loaded、页表项驻留，像素却不在池里，"N/N 页驻留"因此只证明 CPU 记账。→ 新增
+   `getPageUploadCount / getPageUploadFailureCount`，首次失败打 ERROR，生产者日志带 `GPU page uploads ok N failed M`。**这是本轮最重要的发现**：此前 Vulkan 的
+   "16/16 驻留"同样不能证明像素到了显存（现在 Vulkan 与 DX12 编辑器里都实测 `ok 16 failed 0`）。
+4. **一次失败的上传会让后续全部失败**：`Close()` 被拒后列表卡在错误态，之后每次 `Reset()` 都 E_INVALIDARG（变异里实测连续 314 次）。→ Close 失败时丢弃 allocator + list，下次重建；
+   函数任何出口都 drain debug layer。
+5. DX12RHI 的 debug layer 消息此前只在设备丢失 / 初始化时才进日志——一个出了校验错误但没丢设备的会话看起来"完全干净"。→ `clear()` 与每次 VT 上传出口都 drain。
+
+**⚠️ 仍未验证 / 已知限制（如实）**
+- **编辑器里 debug layer 的"零消息"证据很弱**：我写了变异（破坏 RowPitch 对齐）想确认编辑器日志能出现 debug-layer 文本，结果上传确实失败了（16 次 `upload list close failed`，被计数
+  器抓到），但 **InfoQueue 里没有对应文本**——所以"编辑器日志 0 条 debug layer 消息"**不能**当作校验干净的证据。DX12 的校验层结论只来自 headless 测试（那里能读 InfoQueue 并抓到过 #649 / #820 / #1361）。
+  **能证明 GPU 侧正确的是上传计数 + headless 像素比对，不是日志里没有校验消息。**
+- **缺失 barrier 的变异没红**：把"→ COPY_DEST"的 barrier 去掉，headless 23/23 仍绿、debug layer 也不报（NVIDIA 驱动宽容）。**barrier 的正确性这条链上没有能证伪它的测试**，
+  只靠代码审阅 + 状态跟踪。
+- debug layer 白名单了两条 DX12RHI 固有的 WARNING（#820 渲染目标无最优清屏值、#1361 非比较采样器写 ComparisonFunc=ALWAYS），与 VT 无关；其余任何 WARNING/ERROR 都算失败。
+- **只在默认 Windows 配置下编译**（同时含 Vulkan 后端）。`WIN32 AND NOT ZENGINE_USE_VULKAN` 的纯 DX12 构建仍把 `VirtualTexture*.cpp` 整体排除——VT 的 `ZENGINE_VT_GPU` 路径
+  仍 `#include` Vulkan 头，要支持纯 DX12 构建得把 Vulkan 分支按 `Z_HAS_VULKAN` 再收一层。
+- Debug 构建、长稳（泄漏 / 峰值内存）仍未测。DX12 `Nanite` 的 `CreateComputePipelineState failed HRESULT=0x80004005`（SPIR-V 当 DXIL 喂）是**既有问题**，与本轮无关。
+- Blitter 在 DX12 下用 `BeginSingleTimeCommands`（会 reset 帧命令列表），**只适合 headless 测试，不能在编辑器帧内调用**；生产者不用它。
 
 ---
 
