@@ -67,6 +67,12 @@ public:
     // Composited on the swapchain overlay from EditorUIPass::Draw (after ZSlate UI).
     void DrawAxis();
 
+    // r.VirtualTexture.Overlay: draws the streamed virtual texture in the lower-left corner of the Scene
+    // viewport, sampled through the page table INSIDE the frame (the page table and the physical pool are
+    // reached through the bindless SRV heap). Composited on the swapchain overlay from EditorUIPass::Draw,
+    // right after the axis gizmo. RHI thread only. No-op unless the CVar is on and a texture is streaming.
+    void DrawVirtualTextureOverlay();
+
     // Legacy swapchain-overlay sky helpers (compiled; no live call sites on DX12 editor).
     // Active sky path: RP1 mesh SkyPass (MainCameraRp1Pass::DrawSkyMeshPass) -> backup_odd HDR before deferred.
     // See doc/rendering/DX12_SKYBOX_RENDERING.md.
@@ -143,6 +149,25 @@ private:
     bool m_SkyboxReady = false;
     bool m_SkyboxSetupAborted = false;
     bool m_SceneGridReady = false;
+
+    // ---- VT overlay (see DrawVirtualTextureOverlay) ----
+    ComPtr<ID3D12PipelineState> m_VtOverlayPso;
+    RHIBuffer* m_VtOverlayConstantBuffer = nullptr;
+    RHIDeviceMemory* m_VtOverlayConstantBufferMemory = nullptr;
+    bool m_VtOverlayReady = false;
+    bool m_VtOverlaySetupFailed = false;      // failed once -> don't retry (and spam) every frame
+    bool m_VtOverlayLoggedFirstDraw = false;
+    bool SetupVirtualTextureOverlayResources();
+    // Overlay self-test (r.VirtualTexture.OverlaySelfTest): 0 idle, 1 readback recorded (waiting for the GPU), 2 done.
+    int m_VtSelfTestState = 0;
+    uint32_t m_VtOverlayDrawCount = 0;
+    uint64_t m_VtOverlayHandle = 0;  // texture the draw counter / self-test refer to; a new texture re-arms the self-test
+    uint32_t m_VtSelfTestVerifyAtDraw = 0;
+    RHIBuffer* m_VtSelfTestReadback = nullptr;
+    RHIDeviceMemory* m_VtSelfTestReadbackMemory = nullptr;
+    uint32_t m_VtSelfTestRowPitch = 0;
+    uint32_t m_VtSelfTestRect[2] = {0, 0};  // overlay width / height in pixels at capture time
+    void VerifyVirtualTextureOverlaySelfTest(uint64_t handle);
 
     ComPtr<ID3D12RootSignature> m_AxisRootSignature;
     ComPtr<ID3D12PipelineState> m_AxisPso;

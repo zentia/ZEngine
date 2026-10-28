@@ -12,11 +12,23 @@ namespace
     // 零回归；只有显式 r.VirtualTexture.Enable 1 才推进流送逻辑。
     int g_enable = 0;
     std::string g_source;
+    int g_overlay = 0;
+    int g_overlay_selftest = 0;
 }  // namespace
 
 bool IsEnabled()
 {
     return g_enable != 0;
+}
+
+bool IsOverlayEnabled()
+{
+    return g_overlay != 0;
+}
+
+bool IsOverlaySelfTestEnabled()
+{
+    return g_overlay_selftest != 0;
 }
 
 const char* GetSource()
@@ -41,5 +53,19 @@ void RegisterConsoleVariables(ConsoleManager& console)
                                    "set; nothing draws it yet, residency is logged when streaming settles.",
                                    "",
                                    &g_source);
+
+    console.RegisterIntVariable("r.VirtualTexture.Overlay",
+                                "Draw the streamed virtual texture in the lower-left corner of the editor Scene "
+                                "viewport, sampled through the page table inside the frame (DX12). Needs "
+                                "r.VirtualTexture.Enable 1 and r.VirtualTexture.Source. 0=off (default), 1=on.",
+                                g_overlay,
+                                &g_overlay);
+
+    console.RegisterIntVariable("r.VirtualTexture.OverlaySelfTest",
+                                "With r.VirtualTexture.Overlay 1: read the overlay's pixels back from the back "
+                                "buffer after a few frames and compare them with the CPU reference (the source "
+                                "texture), logging the result. 0=off (default), 1=on.",
+                                g_overlay_selftest,
+                                &g_overlay_selftest);
 }
 }  // namespace VirtualTextureSettings

@@ -1414,6 +1414,43 @@ ID3D12DescriptorHeap* DX12RHI::GetSamplerDescriptorHeap()
     return m_SamplerHeap.Get();
 }
 
+uint32_t DX12RHI::AllocateBindlessSrvForImage(RHIImage* image, RHIFormat format)
+{
+    constexpr uint32_t kInvalid = 0xFFFFFFFFu;
+    auto* dx12_image = static_cast<DX12Image*>(image);
+    if (!m_Device || !m_BindlessTextureManager || dx12_image == nullptr || dx12_image->getResource() == nullptr)
+    {
+        return kInvalid;
+    }
+    const DXGI_FORMAT dxgi_format = ToDX12Format(format);
+    if (dxgi_format == DXGI_FORMAT_UNKNOWN)
+    {
+        return kInvalid;
+    }
+    const uint32_t slot = m_BindlessTextureManager->AllocateRawSlot();
+    if (slot == RHIBindlessTextureManager::kInvalidBindlessIndex)
+    {
+        return kInvalid;
+    }
+    D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc = {};
+    srv_desc.Format = dxgi_format;
+    srv_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    srv_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    srv_desc.Texture2D.MostDetailedMip = 0;
+    srv_desc.Texture2D.MipLevels = 1;
+    srv_desc.Texture2D.ResourceMinLODClamp = 0.0f;
+    m_Device->CreateShaderResourceView(dx12_image->getResource(), &srv_desc, m_BindlessTextureManager->GetCpuHandleAt(slot));
+    return slot;
+}
+
+void DX12RHI::FreeBindlessSrv(uint32_t slot)
+{
+    if (m_BindlessTextureManager && slot != RHIBindlessTextureManager::kInvalidBindlessIndex)
+    {
+        m_BindlessTextureManager->FreeRawSlot(slot);
+    }
+}
+
 bool DX12RHI::SetBindlessDescriptorHeaps()
 {
     if (!m_BindlessSupported || !m_BindlessTextureManager)
@@ -1527,6 +1564,63 @@ void DX12RHI::BeginSwapchainOverlayDraw()
     }
 
     RestoreSwapchainRenderState();
+}
+
+bool DX12RHI::RecordBackBufferRegionReadback(uint32_t x,
+                                             uint32_t y,
+                                             uint32_t width,
+                                             uint32_t height,
+                                             RHIBuffer* readback_buffer,
+                                             uint32_t& out_row_pitch_bytes)
+{
+    out_row_pitch_bytes = 0;
+    ID3D12GraphicsCommandList* command_list = getCurrentCommandList();
+    auto* dst_buffer = static_cast<DX12Buffer*>(readback_buffer);
+    if (command_list == nullptr || dst_buffer == nullptr || dst_buffer->getResource() == nullptr || width == 0 ||
+        height == 0 || !m_RenderTargets[m_CurrentBackBufferIndex])
+    {
+        return false;
+    }
+    if (x + width > m_SwapchainExtent.width || y + height > m_SwapchainExtent.height)
+    {
+        return false;
+    }
+
+    const DXGI_FORMAT format = ToDX12SwapchainFormat(m_SwapchainImageFormat);
+    const uint32_t bytes_per_pixel = GetDXGIFormatBytesPerPixel(format);
+    const uint32_t row_pitch = AlignTo(width * bytes_per_pixel, D3D12_TEXTURE_DATA_PITCH_ALIGNMENT);
+
+    TransitionSwapchainBuffer(m_CurrentBackBufferIndex, D3D12_RESOURCE_STATE_COPY_SOURCE);
+
+    D3D12_TEXTURE_COPY_LOCATION src = {};
+    src.pResource = m_RenderTargets[m_CurrentBackBufferIndex].Get();
+    src.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    src.SubresourceIndex = 0;
+
+    D3D12_TEXTURE_COPY_LOCATION dst = {};
+    dst.pResource = dst_buffer->getResource();
+    dst.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+    dst.PlacedFootprint.Offset = 0;
+    dst.PlacedFootprint.Footprint.Format = format;
+    dst.PlacedFootprint.Footprint.Width = width;
+    dst.PlacedFootprint.Footprint.Height = height;
+    dst.PlacedFootprint.Footprint.Depth = 1;
+    dst.PlacedFootprint.Footprint.RowPitch = row_pitch;
+
+    D3D12_BOX box = {};
+    box.left = x;
+    box.top = y;
+    box.front = 0;
+    box.right = x + width;
+    box.bottom = y + height;
+    box.back = 1;
+    command_list->CopyTextureRegion(&dst, 0, 0, 0, &src, &box);
+
+    TransitionSwapchainBuffer(m_CurrentBackBufferIndex, D3D12_RESOURCE_STATE_RENDER_TARGET);
+    // The draw that follows (if any) needs the swapchain RTV bound again.
+    RestoreSwapchainRenderState();
+    out_row_pitch_bytes = row_pitch;
+    return true;
 }
 
 void DX12RHI::RestoreSwapchainRenderState()

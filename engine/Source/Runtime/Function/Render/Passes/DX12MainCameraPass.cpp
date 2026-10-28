@@ -13,12 +13,21 @@
 #include "Runtime/Function/Render/RenderSystem.h"
 #include "Runtime/Function/Render/RenderType.h"
 #include "Runtime/Function/Render/Spine/SpineGpuRenderer.h"
+#if defined(Z_HAS_VULKAN)
+    // VT's .cpp files only build where the Vulkan backend is compiled in (see Runtime/CMakeLists.txt).
+    #include "Runtime/Function/Render/Texture/VirtualTextureManager.h"
+    #include "Runtime/Function/Render/Texture/VirtualTextureResource.h"
+    #include "Runtime/Function/Render/Texture/VirtualTextureSettings.h"
+    #include "Runtime/Function/Render/Texture/VirtualTextureTypes.h"
+#endif
 
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstring>
 #include <exception>
+#include <format>
+#include <string>
 #include <vector>
 
 namespace
@@ -1812,6 +1821,522 @@ void DX12MainCameraPass::DrawSceneGrid()
 
     dx12_cmd->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     dx12_cmd->DrawInstanced(3, 1, 0, 0);
+}
+
+// ---------------------------------------------------------------------------------------------------
+// VT overlay: the first IN-FRAME consumer of a virtual texture.
+//
+// What it proves that the offscreen blitter could not: the page table and the physical pool are
+// reached from a shader that runs inside the real frame, through the bindless SRV heap
+// (ResourceDescriptorHeap[slot]) -- the way a material would reach them -- and the result lands on the
+// swapchain the user is looking at. It is deliberately NOT a material: wiring VT into the mesh
+// material system (descriptor layout, per-draw VT handle, UV derivatives for mip selection) is a
+// bigger change that touches every material permutation.
+// ---------------------------------------------------------------------------------------------------
+namespace
+{
+    // Must match cbuffer VtOverlayParams in shader/hlsl/vt/vt_overlay.frag.hlsl (b1).
+    struct DX12VtOverlayConstants
+    {
+        uint32_t lookup[4];   // page_size, pool_width_pages, pages_x, pages_y
+        uint32_t extent[4];   // virtual width, virtual height, page-table slot, pool slot
+        float border[4];      // rgb frame colour
+        float rect[4];        // overlay size in pixels
+    };
+    static_assert(sizeof(DX12VtOverlayConstants) == 64, "VtOverlayParams layout");
+    constexpr uint32_t kVtOverlayConstantBufferBytes = 256;  // root CBV needs a 256-byte-aligned size
+    static_assert(sizeof(DX12VtOverlayConstants) <= kVtOverlayConstantBufferBytes, "fits the CBV");
+}  // namespace
+
+bool DX12MainCameraPass::SetupVirtualTextureOverlayResources()
+{
+#if defined(Z_HAS_VULKAN)
+    auto* dx12_rhi = dynamic_cast<DX12RHI*>(m_Rhi);
+    if (!dx12_rhi || !m_BindlessRootSignature)
+    {
+        return false;
+    }
+
+#ifdef ZENGINE_SHADER_ROOT
+    const std::string shader_root = std::string(ZENGINE_SHADER_ROOT) + "/hlsl/vt/";
+#else
+    const std::string shader_root = "e:/Engine/ZEngine/engine/shader/hlsl/vt/";
+#endif
+
+    DX12ShaderCompiler vs_compiler;
+    DX12ShaderCompileResult vs_result =
+        vs_compiler.CompileFromFile(shader_root + "vt_blit.vert.hlsl", ShaderStage::Vertex, {}, {}, "main", "vs_6_0", "2021");
+    if (!vs_result.success)
+    {
+        LOG_ERROR(ZRender, "DX12MainCameraPass: VT overlay VS compile failed: {}", vs_result.error_message);
+        return false;
+    }
+
+    // ps_6_6: ResourceDescriptorHeap[] needs SM 6.6.
+    DX12ShaderCompiler ps_compiler;
+    DX12ShaderCompileResult ps_result =
+        ps_compiler.CompileFromFile(shader_root + "vt_overlay.frag.hlsl", ShaderStage::Fragment, {}, {}, "main", "ps_6_6", "2021");
+    if (!ps_result.success)
+    {
+        LOG_ERROR(ZRender, "DX12MainCameraPass: VT overlay PS compile failed: {}", ps_result.error_message);
+        return false;
+    }
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC pso_desc = {};
+    pso_desc.pRootSignature = m_BindlessRootSignature.Get();
+    pso_desc.VS = {vs_result.dxil_code.data(), vs_result.dxil_code.size()};
+    pso_desc.PS = {ps_result.dxil_code.data(), ps_result.dxil_code.size()};
+    pso_desc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    pso_desc.NumRenderTargets = 1;
+    pso_desc.RTVFormats[0] = dx12_rhi->GetSwapchainDXGIFormat();
+    pso_desc.SampleDesc.Count = 1;
+    pso_desc.SampleMask = UINT_MAX;
+    pso_desc.DepthStencilState.DepthEnable = FALSE;
+    pso_desc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
+    pso_desc.BlendState.RenderTarget[0].BlendEnable = FALSE;  // opaque window
+    pso_desc.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+    pso_desc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+    pso_desc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+    pso_desc.RasterizerState.DepthClipEnable = TRUE;
+
+    HRESULT hr = dx12_rhi->getDevice()->CreateGraphicsPipelineState(&pso_desc, IID_PPV_ARGS(&m_VtOverlayPso));
+    if (!PassCheckDX12(hr, "DX12MainCameraPass: VT overlay CreateGraphicsPipelineState failed"))
+    {
+        return false;
+    }
+
+    m_Rhi->CreateBuffer(kVtOverlayConstantBufferBytes,
+                        RHI_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                        RHI_MEMORY_PROPERTY_HOST_VISIBLE_BIT | RHI_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                        m_VtOverlayConstantBuffer,
+                        m_VtOverlayConstantBufferMemory);
+    if (m_VtOverlayConstantBuffer == nullptr || m_VtOverlayConstantBufferMemory == nullptr)
+    {
+        return false;
+    }
+    LOG_INFO(ZRender, "DX12MainCameraPass: VT overlay initialized (bindless page table + physical pool)");
+    return true;
+#else
+    return false;
+#endif
+}
+
+void DX12MainCameraPass::VerifyVirtualTextureOverlaySelfTest(uint64_t handle)
+{
+#if defined(Z_HAS_VULKAN)
+    m_VtSelfTestState = 2;  // one shot, whatever happens below
+    auto resource = VirtualTextureManager::Get().GetVirtualTexture(handle);
+    if (!resource || !resource->getSourceData() || m_VtSelfTestReadback == nullptr)
+    {
+        LOG_ERROR(ZRender, "VT overlay self-test: cannot verify (texture or readback buffer is gone)");
+        return;
+    }
+    const TextureData& source = *resource->getSourceData();
+    const uint32_t w = m_VtSelfTestRect[0];
+    const uint32_t h = m_VtSelfTestRect[1];
+    void* mapped = nullptr;
+    if (!m_Rhi->MapMemory(m_VtSelfTestReadbackMemory, 0, static_cast<RHIDeviceSize>(m_VtSelfTestRowPitch) * h, 0, &mapped) ||
+        mapped == nullptr)
+    {
+        LOG_ERROR(ZRender, "VT overlay self-test: cannot map the readback buffer");
+        return;
+    }
+    const uint8_t* bytes = static_cast<const uint8_t*>(mapped);
+
+    const float vw = static_cast<float>(source.m_Width);
+    const float vh = static_cast<float>(source.m_Height);
+    auto source_rgb = [&](uint32_t tx, uint32_t ty) -> uint32_t {
+        const uint8_t* t = source.m_Pixels + (static_cast<size_t>(ty) * source.m_Width + tx) * 4u;
+        return static_cast<uint32_t>(t[0]) | (static_cast<uint32_t>(t[1]) << 8) | (static_cast<uint32_t>(t[2]) << 16);
+    };
+    auto is_boundary = [](float f) { return std::fabs(f - std::nearbyint(f)) < 1.0e-3f; };
+
+    constexpr uint32_t kBorder = 3;  // 2 px frame + 1 px of slack
+    uint32_t checked = 0, exact = 0, boundary_ok = 0, mismatch = 0, fallback_pixels = 0, distinct_colors_probe = 0;
+    uint32_t first_bad_x = 0, first_bad_y = 0, first_bad_got = 0, first_bad_want = 0;
+    uint32_t last_color = 0xFFFFFFFFu;
+    uint32_t page_total[64] = {}, page_bad[64] = {};
+    uint32_t page_shows[16][16] = {};
+    for (uint32_t y = kBorder; y + kBorder < h; ++y)
+    {
+        for (uint32_t x = kBorder; x + kBorder < w; ++x)
+        {
+            const uint8_t* px = bytes + static_cast<size_t>(y) * m_VtSelfTestRowPitch + static_cast<size_t>(x) * 4u;
+            const uint32_t got = static_cast<uint32_t>(px[0]) | (static_cast<uint32_t>(px[1]) << 8) | (static_cast<uint32_t>(px[2]) << 16);
+            if (got != last_color)
+            {
+                ++distinct_colors_probe;
+                last_color = got;
+            }
+            // The shader samples at the pixel centre: uv = (x + 0.5) / w.
+            const float fx = (static_cast<float>(x) + 0.5f) / static_cast<float>(w) * vw;
+            const float fy = (static_cast<float>(y) + 0.5f) / static_cast<float>(h) * vh;
+            const uint32_t tx = std::min(static_cast<uint32_t>(fx), source.m_Width - 1);
+            const uint32_t ty = std::min(static_cast<uint32_t>(fy), source.m_Height - 1);
+            const PageTableEntry entry = resource->GetPageTableEntry(0, tx / resource->getPageSize(), ty / resource->getPageSize());
+            const bool resident = entry.is_valid && entry.physical_slot != UINT32_MAX;
+            if (!resident)
+            {
+                // Non-resident texel: the shader draws a magenta checkerboard. Not comparable with the source.
+                ++fallback_pixels;
+                continue;
+            }
+            ++checked;
+            const uint32_t page_index = (ty / resource->getPageSize()) * resource->getPagesX() + (tx / resource->getPageSize());
+            if (page_index < 64) { ++page_total[page_index]; }
+            if (got == source_rgb(tx, ty))
+            {
+                ++exact;
+                continue;
+            }
+            if (page_index < 64) { ++page_bad[page_index]; }
+            // Diagnostic: which OTHER page's content does this pixel equal (same in-page offset)? A clean
+            // permutation here means the page table and the pool disagree about slots.
+            if (page_index < 16)
+            {
+                const uint32_t ps = resource->getPageSize();
+                for (uint32_t other = 0; other < resource->getPagesX() * resource->getPagesY() && other < 16; ++other)
+                {
+                    const uint32_t ox = (other % resource->getPagesX()) * ps + (tx % ps);
+                    const uint32_t oy = (other / resource->getPagesX()) * ps + (ty % ps);
+                    if (ox < source.m_Width && oy < source.m_Height && got == source_rgb(ox, oy) && source_rgb(ox, oy) != 0)
+                    {
+                        ++page_shows[page_index][other];
+                    }
+                }
+            }
+            // Only a sample that lands exactly on a texel boundary may legitimately pick the neighbour.
+            bool ok = false;
+            if (is_boundary(fx) || is_boundary(fy))
+            {
+                const uint32_t txs[2] = {tx, is_boundary(fx) && tx > 0 ? tx - 1 : tx};
+                const uint32_t tys[2] = {ty, is_boundary(fy) && ty > 0 ? ty - 1 : ty};
+                for (uint32_t i = 0; i < 2 && !ok; ++i)
+                    for (uint32_t j = 0; j < 2 && !ok; ++j)
+                        ok = (got == source_rgb(txs[i], tys[j]));
+            }
+            if (ok)
+            {
+                ++boundary_ok;
+                continue;
+            }
+            if (mismatch == 0)
+            {
+                first_bad_x = x;
+                first_bad_y = y;
+                first_bad_got = got;
+                first_bad_want = source_rgb(tx, ty);
+            }
+            ++mismatch;
+        }
+    }
+    if (mismatch != 0)
+    {
+        // Failure diagnostics: is the readback even pointing at the overlay (its yellow frame = bytes 255,217,51),
+        // and what do the first few bad pixels look like next to what the CPU expected.
+        auto at = [&](uint32_t x, uint32_t y) {
+            const uint8_t* q = bytes + static_cast<size_t>(y) * m_VtSelfTestRowPitch + static_cast<size_t>(x) * 4u;
+            return (static_cast<uint32_t>(q[0]) << 24) | (static_cast<uint32_t>(q[1]) << 16) | (static_cast<uint32_t>(q[2]) << 8) | q[3];
+        };
+        LOG_INFO(ZRender, "VT overlay self-test diag: corner px (0,0)=0x{:08X} (w-1,h-1)=0x{:08X} (w/2,1)=0x{:08X} [RGBA bytes; frame should be FFD933FF]",
+                 at(0, 0), at(w - 1, h - 1), at(w / 2, 1));
+        for (uint32_t py = 0; py < resource->getPagesY() && py < 8; ++py)
+        {
+            std::string row;
+            for (uint32_t px_i = 0; px_i < resource->getPagesX() && px_i < 8; ++px_i)
+            {
+                const uint32_t idx = py * resource->getPagesX() + px_i;
+                const PageTableEntry e = resource->GetPageTableEntry(0, px_i, py);
+                row += std::format(" p({},{})slot{}:{}/{}", px_i, py, e.physical_slot, page_bad[idx], page_total[idx]);
+            }
+            LOG_INFO(ZRender, "VT overlay self-test diag [bad/total per page]:{}", row);
+        }
+        for (uint32_t pg = 0; pg < 16 && pg < resource->getPagesX() * resource->getPagesY(); ++pg)
+        {
+            uint32_t best = pg, best_n = 0;
+            for (uint32_t o = 0; o < 16; ++o)
+            {
+                if (page_shows[pg][o] > best_n) { best_n = page_shows[pg][o]; best = o; }
+            }
+            LOG_INFO(ZRender, "VT overlay self-test diag: page {} displays content of page {} ({} px, own-page hits {})",
+                     pg, best, best_n, page_shows[pg][pg]);
+        }
+        uint32_t shown = 0;
+        for (uint32_t y = kBorder; y + kBorder < h && shown < 6; y += 17)
+        {
+            for (uint32_t x = kBorder; x + kBorder < w && shown < 6; x += 53)
+            {
+                const float fx = (static_cast<float>(x) + 0.5f) / static_cast<float>(w) * vw;
+                const float fy = (static_cast<float>(y) + 0.5f) / static_cast<float>(h) * vh;
+                const uint32_t tx = std::min(static_cast<uint32_t>(fx), source.m_Width - 1);
+                const uint32_t ty = std::min(static_cast<uint32_t>(fy), source.m_Height - 1);
+                LOG_INFO(ZRender, "VT overlay self-test diag: ({},{}) -> texel ({},{}) got RGBA=0x{:08X} source RGBA=0x{:02X}{:02X}{:02X}{:02X}",
+                         x, y, tx, ty, at(x, y),
+                         source.m_Pixels[(static_cast<size_t>(ty) * source.m_Width + tx) * 4u + 0],
+                         source.m_Pixels[(static_cast<size_t>(ty) * source.m_Width + tx) * 4u + 1],
+                         source.m_Pixels[(static_cast<size_t>(ty) * source.m_Width + tx) * 4u + 2],
+                         source.m_Pixels[(static_cast<size_t>(ty) * source.m_Width + tx) * 4u + 3]);
+                ++shown;
+            }
+        }
+    }
+    m_Rhi->UnmapMemory(m_VtSelfTestReadbackMemory);
+    m_Rhi->FreeMemory(m_VtSelfTestReadbackMemory);
+    m_Rhi->DestroyBuffer(m_VtSelfTestReadback);
+    m_VtSelfTestReadbackMemory = nullptr;
+    m_VtSelfTestReadback = nullptr;
+
+    // "distinct colour runs" is a sanity probe against a degenerate pass (a flat overlay would trivially
+    // match a flat source): the real image has many colour changes along a row.
+    LOG_INFO(ZRender,
+             "VT overlay self-test: rect {}x{}, compared {} resident-texel pixels: exact={} boundary-neighbour={} "
+             "MISMATCH={} (non-resident/checker pixels skipped: {}; colour runs seen: {})",
+             w, h, checked, exact, boundary_ok, mismatch, fallback_pixels, distinct_colors_probe);
+    if (mismatch != 0)
+    {
+        LOG_ERROR(ZRender,
+                  "VT overlay self-test FAILED: first mismatch at overlay pixel ({},{}): got 0x{:06X} expected 0x{:06X}",
+                  first_bad_x, first_bad_y, first_bad_got, first_bad_want);
+    }
+    else if (checked == 0)
+    {
+        LOG_ERROR(ZRender, "VT overlay self-test FAILED: nothing was comparable (no resident texel under the overlay)");
+    }
+    else
+    {
+        LOG_INFO(ZRender, "VT overlay self-test PASSED");
+    }
+#else
+    (void)handle;
+#endif
+}
+
+void DX12MainCameraPass::DrawVirtualTextureOverlay()
+{
+#if defined(Z_HAS_VULKAN)
+    if (!VirtualTextureSettings::IsOverlayEnabled() || !VirtualTextureSettings::IsEnabled())
+    {
+        return;
+    }
+    auto* render_system = GET_SYSTEM(RenderSystem);
+    auto* dx12_rhi = dynamic_cast<DX12RHI*>(m_Rhi);
+    if (render_system == nullptr || dx12_rhi == nullptr || !m_BindlessRootSignature)
+    {
+        return;
+    }
+
+    // The producer hands out a handle only while it owns a live texture (see getGpuVisibleHandle).
+    const uint64_t handle = render_system->GetVirtualTextureGpuHandle();
+    if (handle == 0)
+    {
+        return;
+    }
+    VirtualTextureManager& manager = VirtualTextureManager::Get();
+    auto resource = manager.GetVirtualTexture(handle);
+    auto pool = manager.getPhysicalTexturePool();
+    if (!resource || !pool)
+    {
+        return;
+    }
+    RHIImageView* page_table_view = resource->getPageTableTextureView();
+    RHIImageView* pool_view = pool->getPhysicalTextureView();
+    // No page table = nothing was ever resident; pool without content = still UNDEFINED/never uploaded.
+    // Either way there is nothing meaningful to sample yet (the overlay would be pure fallback).
+    if (page_table_view == nullptr || pool_view == nullptr || !pool->hasContent())
+    {
+        return;
+    }
+
+    if (!m_VtOverlayReady)
+    {
+        if (m_VtOverlaySetupFailed)
+        {
+            return;
+        }
+        m_VtOverlayReady = SetupVirtualTextureOverlayResources();
+        if (!m_VtOverlayReady)
+        {
+            m_VtOverlaySetupFailed = true;
+            LOG_ERROR(ZRender, "DX12MainCameraPass: VT overlay unavailable (setup failed); it will not be retried");
+            return;
+        }
+    }
+
+    // Bindless slots are owned by the pool / the page table resource: they were registered when the views
+    // were created (see VirtualTextureCreateGenericImage -- registering later would copy a recycled SRV
+    // descriptor). Nothing to allocate or refresh here.
+    const uint32_t page_table_slot = resource->getPageTableBindlessSlot();
+    const uint32_t pool_slot = pool->getBindlessSlot();
+    if (page_table_slot == 0xFFFFFFFFu || pool_slot == 0xFFFFFFFFu)
+    {
+        static bool s_logged = false;
+        if (!s_logged)
+        {
+            s_logged = true;
+            LOG_ERROR(ZRender, "DX12MainCameraPass: VT overlay skipped: page table / pool have no bindless slot (page_table={} pool={})",
+                      page_table_slot, pool_slot);
+        }
+        return;
+    }
+
+    // ---- placement: lower-left corner of the Scene viewport, aspect of the virtual texture ----
+    // Prefer the Scene panel; when it is not the visible tab fall back to the Game panel, so the overlay
+    // is visible whichever viewport the editor is showing.
+    RHIViewport* scene_viewport = m_Rhi->GetViewport(ViewportType::scene);
+    if (!scene_viewport || scene_viewport->width < 80.0f || scene_viewport->height < 80.0f)
+    {
+        scene_viewport = m_Rhi->GetViewport(ViewportType::game);
+    }
+    if (!scene_viewport || scene_viewport->width < 80.0f || scene_viewport->height < 80.0f)
+    {
+        static bool s_logged = false;
+        if (!s_logged)
+        {
+            s_logged = true;
+            RHIViewport* sv = m_Rhi->GetViewport(ViewportType::scene);
+            RHIViewport* gv = m_Rhi->GetViewport(ViewportType::game);
+            LOG_WARNING(ZRender,
+                        "DX12MainCameraPass: VT overlay skipped: neither viewport is visible (scene {:.0f}x{:.0f}, game {:.0f}x{:.0f})",
+                        sv ? sv->width : -1.0f, sv ? sv->height : -1.0f, gv ? gv->width : -1.0f, gv ? gv->height : -1.0f);
+        }
+        return;
+    }
+    const float vt_w = static_cast<float>(std::max(resource->getVirtualWidth(), 1u));
+    const float vt_h = static_cast<float>(std::max(resource->getVirtualHeight(), 1u));
+    constexpr float kMargin = 10.0f;
+    float overlay_w = std::clamp(scene_viewport->width * 0.35f, 64.0f, 640.0f);
+    float overlay_h = overlay_w * vt_h / vt_w;
+    const float max_h = scene_viewport->height * 0.5f;
+    if (overlay_h > max_h)
+    {
+        overlay_h = max_h;
+        overlay_w = overlay_h * vt_w / vt_h;
+    }
+    overlay_w = std::floor(overlay_w);
+    overlay_h = std::floor(std::max(overlay_h, 8.0f));
+
+    RHIViewport overlay_viewport {};
+    overlay_viewport.x = std::floor(scene_viewport->x + kMargin);
+    overlay_viewport.y = std::floor(scene_viewport->y + scene_viewport->height - kMargin - overlay_h);
+    overlay_viewport.width = overlay_w;
+    overlay_viewport.height = overlay_h;
+    overlay_viewport.minDepth = 0.0f;
+    overlay_viewport.maxDepth = 1.0f;
+    RHIRect2D overlay_scissor {};
+    overlay_scissor.offset.x = static_cast<int32_t>(overlay_viewport.x);
+    overlay_scissor.offset.y = static_cast<int32_t>(overlay_viewport.y);
+    overlay_scissor.extent.width = static_cast<uint32_t>(overlay_w);
+    overlay_scissor.extent.height = static_cast<uint32_t>(overlay_h);
+
+    // ---- constants ----
+    DX12VtOverlayConstants constants {};
+    constants.lookup[0] = pool->getPageSize();
+    constants.lookup[1] = pool->getPoolWidthPages();
+    constants.lookup[2] = resource->getPagesX();
+    constants.lookup[3] = resource->getPagesY();
+    constants.extent[0] = resource->getVirtualWidth();
+    constants.extent[1] = resource->getVirtualHeight();
+    constants.extent[2] = page_table_slot;
+    constants.extent[3] = pool_slot;
+    constants.border[0] = 1.0f;
+    constants.border[1] = 0.85f;
+    constants.border[2] = 0.2f;
+    constants.rect[0] = overlay_w;
+    constants.rect[1] = overlay_h;
+
+    void* mapped = nullptr;
+    if (!m_Rhi->MapMemory(m_VtOverlayConstantBufferMemory, 0, sizeof(constants), 0, &mapped) || mapped == nullptr)
+    {
+        return;
+    }
+    std::memcpy(mapped, &constants, sizeof(constants));
+    m_Rhi->UnmapMemory(m_VtOverlayConstantBufferMemory);
+
+    if (handle != m_VtOverlayHandle)
+    {
+        // A different texture (VT toggled off/on, or the source changed): new page table, new bindless slots.
+        // Start the draw counter over and re-arm the self-test so the NEW texture gets verified too.
+        m_VtOverlayHandle = handle;
+        m_VtOverlayDrawCount = 0;
+        if (m_VtSelfTestState == 2)
+        {
+            m_VtSelfTestState = 0;
+        }
+    }
+    ++m_VtOverlayDrawCount;
+    if (m_VtSelfTestState == 1 && m_VtOverlayDrawCount >= m_VtSelfTestVerifyAtDraw)
+    {
+        // The capture was recorded kVerifyDelay draws ago; by now every in-flight frame slot has been waited on.
+        VerifyVirtualTextureOverlaySelfTest(handle);
+    }
+
+    // ---- draw ----
+    RHICommandBuffer* command_buffer = m_Rhi->GetCurrentCommandBuffer();
+    float event_color[4] = {1.0f, 0.2f, 0.9f, 1.0f};
+    m_Rhi->PushEvent(command_buffer, "VT Overlay", event_color);
+    dx12_rhi->BeginSwapchainOverlayDraw();
+    dx12_rhi->SetBindlessDescriptorHeaps();
+
+    m_Rhi->CmdSetViewportPFN(command_buffer, 0, 1, &overlay_viewport);
+    m_Rhi->CmdSetScissorPFN(command_buffer, 0, 1, &overlay_scissor);
+
+    auto* dx12_cmd = dx12_rhi->getCurrentCommandList();
+    dx12_cmd->SetPipelineState(m_VtOverlayPso.Get());
+    dx12_cmd->SetGraphicsRootSignature(m_BindlessRootSignature.Get());
+    dx12_cmd->SetGraphicsRoot32BitConstant(0, 0, 0);  // b0: unused by this shader, set for signature consistency
+    auto* ubo = static_cast<DX12Buffer*>(m_VtOverlayConstantBuffer);
+    dx12_cmd->SetGraphicsRootConstantBufferView(1, ubo->getResource()->GetGPUVirtualAddress());
+    dx12_cmd->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    dx12_cmd->DrawInstanced(3, 1, 0, 0);
+    m_Rhi->PopEvent(command_buffer);
+
+    // Self-test capture: after the overlay has been on screen for a while, copy its pixels out of the back buffer.
+    if (VirtualTextureSettings::IsOverlaySelfTestEnabled() && m_VtSelfTestState == 0 && m_VtOverlayDrawCount >= 40)
+    {
+        const uint32_t w = static_cast<uint32_t>(overlay_w);
+        const uint32_t h = static_cast<uint32_t>(overlay_h);
+        const uint32_t row_pitch = (w * 4u + 255u) & ~255u;
+        m_Rhi->CreateBuffer(static_cast<RHIDeviceSize>(row_pitch) * h,
+                            RHI_BUFFER_USAGE_TRANSFER_DST_BIT,
+                            RHI_MEMORY_PROPERTY_HOST_VISIBLE_BIT | RHI_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                            m_VtSelfTestReadback,
+                            m_VtSelfTestReadbackMemory);
+        uint32_t pitch_out = 0;
+        if (m_VtSelfTestReadback != nullptr &&
+            dx12_rhi->RecordBackBufferRegionReadback(static_cast<uint32_t>(overlay_viewport.x),
+                                                     static_cast<uint32_t>(overlay_viewport.y),
+                                                     w,
+                                                     h,
+                                                     m_VtSelfTestReadback,
+                                                     pitch_out))
+        {
+            m_VtSelfTestRowPitch = pitch_out;
+            m_VtSelfTestRect[0] = w;
+            m_VtSelfTestRect[1] = h;
+            m_VtSelfTestVerifyAtDraw = m_VtOverlayDrawCount + 8;
+            m_VtSelfTestState = 1;
+        }
+        else
+        {
+            m_VtSelfTestState = 2;
+            LOG_ERROR(ZRender, "VT overlay self-test: could not record the back-buffer readback");
+        }
+    }
+
+    if (!m_VtOverlayLoggedFirstDraw)
+    {
+        m_VtOverlayLoggedFirstDraw = true;
+        LOG_INFO(ZRender,
+                 "DX12MainCameraPass: VT overlay first draw: rect=({:.0f},{:.0f}) {:.0f}x{:.0f} "
+                 "page_table_slot={} pool_slot={}",
+                 overlay_viewport.x,
+                 overlay_viewport.y,
+                 overlay_w,
+                 overlay_h,
+                 page_table_slot,
+                 pool_slot);
+    }
+#endif
 }
 
 void DX12MainCameraPass::TryLateInitializeSkybox()

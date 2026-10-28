@@ -263,6 +263,7 @@ void EditorUIPass::Draw()
                 if (auto* dx12_pass = dynamic_cast<DX12MainCameraPass*>(render_pipeline->GetMainCameraPass()))
                 {
                     dx12_pass->DrawAxis();
+                    dx12_pass->DrawVirtualTextureOverlay();
                 }
             }
         }

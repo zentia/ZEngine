@@ -145,6 +145,9 @@ public:
                                  uint32_t miplevels,
                                  RHIImageView*& image_view) override;
     virtual bool SupportsVirtualTextureUpload() const override { return true; }
+    void WaitForDeviceIdle() override { WaitForGpuIdle(); }
+    uint32_t AllocateBindlessSrvForImage(RHIImage* image, RHIFormat format) override;
+    void FreeBindlessSrv(uint32_t slot) override;
     // Test hook: copy of every non-INFO debug-layer message drained so far (bounded to the first 512).
     void DrainDebugLayerMessagesForTest() const { DrainDebugLayerMessages(); }
     std::vector<DebugLayerRecord> CopyDebugLayerHistory() const
@@ -432,6 +435,17 @@ public:
     // After RP2 ends the swapchain image may be in PRESENT; rebind swapchain RTV for
     // fullscreen overlay draws (scene grid / skybox) that run outside the RP2 pass.
     void BeginSwapchainOverlayDraw();
+    // Record (into the CURRENT frame command list) a copy of a back-buffer rectangle into `readback_buffer`
+    // (a HOST_VISIBLE | TRANSFER_DST buffer, i.e. a READBACK heap), then put the back buffer back into
+    // RENDER_TARGET. Rows are D3D12_TEXTURE_DATA_PITCH_ALIGNMENT-aligned; the pitch is returned in bytes.
+    // Pixel layout is the swapchain format (R8G8B8A8_UNORM here). The data is only valid once the GPU has
+    // finished this frame: map the buffer a few frames later. Used by the VT overlay self-test.
+    bool RecordBackBufferRegionReadback(uint32_t x,
+                                        uint32_t y,
+                                        uint32_t width,
+                                        uint32_t height,
+                                        RHIBuffer* readback_buffer,
+                                        uint32_t& out_row_pitch_bytes);
     // DEBUG: Clear swapchain to a solid color to verify present pipeline works.
     void ClearSwapchainToColor(const float color[4]);
     // Bind backup_even (or any color RTV) for ImGui during RP2 UI subpass. No-op if view is null

@@ -244,6 +244,12 @@ private:
     // 同样无条件声明、定义里用 Z_HAS_VULKAN 包住，非 Vulkan 构建下是 no-op。
     void ShutdownVirtualTexture();
 
+public:
+    // RHI 线程：帧内 VT 消费者（DX12 主相机 pass 的 VT 叠加层）现在可以采样的虚拟纹理句柄，没有则 0。
+    // 无条件声明、定义里用 Z_HAS_VULKAN 包住（非 Vulkan 构建下恒为 0）。
+    uint64_t GetVirtualTextureGpuHandle();
+
+private:
     static constexpr uint32_t kMaxFrameDrawLists = 3;
 
     uint32_t AllocateFrameDrawListSlot();

@@ -90,7 +90,19 @@ void VirtualTextureProducer::RetireHandle(uint64_t handle)
         return;
     }
     std::lock_guard<std::mutex> lock(m_HandoffMutex);
+    // Stop advertising the handle to RHI-thread consumers in the same critical section that queues it
+    // for destruction (see getGpuVisibleHandle()).
+    if (m_GpuVisibleHandle == handle)
+    {
+        m_GpuVisibleHandle = 0;
+    }
     m_Retired.push_back(handle);
+}
+
+uint64_t VirtualTextureProducer::getGpuVisibleHandle() const
+{
+    std::lock_guard<std::mutex> lock(m_HandoffMutex);
+    return m_GpuVisibleHandle;
 }
 
 void VirtualTextureProducer::ReleaseTexture()
@@ -178,6 +190,7 @@ bool VirtualTextureProducer::TickCpu(bool enabled,
         {
             std::lock_guard<std::mutex> lock(m_HandoffMutex);
             m_WantPool = true;  // 告诉 RHI 线程：有纹理要流送了，需要池
+            m_GpuVisibleHandle = m_Handle;
         }
 #if ZENGINE_VT_GPU
         auto resource = m_Manager->GetVirtualTexture(m_Handle);

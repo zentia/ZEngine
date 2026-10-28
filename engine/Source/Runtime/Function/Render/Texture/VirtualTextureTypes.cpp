@@ -52,11 +52,13 @@ bool VirtualTextureCreateGenericImage(RHI* rhi,
                                       RHIFormat format,
                                       RHIImage*& image,
                                       RHIImageView*& view,
-                                      void*& backend_alloc)
+                                      void*& backend_alloc,
+                                      uint32_t& bindless_slot)
 {
     image = nullptr;
     view = nullptr;
     backend_alloc = nullptr;
+    bindless_slot = RHIBindlessTextureManager::kInvalidBindlessIndex;
     if (rhi == nullptr || width == 0 || height == 0)
     {
         return false;
@@ -104,14 +106,23 @@ bool VirtualTextureCreateGenericImage(RHI* rhi,
         return false;
     }
     backend_alloc = memory;
+    // Write the SRV straight into the bindless table from the image (see RHI::AllocateBindlessSrvForImage).
+    bindless_slot = rhi->AllocateBindlessSrvForImage(image, format);
     return true;
 }
 
-void VirtualTextureDestroyGenericImage(RHI* rhi, RHIImage* image, RHIImageView* view, void* backend_alloc)
+void VirtualTextureDestroyGenericImage(
+    RHI* rhi, RHIImage* image, RHIImageView* view, void* backend_alloc, uint32_t bindless_slot)
 {
     if (rhi == nullptr)
     {
         return;
+    }
+    // A frame-time consumer (the DX12 overlay) may still be sampling this image from a submitted frame.
+    rhi->WaitForDeviceIdle();
+    if (bindless_slot != RHIBindlessTextureManager::kInvalidBindlessIndex)
+    {
+        rhi->FreeBindlessSrv(bindless_slot);
     }
     if (view != nullptr)
     {
@@ -216,7 +227,8 @@ bool PhysicalTexturePool::Initialize(RHI* rhi,
                                               format,
                                               m_PhysicalTexture,
                                               m_PhysicalTextureView,
-                                              generic_alloc))
+                                              generic_alloc,
+                                              m_BindlessSlot))
         {
             return false;
         }
@@ -363,7 +375,8 @@ void PhysicalTexturePool::Shutdown()
     // "RHI 销毁 + 自己 delete 包装" 双步。
     if (m_Rhi && m_PhysicalTexture && !VirtualTextureUsesVulkanPath(m_Rhi))
     {
-        VirtualTextureDestroyGenericImage(m_Rhi, m_PhysicalTexture, m_PhysicalTextureView, m_Allocation);
+        VirtualTextureDestroyGenericImage(m_Rhi, m_PhysicalTexture, m_PhysicalTextureView, m_Allocation, m_BindlessSlot);
+        m_BindlessSlot = RHIBindlessTextureManager::kInvalidBindlessIndex;
         m_PhysicalTexture = nullptr;
         m_PhysicalTextureView = nullptr;
         m_Allocation = nullptr;

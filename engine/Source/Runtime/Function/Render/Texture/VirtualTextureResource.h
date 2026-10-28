@@ -132,6 +132,8 @@ public:
     // Format: R32G32_UINT (physical_slot, mip_level)
     RHIImage* GetPageTableTexture() const { return m_PageTableTexture; }
     RHIImageView* getPageTableTextureView() const { return m_PageTableTextureView; }
+    // Bindless SRV slot of the page table texture (0xFFFFFFFF = none). See VirtualTextureCreateGenericImage.
+    uint32_t getPageTableBindlessSlot() const { return m_PageTableBindlessSlot; }
 
     // Update page table texture: unconditionally (re)pack the CPU page table and
     // upload it. Creates the texture on first call. Clears the dirty flag.
@@ -202,6 +204,7 @@ private:
     RHIImage* m_PageTableTexture;
     RHIImageView* m_PageTableTextureView;
     VmaAllocation m_PageTableAllocation;
+    uint32_t m_PageTableBindlessSlot {0xFFFFFFFFu};
     // Same discard_prior_content guard as PhysicalTexturePool::m_HasContent: the
     // page table is re-uploaded every time any page's mapping changes, so only
     // the very first upload may treat the image as UNDEFINED.

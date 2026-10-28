@@ -46,7 +46,7 @@
 | C1 | **RenderGraph 接管流水线** | 帧图编译器：自动屏障、瞬态 RT 别名、剔除 | **✅ 已默认开·真机验证 PASS**（165 编译+92 执行断言；RP2 图路径 2026-10-26 翻默认开 `c0d1bcfc`，同帧 A/B 逐位等价 + soak 无异常，见 §2 落地记录·2.6） | 阶段一 RHI 注册表 | ★★★ 高价值/低风险 |
 | C2 | **RenderGraph → RP1**（`render_pass_refactor`） | RP1 三子pass 拆成 3 独立 pass，纳入图管理 | **✅ 已默认开·真机验证 PASS**（2.3 三分已在代码：3 独立 render pass/subpass 恒 0；2.4 compiler 200/200 + executor 121/121 已验。`DrawRP1WithGraph` 2026-10-26 翻默认开 `871878e3`，同帧 A/B `rp1.backup_odd` 逐位 IDENTICAL + soak 无异常，见 §2 落地记录·2.6） | **必须在 C1 之后** | ★★ 高价值/中风险 |
 | C3 | **Nanite 收尾** | 流送 → 几何压缩 → HiZ 遮挡 → 页池 | **大部分实现**（真 GPU dispatch 已有；几何压缩✅ + streaming✅ + **页池簿记层✅ 已落地 2026-10-26**（opt-in，`streaming_pool_budget_bytes>0`；显存上传待真机），见 §2 落地记录·2.5 页池；**HiZ CPU 侧✅ 已落地 2026-10-26**，见 §2 落地记录·2.5 HiZ；**HiZ GPU 侧✅ 已落地 2026-10-27**：切法一 compute 生成金字塔 14/14、切法二 GPU 遮挡剔除 16/16，见 `doc/PHASE2_STEP2.5_HIZ_GPU.md` §6/§7；**页池 GPU 路径✅ 逐像素一致 13/13**。剩切法三（device-local+真 mip 纹理，可选打磨）与顶点去重（回归面>收益，主动推迟）） | C1/C2 给其 RG 管理的目标 | ★★★ 高价值/中风险 |
-| C4 | **Virtual Texture 接线** | 分页纹理虚拟化，从"孤儿"到可用 | **CPU 侧✅ + GPU 侧✅ 2026-10-27**（页上传进物理页池 + 页表纹理上传，headless A/B 18/18 全绿、逐字节比对 0 失配，见 §2 落地记录·2.6 VirtualTexture GPU 侧）。页表间接寻址 shader（`vt_common.h` + `vt_resolve.comp`）2026-10-27 已落地并 A/B 22/22（见 §2 落地记录·2.6 VT 页表间接寻址 shader）。片元阶段消费者（`vt_blit.frag`，离屏全屏三角形）2026-10-27 也已落地并 A/B 22/22（见 §2 落地记录·2.6 VT 片元阶段页表消费者）。**仍未接进真实材质 / 主相机 pass**（需 2.4 的 RG 资源注册与描述符绑定），。**最小生产者 2026-10-27 已落地**（`r.VirtualTexture.Source`，A/B 48/48，见 §2 落地记录·2.6 VT 最小生产者），；**接线 2026-10-28 已在真实 Vulkan 编辑器里验证**（见 §2 落地记录·2.6 VT 生产者拆成渲染线程 / RHI 线程两半，附未验证清单）。**DX12 后端 2026-10-28 已落地**（RHI 新增 `UploadImageRegionImmediate`，HLSL 消费者 + DX12 无头模式，blit A/B 在 DX12 上 23/23，真实 DX12 编辑器 `GPU page uploads ok 16 failed 0`；compute resolver 仍仅 Vulkan，见 §2 落地记录·2.6 VT 的 DX12 后端） | C1/C2 的 RG 资源注册 | ★★ 高价值/中高风险 |
+| C4 | **Virtual Texture 接线** | 分页纹理虚拟化，从"孤儿"到可用 | **CPU 侧✅ + GPU 侧✅ 2026-10-27**（页上传进物理页池 + 页表纹理上传，headless A/B 18/18 全绿、逐字节比对 0 失配，见 §2 落地记录·2.6 VirtualTexture GPU 侧）。页表间接寻址 shader（`vt_common.h` + `vt_resolve.comp`）2026-10-27 已落地并 A/B 22/22（见 §2 落地记录·2.6 VT 页表间接寻址 shader）。片元阶段消费者（`vt_blit.frag`，离屏全屏三角形）2026-10-27 也已落地并 A/B 22/22（见 §2 落地记录·2.6 VT 片元阶段页表消费者）。**仍未接进真实材质 / 主相机 pass**（需 2.4 的 RG 资源注册与描述符绑定），。**最小生产者 2026-10-27 已落地**（`r.VirtualTexture.Source`，A/B 48/48，见 §2 落地记录·2.6 VT 最小生产者），；**接线 2026-10-28 已在真实 Vulkan 编辑器里验证**（见 §2 落地记录·2.6 VT 生产者拆成渲染线程 / RHI 线程两半，附未验证清单）。**DX12 后端 2026-10-28 已落地**（RHI 新增 `UploadImageRegionImmediate`，HLSL 消费者 + DX12 无头模式，blit A/B 在 DX12 上 23/23，真实 DX12 编辑器 `GPU page uploads ok 16 failed 0`；compute resolver 仍仅 Vulkan，见 §2 落地记录·2.6 VT 的 DX12 后端）。**第一个帧内消费者 2026-10-28 已落地**（DX12 编辑器叠加层 `r.VirtualTexture.Overlay`，经 bindless 页表间接寻址画到屏幕，后备缓冲读回自检 97636 像素 0 失配；仍不是材质，见 §2 落地记录·2.6 VT 的第一个帧内消费者） | C1/C2 的 RG 资源注册 | ★★ 高价值/中高风险 |
 | C5 | ~~**Vulkan `MainCameraPass` 崩溃根因修复**~~ | 跨切面阻塞：解除 Vulkan 侧验证能力 | **✅ 已被 `7e5d2521` 修掉（2026-10-25 复核关闭）** | — | ★★★ 已关闭（见 §2 step 2.0） |
 | C6 | **Lumen 收尾（SSR → GPU 化）** | 动态 GI + 反射；取 SSR 一半 + 首个 Lumen shader | **✅ CPU 侧已完整**（GI/反射/接线/CVar/发布桥全落地 + 7 smoke test；2026-10-25 复核，见 §2 落地记录·2.7）。剩 SSR/HWRT/首个 shader 全 GPU 侧 | C2 的 GBuffer/depth 声明 | ★★ 中价值/高风险（CPU 侧无活，剩 GPU 放最后） |
 | C7 | **编辑器/内容管线填充**（低风险稳态轨） | 平台窗口化收尾 / Timeline 四片段 / Prefab §9.4 | 各为**部分实现·机械收尾**（**Timeline 四片段 2026-10-25 已落地**，见 `doc/timeline/TIMELINE_IMPLEMENTATION.md`“片段语义”；**Prefab §9.4 第 1 条落地、第 2 条对象图层已验**，见 `doc/PrefabSystem_Design.md` §9.4.1，顺带修 7 个真 bug；平台窗口化未动；**平台窗口化 2026-10-25 对代码核对**：Step 1-5 早已兑现（零 GLFW 引用），计划文档勾选已按代码更新；核对时修了 Win32 修饰键恒 0 / 拖放不派发 / Linux 原生 #error / Web 启动空指针等，见 `doc/platform_windowing_plan.md`；剩 Linux X11 窗口层与多显示器枚举） | — | ★★ 低风险填缝 |
@@ -868,6 +868,43 @@ commit `1841dc71`。**上一节"最小生产者"的接线在真实 Vulkan 编辑
 
 **边界（如实）**：采样只有 5 s 一次、总时长 ~3 分钟，**抓不住很慢的泄漏**（小于 ~1 MB/min 的量级分辨不出）；显存数字来自 Windows `GPU Process Memory` 性能计数器，含驱动自身开销，只能看趋势。
 没有测 Vulkan 的长稳（Vulkan Debug 太慢，Release 的 Vulkan 长稳未跑）。"开 / 关循环"只覆盖了单张纹理的注册 / 卸载；多纹理、池满驱逐下的长稳没有覆盖。
+
+---
+
+### 落地记录 · 2.6 VT 的第一个帧内消费者：DX12 编辑器叠加层（2026-10-28）
+
+**用户要求**："实现 ②"——把 VT 接进真实渲染（屏幕上能看到），而不是只在离屏测试里采样。
+
+**范围与诚实的取舍**：接进**网格材质系统**要动每个材质排列的描述符布局、每次绘制的 VT 句柄、纹理导数选 mip——体量大且碰所有材质，不适合在没人盯着时盲改共享路径。
+所以这一步做的是**帧内、经页表间接寻址、走 bindless 堆**的消费者：`r.VirtualTexture.Overlay 1` 在编辑器 Scene（或 Game，Scene 页签不可见时回退）视口左下角画一个 VT 窗口。
+它**不是材质**；它证明的是材质将要依赖的那条链：真实帧命令列表 → bindless SRV 表（`ResourceDescriptorHeap[slot]`）→ 页表 + 页池 → 屏幕上的像素。
+
+**新增**
+- `shader/hlsl/vt/vt_overlay.frag.hlsl`（PS，SM 6.6，经 `ResourceDescriptorHeap` 取页表 / 页池，复用 `vt_common.hlsli` 与 `vt_blit.vert.hlsl`；非驻留页画洋红棋盘格，不是"透明空洞"）。
+- `DX12MainCameraPass::DrawVirtualTextureOverlay`：复用既有 bindless 根签名（b0 根常量 + b1 根 CBV），从 `EditorUIPass` 里 `DrawAxis` 之后调用，RHI 线程。
+- CVar `r.VirtualTexture.Overlay`、`r.VirtualTexture.OverlaySelfTest`（默认都是 0）。
+- `VirtualTextureProducer::getGpuVisibleHandle()`（线程安全交接：与"退役句柄"同一把锁内清零，RHI 线程读到非零就可在本帧使用）、`RenderSystem::GetVirtualTextureGpuHandle()`。
+- RHI：`WaitForDeviceIdle()`（销毁 VT 的 GPU 图前等在飞帧——现在帧内有人读它们了，"所有提交都是 single-time"的旧前提不再成立）、`AllocateBindlessSrvForImage / FreeBindlessSrv`、DX12 `RecordBackBufferRegionReadback`。
+- 池 / 页表纹理各持有一个 bindless 槽位（`PhysicalTexturePool::getBindlessSlot`、`VirtualTextureResource::getPageTableBindlessSlot`），随图创建 / 销毁。
+
+**像素级验证（没人盯屏幕也能证明"屏幕上画的是对的"）**：`r.VirtualTexture.OverlaySelfTest 1` 在叠加层画满 40 帧后，把它在**后备缓冲里**的像素拷回 host，逐像素和 CPU 参考（源纹理）比对。
+- 真实 DX12 编辑器：**97636 个驻留 texel 像素，exact=84831、边界邻居=12805、MISMATCH=0 → PASSED**；2 像素黄框的位置 / 颜色（`FFD933FF`）也读回确认。
+- **自检不空转（变异）**：HLSL `slot_xy` 分量互换 → FAILED（MISMATCH=40687）；页表被忽略（恒取 0 号槽）→ FAILED（MISMATCH=72999）。均已还原。
+- VT 关→开（新页表、新 bindless 槽位）后自检**重新触发并 PASSED**；本轮及之后每次注册都验证。
+- 回归：16 个原生 Nanite / VT 套件 0 失败，`--rhi dx12` blit 10/10（24 项，含 D3D12 debug layer 零错误），WASM 15/15；DX12 VT 关 / 叠加层关、Vulkan 带叠加层 CVar 的编辑器都干净退出、叠加层 0 条输出（它是 DX12 专属，Vulkan 上惰性）。
+
+**调试中抓到的两个真问题（都已修，且都是之前"通过"的东西里藏着的）**
+1. **晚登记 bindless 会读到别人的描述符**：第一版在首次绘制时才 `bindless->allocate(view)`。DX12 的 `RHIImageView` 的 SRV 描述符放在**每帧复位的环形堆**里，视图创建几帧后那个槽位早被别的视图覆盖。症状很有迷惑性：
+   自检 24% 像素对、其余 76% 错，而且错得很整齐——**每一页都显示 0 号页的内容**（页表读成了全 0 ⇒ 每页都映射到槽位 0）。靠"每个错像素与哪一页的内容相等"的诊断一眼看出。
+2. **改成"直接从资源建 SRV 写进 bindless 表"之后，headless 的 DX12 debug layer 报了 #654**：`allocate(view)` 是 `CopyDescriptorsSimple` 以**CPU 只写**的遗留堆为源，被明令禁止（在 NVIDIA 上碰巧能读到）。这是**引擎既有 bindless 路径的通病**，不是 VT 引入的；
+   VT 现在不走它（`AllocateBindlessSrvForImage`），headless 测试因此也成了这条路径的回归（它在我第一版就红了 10/10，是它拦住了我）。**没改引擎其它用 `allocate(view)` 的地方**——那是另一件事，这里只记录。
+
+**⚠️ 仍未做 / 限制（如实）**
+- **不是材质**：没有网格材质采样 VT。要做的话还差：材质描述符里的 VT 槽位 / 句柄、屏幕空间导数选 mip（目前只有 mip 0）、双线性（需要页 gutter）。
+- **DX12 专属**：Vulkan 编辑器没有叠加层（它的主相机 pass 是另一份 4000 行代码），CVar 在 Vulkan 上惰性。
+- 我**没有肉眼看到**叠加层——环境禁止 .NET 反射 / Add-Type，截屏做不了。证据是后备缓冲读回 + CPU 参考 + 变异，不是眼睛；位置（左下角、`rect=(589,1330) 640x160`）来自日志。
+- 叠加层读 `VirtualTextureManager::Get()` 单例 + 生产者句柄，**只支持"一张"流送纹理**（与当前最小生产者一致）。
+- 页表 / 池销毁时 `WaitForDeviceIdle` 会阻塞 RHI 线程直到在飞帧完成（罕见路径：VT 关闭 / 换源）；没有做延迟销毁。
 
 ---
 

@@ -286,6 +286,8 @@ public:
     // Get physical texture resources
     RHIImage* getPhysicalTexture() const { return m_PhysicalTexture; }
     RHIImageView* getPhysicalTextureView() const { return m_PhysicalTextureView; }
+    // Bindless SRV slot of the pool image (0xFFFFFFFF = none; Vulkan path / RHI without a bindless manager).
+    uint32_t getBindlessSlot() const { return m_BindlessSlot; }
     VmaAllocation getAllocation() const { return m_Allocation; }
 
     // Get pool dimensions
@@ -317,6 +319,7 @@ private:
     RHIImage* m_PhysicalTexture;
     RHIImageView* m_PhysicalTextureView;
     VmaAllocation m_Allocation;
+    uint32_t m_BindlessSlot {0xFFFFFFFFu};
 
     uint32_t m_PoolWidthPages;   // Pool width in pages
     uint32_t m_PoolHeightPages;  // Pool height in pages
@@ -376,13 +379,20 @@ bool VirtualTextureBackendSupported(RHI* rhi);
 bool VirtualTextureUsesVulkanPath(RHI* rhi);
 
 // 通用 RHI 路径下建一张"可采样 + 可拷出"的 2D 图和它的 view。backend_alloc 收 RHIDeviceMemory*。
+//
+// bindless_slot：若该 RHI 有 bindless 纹理表，把图的 SRV **直接写进**去并返回槽位（否则 0xFFFFFFFF）。
+// 不能走 getBindlessTextureManager()->allocate(view)：那是从 RHIImageView 的描述符"拷过去"，而 DX12 的
+// view 描述符放在"每帧复位的环形堆"里——① 视图创建若干帧后那个槽位早被别的视图覆盖，晚拷就把别人的描述符
+// 拷进 bindless 堆（实测：页表读成全 0，所有页都显示 0 号页的内容）；② 该堆是 CPU 只写内存，调试层
+// 明令禁止把它当拷贝源（#654）。直接从资源建 SRV 两个问题都没有。
 bool VirtualTextureCreateGenericImage(RHI* rhi,
                                       uint32_t width,
                                       uint32_t height,
                                       RHIFormat format,
                                       RHIImage*& image,
                                       RHIImageView*& view,
-                                      void*& backend_alloc);
+                                      void*& backend_alloc,
+                                      uint32_t& bindless_slot);
 
 // 与上面成对。三个指针允许为空（幂等）。调用前提：没有 GPU 工作还在用这张图。
-void VirtualTextureDestroyGenericImage(RHI* rhi, RHIImage* image, RHIImageView* view, void* backend_alloc);
+void VirtualTextureDestroyGenericImage(RHI* rhi, RHIImage* image, RHIImageView* view, void* backend_alloc, uint32_t bindless_slot);

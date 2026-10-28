@@ -126,6 +126,12 @@ public:
 
     // ---- observability (tests, and the periodic log line) ----
     uint64_t getHandle() const { return m_Handle; }
+    /// RHI thread: handle of the texture a frame-time consumer (the DX12 overlay) may sample right now,
+    /// or 0. Unlike getHandle() this is safe to call from the RHI thread -- m_Handle belongs to the
+    /// render thread. It is cleared (under the same lock that queues the handle for destruction) BEFORE
+    /// the handle is retired, and the retired handle is only ever unregistered on the RHI thread, so a
+    /// consumer that reads a non-zero value on the RHI thread can use it for the rest of that frame.
+    uint64_t getGpuVisibleHandle() const;
     bool isStreaming() const { return m_Handle != 0; }
     const std::string& getActivePath() const { return m_ActivePath; }
     uint32_t getFailureCount() const { return m_FailureCount; }
@@ -140,10 +146,11 @@ private:
     void RetireHandle(uint64_t handle);
 
     // ---- the only state that crosses threads ----
-    std::mutex m_HandoffMutex;
+    mutable std::mutex m_HandoffMutex;
     std::vector<uint64_t> m_Retired;    // handles for the RHI thread to unregister (guarded)
     bool m_WantPool {false};            // the render thread has a texture that needs the pool (guarded)
     bool m_PoolFailed {false};          // the RHI thread could not build the pool (guarded)
+    uint64_t m_GpuVisibleHandle {0};    // handle consumers on the RHI thread may sample (guarded)
 
     VirtualTextureManager* m_Manager {nullptr};
     TextureLoader m_Loader {nullptr};

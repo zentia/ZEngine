@@ -403,8 +403,14 @@ void VirtualTextureResource::UpdatePageTableTexture(RHI* rhi)
     {
         // 非 Vulkan 后端（DX12）：通用 RHI 路径。
         void* generic_alloc = nullptr;
-        if (!VirtualTextureCreateGenericImage(
-                rhi, m_PagesX, m_PagesY, table_format, m_PageTableTexture, m_PageTableTextureView, generic_alloc))
+        if (!VirtualTextureCreateGenericImage(rhi,
+                                              m_PagesX,
+                                              m_PagesY,
+                                              table_format,
+                                              m_PageTableTexture,
+                                              m_PageTableTextureView,
+                                              generic_alloc,
+                                              m_PageTableBindlessSlot))
         {
             return;
         }
@@ -523,7 +529,8 @@ void VirtualTextureResource::ReleasePageTableTexture()
     {
         // 通用 RHI 路径（DX12）：一把销毁 view / 图 / 内存。
         VirtualTextureDestroyGenericImage(
-            m_PageTableRhi, m_PageTableTexture, m_PageTableTextureView, m_PageTableAllocation);
+            m_PageTableRhi, m_PageTableTexture, m_PageTableTextureView, m_PageTableAllocation, m_PageTableBindlessSlot);
+        m_PageTableBindlessSlot = 0xFFFFFFFFu;
         m_PageTableTextureView = nullptr;
         m_PageTableTexture = nullptr;
         m_PageTableAllocation = nullptr;

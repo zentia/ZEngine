@@ -331,6 +331,18 @@ public:
     //
     // SupportsVirtualTextureUpload(): true if UploadImageRegionImmediate() is implemented.
     virtual bool SupportsVirtualTextureUpload() const { return false; }
+    // Block until every previously SUBMITTED GPU frame has finished. Callers use it before freeing a
+    // resource that an in-flight frame may still read (the VT page table / pool, once a frame-time
+    // consumer samples them). Vulkan's VT path never needs it (every submit there already ends in
+    // vkQueueWaitIdle); the default is a no-op.
+    virtual void WaitForDeviceIdle() {}
+    // Write a 2D SRV for `image` (mip 0, single layer, `format`) DIRECTLY into the bindless SRV table and return
+    // its slot (RHIBindlessTextureManager::kInvalidBindlessIndex if unsupported / table full). Unlike
+    // getBindlessTextureManager()->allocate(view), this does not copy from an RHIImageView's descriptor, which on
+    // DX12 (a) lives in the per-frame ring of the legacy shader-visible heap and is recycled a few frames after the
+    // view is created, and (b) is CPU-write-only memory the debug layer forbids as a copy source (#654).
+    virtual uint32_t AllocateBindlessSrvForImage(RHIImage* image, RHIFormat format) { return 0xFFFFFFFFu; }
+    virtual void FreeBindlessSrv(uint32_t slot) {}
     // Copies a tightly packed w*h*bytes_per_pixel block into `image` at (offset_x, offset_y),
     // mip 0 / layer 0, then leaves the image readable by shaders. Blocks until the GPU has
     // finished. `discard_prior_content` is true only for the very first write to a fresh

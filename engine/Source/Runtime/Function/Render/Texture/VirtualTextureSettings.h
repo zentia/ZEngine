@@ -22,6 +22,15 @@ namespace VirtualTextureSettings
     // 会注册虚拟纹理或请求页。返回值按值，因为 CVar 可能在别的线程被改写。
     const char* GetSource();
 
+    // r.VirtualTexture.Overlay：0=off（默认），1=在编辑器 Scene 视口左下角画一个 VT 调试窗口——
+    // **第一个真正在帧内、经页表间接寻址采样 VT 的消费者**（DX12 主相机 pass，见
+    // DX12MainCameraPass::DrawVirtualTextureOverlay）。需要同时 Enable 1 + Source。
+    bool IsOverlayEnabled();
+
+    // r.VirtualTexture.OverlaySelfTest：1 = 叠加层画满若干帧后，把它在后备缓冲里的像素读回，逐像素和 CPU
+    // 参考（源纹理）比对，结果写日志。默认 0。用来在没人盯屏幕时证明"屏幕上画出来的是对的"。
+    bool IsOverlaySelfTestEnabled();
+
     // 注册 r.VirtualTexture.*（从 RegisterRuntimeConsoleCommands 调用）
     void RegisterConsoleVariables(ConsoleManager& console);
 }  // namespace VirtualTextureSettings

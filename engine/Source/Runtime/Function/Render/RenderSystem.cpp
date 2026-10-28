@@ -2063,6 +2063,20 @@ void RenderSystem::UpdateVirtualTextureGpu()
 #endif
 }
 
+uint64_t RenderSystem::GetVirtualTextureGpuHandle()
+{
+#if defined(Z_HAS_VULKAN)
+    VirtualTextureProducer* producer = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(m_VirtualTextureViewMutex);
+        producer = m_VirtualTextureProducerPublished;
+    }
+    return producer != nullptr ? producer->getGpuVisibleHandle() : 0;
+#else
+    return 0;
+#endif
+}
+
 void RenderSystem::UpdateVirtualTextureForFrame(float delta_time)
 {
     // 单线程调用者（Apple Tick、DX12 分支、单线程尾部）：两半背靠背。Vulkan 并行路径**不**走这里，
