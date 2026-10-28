@@ -54,7 +54,7 @@ endforeach()
 set(CAT_STRUCTS "")
 set(CAT_INDEX 1)
 foreach(cat IN LISTS CATEGORIES)
-    string(APPEND CAT_STRUCTS "        struct EBCO : public ${CLASS_NAME}_category_base<${CAT_INDEX}> {\n        } ${cat};    //${cat}\n")
+    string(APPEND CAT_STRUCTS "        struct BQ_EBCO : public ${CLASS_NAME}_category_base<${CAT_INDEX}> {\n        } ${cat};    //${cat}\n")
     math(EXPR CAT_INDEX "${CAT_INDEX} + 1")
 endforeach()
 
@@ -101,7 +101,7 @@ ${NAMES_ARRAY}
             };
         };
 
-        struct EBCO ${CLASS_NAME}_category_root
+        struct BQ_EBCO ${CLASS_NAME}_category_root
         {
 ${CAT_STRUCTS}        };
 
