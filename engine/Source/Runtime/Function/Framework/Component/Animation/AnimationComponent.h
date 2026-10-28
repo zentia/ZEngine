@@ -157,4 +157,11 @@ protected:
     bool m_HasTimelineOverride {false};
     /// Transient single-clip blend state the override samples (see SetTimelineOverride).
     BlendState m_TimelineBlendState {};
+
+    /// Reused resolve buffer for Tick (P0.2). Deliberately NOT a ZPROPERTY: it
+    /// is frame-local scratch, not state -- it holds borrowed clip pointers
+    /// (see BlendStateWithClipData) and must never be serialized or shown in
+    /// the Inspector. Lives here, rather than inside AnimationSystem, so each
+    /// component keeps its own capacity and nothing is shared across objects.
+    BlendStateWithClipData m_ClipDataScratch {};
 };

@@ -231,11 +231,16 @@ namespace
     // The ONLY place this test touches the pipeline's API, so the refactor that
     // changes that API changes this function and nothing else.
 
+    /// Mirrors AnimationComponent::Tick: the caller owns the resolve buffer and
+    /// the result, exactly as the component owns m_ClipDataScratch and
+    /// m_AnimationRes.animation_result.
+    BlendStateWithClipData g_ClipDataScratch;
+
     void EvaluatePipeline(const BlendState& in_state, Skeleton& in_out_skeleton, AnimationResult& out_result)
     {
-        const BlendStateWithClipData& clip_data = AnimationSystem::GetBlendStateWithClipData(in_state);
-        in_out_skeleton.ApplyAnimation(clip_data);
-        out_result = in_out_skeleton.OutputAnimationResult();
+        AnimationSystem::BuildBlendStateWithClipData(in_state, g_ClipDataScratch);
+        in_out_skeleton.ApplyAnimation(g_ClipDataScratch);
+        in_out_skeleton.OutputAnimationResult(out_result);
     }
 
     Vector3 BonePosition(const Skeleton& in_skeleton, int in_bone)
@@ -444,8 +449,9 @@ int main(int argc, char** argv)
                                          std::vector<const AnimationClip*>>,
                           "blend_clip must borrow clips, not own copies");
 
-            const BlendStateWithClipData resolved =
-                AnimationSystem::GetBlendStateWithClipData(MakeBlendState({clip_a, clip_b}, map_path, {0.5f, 0.5f}, {0.0f, 0.0f}));
+            BlendStateWithClipData resolved;
+            AnimationSystem::BuildBlendStateWithClipData(
+                MakeBlendState({clip_a, clip_b}, map_path, {0.5f, 0.5f}, {0.0f, 0.0f}), resolved);
             Check(resolved.clip_count == 2, "P5: both clips resolve");
             Check(resolved.blend_clip.size() == 2u && resolved.blend_clip[0] != nullptr && resolved.blend_clip[1] != nullptr,
                   "P5: both clip pointers are non-null");
@@ -457,10 +463,72 @@ int main(int argc, char** argv)
 
             // Resolving again must hand back the SAME addresses: a fresh copy
             // (or a reloaded clip) every frame is exactly what P0.2 removes.
-            const BlendStateWithClipData again =
-                AnimationSystem::GetBlendStateWithClipData(MakeBlendState({clip_a, clip_b}, map_path, {0.5f, 0.5f}, {0.5f, 0.5f}));
-            Check(again.blend_clip[0] == resolved.blend_clip[0] && again.blend_clip[1] == resolved.blend_clip[1],
+            const void* first_0 = resolved.blend_clip[0];
+            const void* first_1 = resolved.blend_clip[1];
+            AnimationSystem::BuildBlendStateWithClipData(
+                MakeBlendState({clip_a, clip_b}, map_path, {0.5f, 0.5f}, {0.5f, 0.5f}), resolved);
+            Check(resolved.blend_clip[0] == first_0 && resolved.blend_clip[1] == first_1,
                   "P5: a second resolve reuses the same cached clips");
+        }
+
+        // ---- P6: the resolve buffer is reusable and shrinks correctly --------
+        {
+            BlendStateWithClipData reused;
+            AnimationSystem::BuildBlendStateWithClipData(
+                MakeBlendState({clip_a, clip_b}, map_path, {0.5f, 0.5f}, {0.0f, 0.0f}), reused);
+            Check(reused.clip_count == 2 && reused.blend_clip.size() == 2u, "P6: two clips fill two slots");
+
+            // Same buffer, fewer clips: nothing from the previous resolve may
+            // survive, or ApplyAnimation would sample a stale clip.
+            AnimationSystem::BuildBlendStateWithClipData(MakeBlendState({clip_a}, map_path, {1.0f}, {0.0f}), reused);
+            Check(reused.clip_count == 1, "P6: clip_count shrinks to one");
+            Check(reused.blend_clip.size() == 1u && reused.blend_anim_skel_map.size() == 1u &&
+                      reused.blend_ratio.size() == 1u && reused.blend_weight.size() == 1u,
+                  "P6: every parallel array shrinks with it");
+            Check(reused.blend_clip[0] == AnimationSystem::TryLoadAnimation(clip_a).get(),
+                  "P6: the surviving slot holds the right clip");
+        }
+
+        // ---- B3: steady state does not grow its buffers ----------------------
+        //
+        // The other half of "no per-frame allocation". Capacity can only grow,
+        // so a capacity that stops changing after warm-up means the frame loop
+        // stopped allocating -- which is checkable without overriding new.
+        {
+            BlendStateWithClipData steady;
+            const BlendState state = MakeBlendState({clip_a, clip_b}, map_path, {0.5f, 0.5f}, {0.25f, 0.75f});
+            Skeleton steady_skeleton;
+            steady_skeleton.BuildSkeleton(*skeleton_data);
+            AnimationResult steady_result;
+
+            for (int warm = 0; warm < 10; ++warm)
+            {
+                AnimationSystem::BuildBlendStateWithClipData(state, steady);
+                steady_skeleton.ApplyAnimation(steady);
+                steady_skeleton.OutputAnimationResult(steady_result);
+            }
+
+            const size_t clip_capacity = steady.blend_clip.capacity();
+            const size_t map_capacity = steady.blend_anim_skel_map.capacity();
+            const size_t weight_capacity = steady.blend_weight.capacity();
+            const size_t inner_capacity_0 = steady.blend_weight[0].blend_weight.capacity();
+            const size_t inner_capacity_1 = steady.blend_weight[1].blend_weight.capacity();
+            const size_t result_capacity = steady_result.node.capacity();
+
+            for (int frame = 0; frame < 1000; ++frame)
+            {
+                AnimationSystem::BuildBlendStateWithClipData(state, steady);
+                steady_skeleton.ApplyAnimation(steady);
+                steady_skeleton.OutputAnimationResult(steady_result);
+            }
+
+            Check(steady.blend_clip.capacity() == clip_capacity, "B3: blend_clip capacity is stable over 1000 frames");
+            Check(steady.blend_anim_skel_map.capacity() == map_capacity, "B3: bone-map capacity is stable");
+            Check(steady.blend_weight.capacity() == weight_capacity, "B3: blend_weight capacity is stable");
+            Check(steady.blend_weight[0].blend_weight.capacity() == inner_capacity_0 &&
+                      steady.blend_weight[1].blend_weight.capacity() == inner_capacity_1,
+                  "B3: per-clip bone-weight buffers keep their capacity (resize, not assign)");
+            Check(steady_result.node.capacity() == result_capacity, "B3: the palette buffer is stable");
         }
 
         // ---- P4: a missing clip ----------------------------------------------

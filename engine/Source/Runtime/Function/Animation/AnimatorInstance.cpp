@@ -500,7 +500,7 @@ void AnimatorInstance::RebuildBlendState()
         output.blend_ratio.push_back(GetNormalizedTime(m_TransitionTarget));
     }
 
-    // No masks: a crossfade blends every bone. GetBlendStateWithClipData()
+    // No masks: a crossfade blends every bone. BuildBlendStateWithClipData()
     // treats an empty mask list as "all bones enabled".
     output.clip_count = static_cast<int>(output.blend_clip_file_path.size());
     m_BlendState = output;

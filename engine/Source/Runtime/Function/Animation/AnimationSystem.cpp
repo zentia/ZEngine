@@ -110,9 +110,16 @@ namespace
     }
 }  // namespace
 
-BlendStateWithClipData AnimationSystem::GetBlendStateWithClipData(const BlendState& blend_state)
+void AnimationSystem::BuildBlendStateWithClipData(const BlendState& blend_state, BlendStateWithClipData& out_clip_data)
 {
-    BlendStateWithClipData blend_state_with_clip_data;
+    BlendStateWithClipData& blend_state_with_clip_data = out_clip_data;
+
+    // Reused scratch: clear FIRST, always. `blend_weight` is deliberately NOT
+    // cleared here -- it is resized and its inner vectors assigned below, which
+    // is what keeps their capacity across frames.
+    blend_state_with_clip_data.clip_count = 0;
+    blend_state_with_clip_data.blend_clip.clear();
+    blend_state_with_clip_data.blend_anim_skel_map.clear();
     blend_state_with_clip_data.blend_ratio = blend_state.blend_ratio;
 
     // The separate "prime the cache" loops that used to sit here are gone: each
@@ -156,13 +163,18 @@ BlendStateWithClipData AnimationSystem::GetBlendStateWithClipData(const BlendSta
     if (clip_count == 0)
     {
         LOG_ERROR(ZAnimation, "AnimationSystem: blend state has no usable clip");
-        return blend_state_with_clip_data;
+        blend_state_with_clip_data.blend_weight.clear();
+        return;
     }
 
     // Masks are optional: without them every bone takes every clip, which is
     // what "no mask authored" has always meant. The old code dereferenced
     // `blend_masks[0]` unconditionally, so any setup without masks crashed.
-    std::vector<const BoneBlendMask*> blend_masks(clip_count, nullptr);
+    // thread_local rather than a plain local: this is one allocation per frame
+    // per animating object otherwise, and the function never recurses. Cleared
+    // by the assign() below, so no state leaks between frames.
+    thread_local std::vector<const BoneBlendMask*> blend_masks;
+    blend_masks.assign(clip_count, nullptr);
     size_t skeleton_bone_count = 0;
     for (size_t clip_index = 0; clip_index < blend_state.blend_mask_file_path.size() && clip_index < clip_count; ++clip_index)
     {
@@ -201,7 +213,12 @@ BlendStateWithClipData AnimationSystem::GetBlendStateWithClipData(const BlendSta
         }
     }
 
-    blend_state_with_clip_data.blend_weight.assign(clip_count, BoneBlendWeight {});
+    // resize + per-entry assign, NOT `assign(clip_count, BoneBlendWeight{})`:
+    // the latter overwrites every entry with a fresh BoneBlendWeight, throwing
+    // away the inner vector's buffer, so a reused instance reallocated
+    // `clip_count` bone-length float vectors every frame. resize() leaves the
+    // surviving entries alone and assign() refills them in place.
+    blend_state_with_clip_data.blend_weight.resize(clip_count);
     for (size_t clip_index = 0; clip_index < clip_count; ++clip_index)
     {
         blend_state_with_clip_data.blend_weight[clip_index].blend_weight.assign(skeleton_bone_count, 0.0f);
@@ -242,5 +259,4 @@ BlendStateWithClipData AnimationSystem::GetBlendStateWithClipData(const BlendSta
                 enabled ? (AuthoredWeight(blend_state, clip_index) / sum_weight) : 0.0f;
         }
     }
-    return blend_state_with_clip_data;
 }

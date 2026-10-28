@@ -80,9 +80,9 @@ void AnimationComponent::Tick(float delta_time)
     // the authored blend state), so both resume exactly where they were afterwards.
     if (m_HasTimelineOverride)
     {
-        const BlendStateWithClipData& clip_data = AnimationSystem::GetBlendStateWithClipData(m_TimelineBlendState);
-        m_Skeleton.ApplyAnimation(clip_data);
-        m_AnimationRes.animation_result = m_Skeleton.OutputAnimationResult();
+        AnimationSystem::BuildBlendStateWithClipData(m_TimelineBlendState, m_ClipDataScratch);
+        m_Skeleton.ApplyAnimation(m_ClipDataScratch);
+        m_Skeleton.OutputAnimationResult(m_AnimationRes.animation_result);
         return;
     }
 
@@ -92,9 +92,9 @@ void AnimationComponent::Tick(float delta_time)
     if (m_Controller != nullptr)
     {
         m_Animator.Tick(delta_time);
-        const BlendStateWithClipData& clip_data = AnimationSystem::GetBlendStateWithClipData(m_Animator.GetBlendState());
-        m_Skeleton.ApplyAnimation(clip_data);
-        m_AnimationRes.animation_result = m_Skeleton.OutputAnimationResult();
+        AnimationSystem::BuildBlendStateWithClipData(m_Animator.GetBlendState(), m_ClipDataScratch);
+        m_Skeleton.ApplyAnimation(m_ClipDataScratch);
+        m_Skeleton.OutputAnimationResult(m_AnimationRes.animation_result);
         return;
     }
 
@@ -123,9 +123,9 @@ void AnimationComponent::Tick(float delta_time)
         blend_state.blend_ratio[clip_index] = ratio;
     }
 
-    const BlendStateWithClipData& clip_data = AnimationSystem::GetBlendStateWithClipData(blend_state);
-    m_Skeleton.ApplyAnimation(clip_data);
-    m_AnimationRes.animation_result = m_Skeleton.OutputAnimationResult();
+    AnimationSystem::BuildBlendStateWithClipData(blend_state, m_ClipDataScratch);
+    m_Skeleton.ApplyAnimation(m_ClipDataScratch);
+    m_Skeleton.OutputAnimationResult(m_AnimationRes.animation_result);
 }
 
 // ---- Editor-facing slot access ---------------------------------------------
@@ -212,7 +212,7 @@ bool AnimationComponent::SetTimelineOverride(const eastl::string& clip_path, flo
 
     // The override samples through a bone map the component already has: the authored
     // slot 0, else whatever the state machine is currently sampling through. Without
-    // one, GetBlendStateWithClipData() would reject the state (and log) every frame.
+    // one, BuildBlendStateWithClipData() would reject the state (and log) every frame.
     eastl::string bone_map;
     const BlendState& authored = m_AnimationRes.blend_state;
     if (!authored.blend_anim_skel_map_path.empty() && !authored.blend_anim_skel_map_path[0].empty())

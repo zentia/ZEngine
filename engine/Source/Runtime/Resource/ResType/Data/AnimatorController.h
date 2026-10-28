@@ -16,7 +16,7 @@
 //     "if speed > x then run" in every character would be unreviewable;
 //   * the evaluator (AnimatorInstance) feeds the EXISTING mixer: it emits a
 //     BlendState with at most two clips and a crossfade weight, so
-//     `AnimationSystem::GetBlendStateWithClipData()` + `Skeleton::ApplyAnimation`
+//     `AnimationSystem::BuildBlendStateWithClipData()` + `Skeleton::ApplyAnimation`
 //     stay the single sampling path. Nothing new was written that can disagree
 //     with the existing pose math.
 //

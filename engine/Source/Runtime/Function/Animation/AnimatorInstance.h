@@ -10,7 +10,7 @@
 //
 // It does not sample any pose itself. `GetBlendState()` emits at most two
 // clips with a crossfade weight and feeds the existing
-// `AnimationSystem::GetBlendStateWithClipData()` -> `Skeleton::ApplyAnimation`
+// `AnimationSystem::BuildBlendStateWithClipData()` -> `Skeleton::ApplyAnimation`
 // path, so there is exactly one sampler in the engine.
 // =============================================================================
 
@@ -44,7 +44,7 @@ public:
     // ---- Driving ------------------------------------------------------------
     void Tick(float delta_time);
 
-    /// Input for `AnimationSystem::GetBlendStateWithClipData()`. One clip when
+    /// Input for `AnimationSystem::BuildBlendStateWithClipData()`. One clip when
     /// settled, two with weights (1-w, w) during a crossfade.
     const BlendState& GetBlendState() const { return m_BlendState; }
 

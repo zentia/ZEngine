@@ -38,7 +38,16 @@ public:
     static std::shared_ptr<AnimationClip> TryLoadAnimation(const eastl::string& file_path);
     static AnimSkelMap* TryLoadAnimationSkeletonMap(const eastl::string& file_path);
     static BoneBlendMask* TryLoadSkeletonMask(const eastl::string& file_path);
-    static BlendStateWithClipData GetBlendStateWithClipData(const BlendState& blend_state);
+    /// Resolves `blend_state` into `out_clip_data`, which the CALLER owns and
+    /// reuses across frames.
+    ///
+    /// Takes an out parameter rather than returning by value (P0.2): this runs
+    /// once per animating object per frame, and a fresh return value meant the
+    /// four vectors -- plus one bone-length float vector per clip -- were
+    /// reallocated every single frame. `out_clip_data` is cleared on entry, so
+    /// handing in a reused instance is always safe; its CAPACITY survives, which
+    /// is the whole point.
+    static void BuildBlendStateWithClipData(const BlendState& blend_state, BlendStateWithClipData& out_clip_data);
 
     AnimationSystem() = default;
 };

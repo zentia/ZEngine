@@ -3,6 +3,21 @@
 > 日期：2026-10-28 ｜ 状态：**方案稿，未动代码** ｜ 上游：`doc/animation/BLENDTREE_ROOTMOTION_ESTIMATE.md` §3 M0 / P0.2
 > 行号以本文写作时的 `main` 为准。
 
+> **落地记录（commit 3，2026-10-28）—— P0.2 收尾**：H4–H6 已消除。`GetBlendStateWithClipData` 改名并改为 out 参数 `BuildBlendStateWithClipData(in, out&)`（旧的按值返回版本已删，不留两条路径）；`blend_weight` 由 `assign(n, BoneBlendWeight{})` 改 `resize(n)` + 内层 `assign`（保住内层容量）；`blend_masks` 改 `thread_local`；`Skeleton` 新增三个 scratch 成员（accumulator / total_weight / poses）；`OutputAnimationResult` 改 out 参数；`AnimationComponent` 持 `m_ClipDataScratch`（不加 ZPROPERTY）。
+> **P7 哈希仍为 `17764afb96eb6b4b`**；三测试全绿（pipeline 29 / skinning 46 / animator 50，共 125 项 0 失败）。
+> 新增 **P6**（同一缓冲区复用并正确缩容）与 **B3**（预热 10 帧后再跑 1000 帧，6 个缓冲区的 `capacity()` 全部不变）—— B3 就是「稳态零分配」的可验证替代品。
+>
+> 三次提交的 Debug 基准（60 骨 2 片段，同机同配置）：
+>
+> | 片段帧数 | commit 1 | commit 2 | commit 3 | 累计提速 |
+> |---|---|---|---|---|
+> | 30 | 142.736 | 55.257 | **50.868** | 2.81× |
+> | 120 | 153.994 | 55.743 | **51.325** | 3.00× |
+> | 600 | 217.946 | 57.180 | **51.880** | 4.20× |
+> | **30→600 离散度** | 52.7% | 3.5% | **2.0%** | — |
+>
+> 三组 `sink` 校验值三次提交完全相同，数值逐位一致。**P0.2 全部验收项达成。**
+>
 > **落地记录（commit 2，2026-10-28）**：H1–H3 已消除。`blend_clip` 改为 `std::vector<const AnimationClip*>`、`TryLoad*` 改 `const eastl::string&`、新增四个 `FindOrLoad*` 把「先 TryLoad 再 find」的两次 `std::map` 查找并成一次。
 > **P7 哈希仍为 `17764afb96eb6b4b`（逐位不变，契约达成）**；三个动画测试全绿（pipeline 20 / skinning 46 / animator 50，共 116 项 0 失败）。
 > Debug 基准（60 骨 2 片段，与 commit 1 同一台机同一配置）：

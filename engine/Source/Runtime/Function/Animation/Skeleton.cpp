@@ -81,8 +81,13 @@ void Skeleton::ApplyAnimation(const BlendStateWithClipData& blend_state)
     ResetSkeleton();
 
     const size_t bone_count = static_cast<size_t>(m_BoneCount);
-    std::vector<AnimationSkinning::BonePose> accumulator(bone_count, AnimationSkinning::BonePose::Identity());
-    std::vector<float> total_weight(bone_count, 0.0f);
+    // Reused member scratch (P0.2): assign() first, always -- these carry last
+    // frame's values otherwise. Capacity survives, so steady state does not
+    // allocate.
+    m_AccumulatorScratch.assign(bone_count, AnimationSkinning::BonePose::Identity());
+    m_TotalWeightScratch.assign(bone_count, 0.0f);
+    std::vector<AnimationSkinning::BonePose>& accumulator = m_AccumulatorScratch;
+    std::vector<float>& total_weight = m_TotalWeightScratch;
 
     const size_t clip_count = std::min({static_cast<size_t>(std::max(blend_state.clip_count, 0)),
                                         blend_state.blend_clip.size(),
@@ -100,7 +105,7 @@ void Skeleton::ApplyAnimation(const BlendStateWithClipData& blend_state)
         }
 
         // Borrowed from AnimationSystem's cache (P0.2): the entry is valid for
-        // the duration of this Tick. Guarded anyway -- GetBlendStateWithClipData
+        // the duration of this Tick. Guarded anyway -- BuildBlendStateWithClipData
         // never pushes a null, but ApplyAnimation is public and a hand-built
         // BlendStateWithClipData must not be able to fault here.
         const AnimationClip* animation_clip_ptr = blend_state.blend_clip[clip_index];
@@ -111,7 +116,9 @@ void Skeleton::ApplyAnimation(const BlendStateWithClipData& blend_state)
         const AnimationClip& animation_clip = *animation_clip_ptr;
         const float phase = (clip_index < blend_state.blend_ratio.size()) ? blend_state.blend_ratio[clip_index] : 0.0f;
 
-        std::vector<AnimationSkinning::BonePose> poses;
+        // SampleClip assign()s into this, so the reused buffer needs no explicit
+        // clear; it was a fresh local (one allocation per clip per frame) before.
+        std::vector<AnimationSkinning::BonePose>& poses = m_PoseScratch;
         AnimationSkinning::SampleClip(animation_clip, phase, AnimationSkinning::WrapMode::Loop, poses);
 
         const size_t node_count = std::min(poses.size(), anim_skel_map->convert.size());
@@ -168,12 +175,15 @@ void Skeleton::ApplyAnimation(const BlendStateWithClipData& blend_state)
     }
 }
 
-AnimationResult Skeleton::OutputAnimationResult()
+void Skeleton::OutputAnimationResult(AnimationResult& out_result)
 {
-    AnimationResult animation_result;
+    AnimationResult& animation_result = out_result;
+    // clear() keeps the caller's buffer; this used to build a fresh
+    // AnimationResult and return it by value, reallocating every frame.
+    animation_result.node.clear();
     if (!m_Bones)
     {
-        return animation_result;
+        return;
     }
 
     animation_result.node.reserve(static_cast<size_t>(m_BoneCount));
@@ -197,7 +207,6 @@ AnimationResult Skeleton::OutputAnimationResult()
         element.transform = skinning_matrix.toMatrix4x4_();
         animation_result.node.push_back(element);
     }
-    return animation_result;
 }
 
 const Bone* Skeleton::GetBones() const

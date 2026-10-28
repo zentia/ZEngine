@@ -2,6 +2,7 @@
 
 #include "Runtime/Core/Math/Matrix4.h"
 #include "Runtime/Function/Animation/Node.h"
+#include "Runtime/Function/Animation/Skinning.h"
 #include "Runtime/Resource/ResType/Components/Animation.h"
 
 #include <vector>
@@ -27,12 +28,30 @@ private:
     /// writes it, so trusting it silently disables skinning.
     std::vector<Matrix4x4> m_InverseBindMatrices;
 
+    // ---- per-frame scratch (P0.2) ------------------------------------------
+    //
+    // ApplyAnimation runs once per animating object per frame and used to
+    // declare these as locals, i.e. 2 + (one per clip) heap allocations every
+    // frame. Held as members so the buffers survive; every one of them is
+    // assign()-ed at the top of its use, so nothing leaks between frames.
+    //
+    // Not serialized and not part of the skeleton's identity -- BuildSkeleton
+    // leaves them alone.
+    std::vector<AnimationSkinning::BonePose> m_AccumulatorScratch;
+    std::vector<float> m_TotalWeightScratch;
+    std::vector<AnimationSkinning::BonePose> m_PoseScratch;
+
 public:
     ~Skeleton();
 
     void BuildSkeleton(SkeletonData& skeleton_definition);
     void ApplyAnimation(const BlendStateWithClipData& blend_state);
-    AnimationResult OutputAnimationResult();
+
+    /// Fills `out_result` with one skinning matrix per bone. Takes an out
+    /// parameter rather than returning by value (P0.2) because the caller holds
+    /// the result across frames: returning a fresh AnimationResult reallocated
+    /// its vector on every Tick.
+    void OutputAnimationResult(AnimationResult& out_result);
     void ResetSkeleton();
     const Bone* GetBones() const;
     int32_t GetBonesCount() const;
