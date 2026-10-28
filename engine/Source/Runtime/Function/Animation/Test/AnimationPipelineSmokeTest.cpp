@@ -313,6 +313,13 @@ namespace
 
 int main(int argc, char** argv)
 {
+    // Unbuffered: in a Release build every printf below used to vanish. The
+    // engine's shutdown path does not flush the CRT's stdio buffer, so the
+    // ~2 KB of results sat in it and died with the process -- the test still
+    // gated correctly by exit code, but `ctest --output-on-failure` printed
+    // nothing, which makes a CI failure undiagnosable. CI builds Release.
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
+
     bool bench = false;
     int iterations = 2000;
     for (int i = 1; i < argc; ++i)

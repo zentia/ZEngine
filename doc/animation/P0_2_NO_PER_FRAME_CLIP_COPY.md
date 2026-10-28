@@ -3,6 +3,12 @@
 > 日期：2026-10-28 ｜ 状态：**方案稿，未动代码** ｜ 上游：`doc/animation/BLENDTREE_ROOTMOTION_ESTIMATE.md` §3 M0 / P0.2
 > 行号以本文写作时的 `main` 为准。
 
+> **Release 实测（2026-10-28，补齐 commit 3 之后的真实数字）**：**~7.5 µs/次**（60 骨 2 片段，20000 次 ×3 轮：7.35 / 7.56 / 7.58 µs 中位数 7.56）。
+> 此前文档里的 ~50 µs 全部是 **Debug** 数（迭代器调试 + 不内联），**不是可用于定优化目标的数**；Release 比 Debug 快约 6.7 倍。
+> Release 下帧数无关性同样成立：30 帧 7.454 µs vs 600 帧 7.491 µs。**P7 哈希在 Release 下也是 `17764afb96eb6b4b`**，与 Debug 一致。
+> 量级参考：60 FPS 单帧预算 16667 µs，7.5 µs/对象 ⇒ 约 2200 个带动画对象才填满一帧。**采样路径已不是瓶颈，不建议继续在此投入。**
+> ⚠️ 同时修掉测试自身一个缺陷：Release 下引擎关闭路径不 flush CRT 的 stdio 缓冲，约 2 KB 结果全丢（exit code 仍正确，但 `ctest --output-on-failure` 什么都打不出来，CI 恰好跑 Release）。main 入口加 `setvbuf(stdout, nullptr, _IONBF, 0)`。
+>
 > **落地记录（commit 3，2026-10-28）—— P0.2 收尾**：H4–H6 已消除。`GetBlendStateWithClipData` 改名并改为 out 参数 `BuildBlendStateWithClipData(in, out&)`（旧的按值返回版本已删，不留两条路径）；`blend_weight` 由 `assign(n, BoneBlendWeight{})` 改 `resize(n)` + 内层 `assign`（保住内层容量）；`blend_masks` 改 `thread_local`；`Skeleton` 新增三个 scratch 成员（accumulator / total_weight / poses）；`OutputAnimationResult` 改 out 参数；`AnimationComponent` 持 `m_ClipDataScratch`（不加 ZPROPERTY）。
 > **P7 哈希仍为 `17764afb96eb6b4b`**；三测试全绿（pipeline 29 / skinning 46 / animator 50，共 125 项 0 失败）。
 > 新增 **P6**（同一缓冲区复用并正确缩容）与 **B3**（预热 10 帧后再跑 1000 帧，6 个缓冲区的 `capacity()` 全部不变）—— B3 就是「稳态零分配」的可验证替代品。
