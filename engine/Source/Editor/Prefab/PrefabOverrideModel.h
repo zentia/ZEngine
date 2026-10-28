@@ -111,4 +111,15 @@ namespace PrefabOverrideModel
     /// coalesce within a transaction; a record whose list did not change is dropped.
     std::unique_ptr<IUndoRecord> MakeOverrideListUndoRecord(PrefabInstance* instance);
     uint64_t OverrideListUndoKey(const PrefabInstance* instance);
+
+    /// Undo record for the instance's component STRUCTURE: the component list of every
+    /// GameObject it owns, plus the added / removed lists and the corresponding-source
+    /// map. Offer it (once per transaction, keyed by StructureUndoKey) before anything
+    /// that adds, detaches or re-introduces components -- Revert All, a component row's
+    /// Revert -- so Ctrl+Z puts the components back and Ctrl+Y takes them away again.
+    /// Separate from the override-list record because that one only knows property
+    /// overrides. Nothing on these paths destroys a component, so undo/redo just swap
+    /// the lists (parked clones live until the level unloads).
+    std::unique_ptr<IUndoRecord> MakeStructureUndoRecord(PrefabInstance* instance);
+    uint64_t StructureUndoKey(const PrefabInstance* instance);
 }  // namespace PrefabOverrideModel

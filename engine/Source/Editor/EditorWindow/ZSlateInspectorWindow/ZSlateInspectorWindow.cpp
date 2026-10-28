@@ -517,6 +517,19 @@ namespace
             core.AddRecord(PrefabOverrideModel::MakeOverrideListUndoRecord(instance), "Edit Prefab Override");
     }
 
+    /// Undo snapshot of the instance's component structure (see MakeStructureUndoRecord).
+    /// Call before anything that adds / detaches / re-introduces components.
+    void RecordPrefabStructureForUndo()
+    {
+        PrefabInstance* instance = SelectedPrefabInstance();
+        EditorUndoSystem* undo = EditorUndo::GetSystem();
+        if (instance == nullptr || undo == nullptr || !EditorUndo::IsRecording())
+            return;
+        UndoSystem& core = undo->GetCore();
+        if (!core.HasPendingRecord(PrefabOverrideModel::StructureUndoKey(instance)))
+            core.AddRecord(PrefabOverrideModel::MakeStructureUndoRecord(instance), "Edit Prefab Structure");
+    }
+
     void SyncPrefabOverride(Object* target, const std::string& path)
     {
         if (target == nullptr || path.empty())
@@ -3314,6 +3327,7 @@ void ZSlateInspectorWindow::BuildForObject(float scale)
                        EditorUndo::ScopedTransaction undo_scope("Revert Prefab Overrides");
                        RecordOverrideTargetsForUndo(inst, nullptr);
                        RecordPrefabOverridesForUndo();
+                       RecordPrefabStructureForUndo();  // Revert All also detaches / re-introduces components
                        PrefabUtilityEditor::Revert(inst);
                        m_ForceRebuild = true;
                    }))
@@ -3359,11 +3373,16 @@ void ZSlateInspectorWindow::BuildForObject(float scale)
             if (row.kind != Kind::Property)
             {
                 // Component rows: Revert only per row (Apply All commits them on a
-                // Variant). Structural Revert is not on the undo stack yet — the undo
-                // record covers the property-override list, not the component lists.
+                // Variant). Revert is undoable via the structure record below.
                 line->AddSlot(make_button("Revert", [this, row]() {
                          if (PrefabInstance* inst = SelectedPrefabInstance())
+                         {
+                             // Undoable: the component list, the added / removed lists and the
+                             // source map are restored together by one structure record.
+                             EditorUndo::ScopedTransaction undo_scope("Revert Prefab Component");
+                             RecordPrefabStructureForUndo();
                              PrefabOverrideModel::RevertStructuralRow(inst, row);
+                         }
                          m_ForceRebuild = true;
                      }))
                     .AutoSize();

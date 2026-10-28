@@ -2291,6 +2291,148 @@ static void scenario_P19_variant_structure()
     std::filesystem::remove(variant_path, ec);
 }
 
+// A8 follow-up: structural Revert on the undo stack. Drives the real UndoSystem with the
+// same records the Inspector offers (structure + override list in ONE transaction).
+static void scenario_P20_structure_undo()
+{
+    std::fprintf(stderr, "[P20] structural Revert is undoable\n");
+    namespace M = PrefabOverrideModel;
+    std::error_code ec;
+    const std::filesystem::path base_path = "p20_base.prefab";
+    const std::filesystem::path variant_path = "p20_variant.prefab";
+    std::filesystem::remove(base_path, ec);
+    std::filesystem::remove(variant_path, ec);
+
+    ObjectManager* om = GET_SYSTEM(ObjectManager);
+    GameObject* root = MakeGameObject(om, "P20Root");
+    GameObject* child = MakeGameObject(om, "P20Child");
+    MeshRenderer* base_mr = MakeMeshRenderer(om, "Base.mat");
+    if (root == nullptr || child == nullptr || base_mr == nullptr)
+    {
+        Check(false, "P20", "authoring failed");
+        return;
+    }
+    TransformOf(child)->SetParent(TransformOf(root), false);
+    root->addComponent(base_mr);
+    root->SyncSerializedComponents();
+    base_mr->PostLoadResource(root);
+    Check(PrefabUtility::SaveAsPrefabAsset(root, base_path), "P20", "saving the base prefab failed");
+    PrefabAsset* base_asset = PrefabUtility::LoadPrefabAsset(base_path);
+    PrefabAsset* variant = base_asset != nullptr ? PrefabUtilityEditor::CreateVariant(base_asset, variant_path) : nullptr;
+    PrefabInstance* inst = variant != nullptr ? PrefabUtilityEditor::InstantiateVariant(variant) : nullptr;
+    if (inst == nullptr)
+    {
+        Check(false, "P20", "variant instantiation failed");
+        return;
+    }
+    MeshRenderer* src_mr = FirstMeshRenderer(base_asset->GetRootGameObject());
+    GameObject* i_root = inst->GetRootGameObject();
+    GameObject* i_child = FirstChild(i_root);
+
+    // Both a suppressed base component AND an added one, so a single Revert All has to
+    // both re-introduce and detach.
+    Check(PrefabUtilityEditor::SuppressSourceComponent(inst, PPtr<Component>(src_mr)), "P20", "suppress");
+    MeshRenderer* added = MakeMeshRenderer(om, "Added.mat");
+    Check(PrefabUtilityEditor::AddComponentOverride(inst, PPtr<GameObject>(i_child), added), "P20", "add");
+    Check(CountMeshRenderers(i_root) == 0 && CountMeshRenderers(i_child) == 1, "P20", "precondition: root 0, child 1");
+
+    // What the Inspector's Revert All does: both records, one transaction, then Revert.
+    auto Revert_all = [&](UndoSystem& undo) {
+        undo.BeginTransaction("Revert Prefab Overrides");
+        undo.AddRecord(M::MakeOverrideListUndoRecord(inst));
+        undo.AddRecord(M::MakeStructureUndoRecord(inst));
+        PrefabUtilityEditor::Revert(inst);
+        undo.EndTransaction();
+    };
+
+    UndoSystem undo;
+    Revert_all(undo);
+    Check(undo.GetUndoCount() == 1, "P20", "Revert All made exactly one undo step");
+    Check(CountMeshRenderers(i_root) == 1 && CountMeshRenderers(i_child) == 0 && !M::HasOverrides(inst), "P20/revert",
+          "after Revert All the instance matches its source");
+
+    MeshRenderer* reintroduced = FirstMeshRenderer(i_root);
+
+    // ---- Undo: the components, the lists and the pairs all come back ----
+    Check(undo.Undo(), "P20/undo", "Undo succeeded");
+    Check(CountMeshRenderers(i_root) == 0 && CountMeshRenderers(i_child) == 1, "P20/undo",
+          "undo restores the shape: renderer off the root, added renderer back on the child");
+    Check(FirstMeshRenderer(i_child) == added, "P20/undo", "...and it is the SAME added component object, not a copy");
+    Check(inst->GetAddedComponents().size() == 1 && inst->GetRemovedComponents().size() == 1, "P20/undo",
+          "undo restores the added / removed lists");
+    Check(M::ListOverrides(inst).size() == 2, "P20/undo", "...so the Inspector lists both component rows again");
+    int pairs_for_src = 0;
+    for (const auto& e : inst->GetCorrespondingSourceMap())
+        if (e.source_object.GetInstanceID() == src_mr->GetInstanceID())
+            ++pairs_for_src;
+    Check(pairs_for_src == 0, "P20/undo", "the suppressed component has no pair (as before the Revert)");
+
+    // ---- Redo: and back ----
+    Check(undo.Redo(), "P20/redo", "Redo succeeded");
+    Check(CountMeshRenderers(i_root) == 1 && CountMeshRenderers(i_child) == 0 && !M::HasOverrides(inst), "P20/redo",
+          "redo re-applies the Revert");
+    Check(FirstMeshRenderer(i_root) == reintroduced, "P20/redo",
+          "redo brings back the SAME re-introduced clone (it was parked, not destroyed)");
+    pairs_for_src = 0;
+    for (const auto& e : inst->GetCorrespondingSourceMap())
+        if (e.source_object.GetInstanceID() == src_mr->GetInstanceID())
+            ++pairs_for_src;
+    Check(pairs_for_src == 1, "P20/redo", "exactly one pair for the source component after redo");
+
+    // ---- a second round trip must be stable (no growth, no duplication) ----
+    Check(undo.Undo() && undo.Redo() && undo.Undo(), "P20/cycle", "undo / redo / undo");
+    Check(CountMeshRenderers(i_root) == 0 && CountMeshRenderers(i_child) == 1 && inst->GetCorrespondingSourceMap().size() >= 1,
+          "P20/cycle", "state after repeated cycling is still the pre-Revert state");
+    Check(undo.Redo(), "P20/cycle", "final redo");
+
+    // ---- a Revert that changes nothing must not make an undo step ----
+    {
+        const size_t steps = undo.GetUndoCount();
+        undo.BeginTransaction("No-op revert");
+        undo.AddRecord(M::MakeStructureUndoRecord(inst));
+        undo.EndTransaction();
+        Check(undo.GetUndoCount() == steps, "P20/noop", "an unchanged structure must not make an undo step");
+    }
+
+    // ---- per-row Revert is undoable too ----
+    {
+        PrefabInstance* row_inst = PrefabUtilityEditor::InstantiateVariant(variant);
+        GameObject* r_root = row_inst->GetRootGameObject();
+        Check(PrefabUtilityEditor::SuppressSourceComponent(row_inst, PPtr<Component>(src_mr)), "P20/row", "suppress");
+        const auto rows = M::ListOverrides(row_inst);
+        Check(rows.size() == 1 && rows[0].kind == M::OverrideRow::Kind::RemovedComponent, "P20/row", "one removed row");
+        UndoSystem row_undo;
+        row_undo.BeginTransaction("Revert Prefab Component");
+        row_undo.AddRecord(M::MakeStructureUndoRecord(row_inst));
+        Check(rows.size() == 1 && M::RevertStructuralRow(row_inst, rows[0]), "P20/row", "revert the row");
+        row_undo.EndTransaction();
+        Check(CountMeshRenderers(r_root) == 1, "P20/row", "the suppressed renderer is back");
+        Check(row_undo.Undo() && CountMeshRenderers(r_root) == 0 && row_inst->GetRemovedComponents().size() == 1, "P20/row",
+              "undo suppresses it again and restores the removed list");
+        Check(row_undo.Redo() && CountMeshRenderers(r_root) == 1 && row_inst->GetRemovedComponents().empty(), "P20/row",
+              "redo un-suppresses it");
+    }
+
+    // ---- coalescing: two offers of the record in one transaction keep the OLDEST state ----
+    {
+        PrefabInstance* c_inst = PrefabUtilityEditor::InstantiateVariant(variant);
+        UndoSystem cu;
+        cu.BeginTransaction("two offers");
+        Check(M::StructureUndoKey(c_inst) != 0 && M::StructureUndoKey(c_inst) != M::OverrideListUndoKey(c_inst), "P20/key",
+              "the structure key is non-zero and distinct from the override-list key");
+        cu.AddRecord(M::MakeStructureUndoRecord(c_inst));
+        Check(cu.HasPendingRecord(M::StructureUndoKey(c_inst)), "P20/key", "the open transaction reports the pending record");
+        PrefabUtilityEditor::SuppressSourceComponent(c_inst, PPtr<Component>(src_mr));
+        cu.AddRecord(M::MakeStructureUndoRecord(c_inst));  // second offer, AFTER a change: must be ignored
+        cu.EndTransaction();
+        Check(cu.Undo() && CountMeshRenderers(c_inst->GetRootGameObject()) == 1, "P20/key",
+              "undo goes back to the state at the FIRST offer (renderer present), not the second");
+    }
+
+    std::filesystem::remove(base_path, ec);
+    std::filesystem::remove(variant_path, ec);
+}
+
 int main()
 {
     std::fprintf(stderr, "ZEngine prefab end-to-end smoke test\n====================================\n");
@@ -2325,6 +2467,7 @@ int main()
     scenario_P17_inspector_override_model();
     scenario_P18_positional_stream_symmetry();
     scenario_P19_variant_structure();
+    scenario_P20_structure_undo();
 
     std::error_code ec;
     for (const auto& p : {kPrefabPath, kAppliedPath, kSceneBinaryPath, kSceneYamlPath, kLevelYamlPath, kLevelDeletedPath,

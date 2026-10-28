@@ -425,6 +425,143 @@ namespace PrefabOverrideModel
         };
     }  // namespace
 
+    namespace
+    {
+        /// Undo for the STRUCTURE of an instance: which components hang off which of its
+        /// GameObjects, plus the three lists that explain them (added, removed, the
+        /// corresponding-source map). Swap semantics, like OverrideListRecord.
+        ///
+        /// Why swapping raw component pointers is safe: nothing on the Revert path
+        /// destroys a component. A detached one (EditorRemoveComponent) stays alive and
+        /// owned by the object tables, and a re-introduced clone stays alive after an
+        /// undo detaches it -- it is parked, then re-attached by redo. The price is that
+        /// those parked clones live until the level is unloaded. Destroying them would
+        /// make redo impossible, which is the whole point of the record.
+        ///
+        /// Not covered: components that were hooked into other systems when attached
+        /// (a MeshRenderer submits its render state in PostLoadResource). Undo restores
+        /// the component LIST; it does not re-run those hooks, so a renderer that undo
+        /// brings back is attached but not necessarily re-submitted until the next
+        /// property change touches it.
+        class StructureRecord final : public IUndoRecord
+        {
+        public:
+            explicit StructureRecord(PrefabInstance* instance)
+                : m_Instance(instance)
+                , m_Added(instance->GetAddedComponents())
+                , m_Removed(instance->GetRemovedComponents())
+                , m_Map(instance->GetCorrespondingSourceMap())
+            {
+                std::unordered_set<int32_t> seen;
+                for (const auto& entry : instance->GetCorrespondingSourceMap())
+                {
+                    GameObject* go = Cast<GameObject>(static_cast<Object*>(entry.instance_object));
+                    if (go == nullptr || !seen.insert(go->GetInstanceID()).second)
+                        continue;
+                    GoState state;
+                    state.go = PPtr<GameObject>(go);
+                    state.components = go->EditorGetComponentsRef();
+                    m_States.push_back(std::move(state));
+                }
+            }
+
+            void Apply() override
+            {
+                PrefabInstance* instance = static_cast<PrefabInstance*>(m_Instance);
+                if (instance == nullptr)
+                    return;
+                for (GoState& state : m_States)
+                {
+                    if (GameObject* go = static_cast<GameObject*>(state.go))
+                        std::swap(go->EditorGetComponentsRef(), state.components);
+                }
+                std::swap(instance->GetAddedComponents(), m_Added);
+                std::swap(instance->GetRemovedComponents(), m_Removed);
+                std::swap(instance->GetCorrespondingSourceMap(), m_Map);
+            }
+
+            bool Finalize() override
+            {
+                PrefabInstance* instance = static_cast<PrefabInstance*>(m_Instance);
+                if (instance == nullptr)
+                    return false;
+                if (!SamePPtrs(instance->GetAddedComponents(), m_Added) ||
+                    !SamePPtrs(instance->GetRemovedComponents(), m_Removed))
+                    return true;
+                const auto& live_map = instance->GetCorrespondingSourceMap();
+                if (live_map.size() != m_Map.size() ||
+                    !std::equal(live_map.begin(), live_map.end(), m_Map.begin(), [](const auto& a, const auto& b) {
+                        return a.instance_object.GetInstanceID() == b.instance_object.GetInstanceID() &&
+                               a.source_object.GetInstanceID() == b.source_object.GetInstanceID();
+                    }))
+                    return true;
+                for (const GoState& state : m_States)
+                {
+                    GameObject* go = static_cast<GameObject*>(state.go);
+                    if (go == nullptr)
+                        continue;
+                    auto& live = go->EditorGetComponentsRef();
+                    if (live.size() != state.components.size())
+                        return true;
+                    for (size_t i = 0; i < live.size(); ++i)
+                        if (static_cast<Component*>(live[i]) != static_cast<Component*>(state.components[i]))
+                            return true;
+                }
+                return false;  // nothing changed: do not make an undo step
+            }
+
+            uint64_t GetCoalesceKey() const override { return Key(m_Instance.GetInstanceID()); }
+            size_t GetMemoryBytes() const override
+            {
+                size_t n = sizeof(*this) + (m_Added.size() + m_Removed.size()) * sizeof(PPtr<Component>) +
+                           m_Map.size() * sizeof(PrefabInstance::CorrespondingSourceEntry);
+                for (const GoState& s : m_States)
+                    n += sizeof(GoState) + s.components.size() * sizeof(ImmediatePtr<Component>);
+                return n;
+            }
+
+            static uint64_t Key(int32_t id)
+            {
+                // Distinct from OverrideListRecord::Key (0x50524546 "PREF") and the
+                // Component / Transform record keys.
+                return (uint64_t {0x50535452u} << 32) | static_cast<uint32_t>(id);  // "PSTR"
+            }
+
+        private:
+            struct GoState
+            {
+                PPtr<GameObject> go;
+                std::vector<ImmediatePtr<Component>> components;
+            };
+
+            static bool SamePPtrs(const std::vector<PPtr<Component>>& a, const std::vector<PPtr<Component>>& b)
+            {
+                return a.size() == b.size() &&
+                       std::equal(a.begin(), a.end(), b.begin(), [](const PPtr<Component>& x, const PPtr<Component>& y) {
+                           return x.GetInstanceID() == y.GetInstanceID();
+                       });
+            }
+
+            PPtr<PrefabInstance> m_Instance;
+            std::vector<GoState> m_States;
+            std::vector<PPtr<Component>> m_Added;
+            std::vector<PPtr<Component>> m_Removed;
+            std::vector<PrefabInstance::CorrespondingSourceEntry> m_Map;
+        };
+    }  // namespace
+
+    std::unique_ptr<IUndoRecord> MakeStructureUndoRecord(PrefabInstance* instance)
+    {
+        if (instance == nullptr)
+            return nullptr;
+        return std::make_unique<StructureRecord>(instance);
+    }
+
+    uint64_t StructureUndoKey(const PrefabInstance* instance)
+    {
+        return instance != nullptr ? StructureRecord::Key(instance->GetInstanceID()) : 0;
+    }
+
     std::unique_ptr<IUndoRecord> MakeOverrideListUndoRecord(PrefabInstance* instance)
     {
         if (instance == nullptr)
