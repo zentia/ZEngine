@@ -70,6 +70,8 @@ e2e_args() {
       --extra-source engine/Source/Runtime/Function/Framework/Component/Camera/CameraComponent.cpp
       --extra-source engine/Source/Runtime/Function/Framework/Component/Particle/ParticleComponent.cpp
       --extra-source engine/Source/Runtime/Function/Framework/Component/Rigidbody/RigidbodyComponent.cpp
+      --extra-source engine/Source/Runtime/Function/Framework/Component/Motor/MotorComponent.cpp
+      --extra-source engine/Source/Runtime/Function/Controller/CharacterController.cpp
       --extra-source engine/Source/Runtime/Function/Framework/Component/Timeline/TimelineComponent.cpp
       --extra-source "${G}/GameObject.gen.cpp"
       --extra-source "${G}/Transform.gen.cpp"
@@ -91,6 +93,7 @@ e2e_args() {
       --exclude-archive-member BaseRenderer.gen.cpp.o
       --exclude-archive-member CameraComponent.cpp.o --exclude-archive-member ParticleComponent.cpp.o
       --exclude-archive-member RigidbodyComponent.cpp.o --exclude-archive-member TimelineComponent.cpp.o
+      --exclude-archive-member MotorComponent.cpp.o --exclude-archive-member CharacterController.cpp.o
     )
 }
 
@@ -133,8 +136,8 @@ run_e2e() {
     if ! echo "${out}" | grep -q "checks,"; then echo "(no result line — the test crashed or did not link)"; status=1; fi
     # In `types` mode every runtime type is registered, so a skipped P21 means the link line
     # lost Camera / Particle -- and the null-system regression guard would silently vanish.
-    if [ "${1:-}" = "types" ] && echo "${out}" | grep -qE "P2[12] skipped"; then
-        echo "(P21/P22 was skipped in types mode: CameraComponent / ParticleComponent are not registered)"; status=1
+    if [ "${1:-}" = "types" ] && echo "${out}" | grep -qE "P2[123] skipped"; then
+        echo "(P21/P22/P23 was skipped in types mode: CameraComponent / ParticleComponent are not registered)"; status=1
     fi
 }
 

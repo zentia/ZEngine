@@ -621,6 +621,11 @@ public:
 
 33. **本机回归的已知断点（2026-10-29，与相机改动无关）**：`verify_prefab_native.sh runtime` 与 `check_ts_chain.py` 在 rebase 到上游脚本层改动（`33e0e33`，ScriptingManager / 编辑器脚本 P0–P5）之后**失败**，且在**不含相机提交**的 `33e0e33` 上复现——归因是上游改动 + 本机陈旧的 `bin/libZRuntime.a`：先是 33 个重复符号（现编的 `ScriptEnv`/`ScriptBinding` 等没排除归档里的同名成员，已补），补完后 `ScriptingManager::Initialize` 跳到地址 0。用新加的 `run_smoke_test.py --link-map` 求得测试真正链入的归档成员 225 个，其中 **35 个自归档以来改过**（含 `RenderSystem` / `WindowSystem` / Lumen / Nanite…，因为 `RegisterRuntime` 的 `REGISTER_SYSTEM` 把整个引擎的系统都拉进来了），重编它们会引入 Objective-C++ / Metal 头文件（`NSObjCRuntime.h`），本机编不过——所以**没有**把它们接进脚本。根治只能是新的 cmake 构建出新归档，本机没有 cmake/ninja。仍然可用的：`verify_prefab_native.sh e2e|types`（407 项）不受影响，P18–P22 都在这两段里。**受影响的：runtime 套件（N 组 34 项、链级结构）和 TS 全链路，在这台机器上现在无法验证。**
 
+34. **MotorComponent / CharacterController 的泄漏（P23）**：§9.4.1 32 里的『疑似』现在是**实测**的。`MotorComponent::PostLoadResource` 用 `NewObject` 造 `Capsule`，`CharacterController::Initialize` 再 `NewObject` 造 `RigidBodyShape`，二者只被 `PPtr` 持有、没有任何地方释放（`~CharacterController() = default`）；而且 `PostLoadResource` 可重入（prefab 重实例化），旧控制器被直接覆盖——**第二个**泄漏点。测试先红：重载累积、销毁不释放，3 项失败（前提『计数器看得到这些对象』的断言是过的，所以红是真泄漏）。
+    修法：`CharacterController` 成为 `Capsule` 与 `RigidBodyShape` 的所有者（`Initialize` 接管传入的 capsule，文档里写明），析构与重入时用 `MemoryManager::DestroyObject` 释放（`NewObject` 的配对）；拷贝构造/赋值删除（拥有一对裸堆对象，拷贝即双释放）。`MotorComponent` 重载时先 `delete` 旧控制器，析构**改按指针判断**而不是按 `m_ControllerType`（指针才是『有没有东西要释放』的真相，`delete nullptr` 安全）。通过 `PPtr` 解析而非缓存裸指针来释放：已销毁的堆对象解析为 null，重复释放是 no-op。
+    **7 个变异：全部抓住，但其中 2 个第一次存活，且原因不同于上次**：M5（重新采用自己已持有的 capsule 时仍释放它→use-after-free）我**事先预判**会存活——测试里每次都给新 capsule，`keep_capsule` 分支没人走；M4（`Initialize` 重入不释放）我**没预判到**：`MotorComponent` 重载时已经把整个控制器 `delete` 了，`new CharacterController()` 永远是首次 `Initialize`，里层的重入路径经由外层**根本不可达**——两层防护，外层先挡掉了。补了直接对同一个 `CharacterController` 调两次 `Initialize` 的用例（换新 capsule / 重新采用同一个）才都转红。
+    **没覆盖到的**：`CharacterController::move` 的物理查询路径（`IsOverlap`）没有跑——本测试只管生命周期；`Capsule` 在 `PhysicsControllerConfig` 里是**内联值成员**（没有 instance ID），`MotorComponent` 是克隆值后交出去的，这点没改。
+
 **未验证**：编辑器里真的拖一个 Prefab 进场景、在 Inspector 上改值后 Apply、保存场景再打开（UI 链路本身是第 3 条，未接）。`Level::load(url)` 带物理场景的完整路径未在无头环境跑过（它与 `LoadObjectGraph` 的差别只在建物理场景）。**Inspector 的 ZSlate 渲染**（结构行的按钮、can_apply 的显隐）只过了 `-fsyntax-only`，没有上机看。
 
 

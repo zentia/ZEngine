@@ -88,6 +88,7 @@
 #include "Runtime/Core/Serialize/TransferFunctions/StreamedBinaryRead.h"
 #include "Runtime/Function/Framework/Component/Camera/CameraComponent.h"
 #include "Runtime/Function/Framework/Component/Mesh/MeshRenderer.h"
+#include "Runtime/Function/Framework/Component/Motor/MotorComponent.h"
 #include "Runtime/Function/Framework/Component/Particle/ParticleComponent.h"
 #include "Runtime/Function/Framework/Component/Rigidbody/RigidbodyComponent.h"
 #include "Runtime/Function/Framework/Component/Timeline/TimelineComponent.h"
@@ -2718,6 +2719,118 @@ static void scenario_P22_camera_default_parameter_lifetime()
     }
 }
 
+// MotorComponent / CharacterController: who frees the Capsule and the RigidBodyShape they
+// create (doc/PrefabSystem_Design.md 9.4.1 #34). Both come from ObjectManager::NewObject, i.e. a
+// registered mimalloc object with an instance ID; before this fix nothing ever released them, and
+// PostLoadResource could run twice (a prefab re-instantiate) and overwrite the controller too.
+static void scenario_P23_motor_controller_lifetime()
+{
+    std::fprintf(stderr, "[P23] motor controller: capsule / shape lifetime\n");
+    ObjectManager* om = GET_SYSTEM(ObjectManager);
+    if (TypeManager::GetInstance().ClassNameToType("MotorComponent") == nullptr ||
+        TypeManager::GetInstance().ClassNameToType("PhysicsControllerConfig") == nullptr)
+    {
+        std::fprintf(stderr, "    (P23 skipped: MotorComponent / PhysicsControllerConfig are not registered in this link -- run `verify_prefab_native.sh types`)\n");
+        return;
+    }
+
+    // Count live objects of a type by scanning the instance-ID table through a probe:
+    // every Capsule / RigidBodyShape the code under test creates must be gone afterwards.
+    auto CountLive = [&](const Type* type) {
+        int n = 0;
+        for (int32_t id = -1; id > -4000; --id)
+        {
+            Object* o = om->IDToPointer(id);
+            if (o != nullptr && o->GetType() == type)
+                ++n;
+        }
+        return n;
+    };
+    const Type* capsule_type = TypeOf<Capsule>();
+    const Type* shape_type = TypeOf<RigidBodyShape>();
+
+    auto MakeMotor = [&](const char* name, GameObject*& go_out, PhysicsControllerConfig*& cfg_out) -> MotorComponent* {
+        go_out = MakeGameObject(om, name);
+        if (go_out == nullptr)
+            return nullptr;
+        go_out->AddComponentByTypeName("Transform");
+        auto* motor = static_cast<MotorComponent*>(om->Produce(TypeOf<MotorComponent>(), 0));
+        cfg_out = static_cast<PhysicsControllerConfig*>(om->Produce(TypeOf<PhysicsControllerConfig>(), 0));
+        if (motor == nullptr || cfg_out == nullptr)
+            return nullptr;
+        om->AllocateAndAssignInstanceID(motor);
+        om->AllocateAndAssignInstanceID(cfg_out);
+        cfg_out->m_CapsuleShape.m_Radius = 0.4f;
+        cfg_out->m_CapsuleShape.m_HalfHeight = 0.9f;
+        motor->GetMotorResMutable().m_ControllerConfig = PPtr<ControllerConfig>(cfg_out);
+        go_out->addComponent(motor);
+        return motor;
+    };
+
+    const int base_capsules = CountLive(capsule_type);
+    const int base_shapes = CountLive(shape_type);
+
+    // ---- 1. one load creates exactly one capsule and one shape ----
+    GameObject* go = nullptr;
+    PhysicsControllerConfig* cfg = nullptr;
+    MotorComponent* motor = MakeMotor("P23Motor", go, cfg);
+    Check(motor != nullptr, "P23/create", "producing a motor and its config");
+    if (motor == nullptr)
+        return;
+    motor->PostLoadResource(go);
+    Check(CountLive(capsule_type) == base_capsules + 1 && CountLive(shape_type) == base_shapes + 1, "P23/create",
+          "loading a physics motor creates one capsule and one shape (premise: they are visible to the counter)");
+
+    // ---- 2. loading AGAIN replaces them instead of stacking another set ----
+    motor->PostLoadResource(go);
+    Check(CountLive(capsule_type) == base_capsules + 1 && CountLive(shape_type) == base_shapes + 1, "P23/reload",
+          "a second PostLoadResource frees the previous controller's objects (no accumulation)");
+
+    // ---- 3. destroying the motor frees them ----
+    go->EditorRemoveComponent(motor);
+    om->Destroy(motor);
+    Check(CountLive(capsule_type) == base_capsules, "P23/destroy", "destroying the motor frees its capsule");
+    Check(CountLive(shape_type) == base_shapes, "P23/destroy", "...and its rigid body shape");
+
+    // ---- 3b. CharacterController on its own: re-Initialize, and re-adopting the same capsule ----
+    // Through MotorComponent these two paths are unreachable (the motor deletes the whole
+    // controller on reload, so Initialize is always the first call on a fresh one) -- which is
+    // exactly why mutations of them survived until they were driven directly.
+    {
+        auto NewCapsule = [&]() { return om->NewObject<Capsule>(); };
+        const int c0 = CountLive(capsule_type), s0 = CountLive(shape_type);
+        auto* controller = new CharacterController();
+
+        Capsule* first_capsule = NewCapsule();
+        controller->Initialize(PPtr<Capsule>(first_capsule));
+        Check(CountLive(capsule_type) == c0 + 1 && CountLive(shape_type) == s0 + 1, "P23/ctrl",
+              "Initialize adopts the capsule and builds one shape");
+
+        // (a) a DIFFERENT capsule: the old capsule and the old shape go, the new capsule stays.
+        Capsule* second_capsule = NewCapsule();
+        const int32_t first_id = first_capsule->GetInstanceID();
+        controller->Initialize(PPtr<Capsule>(second_capsule));
+        Check(om->IDToPointer(first_id) == nullptr, "P23/ctrl", "re-Initialize with a new capsule frees the previous capsule");
+        Check(CountLive(capsule_type) == c0 + 1 && CountLive(shape_type) == s0 + 1, "P23/ctrl",
+              "...and the previous shape (one capsule and one shape live, not two)");
+
+        // (b) the SAME capsule it already owns: the shape is rebuilt, the capsule must SURVIVE.
+        const int32_t second_id = second_capsule->GetInstanceID();
+        controller->Initialize(PPtr<Capsule>(second_capsule));
+        Check(om->IDToPointer(second_id) != nullptr, "P23/ctrl",
+              "re-adopting the capsule it already owns does not free it (no use-after-free)");
+        Check(CountLive(capsule_type) == c0 + 1 && CountLive(shape_type) == s0 + 1, "P23/ctrl",
+              "...and still exactly one capsule and one shape");
+
+        delete controller;
+        Check(CountLive(capsule_type) == c0 && CountLive(shape_type) == s0, "P23/ctrl", "destroying the controller frees both");
+    }
+
+    // ---- 4. the config the motor READ from is not ours to free ----
+    Check(om->IDToPointer(cfg->GetInstanceID()) != nullptr, "P23/destroy", "the controller config (not created by the motor) is untouched");
+    om->Destroy(cfg);
+}
+
 int main()
 {
     std::fprintf(stderr, "ZEngine prefab end-to-end smoke test\n====================================\n");
@@ -2755,6 +2868,7 @@ int main()
     scenario_P20_structure_undo();
     scenario_P21_load_without_systems();
     scenario_P22_camera_default_parameter_lifetime();
+    scenario_P23_motor_controller_lifetime();
 
     std::error_code ec;
     for (const auto& p : {kPrefabPath, kAppliedPath, kSceneBinaryPath, kSceneYamlPath, kLevelYamlPath, kLevelDeletedPath,
