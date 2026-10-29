@@ -662,6 +662,33 @@ public:
     分别靠『从文件重新加载』和『被移除的对象占着最高 fileID』补上；S10（从 header 而非图内最大值起算）是等价变异——在测试覆盖到的情形里两道防线的落点相同，
     只有『某个对象被销毁、槽空出来』时才会分叉，本机没有这种路径。
 
+36. **结构性 Revert 进撤销栈（P25）**：用户要求做这个功能，但**先读 AGENTS.md §2.32 的结果显示它上游已经做完了**
+    （`e8b81c9`，2026-10-28，143 行 P20 测试），而且逐条符合 §2.32：记录是**交换式**的（`Apply()` 把存储值与活值互换，天然自逆）、
+    `Finalize()` 对"什么都没变"返回 false 从而丢弃空记录、只按 InstanceID 解析不用裸指针、组件快照经 `Transfer()` 落 YAML DOM 并配
+    `ScopedPPtrResolver(nullptr)`、coalesce 键与属性记录区分（`"PSTR"`）、Inspector 在**改动之前**记录。因此没有重写，只补现状对不上测试的组合。
+    ⚠️ 教训：**"未做"清单里的一项，动手前先读约定 + 查一遍代码**，否则会重复实现一遍已经存在且更合规的版本。
+
+    **真正的缺口是 P24 之后的新组合**：普通 prefab 结构性 Apply（往源图里塞一个刚领到 fileID 的新对象）之后，
+    再抑制这个源组件并 Revert、然后 undo/redo —— P20 只测了 Variant 路径，从没碰过"源对象是 Apply 现造的"这种情况。
+    测试 P25 的流程：造普通 prefab（root 上一个 Kept、子节点上一个 Doomed）→ `InstantiateAsPrefab` →
+    `AddComponentOverride` + `ApplyAll`（走 P24 那条路）→ `FindSourceForInstance` → `SuppressSourceComponent` →
+    `BeginTransaction` + `AddRecord(MakeStructureUndoRecord)` + `AddRecord(MakeOverrideListUndoRecord)` + `Revert` + `EndTransaction`
+    → 断言**只有 1 步**撤销 → Undo → Redo → 再来一轮 → 最后从"已撤销"的状态**再 Revert 一次**。
+
+    ⚠️ **测试第一版转红是我自己写错了断言，不是实现有问题**：我断言"undo 之后活组件仍然配对"，而
+    `SuppressSourceComponent` **故意**调了 `ErasePairForInstanceObject`——保留配对会让『有对应源』不再蕴含『还挂着』，
+    Unsuppress 时还会把同一个源配对两次。所以**被抑制的组件按设计就是 UNPAIRED**。改成断言这个按设计的不配对状态，
+    并且**加一条后果检查**：从撤销态再 Revert 一次必须恰好带回 **1 份**（不是 2 份也不是 0 份）——
+    正是这条后果检查抓住了变异 M2（不交换 corresponding-source map），而"状态断言"单独一条抓不住。
+
+    **4 个变异全部抓住，0 存活**：M1 不交换组件列表（P20×5 + P25×4）、M2 不交换对应源映射（P20×1 + P25/undo + P25/again）、
+    M3 抑制时保留配对（P19×6 + P20×2 + P24×1 + P25×2）、M4 Revert 跳过 `ReconcileStructure`（P19×4 + P20×3 + P25×4）。
+    检查数 e2e 420→448、types 444→472（+28）。
+
+    顺带把 §2.32 补上与现状一致的一条：prefab 覆盖有**两个**自己的撤销记录（属性列表 / 组件结构），结构记录服务 Revert All 与单行 Revert；
+    undo/redo 永不销毁组件（被摘下的先停靠、回滚时再挂回）；**结构性 Apply 刻意不入撤销栈**——它改写磁盘上的资产，
+    而资产编辑不在撤销栈范围内（与 Unity 一致）。
+
 **未验证**：编辑器里真的拖一个 Prefab 进场景、在 Inspector 上改值后 Apply、保存场景再打开（UI 链路本身是第 3 条，未接）。`Level::load(url)` 带物理场景的完整路径未在无头环境跑过（它与 `LoadObjectGraph` 的差别只在建物理场景）。**Inspector 的 ZSlate 渲染**（结构行的按钮、can_apply 的显隐）只过了 `-fsyntax-only`，没有上机看。
 
 
