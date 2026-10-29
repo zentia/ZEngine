@@ -100,24 +100,10 @@ e2e_args() {
 # `types` mode: add every gen.cpp and every stale class source, computed by
 # native_full_link_args.py, minus whatever e2e_args already lists (a source compiled
 # twice is a duplicate-symbol link error). See that script for why both are needed.
-# UPSTREAM BREAK (2026-10-29, 155ff0d "docs(gpuspine)"): that commit deleted
-# engine/Source/Runtime/Function/Render/Spine/* (SpineGpuAnimationState.h among them) while
-# SpineRenderer.cpp still includes them, so recompiling it is impossible -- and it is stale
-# relative to bin/libZRuntime.a, which is what puts it in this list. Keep the ARCHIVE member
-# instead: nothing here tests Spine. Remove this filter once the Spine headers are restored
-# (or SpineRenderer.cpp stops including them).
-# Still broken as of 3c4fdf8, just renamed: Render/Spine/ now holds only SpineGpuRenderer.h/.cpp,
-# while SpineRenderer.cpp includes the non-existent SpineGpuAnimationState.h / SpineGpuAssetFile.h.
-spine_is_broken_upstream() {
-    # Both halves, or neither: the archive's SpineRenderer.cpp.o predates OnOwnerActiveChanged,
-    # which the freshly generated SpineRenderer.gen.cpp calls -- keeping one and dropping the
-    # other is a "symbol not found in flat namespace" at launch.
-    case "$(basename -- "${1}")" in
-        SpineRenderer.cpp | SpineRenderer.cpp.o | SpineRenderer.gen.cpp | SpineRenderer.gen.cpp.o) return 0 ;;
-    esac
-    return 1
-}
-
+# (Used to carry a `spine_is_broken_upstream` filter: 155ff0d moved the Spine core out to the
+# GPUSpine repo without registering the submodule, so SpineRenderer.cpp could not compile and had
+# to stay on its stale archive member. Removed 2026-10-29 -- GPUSpine is cloned and the include
+# paths are fixed, so ninja/CZRuntime builds it like anything else.)
 add_full_type_args() {
     local line kind
     local -a pending=()
@@ -131,7 +117,6 @@ add_full_type_args() {
         if [ "${present}" -eq 0 ] && [ "${kind}" = "--extra-source" ]; then
             for a in "${E2E_ARGS[@]}"; do [ "$(basename -- "${a}")" = "$(basename -- "${value}")" ] && present=1; done
         fi
-        spine_is_broken_upstream "${value}" && continue
         [ "${present}" -eq 0 ] && E2E_ARGS+=("${kind}" "${value}")
     done
 }

@@ -11,8 +11,11 @@
 #include "Runtime/Function/Render/RenderCamera.h"
 #include "Runtime/Function/Render/RenderSystem.h"
 #include "Runtime/Function/Render/RenderType.h"
-#include "Runtime/Function/Render/Spine/SpineGpuAnimationState.h"
-#include "Runtime/Function/Render/Spine/SpineGpuAssetFile.h"
+// Spine 的核心已搬到独立仓库 GPUSpine（engine/Libraries/GPUSpine，头文件在它的
+// Runtime/ 下），Render/Spine/ 里只剩 ZEngine 侧的渲染器包装。这两个头还按老路径
+// 引会 file not found，整棵树的 fresh build 都过不去（2026-10-29）。
+#include "GPUSpine/SpineGpuAnimationState.h"
+#include "GPUSpine/SpineGpuAssetFile.h"
 #include "Runtime/Function/Render/Spine/SpineGpuRenderer.h"
 #include "Runtime/Project/ProjectInfo.h"
 #include "Runtime/Resource/Asset/AssetManager.h"
