@@ -2,8 +2,6 @@
 
 #include "Application/Application.h"
 #include "Runtime/BaseClasses/GameObject.h"
-#include "Runtime/BaseClasses/ObjectManager.h"
-#include "Runtime/Core/Serialize/TransferUtility.h"
 #include "Runtime/Core/Base/Macro.h"
 #include "Runtime/Core/Math/MathHeaders.h"
 #include "Runtime/Core/Memory/MemoryManager.h"
@@ -17,64 +15,20 @@
 #include "Runtime/Function/Render/RenderSystem.h"
 #include "Runtime/BaseClasses/Cast.h"
 
-#include <mutex>
-#include <unordered_map>
-#include <vector>
-
 namespace
 {
-    /// Which camera owns which default parameter (parameter instance ID -> owning camera).
-    /// The parameter itself carries no owner and file-loaded parameters look identical to a
-    /// default one from the outside, so "who frees this" needs its own record. A side table
-    /// rather than a field on CameraParameter: no change to a serialized resource class.
-    struct OwnedParameterRegistry
-    {
-        std::mutex mutex;
-        std::unordered_map<int32_t, const void*> owner_of;
-        static OwnedParameterRegistry& Get()
-        {
-            static OwnedParameterRegistry registry;
-            return registry;
-        }
-        void Set(int32_t parameter_id, const void* owner)
-        {
-            std::lock_guard<std::mutex> lock(mutex);
-            owner_of[parameter_id] = owner;
-        }
-        void Erase(int32_t parameter_id)
-        {
-            std::lock_guard<std::mutex> lock(mutex);
-            owner_of.erase(parameter_id);
-        }
-        bool IsOwnedByAnother(int32_t parameter_id, const void* me)
-        {
-            std::lock_guard<std::mutex> lock(mutex);
-            auto it = owner_of.find(parameter_id);
-            return it != owner_of.end() && it->second != me;
-        }
-    };
-
-    /// Build the default parameter for `mode` THROUGH ObjectManager::NewObject, which gives it
-    /// a real (negative) instance ID. A bare MemoryManager::CreateObject leaves the ID at 0,
-    /// and PPtr<T>(ptr) keys on the ID -- so the old code stored a PPtr that read back NULL,
-    /// PostLoadResource returned early ("camera parameter is null") and the render hand-off
-    /// behind it was dead code. Pairing: NewObject is mimalloc, released with
-    /// MemoryManager::DestroyObject (see ReleaseOwnedDefaultParameter).
     CameraParameter* createDefaultCameraParameter(CameraMode mode)
     {
-        ObjectManager* object_manager = GET_SYSTEM(ObjectManager);
-        if (object_manager == nullptr)
-            return nullptr;
         switch (mode)
         {
             case CameraMode::third_person:
-                return object_manager->NewObject<ThirdPersonCameraParameter>();
+                return MemoryManager::CreateObject<ThirdPersonCameraParameter>();
             case CameraMode::free:
-                return object_manager->NewObject<FreeCameraParameter>();
+                return MemoryManager::CreateObject<FreeCameraParameter>();
             case CameraMode::first_person:
             case CameraMode::invalid:
             default:
-                return object_manager->NewObject<FirstPersonCameraParameter>();
+                return MemoryManager::CreateObject<FirstPersonCameraParameter>();
         }
     }
 }  // namespace
@@ -94,77 +48,8 @@ namespace
     }
 }  // namespace
 
-CameraComponent::~CameraComponent()
-{
-    ReleaseOwnedDefaultParameter();
-}
-
-void CameraComponent::ReleaseOwnedDefaultParameter()
-{
-    if (m_OwnedDefaultParameterId == 0)
-        return;
-
-    // Only destroy it if it is still THE parameter this component holds. If something
-    // replaced it (Initialize with an external one, a field edit), whoever replaced it
-    // owns the new one and the default is already unreachable from here -- but it is
-    // still ours to free, so look it up by the remembered ID rather than by the PPtr.
-    ObjectManager* object_manager = GET_SYSTEM(ObjectManager);
-    Object* owned = object_manager != nullptr ? object_manager->IDToPointer(m_OwnedDefaultParameterId) : nullptr;
-    OwnedParameterRegistry::Get().Erase(m_OwnedDefaultParameterId);
-    // Clearing the ID is belt-and-braces: heap IDs only count down and are never reused
-    // (ObjectManager::m_NextHeapInstanceID), so a second pass would look up a de-registered ID
-    // and find nothing. Kept so correctness does not rest on that external invariant.
-    m_OwnedDefaultParameterId = 0;
-    if (owned != nullptr)
-    {
-        // NewObject -> MemoryManager::CreateObject (mimalloc) -> MemoryManager::DestroyObject.
-        MemoryManager::DestroyObject(owned);
-    }
-}
-
-void CameraComponent::CreateOwnedDefaultParameter()
-{
-    ReleaseOwnedDefaultParameter();
-    CameraParameter* created = createDefaultCameraParameter(m_CameraMode);
-    m_CameraRes.m_Parameter = PPtr<CameraParameter>(created);
-    m_OwnedDefaultParameterId = created != nullptr ? created->GetInstanceID() : 0;
-    if (m_OwnedDefaultParameterId != 0)
-        OwnedParameterRegistry::Get().Set(m_OwnedDefaultParameterId, this);
-}
-
-void CameraComponent::DetachFromParameterOwnedElsewhere()
-{
-    CameraParameter* shared = m_CameraRes.m_Parameter;
-    if (shared == nullptr || shared->GetInstanceID() == m_OwnedDefaultParameterId)
-        return;
-    if (!OwnedParameterRegistry::Get().IsOwnedByAnother(shared->GetInstanceID(), this))
-        return;
-
-    // Copy the values into a fresh NewObject of the same type (NOT CloneObjectViaSerialization:
-    // that allocates with Produce / `new`, which would not pair with the DestroyObject this
-    // camera frees its default with). If the shared parameter is not the type this camera's
-    // mode asks for, the fresh default stands -- the same rule OnSerializedFieldsUpdated uses.
-    CameraParameter* fresh = createDefaultCameraParameter(m_CameraMode);
-    if (fresh == nullptr)
-        return;
-    if (fresh->GetType() == shared->GetType())
-    {
-        std::vector<uint8_t> bytes;
-        TransferUtility::WriteObjectToVector(*shared, bytes);
-        if (!bytes.empty())
-            TransferUtility::ReadObjectFromVector(*fresh, bytes);
-    }
-    ReleaseOwnedDefaultParameter();  // normally nothing: a clone owns no default yet
-    m_CameraRes.m_Parameter = PPtr<CameraParameter>(fresh);
-    m_OwnedDefaultParameterId = fresh->GetInstanceID();
-    OwnedParameterRegistry::Get().Set(m_OwnedDefaultParameterId, this);
-}
-
 void CameraComponent::Initialize(CameraMode mode, CameraParameter* parameter)
 {
-    // An externally supplied parameter replaces whatever default we made; that default is
-    // ours to free, the new one is not.
-    ReleaseOwnedDefaultParameter();
     m_CameraMode = mode;
     m_CameraRes.m_Parameter = PPtr<CameraParameter>(parameter);
 }
@@ -205,7 +90,7 @@ void CameraComponent::OnSerializedFieldsUpdated()
 
     if (should_reset_parameter)
     {
-        CreateOwnedDefaultParameter();
+        m_CameraRes.m_Parameter = PPtr<CameraParameter>(createDefaultCameraParameter(m_CameraMode));
         parameter = m_CameraRes.m_Parameter;
     }
 
@@ -243,11 +128,7 @@ void CameraComponent::PostLoadResource(GameObject* parent_object)
     }
     if (m_CameraRes.m_Parameter == nullptr)
     {
-        CreateOwnedDefaultParameter();
-    }
-    else
-    {
-        DetachFromParameterOwnedElsewhere();
+        m_CameraRes.m_Parameter = PPtr<CameraParameter>(createDefaultCameraParameter(m_CameraMode));
     }
 
     if (m_CameraRes.m_Parameter == nullptr)

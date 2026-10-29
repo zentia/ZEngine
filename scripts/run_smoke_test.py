@@ -192,10 +192,6 @@ def main() -> int:
                              "目标文件都定义同一批符号就是 duplicate symbol，而该成员仍会因为"
                              "别处引用了它独有的旧符号被拉进来。实现是复制一份 .a 到 /tmp 再 "
                              "ar -d（按成员列表缓存，只做一次）。")
-    parser.add_argument("--link-map", metavar="PATH", default=None,
-                        help="让链接器写一份 map 文件（-Wl,-map）。里面的 '[ N] path/lib.a(Member.o)' 列表就是"
-                             "**这个测试真正链进来的归档成员**——判断『哪些过期成员需要重编』时看它，"
-                             "而不是靠猜或全部重编。")
     args = parser.parse_args()
 
     test_path = Path(args.test_source)
@@ -225,8 +221,6 @@ def main() -> int:
         link_dir = prepare_pruned_lib_dir(args.exclude_archive_member)
     cmd.append(f"-L{link_dir}")
     cmd.append(f"-F{BIN_DIR}")
-    if args.link_map:
-        cmd.append(f"-Wl,-map,{args.link_map}")
     # 静态库顺序敏感（依赖者在前、被依赖者在后），而我们无从知道真实依赖
     # 图 —— 列两遍是链接静态库时的常规兜底。
     for _ in range(2):

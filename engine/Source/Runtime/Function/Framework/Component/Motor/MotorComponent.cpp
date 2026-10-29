@@ -21,16 +21,6 @@ void MotorComponent::PostLoadResource(GameObject* parent_object)
 {
     m_ParentObject = parent_object;
 
-    // PostLoadResource can run more than once on the same component (a prefab re-instantiate);
-    // the previous controller (and the capsule / shape it owns) is ours to free before we build
-    // another, or each reload leaks a whole set.
-    if (m_Controller != nullptr)
-    {
-        delete m_Controller;
-        m_Controller = nullptr;
-        m_ControllerType = ControllerType::invalid;
-    }
-
     // 按运行时类型分发，不要用 GetTypeString()：它是 static 的，展开成
     // PPtr<ControllerConfig>::GetTypeString() → "PPtr<ControllerConfig>"，
     // 跟实际指向的对象无关，跟 "PhysicsControllerConfig" 永远不相等。
@@ -71,11 +61,11 @@ void MotorComponent::GetOffStuckDead()
 }
 MotorComponent::~MotorComponent()
 {
-    // Keyed on the pointer, not on m_ControllerType: the controller owns a capsule and a shape
-    // (CharacterController's destructor frees them), and the pointer is the thing that says
-    // whether there is anything to free. `delete nullptr` is a no-op.
-    delete m_Controller;
-    m_Controller = nullptr;
+    if (m_ControllerType == ControllerType::physics)
+    {
+        delete m_Controller;
+        m_Controller = nullptr;
+    }
 }
 
 void MotorComponent::Tick(float delta_time)
