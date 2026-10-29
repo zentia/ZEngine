@@ -1,5 +1,9 @@
 #pragma once
 
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
+
 #include "Interface/RHI.h"
 #include "Runtime/Core/Math/Matrix4.h"
 #include "Runtime/Core/Math/Vector3.h"
@@ -234,7 +238,10 @@ struct MeshMaterialUniform
     uint32_t is_double_sided = 0;                 // 48
 
     // 52 -> 64。见上面第 1 点。
-    uint32_t _padding_0 = 0;  // 52
+    //
+    // vt_flags（原 _padding_0）：材质里的 Virtual Texture 槽位开关，见 MaterialCustomParamSlots.h
+    // （k_MaterialVtFlag_*）。置位时 customParams[2] / [3] 被 VT 参数占用。0 = 与没有这个功能时一样。
+    uint32_t vt_flags = 0;    // 52
     uint32_t _padding_1 = 0;  // 56
     uint32_t _padding_2 = 0;  // 60
 
@@ -253,6 +260,66 @@ struct MeshMaterialUniform
 
     // total 128
 };
+
+static_assert(sizeof(MeshMaterialUniform) == 128, "MeshMaterialUniform must stay 128 bytes (ShaderLab blob, std140)");
+static_assert(offsetof(MeshMaterialUniform, vt_flags) == 52, "vt_flags must sit at offset 52 (shader mirrors depend on it)");
+static_assert(offsetof(MeshMaterialUniform, customParams) == 64, "customParams must start at 64");
+
+/// customParams 是 float4，VT 参数是 uint：按位模式存取（HLSL 侧 asuint），不做数值转换。
+inline float MaterialVtBitsToFloat(uint32_t value)
+{
+    float result;
+    static_assert(sizeof(result) == sizeof(value), "float/uint32 size");
+    std::memcpy(&result, &value, sizeof(result));
+    return result;
+}
+
+inline uint32_t MaterialVtFloatToBits(float value)
+{
+    uint32_t result;
+    std::memcpy(&result, &value, sizeof(result));
+    return result;
+}
+
+/// 把 VT 槽位写进一块已经填好的材质 UBO 字节（128 字节）。`slot.enabled == false` 时**什么都不改**——
+/// 调用方先填好常规字段，再叫这个函数，没启用 VT 的材质逐字节与过去一致。
+/// 启用时改三处：vt_flags、customParams[2]、customParams[3]（见 MaterialCustomParamSlots.h）。
+inline void ApplyMaterialVirtualTextureSlot(const MaterialVirtualTextureSlot& slot, uint8_t* ubo_bytes)
+{
+    if (!slot.enabled || ubo_bytes == nullptr)
+    {
+        return;
+    }
+    MeshMaterialUniform& ubo = *reinterpret_cast<MeshMaterialUniform*>(ubo_bytes);
+    ubo.vt_flags = k_MaterialVtFlag_BaseColor | (slot.srgb ? k_MaterialVtFlag_Srgb : 0u);
+    ubo.customParams[k_MaterialVtCustomParamSlot_Layout] =
+        Vector4(MaterialVtBitsToFloat(slot.page_size),
+                MaterialVtBitsToFloat(slot.page_border),
+                MaterialVtBitsToFloat(slot.mip_count),
+                0.0f);
+    ubo.customParams[k_MaterialVtCustomParamSlot_Extent] =
+        Vector4(MaterialVtBitsToFloat(slot.virtual_width), MaterialVtBitsToFloat(slot.virtual_height), 0.0f, 0.0f);
+}
+
+/// 反过来：从 UBO 字节读出 VT 槽位（测试用）。vt_flags 位 0 没置位 ⇒ enabled = false。
+inline MaterialVirtualTextureSlot ReadMaterialVirtualTextureSlot(const uint8_t* ubo_bytes)
+{
+    MaterialVirtualTextureSlot slot;
+    const MeshMaterialUniform& ubo = *reinterpret_cast<const MeshMaterialUniform*>(ubo_bytes);
+    slot.enabled = (ubo.vt_flags & k_MaterialVtFlag_BaseColor) != 0;
+    slot.srgb = (ubo.vt_flags & k_MaterialVtFlag_Srgb) != 0;
+    if (slot.enabled)
+    {
+        const Vector4& layout = ubo.customParams[k_MaterialVtCustomParamSlot_Layout];
+        const Vector4& extent = ubo.customParams[k_MaterialVtCustomParamSlot_Extent];
+        slot.page_size = MaterialVtFloatToBits(layout.x);
+        slot.page_border = MaterialVtFloatToBits(layout.y);
+        slot.mip_count = MaterialVtFloatToBits(layout.z);
+        slot.virtual_width = MaterialVtFloatToBits(extent.x);
+        slot.virtual_height = MaterialVtFloatToBits(extent.y);
+    }
+    return slot;
+}
 
 struct PointLightShadowPerFrame
 {

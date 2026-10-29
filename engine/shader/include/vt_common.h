@@ -173,4 +173,12 @@ vec4 VTSampleBilinear(sampler2D page_table, sampler2D physical_pool, VTLookupPar
     return fallback;
 }
 
+// sRGB -> linear（IEC 61966-2-1 精确公式），与 HLSL 的 VTSrgbToLinear、C++ 的 VTRef::SrgbToLinear 同一契约。
+vec3 VTSrgbToLinear(vec3 c)
+{
+    const vec3 low = c / 12.92;
+    const vec3 high = pow((c + 0.055) / 1.055, vec3(2.4));
+    return vec3(c.x <= 0.04045 ? low.x : high.x, c.y <= 0.04045 ? low.y : high.y, c.z <= 0.04045 ? low.z : high.z);
+}
+
 #endif  // ZENGINE_VT_COMMON_H

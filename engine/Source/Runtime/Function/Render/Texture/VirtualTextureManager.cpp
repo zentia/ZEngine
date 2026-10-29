@@ -441,6 +441,50 @@ RHIImageView* VirtualTextureManager::GetPageTableTexture(VirtualTextureHandle ha
     return nullptr;
 }
 
+bool VirtualTextureManager::GetMaterialBinding(VirtualTextureHandle handle,
+                                               bool srgb,
+                                               MaterialVirtualTextureSlot& out_slot,
+                                               RHIImageView*& out_page_table,
+                                               RHIImageView*& out_pool) const
+{
+    out_slot = MaterialVirtualTextureSlot {};
+    out_page_table = nullptr;
+    out_pool = nullptr;
+
+    auto resource = GetVirtualTexture(handle);
+    auto pool = getPhysicalTexturePool();
+    if (!resource || !pool)
+    {
+        return false;
+    }
+    RHIImageView* page_table_view = resource->getPageTableTextureView();
+    RHIImageView* pool_view = pool->getPhysicalTextureView();
+    if (page_table_view == nullptr || pool_view == nullptr || !pool->hasContent())
+    {
+        return false;
+    }
+    VirtualTextureShaderParams params {};
+    if (!resource->BuildShaderParams(*pool, params))
+    {
+        return false;
+    }
+    // 材质的 v2 采样（mip 选择 + 双线性）要 gutter：border 0 的池里 2x2 足迹会读到相邻槽位的像素。
+    if (params.v2[0] == 0)
+    {
+        return false;
+    }
+    out_slot.enabled = true;
+    out_slot.srgb = srgb;
+    out_slot.page_size = params.lookup[0];
+    out_slot.page_border = params.v2[0];
+    out_slot.mip_count = params.v2[1];
+    out_slot.virtual_width = params.extent[0];
+    out_slot.virtual_height = params.extent[1];
+    out_page_table = page_table_view;
+    out_pool = pool_view;
+    return true;
+}
+
 VirtualTextureStats VirtualTextureManager::GetStats() const
 {
     std::lock_guard<std::mutex> lock(m_StatsMutex);

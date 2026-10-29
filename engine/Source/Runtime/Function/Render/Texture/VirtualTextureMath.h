@@ -222,4 +222,11 @@ namespace VTRef
         }
         return result;
     }
+
+    /// sRGB -> linear（IEC 61966-2-1 精确公式），与 vt_common.hlsli / vt_common.h 的 VTSrgbToLinear 同一契约。
+    /// 输入输出都是 0..1 的浮点；材质把 VT 当 base color 时在滤波之后调用。
+    inline float SrgbToLinear(float c)
+    {
+        return c <= 0.04045f ? c / 12.92f : std::pow((c + 0.055f) / 1.055f, 2.4f);
+    }
 }  // namespace VTRef

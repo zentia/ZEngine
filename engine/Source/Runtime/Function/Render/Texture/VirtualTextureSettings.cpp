@@ -14,6 +14,8 @@ namespace
     std::string g_source;
     int g_overlay = 0;
     int g_overlay_selftest = 0;
+    int g_material_slot = 0;
+    int g_material_srgb = 1;
 }  // namespace
 
 bool IsEnabled()
@@ -29,6 +31,16 @@ bool IsOverlayEnabled()
 bool IsOverlaySelfTestEnabled()
 {
     return g_overlay_selftest != 0;
+}
+
+bool IsMaterialSlotEnabled()
+{
+    return g_material_slot != 0;
+}
+
+bool IsMaterialSrgbEnabled()
+{
+    return g_material_srgb != 0;
 }
 
 const char* GetSource()
@@ -67,5 +79,19 @@ void RegisterConsoleVariables(ConsoleManager& console)
                                 "texture), logging the result. 0=off (default), 1=on.",
                                 g_overlay_selftest,
                                 &g_overlay_selftest);
+
+    console.RegisterIntVariable("r.VirtualTexture.MaterialSlot",
+                                "Make the base color of every built-in-layout mesh material sample the streamed "
+                                "virtual texture (DX12 deferred gbuffer path: mip from uv derivatives, bilinear, "
+                                "coarser-mip fallback; non-resident falls back to the plain base color). Needs "
+                                "r.VirtualTexture.Enable 1 and r.VirtualTexture.Source. 0=off (default), 1=on.",
+                                g_material_slot,
+                                &g_material_slot);
+
+    console.RegisterIntVariable("r.VirtualTexture.MaterialSrgb",
+                                "With r.VirtualTexture.MaterialSlot 1: decode the sampled VT colour from sRGB to "
+                                "linear (the page pool stores raw bytes). 1=decode (default), 0=use as is.",
+                                g_material_srgb,
+                                &g_material_srgb);
 }
 }  // namespace VirtualTextureSettings

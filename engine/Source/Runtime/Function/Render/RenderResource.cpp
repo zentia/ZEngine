@@ -693,9 +693,13 @@ GpuPBRMaterial& RenderResource::GetOrCreateMaterial(RHI* rhi,
 
             // 共享材质走的是"资产默认值"这一档：per-part 的 override 属于材质实例，
             // 见 MaterializeMaterialInstance 里同一个 helper。
+            //
+            // VT 槽位：当前全局槽位启用时，新建的内置布局材质一出生就带着（ShaderLab 布局的材质不带）。
+            now_material.vt_slot = now_material.shaderlab_property_layout ? MaterialVirtualTextureSlot {} : m_MaterialVtSlot;
             if (staging_buffer_data != nullptr)
             {
                 FillMaterialUniformBytes(now_material, entity, static_cast<uint8_t*>(staging_buffer_data));
+                std::memcpy(now_material.uniform_bytes, staging_buffer_data, sizeof(now_material.uniform_bytes));
             }
 
             rhi->UnmapMemory(inefficient_staging_buffer_memory);
@@ -845,7 +849,7 @@ GpuPBRMaterial& RenderResource::GetOrCreateMaterial(RHI* rhi,
         emissive_image_info.sampler = rhi->GetOrCreateMipmapSampler(emissive_image_width, emissive_image_height);
         now_material.emissive_sampler = emissive_image_info.sampler;
 
-        RHIWriteDescriptorSet mesh_descriptor_writes_info[6];
+        RHIWriteDescriptorSet mesh_descriptor_writes_info[8];
 
         mesh_descriptor_writes_info[0].sType = RHI_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         mesh_descriptor_writes_info[0].pNext = NULL;
@@ -881,7 +885,18 @@ GpuPBRMaterial& RenderResource::GetOrCreateMaterial(RHI* rhi,
         mesh_descriptor_writes_info[5].dstBinding = 5;
         mesh_descriptor_writes_info[5].pImageInfo = &emissive_image_info;
 
-        rhi->UpdateDescriptorSets(6, mesh_descriptor_writes_info, 0, nullptr);
+        // DX12 的网格材质布局多两个 binding（VT 页表 / 页池，见 MaterialCustomParamSlots.h）。每个 root descriptor
+        // table 都必须有值，所以先用 base color 的视图占位；VT 启用时 SyncMaterialVirtualTexture 每帧换成真的。
+        uint32_t descriptor_write_count = 6;
+        if (rhi->getGraphicsAPI() == GraphicsAPI::DirectX12)
+        {
+            mesh_descriptor_writes_info[6] = mesh_descriptor_writes_info[1];
+            mesh_descriptor_writes_info[6].dstBinding = k_MaterialVtBinding_PageTable;
+            mesh_descriptor_writes_info[7] = mesh_descriptor_writes_info[1];
+            mesh_descriptor_writes_info[7].dstBinding = k_MaterialVtBinding_Pool;
+            descriptor_write_count = 8;
+        }
+        rhi->UpdateDescriptorSets(descriptor_write_count, mesh_descriptor_writes_info, 0, nullptr);
 
         return now_material;
     }
@@ -932,6 +947,7 @@ void RenderResource::MaterializeMaterialInstance(RHI* rhi, RenderEntity entity, 
             // instance.property_defaults 是资产值，entity.m_PropertyBlob 是脚本
             // SetFloat 设的，按 float 掩码盖上去。
             FillMaterialUniformBytes(instance, entity, static_cast<uint8_t*>(staging_data));
+            std::memcpy(instance.uniform_bytes, staging_data, sizeof(instance.uniform_bytes));
         }
         rhi->UnmapMemory(staging_buffer_memory);
 
@@ -983,7 +999,7 @@ void RenderResource::MaterializeMaterialInstance(RHI* rhi, RenderEntity entity, 
         image_infos[slot].sampler = samplers[slot];
     }
 
-    RHIWriteDescriptorSet writes[6];
+    RHIWriteDescriptorSet writes[8];
 
     writes[0].sType = RHI_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     writes[0].pNext = NULL;
@@ -1007,7 +1023,170 @@ void RenderResource::MaterializeMaterialInstance(RHI* rhi, RenderEntity entity, 
         write.pImageInfo = &image_infos[slot];
     }
 
-    rhi->UpdateDescriptorSets(6, writes, 0, nullptr);
+    // DX12：VT 页表 / 页池占位（理由同共享材质），启用 VT 时由 SyncMaterialVirtualTexture 每帧覆盖。
+    uint32_t write_count = 6;
+    if (rhi->getGraphicsAPI() == GraphicsAPI::DirectX12)
+    {
+        writes[6] = writes[1];
+        writes[6].dstBinding = k_MaterialVtBinding_PageTable;
+        writes[7] = writes[1];
+        writes[7].dstBinding = k_MaterialVtBinding_Pool;
+        write_count = 8;
+    }
+    rhi->UpdateDescriptorSets(write_count, writes, 0, nullptr);
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// 材质里的 Virtual Texture 槽位
+// ---------------------------------------------------------------------------------------------------------------
+void RenderResource::ReuploadMaterialUniform(RHI* rhi, GpuPBRMaterial& material)
+{
+    if (rhi == nullptr || material.material_uniform_buffer == RHI_NULL_HANDLE)
+    {
+        return;
+    }
+    const RHIDeviceSize buffer_size = sizeof(MeshMaterialUniform);
+    RHIBuffer* staging_buffer = RHI_NULL_HANDLE;
+    RHIDeviceMemory* staging_buffer_memory = RHI_NULL_HANDLE;
+    rhi->CreateBuffer(buffer_size,
+                      RHI_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                      RHI_MEMORY_PROPERTY_HOST_VISIBLE_BIT | RHI_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                      staging_buffer,
+                      staging_buffer_memory);
+    void* mapped = nullptr;
+    rhi->MapMemory(staging_buffer_memory, 0, buffer_size, 0, &mapped);
+    if (mapped != nullptr)
+    {
+        std::memcpy(mapped, material.uniform_bytes, sizeof(material.uniform_bytes));
+    }
+    rhi->UnmapMemory(staging_buffer_memory);
+    if (mapped != nullptr)
+    {
+        rhi->CopyBuffer(staging_buffer, material.material_uniform_buffer, 0, 0, buffer_size);
+        ++m_MaterialVtUniformReuploads;
+    }
+    rhi->DestroyBuffer(staging_buffer);
+    rhi->FreeMemory(staging_buffer_memory);
+}
+
+void RenderResource::WriteMaterialVtBindings(RHI* rhi,
+                                             GpuPBRMaterial& material,
+                                             RHIImageView* page_table_view,
+                                             RHIImageView* pool_view)
+{
+    if (material.material_descriptor_set == RHI_NULL_HANDLE)
+    {
+        return;
+    }
+    RHIDescriptorImageInfo table_info {};
+    table_info.imageLayout = RHI_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    table_info.imageView = page_table_view;
+    table_info.sampler = m_MaterialVtSampler;  // 页表只用 Load，这里只是给 combined image sampler 一个合法采样器
+    RHIDescriptorImageInfo pool_info = table_info;
+    pool_info.imageView = pool_view;
+
+    RHIWriteDescriptorSet writes[2] {};
+    for (uint32_t i = 0; i < 2; ++i)
+    {
+        writes[i].sType = RHI_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[i].dstSet = material.material_descriptor_set;
+        writes[i].dstBinding = i == 0 ? k_MaterialVtBinding_PageTable : k_MaterialVtBinding_Pool;
+        writes[i].descriptorType = RHI_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        writes[i].descriptorCount = 1;
+        writes[i].pImageInfo = i == 0 ? &table_info : &pool_info;
+    }
+    rhi->UpdateDescriptorSets(2, writes, 0, nullptr);
+    ++m_MaterialVtBindingWrites;
+}
+
+void RenderResource::SyncMaterialVirtualTexture(RHI* rhi,
+                                                const MaterialVirtualTextureSlot& desired,
+                                                RHIImageView* page_table_view,
+                                                RHIImageView* pool_view)
+{
+    // 只有 DX12 的网格材质布局有 binding 6/7；别的后端什么都不做（槽位保持关闭）。
+    if (rhi == nullptr || rhi->getGraphicsAPI() != GraphicsAPI::DirectX12)
+    {
+        return;
+    }
+    // 没有页表 / 页池视图就没东西可绑：按「关闭」处理，宁可画回普通 base color，也不绑一个空视图。
+    MaterialVirtualTextureSlot effective = desired;
+    if (page_table_view == nullptr || pool_view == nullptr)
+    {
+        effective = MaterialVirtualTextureSlot {};
+    }
+
+    if (m_MaterialVtSampler == nullptr)
+    {
+        // LINEAR + clamp：VT 双线性靠它（页 gutter 保证 2x2 足迹不出槽位）。
+        RHISamplerCreateInfo sampler_info {};
+        sampler_info.sType = RHI_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+        sampler_info.magFilter = RHI_FILTER_LINEAR;
+        sampler_info.minFilter = RHI_FILTER_LINEAR;
+        sampler_info.mipmapMode = RHI_SAMPLER_MIPMAP_MODE_NEAREST;
+        sampler_info.addressModeU = RHI_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        sampler_info.addressModeV = RHI_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        sampler_info.addressModeW = RHI_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        sampler_info.minLod = 0.0f;
+        sampler_info.maxLod = 0.0f;
+        if (!rhi->CreateSampler(&sampler_info, m_MaterialVtSampler))
+        {
+            m_MaterialVtSampler = nullptr;
+            return;
+        }
+    }
+
+    const bool slot_changed = (effective != m_MaterialVtSlot);
+    m_MaterialVtSlot = effective;
+    uint32_t materials_updated = 0;
+
+    const auto sync_one = [&](GpuPBRMaterial& material) {
+        if (material.shaderlab_property_layout)
+        {
+            return;  // 自定义布局的 UBO 不是 MeshMaterialUniform，不能往里写 VT 字段
+        }
+        if (slot_changed || material.vt_slot != m_MaterialVtSlot)
+        {
+            // 先把旧的 VT 字段清掉再写新的：关闭时 vt_flags / customParams[2..3] 必须回到 0，
+            // 不能残留上一次的参数。其余字节（base color 因子、溶解参数等）原样保留。
+            MeshMaterialUniform& ubo = *reinterpret_cast<MeshMaterialUniform*>(material.uniform_bytes);
+            ubo.vt_flags = 0;
+            ubo.customParams[k_MaterialVtCustomParamSlot_Layout] = Vector4(0.0f, 0.0f, 0.0f, 0.0f);
+            ubo.customParams[k_MaterialVtCustomParamSlot_Extent] = Vector4(0.0f, 0.0f, 0.0f, 0.0f);
+            material.vt_slot = m_MaterialVtSlot;
+            ApplyMaterialVirtualTextureSlot(material.vt_slot, material.uniform_bytes);
+            ReuploadMaterialUniform(rhi, material);
+            ++materials_updated;
+        }
+        if (material.vt_slot.enabled)
+        {
+            WriteMaterialVtBindings(rhi, material, page_table_view, pool_view);
+        }
+    };
+    for (auto& entry : m_Materials)
+    {
+        sync_one(entry.second);
+    }
+    for (auto& entry : m_MaterialInstances)
+    {
+        sync_one(entry.second);
+    }
+    if (slot_changed)
+    {
+        LOG_INFO(ZRender,
+                 "RenderResource: material VT slot {} (page {} + 2*{} gutter, {} mips, virtual {}x{}, srgb={}): "
+                 "{} built-in-layout materials updated ({} shared, {} instances)",
+                 m_MaterialVtSlot.enabled ? "ON" : "OFF",
+                 m_MaterialVtSlot.page_size,
+                 m_MaterialVtSlot.page_border,
+                 m_MaterialVtSlot.mip_count,
+                 m_MaterialVtSlot.virtual_width,
+                 m_MaterialVtSlot.virtual_height,
+                 m_MaterialVtSlot.srgb,
+                 materials_updated,
+                 m_Materials.size(),
+                 m_MaterialInstances.size());
+    }
 }
 
 void RenderResource::UpdateMeshData(RHI* rhi,

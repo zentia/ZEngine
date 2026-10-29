@@ -31,6 +31,15 @@ namespace VirtualTextureSettings
     // 参考（源纹理）比对，结果写日志。默认 0。用来在没人盯屏幕时证明"屏幕上画出来的是对的"。
     bool IsOverlaySelfTestEnabled();
 
+    // r.VirtualTexture.MaterialSlot：1 = 所有内置布局（StandardLit）的网格材质把 base color 改为经 VT 采样（DX12 的
+    // 延迟 gbuffer 路径）。需要同时 Enable 1 + Source。默认 0：不开时材质逐字节与过去一致。
+    // 现在是引擎级总开关（调试 / 演示用）；按材质资产逐个指定 VT 纹理需要材质资产格式支持，尚未做。
+    bool IsMaterialSlotEnabled();
+
+    // r.VirtualTexture.MaterialSrgb：材质里的 VT 采样结果是否按 sRGB 解码成线性（默认 1：页池存的是原始字节，
+    // 彩色图片是 sRGB 编码的）。
+    bool IsMaterialSrgbEnabled();
+
     // 注册 r.VirtualTexture.*（从 RegisterRuntimeConsoleCommands 调用）
     void RegisterConsoleVariables(ConsoleManager& console);
 }  // namespace VirtualTextureSettings

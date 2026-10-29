@@ -253,10 +253,35 @@ public:
     // Get texture streaming manager
     std::shared_ptr<TextureStreamingManager> getTextureStreamingManager() const { return m_TextureStreamingManager; }
 
+    // ---- 材质里的 Virtual Texture 槽位（base color 经 VT 采样；仅 DX12 的网格材质布局有 binding 6/7）----
+    //
+    /// RHI 线程。每帧在 VT 的 GPU 半帧之后调用一次。`desired.enabled == false` 表示「现在不该有 VT 材质」。
+    ///   · 槽位内容变化（开/关、纹理换了、参数变了）：所有内置布局的材质（共享 + 实例）改 UBO 字节并整块重传；
+    ///     之后创建的材质也带着这个槽位（见 GetOrCreateMaterial）。
+    ///   · 启用状态下**每帧**重写 binding 6（页表）/ 7（页池 + LINEAR/clamp 采样器）——页池/页表可能重建，
+    ///     DX12 的 SRV 又是按帧循环的，写一次不够。
+    /// ShaderLab 自定义布局的材质不动（它们的 UBO 是 shader 自己的布局）。
+    void SyncMaterialVirtualTexture(RHI* rhi,
+                                    const MaterialVirtualTextureSlot& desired,
+                                    RHIImageView* page_table_view,
+                                    RHIImageView* pool_view);
+    const MaterialVirtualTextureSlot& GetMaterialVirtualTextureSlot() const { return m_MaterialVtSlot; }
+    /// 观测：槽位变化导致的材质 UBO 重传次数 / 每帧 binding 重写的材质描述符集次数（测试和日志用）。
+    uint64_t GetMaterialVtUniformReuploads() const { return m_MaterialVtUniformReuploads; }
+    uint64_t GetMaterialVtBindingWrites() const { return m_MaterialVtBindingWrites; }
+
     MegaLights::MegaLightsSystem& GetMegaLightsSystem() { return m_MegaLights; }
     const MegaLights::MegaLightsSystem& GetMegaLightsSystem() const { return m_MegaLights; }
 
 private:
+    MaterialVirtualTextureSlot m_MaterialVtSlot {};
+    RHISampler* m_MaterialVtSampler {nullptr};
+    uint64_t m_MaterialVtUniformReuploads {0};
+    uint64_t m_MaterialVtBindingWrites {0};
+    /// 把 material.uniform_bytes 整块传到 material_uniform_buffer（staging + 立即拷贝）。
+    void ReuploadMaterialUniform(RHI* rhi, GpuPBRMaterial& material);
+    void WriteMaterialVtBindings(RHI* rhi, GpuPBRMaterial& material, RHIImageView* page_table_view, RHIImageView* pool_view);
+
     void CreateIBLSamplers(RHI* rhi);
     void CreateIBLTextures(RHI* rhi,
                            std::array<std::shared_ptr<TextureData>, 6> irradiance_maps,
@@ -347,6 +372,8 @@ inline void FillMaterialUniformBytes(const GpuPBRMaterial& material, const Rende
     {
         ubo.customParams[param_index] = entity.m_CustomParams[param_index];
     }
+    // VT 槽位盖在最后：启用时它占用 vt_flags 和 customParams[2..3]，覆盖 entity 在那两个自留槽里写的值。
+    ApplyMaterialVirtualTextureSlot(material.vt_slot, out_bytes);
 }
 
 /// 一个贴图槽的上传源：像素 + 尺寸 + 格式。

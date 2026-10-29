@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Runtime/Core/Math/AxisAligned.h"
+#include "Runtime/Function/Render/MaterialCustomParamSlots.h"
 #include "Runtime/Function/Render/RenderResourceBase.h"
 #include "VirtualTextureResource.h"
 #include "VirtualTextureTypes.h"
@@ -99,6 +100,16 @@ public:
 
     // Get page table texture for a virtual texture
     RHIImageView* GetPageTableTexture(VirtualTextureHandle handle) const;
+
+    // 材质里的 VT 槽位（MaterialCustomParamSlots.h）需要的三样东西：槽位内容、页表视图、页池视图。
+    // RHI 线程调用。纹理没注册 / 还没有页表（从没有任何页驻留）/ 页池从没传过页（布局还是 UNDEFINED，
+    // 描述符里声明 SHADER_READ_ONLY 去读它是非法的）/ 页池与纹理的 gutter 不一致 —— 一律返回 false，
+    // 调用方应当按「没有 VT 材质」处理。
+    bool GetMaterialBinding(VirtualTextureHandle handle,
+                            bool srgb,
+                            MaterialVirtualTextureSlot& out_slot,
+                            RHIImageView*& out_page_table,
+                            RHIImageView*& out_pool) const;
 
     // Get statistics
     VirtualTextureStats GetStats() const;

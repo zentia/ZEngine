@@ -179,4 +179,13 @@ float4 VTSampleBilinear(Texture2D<float2> page_table,
     return fallback;
 }
 
+// sRGB -> linear（IEC 61966-2-1 精确公式）。VT 页池存的是 UNORM 字节（不做硬件 sRGB 解码），材质把 VT 当 base color
+// 用时在滤波之后解码——滤波在 sRGB 编码空间里做，是常见折中；要「线性空间滤波」需要 R8G8B8A8_SRGB 的页池。
+float3 VTSrgbToLinear(float3 c)
+{
+    const float3 low = c / 12.92f;
+    const float3 high = pow((c + 0.055f) / 1.055f, 2.4f);
+    return float3(c.x <= 0.04045f ? low.x : high.x, c.y <= 0.04045f ? low.y : high.y, c.z <= 0.04045f ? low.z : high.z);
+}
+
 #endif  // ZENGINE_VT_COMMON_HLSLI

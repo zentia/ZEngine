@@ -441,7 +441,7 @@ namespace
         emissive_info.imageView = material.emissive_image_view;
         material.emissive_sampler = emissive_info.sampler;
 
-        RHIWriteDescriptorSet writes[6] {};
+        RHIWriteDescriptorSet writes[8] {};
         writes[0].sType = RHI_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         writes[0].dstSet = material.material_descriptor_set;
         writes[0].dstBinding = 0;
@@ -463,7 +463,14 @@ namespace
         writes[4].pImageInfo = &occlusion_info;
         writes[5].pImageInfo = &emissive_info;
 
-        rhi->UpdateDescriptorSets(6, writes, 0, nullptr);
+        // binding 6/7 = VT 页表 / 页池（MaterialCustomParamSlots.h）。材质布局有这两个 binding，每个 root descriptor
+        // table 都必须有值：用 base color 的 1x1 白图占位（vt_flags 为 0 时 shader 不读）。
+        writes[6] = writes[1];
+        writes[6].dstBinding = k_MaterialVtBinding_PageTable;
+        writes[7] = writes[1];
+        writes[7].dstBinding = k_MaterialVtBinding_Pool;
+
+        rhi->UpdateDescriptorSets(8, writes, 0, nullptr);
     }
 }  // namespace
 
@@ -1043,7 +1050,7 @@ void RenderResource::MaterializeMaterialInstance(RHI* rhi, RenderEntity entity, 
         image_infos[slot].imageView = views[slot];
     }
 
-    RHIWriteDescriptorSet writes[6] {};
+    RHIWriteDescriptorSet writes[8] {};
     writes[0].sType = RHI_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     writes[0].dstSet = instance.material_descriptor_set;
     writes[0].dstBinding = 0;
@@ -1060,7 +1067,13 @@ void RenderResource::MaterializeMaterialInstance(RHI* rhi, RenderEntity entity, 
         writes[i].pImageInfo = &image_infos[i - 1];
     }
 
-    rhi->UpdateDescriptorSets(6, writes, 0, nullptr);
+    // binding 6/7 占位，理由同 Dx12UploadMaterialources。
+    writes[6] = writes[1];
+    writes[6].dstBinding = k_MaterialVtBinding_PageTable;
+    writes[7] = writes[1];
+    writes[7].dstBinding = k_MaterialVtBinding_Pool;
+
+    rhi->UpdateDescriptorSets(8, writes, 0, nullptr);
 }
 
 #endif  // !Z_HAS_VULKAN

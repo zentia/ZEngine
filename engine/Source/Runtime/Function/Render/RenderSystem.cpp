@@ -2044,11 +2044,37 @@ void RenderSystem::UpdateVirtualTextureGpu()
     {
         return;
     }
+
+    // 材质里的 VT 槽位（r.VirtualTexture.MaterialSlot）：在 VT 的 GPU 半帧**之后**同步——此刻页池 / 页表是本帧最新的，
+    // 而且网格 pass 还没录制。槽位该关（开关关了 / VT 关了 / 纹理没了 / 页池还没内容）就以「关闭」同步，
+    // 材质 UBO 与描述符回到没有这个功能时的样子。
+    const auto sync_material_slot = [&]() {
+        auto* render_resource = static_cast<RenderResource*>(m_RenderResource.get());
+        if (render_resource == nullptr)
+        {
+            return;
+        }
+        MaterialVirtualTextureSlot slot;
+        RHIImageView* page_table_view = nullptr;
+        RHIImageView* pool_view = nullptr;
+        if (view.valid && VirtualTextureSettings::IsEnabled() && VirtualTextureSettings::IsMaterialSlotEnabled())
+        {
+            const uint64_t handle = producer->getGpuVisibleHandle();
+            if (handle != 0)
+            {
+                VirtualTextureManager::Get().GetMaterialBinding(
+                    handle, VirtualTextureSettings::IsMaterialSrgbEnabled(), slot, page_table_view, pool_view);
+            }
+        }
+        render_resource->SyncMaterialVirtualTexture(m_Rhi, slot, page_table_view, pool_view);
+    };
+
     if (!view.valid)
     {
         // 开关刚关掉：仍要让 TickGpu 跑一次，销毁渲染线程刚退役的纹理。给它一个无害的默认视图。
         producer->TickGpu(m_Rhi, m_RenderResource.get(), Vector3(), Vector3(0.0f, 0.0f, -1.0f),
                           1.0471975f, 1.7777778f, 1, 1, 0.0f);
+        sync_material_slot();
         return;
     }
     producer->TickGpu(m_Rhi,
@@ -2060,6 +2086,7 @@ void RenderSystem::UpdateVirtualTextureGpu()
                                       view.screen_width,
                                       view.screen_height,
                                       view.delta_time);
+    sync_material_slot();
 #endif
 }
 

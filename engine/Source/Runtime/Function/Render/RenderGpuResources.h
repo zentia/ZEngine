@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Runtime/Function/Render/MaterialCustomParamSlots.h"
 #include "Runtime/Function/Render/RenderGPUResource.h"
 #include "Runtime/Function/ShaderLab/ShaderPropertyBlob.h"
 
@@ -81,6 +82,13 @@ struct GpuPBRMaterial : RenderMaterialGPUResource
 
     RHIBuffer* material_uniform_buffer {RHI_NULL_HANDLE};
     VmaAllocation material_uniform_buffer_allocation {nullptr};
+
+    /// 材质 UBO 当前内容的 CPU 副本（128 字节）。共享材质的 UBO 是用「第一个用到它的 part」的 entity 填的，
+    /// 之后没有 entity 可用；VT 槽位要在运行时开/关，只能在这份副本上改几个字段再整块重传。每次写 UBO 时同步更新。
+    uint8_t uniform_bytes[128] {};
+
+    /// 这个材质当前的 VT 槽位（enabled = false 就是没有）。由 RenderResource::SyncMaterialVirtualTexture 维护。
+    MaterialVirtualTextureSlot vt_slot {};
 
     RHIDescriptorSet* material_descriptor_set {RHI_NULL_HANDLE};
 

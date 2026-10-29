@@ -36,3 +36,44 @@ constexpr uint32_t k_MaterialCustomParamSlot_Custom1 = 3;
 
 /// 一个 vec4 槽里的分量数。四个约定的标量名各占一个分量。
 constexpr uint32_t k_MaterialCustomParamComponents = 4;
+
+// =========================================================================
+// 材质里的 Virtual Texture 槽位（base color 经 VT 采样）。
+//
+// 不增加 MeshMaterialUniform 的大小（仍是 128 字节，ShaderLab 属性块与它同尺寸）：
+//   · `vt_flags`（原 `_padding_0`，offset 52）：位 0 = 启用 VT base color，位 1 = 采样结果按 sRGB 解码；
+//   · `customParams[2]` / `customParams[3]` 在 vt_flags 位 0 置位时**被 VT 占用**，按 uint 位模式存放：
+//        customParams[2] = { page_size, page_border, mip_count, 0 }
+//        customParams[3] = { virtual_width, virtual_height, 0, 0 }
+//     所以启用 VT 的材质上，脚本的 `_CustomParam0/1` 不再生效（它们本来就是「项目自留，shader 不解释」）。
+// 页池宽度（页数）、页表尺寸不用传：shader 用 GetDimensions 自己取。
+//
+// 页表和页池是两个图像，走材质描述符集的 binding 6（页表）/ 7（页池，LINEAR+clamp 采样器）——仅 DX12 的
+// 网格材质布局有这两个 binding。每帧重写（页池/页表可能重建，DX12 的 SRV 也是按帧循环的）。
+// =========================================================================
+constexpr uint32_t k_MaterialVtFlag_BaseColor = 1u << 0;
+constexpr uint32_t k_MaterialVtFlag_Srgb = 1u << 1;
+constexpr uint32_t k_MaterialVtBinding_PageTable = 6;
+constexpr uint32_t k_MaterialVtBinding_Pool = 7;
+constexpr uint32_t k_MaterialVtCustomParamSlot_Layout = 2;  // customParams[2]
+constexpr uint32_t k_MaterialVtCustomParamSlot_Extent = 3;  // customParams[3]
+
+/// 一个材质的 VT 槽位内容。`enabled = false` 时材质的行为与没有这个功能完全一样。
+struct MaterialVirtualTextureSlot
+{
+    bool enabled {false};
+    bool srgb {true};
+    uint32_t page_size {0};
+    uint32_t page_border {0};
+    uint32_t mip_count {0};
+    uint32_t virtual_width {0};
+    uint32_t virtual_height {0};
+
+    bool operator==(const MaterialVirtualTextureSlot& other) const
+    {
+        return enabled == other.enabled && srgb == other.srgb && page_size == other.page_size &&
+               page_border == other.page_border && mip_count == other.mip_count &&
+               virtual_width == other.virtual_width && virtual_height == other.virtual_height;
+    }
+    bool operator!=(const MaterialVirtualTextureSlot& other) const { return !(*this == other); }
+};

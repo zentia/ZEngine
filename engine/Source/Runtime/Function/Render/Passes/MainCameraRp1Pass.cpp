@@ -1,5 +1,6 @@
 #include "Runtime/Function/Render/Passes/MainCameraRp1Pass.h"
 #include "Runtime/Function/Render/Passes/MainCameraRp1GraphDecl.h"
+#include "Runtime/Function/Render/MeshMaterialLayout.h"
 
 #include "Runtime/Core/Base/Macro.h"
 #include "Runtime/Function/Render/AppleSsaoPass.h"
@@ -551,29 +552,16 @@ void MainCameraRp1Pass::SetupDescriptorSetLayouts()
     }
 
     {
-        RHIDescriptorSetLayoutBinding mesh_material_layout_bindings[6] {};
-        mesh_material_layout_bindings[0].binding = 0;
-        mesh_material_layout_bindings[0].descriptorType = RHI_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        mesh_material_layout_bindings[0].descriptorCount = 1;
-        mesh_material_layout_bindings[0].stageFlags = RHI_SHADER_STAGE_FRAGMENT_BIT;
-
-        mesh_material_layout_bindings[1].binding = 1;
-        mesh_material_layout_bindings[1].descriptorType = RHI_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        mesh_material_layout_bindings[1].descriptorCount = 1;
-        mesh_material_layout_bindings[1].stageFlags = RHI_SHADER_STAGE_FRAGMENT_BIT;
-
-        mesh_material_layout_bindings[2] = mesh_material_layout_bindings[1];
-        mesh_material_layout_bindings[2].binding = 2;
-        mesh_material_layout_bindings[3] = mesh_material_layout_bindings[1];
-        mesh_material_layout_bindings[3].binding = 3;
-        mesh_material_layout_bindings[4] = mesh_material_layout_bindings[1];
-        mesh_material_layout_bindings[4].binding = 4;
-        mesh_material_layout_bindings[5] = mesh_material_layout_bindings[1];
-        mesh_material_layout_bindings[5].binding = 5;
+        // 布局来自单一来源（MeshMaterialLayout.h），VT 材质 A/B 测试用同一个函数建同一份布局。
+        // DX12 多 binding 6/7（VT 页表 / 页池）；别的后端的 GLSL / SPIR-V gbuffer 着色器不认这两个 binding，
+        // 布局保持 6 个，行为一字不变。
+        RHIDescriptorSetLayoutBinding mesh_material_layout_bindings[8] {};
+        const uint32_t mesh_material_binding_count = BuildMeshMaterialLayoutBindings(
+            m_Rhi->getGraphicsAPI() == GraphicsAPI::DirectX12, mesh_material_layout_bindings);
 
         RHIDescriptorSetLayoutCreateInfo mesh_material_layout_create_info {};
         mesh_material_layout_create_info.sType = RHI_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        mesh_material_layout_create_info.bindingCount = 6;
+        mesh_material_layout_create_info.bindingCount = mesh_material_binding_count;
         mesh_material_layout_create_info.pBindings = mesh_material_layout_bindings;
 
         if (m_Rhi->CreateDescriptorSetLayout(&mesh_material_layout_create_info,
