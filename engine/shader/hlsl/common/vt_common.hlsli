@@ -1,18 +1,15 @@
 // ===========================================================================
-// VirtualTexture page-table indirect lookup (shared HLSL).
+// VirtualTexture page-table indirect lookup (shared HLSL).  Sampling contract v2.
 //
-// HLSL twin of engine/shader/include/vt_common.h (GLSL). The two files implement
-// ONE sampling contract and must change together -- the page table / pool layout
-// is defined by the CPU side (VirtualTextureResource::UpdatePageTableTexture,
-// PhysicalTexturePool), see the long comment at the top of vt_common.h:
+// HLSL twin of engine/shader/include/vt_common.h (GLSL) and Texture/VirtualTextureMath.h (C++). The three
+// implement ONE contract and must change together. The long description of the page table atlas, the slot
+// layout with its gutter, the mip rule and the fallback rule is at the top of vt_common.h; the short version:
 //
-//   page table : R32G32_FLOAT, one texel per mip-0 page.  .x = physical slot (>= 0)
-//                or < 0 when not resident (only test "x < 0"), .y = mip level.
-//   pool       : R8G8B8A8, slot -> (slot % pool_width_pages, slot / pool_width_pages),
-//                a page is a whole page_size x page_size block at slot_xy * page_size.
-//
-// Point sampling only (Load): bilinear across a page boundary would read the
-// neighbouring *physical* slot, which holds an unrelated page.
+//   page table : R32G32_FLOAT atlas; mip m's page grid starts at row sum_{i<m} pages_y(i); .x = slot or < 0.
+//   pool       : R8G8B8A8, slot_size = page_size + 2*border; page interior starts `border` texels into the slot.
+//   v1 (VTFetch / VTSampleUV)         mip 0, point (Load). Works for border 0 and 1.
+//   v2 (VTLod / VTSampleBilinear)     nearest-mip selection from derivatives, coarser-mip residency fallback,
+//                                     bilinear via the pool's LINEAR/clamp sampler. REQUIRES border >= 1.
 // ===========================================================================
 
 #ifndef ZENGINE_VT_COMMON_HLSLI
@@ -24,11 +21,38 @@ struct VTLookupParams
     uint pool_width_pages;
     uint pages_x;  // virtual texture width in pages (mip 0)
     uint pages_y;
+    uint border;     // gutter texels per page edge inside a slot
+    uint mip_count;  // sampled mips (>= 1)
+    uint2 virtual_size;
 };
 
-// Resolve one virtual texel (mip 0) through the page table. Returns true and the
-// physical texel coordinate when the page is resident; false (physical_texel = 0)
-// when it is not.
+uint VTSlotSize(VTLookupParams p)
+{
+    return p.page_size + 2u * p.border;
+}
+
+uint2 VTMipTexels(VTLookupParams p, uint mip)
+{
+    return max(p.virtual_size >> mip, uint2(1u, 1u));
+}
+
+uint2 VTMipPages(VTLookupParams p, uint mip)
+{
+    return (VTMipTexels(p, mip) + uint2(p.page_size - 1u, p.page_size - 1u)) / p.page_size;
+}
+
+uint VTMipRowOffset(VTLookupParams p, uint mip)
+{
+    uint offset = 0u;
+    for (uint i = 0u; i < mip; ++i)
+    {
+        offset += VTMipPages(p, i).y;
+    }
+    return offset;
+}
+
+// Resolve one virtual texel (mip 0) through the page table. Returns true and the physical texel coordinate when the
+// page is resident; false (physical_texel = 0) when it is not.
 bool VTResolveTexel(Texture2D<float2> page_table, VTLookupParams p, uint2 virtual_texel, out int2 physical_texel)
 {
     physical_texel = int2(0, 0);
@@ -48,7 +72,7 @@ bool VTResolveTexel(Texture2D<float2> page_table, VTLookupParams p, uint2 virtua
     const uint slot = uint(entry.x);
     const uint2 slot_xy = uint2(slot % p.pool_width_pages, slot / p.pool_width_pages);
     const uint2 in_page = virtual_texel % p.page_size;
-    physical_texel = int2(slot_xy * p.page_size + in_page);
+    physical_texel = int2(slot_xy * VTSlotSize(p) + uint2(p.border, p.border) + in_page);
     return true;
 }
 
@@ -83,6 +107,76 @@ float4 VTSampleUV(Texture2D<float2> page_table,
     const float2 texel_f = saturate(uv) * float2(virtual_size);
     const uint2 texel = min(uint2(texel_f), virtual_size - uint2(1u, 1u));
     return VTFetch(page_table, physical_pool, p, texel, fallback, resident);
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// v2: mip selection + bilinear
+// ---------------------------------------------------------------------------------------------------------------
+
+// lod from the screen-space derivatives of uv (uv units per pixel). Call it from uniform control flow, passing
+// ddx(uv) / ddy(uv).
+float VTLod(VTLookupParams p, float2 uv_ddx, float2 uv_ddy)
+{
+    const float2 dx = uv_ddx * float2(p.virtual_size);
+    const float2 dy = uv_ddy * float2(p.virtual_size);
+    const float d = max(dot(dx, dx), dot(dy, dy));
+    return 0.5f * log2(max(d, 1.0e-8f));
+}
+
+// Page-table lookup for (mip, page). True and the slot's grid coordinate when resident.
+bool VTLookupSlot(Texture2D<float2> page_table, VTLookupParams p, uint mip, uint2 page, out uint2 slot_xy)
+{
+    slot_xy = uint2(0u, 0u);
+    const float slot_f = page_table.Load(int3(int(page.x), int(VTMipRowOffset(p, mip) + page.y), 0)).x;
+    if (slot_f < 0.0f)
+    {
+        return false;
+    }
+    const uint slot = uint(slot_f);
+    slot_xy = uint2(slot % p.pool_width_pages, slot / p.pool_width_pages);
+    return true;
+}
+
+// Nearest-mip selection from `lod`, residency fallback to coarser mips, bilinear inside the chosen mip. uv in
+// [0,1] (clamped). `used_mip` is the mip actually sampled. Returns `fallback` (resident = false) when no mip from the
+// selected one up to the coarsest has the page under the sample resident.
+float4 VTSampleBilinear(Texture2D<float2> page_table,
+                        Texture2D<float4> physical_pool,
+                        SamplerState pool_sampler,
+                        VTLookupParams p,
+                        float2 uv,
+                        float lod,
+                        float4 fallback,
+                        out bool resident,
+                        out uint used_mip)
+{
+    resident = false;
+    used_mip = 0u;
+    const float2 cuv = saturate(uv);
+    const uint first = uint(min(max(lod, 0.0f) + 0.5f, float(p.mip_count - 1u)));
+    uint pool_w, pool_h;
+    physical_pool.GetDimensions(pool_w, pool_h);
+    const float2 pool_size = float2(pool_w, pool_h);
+    const uint slot_size = VTSlotSize(p);
+
+    for (uint m = first; m < p.mip_count; ++m)
+    {
+        const uint2 dims = VTMipTexels(p, m);
+        const uint2 pages = VTMipPages(p, m);
+        const float2 pos = cuv * float2(dims);                       // continuous texel position in mip m
+        const uint2 texel = min(uint2(pos), dims - uint2(1u, 1u));   // the texel the sample point lies in
+        const uint2 page = min(texel / p.page_size, pages - uint2(1u, 1u));
+        uint2 slot_xy;
+        if (VTLookupSlot(page_table, p, m, page, slot_xy))
+        {
+            const float2 in_page = pos - float2(page * p.page_size);
+            const float2 physical = float2(slot_xy * slot_size + uint2(p.border, p.border)) + in_page;
+            resident = true;
+            used_mip = m;
+            return physical_pool.SampleLevel(pool_sampler, physical / pool_size, 0.0f);
+        }
+    }
+    return fallback;
 }
 
 #endif  // ZENGINE_VT_COMMON_HLSLI

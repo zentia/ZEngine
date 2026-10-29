@@ -27,6 +27,7 @@ layout(set = 0, binding = 0) uniform _vt_resolve_params
     uvec4 lookup;   // x = page_size, y = pool_width_pages, z = pages_x, w = pages_y
     uvec4 extent;   // x = virtual width, y = virtual height, z = mode (0 texel / 1 uv), w = unused
     vec4 fallback;  // 不驻留页返回的颜色
+    uvec4 v2;       // x = page_border (gutter), y = mip_count, z/w = unused
 } u_params;
 
 layout(set = 0, binding = 1) uniform sampler2D u_page_table;
@@ -52,6 +53,9 @@ void main()
     p.pool_width_pages = u_params.lookup.y;
     p.pages_x = u_params.lookup.z;
     p.pages_y = u_params.lookup.w;
+    p.border = u_params.v2.x;
+    p.mip_count = u_params.v2.y;
+    p.virtual_size = uvec2(width, height);
 
     bool resident = false;
     vec4 color;

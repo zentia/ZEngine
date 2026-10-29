@@ -452,6 +452,10 @@ list(REMOVE_ITEM SOURCE_FILES
 list(REMOVE_ITEM REGULAR_SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Texture/Test/VirtualTextureAsyncLoadABSmokeTest.cpp")
 list(REMOVE_ITEM SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Texture/Test/VirtualTextureMipBilinearABSmokeTest.cpp")
+list(REMOVE_ITEM REGULAR_SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Texture/Test/VirtualTextureMipBilinearABSmokeTest.cpp")
+list(REMOVE_ITEM SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Texture/Test/VirtualTextureBlitABSmokeTest.cpp")
 list(REMOVE_ITEM REGULAR_SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Texture/Test/VirtualTextureBlitABSmokeTest.cpp")

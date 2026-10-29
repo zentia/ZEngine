@@ -57,12 +57,22 @@ public:
     /// creation); it is filled with `fallback_rgba` on the CPU instead of binding a
     /// null image. Fails (returns false) if the pool image holds no uploaded page
     /// yet, because the pool would still be in the UNDEFINED layout.
+    ///
+    /// `filter`: Point = the v1 path (mip 0, point sampling, any gutter); MipBilinear = the v2 path (mip chosen
+    /// from the rasterizer's uv derivatives, coarser-mip fallback, bilinear) -- needs a pool with page_border >= 1.
+    enum class Filter : uint32_t
+    {
+        Point = 0,
+        MipBilinear = 1,
+    };
+
     bool Render(VirtualTextureManager& manager,
                 uint64_t handle,
                 uint32_t out_width,
                 uint32_t out_height,
                 const float fallback_rgba[4],
-                std::vector<uint32_t>& out_rgba);
+                std::vector<uint32_t>& out_rgba,
+                Filter filter = Filter::Point);
 
 private:
     bool EnsureTarget(uint32_t width, uint32_t height);
@@ -71,7 +81,8 @@ private:
     RHI* m_Rhi {nullptr};
     bool m_Ready {false};
 
-    RHISampler* m_Sampler {nullptr};
+    RHISampler* m_Sampler {nullptr};        // NEAREST: page table (only ever fetched)
+    RHISampler* m_LinearSampler {nullptr};  // LINEAR + clamp: the physical pool (v2 bilinear)
     RHIBuffer* m_ParamsBuffer {nullptr};
     RHIDeviceMemory* m_ParamsMemory {nullptr};
 

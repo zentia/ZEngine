@@ -390,7 +390,10 @@ int main()
         std::printf("       [info] a.png residency %u/%u, pool used %u/%u\n", resident, total,
                     manager.GetStats().physical_pool_used_slots, manager.GetStats().physical_pool_total_slots);
         Check(total == 24 && resident == 24, "a.png is 6x4 = 24 pages, all resident");
-        Check(manager.GetStats().loaded_pages == 24, "no coarse-mip page was loaded behind the producer's back");
+        // 生产者默认走采样契约 v2：mip 链常驻。a.png 700x500 @ page 128：mip0 6x4=24, mip1(350x250) 3x2=6, mip2(175x125) 2x1=2, mip3(88x62) 1x1=1。
+        // "不多不少"仍然是这条检查的意图——只载可采样 mip 的页，不载更细碎的（mip 4+ 每级又是一页的）那些。
+        Check(manager.GetStats().loaded_pages == 33,
+              "exactly the 33 pages of the 4 sampled mips are resident (24 + 6 + 2 + 1), nothing from the unsampled tail");
     }
 
     // ---- C3: 真 shader 读回 ----
@@ -416,8 +419,8 @@ int main()
             producer.Tick(&vulkan_rhi, nullptr, true, "a.png", frame.camera_pos, frame.camera_fwd);
             peak = std::max(peak, manager.getPendingLoadCount());
         }
-        std::printf("       [info] pending loads after 200 requests with no pumping: peak=%u (24 pages)\n", peak);
-        Check(peak <= 24u, "RequestPages is idempotent: 200 requests of a 24-page texture never queue more than 24 tasks");
+        std::printf("       [info] pending loads after 200 requests with no pumping: peak=%u (33 pages incl. the mip chain)\n", peak);
+        Check(peak <= 33u, "RequestPages is idempotent: 200 requests of a 33-page (24 + mip chain) texture never queue more than 33 tasks");
         settled = false;
         RunWithWatchdog("re-stream", [&] { settled = RunUntilResident(frame, 30000); }, 40);
         Check(settled && manager.getPendingLoadCount() == 0, "it still streams back fully, and the queue drains to 0");

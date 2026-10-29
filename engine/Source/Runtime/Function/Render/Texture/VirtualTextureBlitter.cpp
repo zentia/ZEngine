@@ -28,14 +28,15 @@ namespace Shader
 
 namespace
 {
-    // 与 vt_blit.frag 的 _vt_blit_params 逐字段对应（std140：uvec4/uvec4/vec4，无填充）。
+    // 与 vt_blit.frag 的 _vt_blit_params 逐字段对应（std140：uvec4/uvec4/vec4/uvec4，无填充）。
     struct BlitParams
     {
         uint32_t lookup[4];  // page_size, pool_width_pages, pages_x, pages_y
         uint32_t extent[4];  // virtual width, virtual height, unused, unused
         float fallback[4];
+        uint32_t v2[4];      // page_border, mip_count, filter, unused
     };
-    static_assert(sizeof(BlitParams) == 48, "BlitParams must match the std140 block in vt_blit.frag");
+    static_assert(sizeof(BlitParams) == 64, "BlitParams must match the std140 block in vt_blit.frag");
 
     constexpr uint32_t kBindingParams = 0;
     constexpr uint32_t kBindingPageTable = 1;
@@ -122,6 +123,15 @@ bool VirtualTextureBlitter::Initialize(RHI* rhi)
     sampler_info.minLod = 0.0f;
     sampler_info.maxLod = 0.0f;
     if (!m_Rhi->CreateSampler(&sampler_info, m_Sampler))
+    {
+        Shutdown();
+        return false;
+    }
+    // 页池用 LINEAR + clamp：v2 的双线性靠它（gutter 保证 2x2 足迹不出槽位）。
+    RHISamplerCreateInfo linear_info = sampler_info;
+    linear_info.magFilter = RHI_FILTER_LINEAR;
+    linear_info.minFilter = RHI_FILTER_LINEAR;
+    if (!m_Rhi->CreateSampler(&linear_info, m_LinearSampler))
     {
         Shutdown();
         return false;
@@ -387,11 +397,16 @@ void VirtualTextureBlitter::Shutdown()
         {
             m_Rhi->DestroySampler(m_Sampler);
         }
+        if (m_LinearSampler != nullptr)
+        {
+            m_Rhi->DestroySampler(m_LinearSampler);
+        }
     }
     m_RenderPass = nullptr;
     m_ParamsMemory = nullptr;
     m_ParamsBuffer = nullptr;
     m_Sampler = nullptr;
+    m_LinearSampler = nullptr;
     // 管线 / 布局 / 描述符集：RHI 没有对应销毁入口，只丢句柄。
     m_Pipeline = nullptr;
     m_PipelineLayout = nullptr;
@@ -465,7 +480,8 @@ bool VirtualTextureBlitter::Render(VirtualTextureManager& manager,
                                    uint32_t out_width,
                                    uint32_t out_height,
                                    const float fallback_rgba[4],
-                                   std::vector<uint32_t>& out_rgba)
+                                   std::vector<uint32_t>& out_rgba,
+                                   Filter filter)
 {
     out_rgba.clear();
 #if !ZENGINE_VT_GPU
@@ -515,13 +531,20 @@ bool VirtualTextureBlitter::Render(VirtualTextureManager& manager,
     }
 
     // ---- 参数 ----
+    VirtualTextureShaderParams shader_params {};
+    if (!resource->BuildShaderParams(*pool, shader_params))
+    {
+        return false;  // 页池与纹理的 gutter 不一致，如实失败
+    }
+    if (filter == Filter::MipBilinear && shader_params.v2[0] == 0)
+    {
+        return false;  // v2 双线性需要 gutter：border 0 的池里 2x2 足迹会读到相邻槽位的像素
+    }
     BlitParams params {};
-    params.lookup[0] = pool->getPageSize();
-    params.lookup[1] = pool->getPoolWidthPages();
-    params.lookup[2] = resource->getPagesX();
-    params.lookup[3] = resource->getPagesY();
-    params.extent[0] = resource->getVirtualWidth();
-    params.extent[1] = resource->getVirtualHeight();
+    std::memcpy(params.lookup, shader_params.lookup, sizeof(params.lookup));
+    std::memcpy(params.extent, shader_params.extent, sizeof(params.extent));
+    std::memcpy(params.v2, shader_params.v2, sizeof(params.v2));
+    params.v2[2] = static_cast<uint32_t>(filter);
     std::memcpy(params.fallback, fallback_rgba, sizeof(params.fallback));
 
     void* mapped = nullptr;
@@ -544,7 +567,7 @@ bool VirtualTextureBlitter::Render(VirtualTextureManager& manager,
     table_info.imageLayout = RHI_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
     RHIDescriptorImageInfo pool_info {};
-    pool_info.sampler = m_Sampler;
+    pool_info.sampler = m_LinearSampler;
     pool_info.imageView = pool->getPhysicalTextureView();
     pool_info.imageLayout = RHI_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 

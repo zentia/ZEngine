@@ -26,15 +26,17 @@ namespace Shader
 
 namespace
 {
-    // 与 vt_resolve.comp 的 _vt_resolve_params 逐字段对应（std140：uvec4/uvec4/vec4，
-    // 全是 16 字节对齐的向量，无填充）。
+    // 与 vt_resolve.comp 的 _vt_resolve_params 逐字段对应（std140：uvec4/uvec4/vec4/uvec4，
+    // 全是 16 字节对齐的向量，无填充）。lookup/extent/v2 三组由 VirtualTextureResource::BuildShaderParams
+    // 统一填，这里只补 mode 与 fallback。
     struct ResolveParams
     {
         uint32_t lookup[4];  // page_size, pool_width_pages, pages_x, pages_y
         uint32_t extent[4];  // width, height, mode, unused
         float fallback[4];
+        uint32_t v2[4];      // page_border, mip_count, unused, unused
     };
-    static_assert(sizeof(ResolveParams) == 48, "ResolveParams must match the std140 block in vt_resolve.comp");
+    static_assert(sizeof(ResolveParams) == 64, "ResolveParams must match the std140 block in vt_resolve.comp");
 
     constexpr uint32_t kBindingParams = 0;
     constexpr uint32_t kBindingPageTable = 1;
@@ -297,13 +299,15 @@ bool VirtualTextureResolver::Resolve(VirtualTextureManager& manager,
     }
 
     // ---- 参数 ----
+    VirtualTextureShaderParams shader_params {};
+    if (!resource->BuildShaderParams(*pool, shader_params))
+    {
+        return false;  // 页池与纹理的 gutter 不一致：页的像素布局和槽位对不上，如实失败
+    }
     ResolveParams params {};
-    params.lookup[0] = pool->getPageSize();
-    params.lookup[1] = pool->getPoolWidthPages();
-    params.lookup[2] = resource->getPagesX();
-    params.lookup[3] = resource->getPagesY();
-    params.extent[0] = width;
-    params.extent[1] = height;
+    std::memcpy(params.lookup, shader_params.lookup, sizeof(params.lookup));
+    std::memcpy(params.extent, shader_params.extent, sizeof(params.extent));
+    std::memcpy(params.v2, shader_params.v2, sizeof(params.v2));
     params.extent[2] = static_cast<uint32_t>(mode);
     std::memcpy(params.fallback, fallback_rgba, sizeof(params.fallback));
 

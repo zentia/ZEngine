@@ -43,16 +43,13 @@ void VirtualTextureProducer::Bind(VirtualTextureManager* manager,
     m_Config = config;
 }
 
-bool VirtualTextureProducer::EnsureManager(RHI* rhi, RenderResourceBase* render_resource)
+void VirtualTextureProducer::ApplyManagerConfig()
 {
-    if (m_Manager == nullptr || rhi == nullptr)
+    if (m_ManagerConfigApplied || m_Manager == nullptr)
     {
-        return false;
+        return;
     }
-    if (m_Manager->getPhysicalTexturePool() != nullptr)
-    {
-        return true;  // 已经有人（本类或别人）把它拉起来了
-    }
+    m_ManagerConfigApplied = true;
 
     // 默认 VirtualTextureConfig 要 2048x2048 页 = 262144x262144 px = 256 GiB 的池图，任何设备都
     // 放不下。生产者给一个量得出来的小池（默认 16x16 页 = 2048 px = 16 MiB）。
@@ -63,11 +60,27 @@ bool VirtualTextureProducer::EnsureManager(RHI* rhi, RenderResourceBase* render_
     config.max_concurrent_loads = m_Config.max_concurrent_loads;
     // 没有 mip 链之前只有 mip 0 的页能上传：关掉 mip 流送，请求才会钉在 mip 0。
     config.enable_mip_streaming = false;
+    config.page_border = m_Config.page_border;
+    config.resident_mip_chain = m_Config.resident_mip_chain;
     config.memory_budget_mb =
         std::max<size_t>(1, (static_cast<size_t>(m_Config.pool_pages_per_side) * m_Config.pool_pages_per_side *
-                             m_Config.page_size * m_Config.page_size * 4u) /
+                             (m_Config.page_size + 2u * m_Config.page_border) *
+                             (m_Config.page_size + 2u * m_Config.page_border) * 4u +
+                         (1024u * 1024u - 1u)) /  // 向上取整：预算比整池小一点，满池时会被预算驱逐误伤
                                 (1024u * 1024u));
     m_Manager->SetConfig(config);
+}
+
+bool VirtualTextureProducer::EnsureManager(RHI* rhi, RenderResourceBase* render_resource)
+{
+    if (m_Manager == nullptr || rhi == nullptr)
+    {
+        return false;
+    }
+    if (m_Manager->getPhysicalTexturePool() != nullptr)
+    {
+        return true;  // 已经有人（本类或别人）把它拉起来了
+    }
 
     // 管理器的 Initialize 只放行 Vulkan / DX12（Metal、WebGL2 没有 VT GPU 路径）。
     if (!m_Manager->Initialize(rhi, render_resource))
@@ -176,6 +189,7 @@ bool VirtualTextureProducer::TickCpu(bool enabled,
 
         // RegisterVirtualTexture 是纯 CPU（只建资源 + 页表项 + 登记，管理器内部有锁），所以可以在
         // 池还没建的时候就做；页会留在队列里，等 RHI 线程建好池后被提交。
+        ApplyManagerConfig();
         m_Handle = m_Manager->RegisterVirtualTexture(texture, m_Config.page_size);
         if (m_Handle == 0)
         {
@@ -392,6 +406,7 @@ void VirtualTextureProducer::Shutdown()
         }
     }
     m_FailedPath.clear();
+    m_ManagerConfigApplied = false;  // 下次开始流送时重新把本生产者的布局推给管理器
     if (m_BroughtUpManager && m_Manager != nullptr)
     {
         // 只拆自己拉起来的：别人初始化的管理器不归我们关。

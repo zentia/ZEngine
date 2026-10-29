@@ -24,6 +24,7 @@ layout(set = 0, binding = 0) uniform _vt_blit_params
     uvec4 lookup;   // x = page_size, y = pool_width_pages, z = pages_x, w = pages_y
     uvec4 extent;   // x = virtual width, y = virtual height, z/w = unused
     vec4 fallback;  // 不驻留页输出的颜色
+    uvec4 v2;       // x = page_border, y = mip_count, z = filter (0 = point mip 0, 1 = mip select + bilinear), w = unused
 } u_params;
 
 layout(set = 0, binding = 1) uniform sampler2D u_page_table;
@@ -37,12 +38,21 @@ void main()
     p.pages_x = u_params.lookup.z;
     p.pages_y = u_params.lookup.w;
 
+    p.border = u_params.v2.x;
+    p.mip_count = u_params.v2.y;
+    p.virtual_size = uvec2(u_params.extent.xy);
+
     bool resident = false;
-    out_color = VTSampleUV(u_page_table,
-                           u_physical_pool,
-                           p,
-                           v_uv,
-                           uvec2(u_params.extent.xy),
-                           u_params.fallback,
-                           resident);
+    if (u_params.v2.z == 0u)
+    {
+        // v1: 整数 texel / 点采样，mip 0。
+        out_color = VTSampleUV(u_page_table, u_physical_pool, p, v_uv, p.virtual_size, u_params.fallback, resident);
+    }
+    else
+    {
+        // v2: 屏幕空间导数 → mip；缺页回退到更粗的 mip；mip 内双线性（gutter 保证跨页边不串页）。
+        uint used_mip;
+        const float lod = VTLod(p, dFdx(v_uv), dFdy(v_uv));
+        out_color = VTSampleBilinear(u_page_table, u_physical_pool, p, v_uv, lod, u_params.fallback, resident, used_mip);
+    }
 }

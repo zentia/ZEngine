@@ -155,12 +155,14 @@ bool PhysicalTexturePool::Initialize(RHI* rhi,
                                      uint32_t pool_width_pages,
                                      uint32_t pool_height_pages,
                                      uint32_t page_size,
-                                     RHIFormat format)
+                                     RHIFormat format,
+                                     uint32_t page_border)
 {
     m_Rhi = rhi;
     m_PoolWidthPages = pool_width_pages;
     m_PoolHeightPages = pool_height_pages;
     m_PageSize = page_size;
+    m_PageBorder = page_border;
     m_Format = format;
 
 #if !ZENGINE_VT_GPU
@@ -168,8 +170,9 @@ bool PhysicalTexturePool::Initialize(RHI* rhi,
 #else
     // Calculate physical texture dimensions. 64 位乘：默认配置 2048 页 * 128 px = 262144，
     // 平方后 2^36 个 texel，32 位乘法在这里不溢出，但再大一点就会，别图省事改回去。
-    const uint64_t physical_width = static_cast<uint64_t>(pool_width_pages) * page_size;
-    const uint64_t physical_height = static_cast<uint64_t>(pool_height_pages) * page_size;
+    const uint64_t slot_size = static_cast<uint64_t>(page_size) + 2ull * page_border;
+    const uint64_t physical_width = static_cast<uint64_t>(pool_width_pages) * slot_size;
+    const uint64_t physical_height = static_cast<uint64_t>(pool_height_pages) * slot_size;
 
     // 池图必须塞得进设备：默认 VirtualTextureConfig 要 262144 x 262144（RGBA8 = 256 GiB），
     // 任何 GPU 的 maxImageDimension2D 都远小于它（常见 16384~32768）。不先量一下，
@@ -337,8 +340,10 @@ bool PhysicalTexturePool::Initialize(RHI* rhi,
 
 bool PhysicalTexturePool::InitializeLogical(uint32_t pool_width_pages,
                                             uint32_t pool_height_pages,
-                                            uint32_t page_size)
+                                            uint32_t page_size,
+                                            uint32_t page_border)
 {
+    m_PageBorder = page_border;
     // Headless counterpart of Initialize(): build the slot grid and size the
     // pool metadata, but create NO Vulkan image. Everything that is pure CPU
     // (slot allocation, LRU, access-time tracking) works unchanged, so the

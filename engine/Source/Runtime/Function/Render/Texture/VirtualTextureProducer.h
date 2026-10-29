@@ -67,6 +67,11 @@ public:
         uint32_t page_size = 128;
         uint32_t pool_pages_per_side = 16;  // 16*128 = 2048 px; 16 MiB RGBA8
         uint32_t max_concurrent_loads = 8;
+        // Sampling contract v2: a 1-texel gutter around every page (bilinear across page edges) and a resident
+        // mip chain (the shader picks the mip from screen-space derivatives). Set page_border = 0 and
+        // resident_mip_chain = false for the original mip-0-only point-sampled layout.
+        uint32_t page_border = 1;
+        bool resident_mip_chain = true;
         // Distance at which the texture is anchored in front of the camera.
         float anchor_distance = 10.0f;
         // World half-extent of the anchored texture's footprint (drives screen size).
@@ -140,6 +145,12 @@ public:
 
 private:
     void ReleaseTexture();
+    // RENDER thread, once, BEFORE the first RegisterVirtualTexture: push this producer's pool / gutter / mip-chain
+    // settings into the manager. They must already be in place when the resource is registered (the resource bakes
+    // the gutter and builds the mip chain at registration), which happens on the render thread long before the RHI
+    // thread brings the pool up -- applying them in EnsureManager (RHI thread) was too late.
+    void ApplyManagerConfig();
+    bool m_ManagerConfigApplied {false};
     // RHI thread. Builds the pool on first need; reports failure back through m_PoolFailed.
     bool EnsureManager(RHI* rhi, RenderResourceBase* render_resource);
     // RENDER thread: hand a handle to the RHI thread instead of unregistering it here.

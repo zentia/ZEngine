@@ -177,10 +177,22 @@ struct VirtualTextureConfig
     bool enable_mip_streaming;       // Enable mip level streaming (default: true)
     RHIFormat physical_pool_format;  // Physical pool format
 
+    // ---- sampling contract v2 (see vt_common.h) -------------------------------------------------
+    // page_border: texels of gutter around every page inside its physical slot (0 or 1). With 1 the slot is
+    //   (page_size + 2)^2 and holds the page plus a 1-texel ring copied from the neighbouring texels of the same
+    //   mip, which is what lets a bilinear footprint cross a page edge without reading another page's pixels.
+    //   0 = the original layout (slot == page): point sampling only.
+    // resident_mip_chain: build the CPU mip chain, keep EVERY sampled mip's pages resident, and publish them in
+    //   the page-table atlas, so a shader can pick a mip from screen-space derivatives and fall back to a
+    //   coarser resident one. false = mip 0 only (the original behaviour; enable_mip_streaming is ignored).
+    uint32_t page_border;
+    bool resident_mip_chain;
+
     VirtualTextureConfig()
         : page_size(128), physical_pool_width(2048), physical_pool_height(2048), memory_budget_mb(512),
           max_concurrent_loads(4), min_screen_size(0.01f), max_distance(2000.0f), enable_async_loading(true),
-          enable_mip_streaming(true), physical_pool_format(RHIFormat::RHI_FORMAT_R8G8B8A8_UNORM)
+          enable_mip_streaming(true), physical_pool_format(RHIFormat::RHI_FORMAT_R8G8B8A8_UNORM), page_border(0),
+          resident_mip_chain(false)
     {
     }
 };
@@ -236,7 +248,8 @@ public:
                     uint32_t pool_width_pages,
                     uint32_t pool_height_pages,
                     uint32_t page_size,
-                    RHIFormat format);
+                    RHIFormat format,
+                    uint32_t page_border = 0);
 
     // Headless / logical initialization: set up the slot grid WITHOUT creating a
     // Vulkan image. Slot allocation / LRU / bookkeeping are pure CPU and work
@@ -244,7 +257,10 @@ public:
     // verification harness (and any platform where VT has no real RHI yet) so the
     // streaming policy (load / evict / priority) can be exercised and asserted
     // against without a device. See VirtualTextureTypes.cpp.
-    bool InitializeLogical(uint32_t pool_width_pages, uint32_t pool_height_pages, uint32_t page_size);
+    bool InitializeLogical(uint32_t pool_width_pages,
+                           uint32_t pool_height_pages,
+                           uint32_t page_size,
+                           uint32_t page_border = 0);
 
     // True when the pool was created via InitializeLogical (no GPU texture).
     bool isLogicalOnly() const { return m_LogicalOnly; }
@@ -294,6 +310,9 @@ public:
     uint32_t getPoolWidthPages() const { return m_PoolWidthPages; }
     uint32_t getPoolHeightPages() const { return m_PoolHeightPages; }
     uint32_t getPageSize() const { return m_PageSize; }
+    // Gutter texels per page edge, and the resulting slot edge length in texels (page + 2 * border).
+    uint32_t getPageBorder() const { return m_PageBorder; }
+    uint32_t getSlotSize() const { return m_PageSize + 2u * m_PageBorder; }
     uint32_t getTotalSlots() const { return m_PoolWidthPages * m_PoolHeightPages; }
 
     // Get slot information
@@ -324,6 +343,7 @@ private:
     uint32_t m_PoolWidthPages;   // Pool width in pages
     uint32_t m_PoolHeightPages;  // Pool height in pages
     uint32_t m_PageSize;         // Page size in pixels
+    uint32_t m_PageBorder {0};   // Gutter texels per page edge
     RHIFormat m_Format;          // Texture format
     bool m_LogicalOnly;          // Set when initialized via InitializeLogical (no GPU texture)
     bool m_HasContent;           // True once at least one page has been uploaded (see hasContent())
@@ -359,6 +379,20 @@ bool UploadImageRegion(RHI* rhi,
                        uint32_t height,
                        uint32_t bytes_per_pixel,
                        bool discard_prior_content);
+
+// ---------------------------------------------------------------------------
+// What every shader consumer needs to find a texel (see engine/shader/include/vt_common.h and
+// shader/hlsl/common/vt_common.hlsli -- the three copies of the contract MUST agree with this).
+// Built in ONE place (VirtualTextureResource::BuildShaderParams) so the resolver, the blitter, the overlay and
+// the material cannot drift. Plain uint[4] groups so it maps 1:1 onto uvec4 / uint4 in a cbuffer.
+// ---------------------------------------------------------------------------
+struct VirtualTextureShaderParams
+{
+    uint32_t lookup[4];  // page_size, pool_width_pages, pages_x (mip 0), pages_y (mip 0)
+    uint32_t extent[4];  // virtual_width, virtual_height, <consumer specific>, <consumer specific>
+    uint32_t v2[4];      // page_border, mip_count (>=1), <consumer specific: filter mode>, <unused>
+};
+static_assert(sizeof(VirtualTextureShaderParams) == 48, "VirtualTextureShaderParams must stay 3 x uint4");
 
 // ---------------------------------------------------------------------------
 // 后端中立的 VT 图像管理（池图 / 页表纹理共用）。

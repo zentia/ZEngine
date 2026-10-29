@@ -66,7 +66,10 @@ bool VirtualTextureResource::Initialize(const std::string& texture_path,
     return true;
 }
 
-bool VirtualTextureResource::Initialize(std::shared_ptr<TextureData> texture_data, uint32_t page_size)
+bool VirtualTextureResource::Initialize(std::shared_ptr<TextureData> texture_data,
+                                        uint32_t page_size,
+                                        uint32_t page_border,
+                                        bool build_mip_chain)
 {
     if (!texture_data)
     {
@@ -96,6 +99,24 @@ bool VirtualTextureResource::Initialize(std::shared_ptr<TextureData> texture_dat
     // Calculate number of mip levels
     uint32_t max_dim = std::max(m_VirtualWidth, m_VirtualHeight);
     m_MipLevels = static_cast<uint32_t>(std::floor(std::log2(max_dim))) + 1;
+
+    // ---- sampling contract v2: gutter + mip chain ----
+    m_PageBorder = page_border;
+    m_SampledMipCount = 1;
+    m_HasMipChain = false;
+    m_MipChain.clear();
+    if (build_mip_chain && getBytesPerPixel() == 4 && texture_data->m_Pixels != nullptr)
+    {
+        m_SampledMipCount = std::min(VTRef::SampledMipCount(m_VirtualWidth, m_VirtualHeight, page_size), m_MipLevels);
+        if (m_SampledMipCount > 1)
+        {
+            std::vector<VTRef::Image> chain = VTRef::BuildMipChain(
+                texture_data->m_Pixels, m_VirtualWidth, m_VirtualHeight, m_SampledMipCount);
+            chain.erase(chain.begin());  // mip 0 stays m_SourceData: no second copy of the biggest level
+            m_MipChain = std::move(chain);
+            m_HasMipChain = true;
+        }
+    }
 
     // Initialize pages
     InitializePages();
@@ -296,8 +317,9 @@ void VirtualTextureResource::UpdatePagePriority(const VirtualTexturePageID& page
 
 void VirtualTextureResource::CalculatePagesForMip(uint32_t mip_level, uint32_t& pages_x, uint32_t& pages_y) const
 {
-    uint32_t mip_width = m_VirtualWidth >> mip_level;
-    uint32_t mip_height = m_VirtualHeight >> mip_level;
+    // A mip level always has at least one texel per axis (a 4096x16 texture's mip 5 is 128x1, not 128x0).
+    uint32_t mip_width = VTRef::MipDim(m_VirtualWidth, mip_level);
+    uint32_t mip_height = VTRef::MipDim(m_VirtualHeight, mip_level);
     pages_x = (mip_width + m_PageSize - 1) / m_PageSize;
     pages_y = (mip_height + m_PageSize - 1) / m_PageSize;
 }
@@ -322,6 +344,67 @@ bool VirtualTextureResource::ExtractPagePixels(uint32_t page_x,
                                                uint32_t& out_width,
                                                uint32_t& out_height) const
 {
+    return ExtractPagePixels(0u, page_x, page_y, out_pixels, out_width, out_height);
+}
+
+const uint8_t* VirtualTextureResource::getMipPixels(uint32_t mip, uint32_t& width, uint32_t& height) const
+{
+    width = 0;
+    height = 0;
+    if (!m_SourceData || mip >= m_SampledMipCount)
+    {
+        return nullptr;
+    }
+    if (mip == 0)
+    {
+        width = m_VirtualWidth;
+        height = m_VirtualHeight;
+        return m_SourceData->m_Pixels;
+    }
+    if (mip - 1 >= m_MipChain.size())
+    {
+        return nullptr;
+    }
+    width = m_MipChain[mip - 1].w;
+    height = m_MipChain[mip - 1].h;
+    return m_MipChain[mip - 1].rgba.data();
+}
+
+uint32_t VirtualTextureResource::getPageTableHeight() const
+{
+    return VTRef::AtlasHeight(m_VirtualWidth, m_VirtualHeight, m_PageSize, m_SampledMipCount);
+}
+
+uint32_t VirtualTextureResource::getMipRowOffset(uint32_t mip) const
+{
+    return VTRef::MipRowOffset(m_VirtualWidth, m_VirtualHeight, m_PageSize, mip);
+}
+
+bool VirtualTextureResource::BuildShaderParams(const PhysicalTexturePool& pool, VirtualTextureShaderParams& out) const
+{
+    out = {};
+    if (!m_IsInitialized || pool.getPageSize() != m_PageSize || pool.getPageBorder() != m_PageBorder)
+    {
+        return false;
+    }
+    out.lookup[0] = pool.getPageSize();
+    out.lookup[1] = pool.getPoolWidthPages();
+    out.lookup[2] = m_PagesX;
+    out.lookup[3] = m_PagesY;
+    out.extent[0] = m_VirtualWidth;
+    out.extent[1] = m_VirtualHeight;
+    out.v2[0] = m_PageBorder;
+    out.v2[1] = m_SampledMipCount;
+    return true;
+}
+
+bool VirtualTextureResource::ExtractPagePixels(uint32_t mip,
+                                               uint32_t page_x,
+                                               uint32_t page_y,
+                                               std::vector<uint8_t>& out_pixels,
+                                               uint32_t& out_width,
+                                               uint32_t& out_height) const
+{
     out_width = 0;
     out_height = 0;
 
@@ -331,35 +414,69 @@ bool VirtualTextureResource::ExtractPagePixels(uint32_t page_x,
     }
 
     const uint32_t bytes_per_pixel = getBytesPerPixel();
-    if (bytes_per_pixel == 0 || page_x >= m_PagesX || page_y >= m_PagesY)
+    if (bytes_per_pixel == 0)
+    {
+        return false;
+    }
+
+    uint32_t mip_width = 0, mip_height = 0;
+    const uint8_t* source = getMipPixels(mip, mip_width, mip_height);
+    if (source == nullptr || mip_width == 0 || mip_height == 0)
+    {
+        return false;
+    }
+    uint32_t pages_x = 0, pages_y = 0;
+    CalculatePagesForMip(mip, pages_x, pages_y);
+    if (page_x >= pages_x || page_y >= pages_y)
     {
         return false;
     }
 
     const uint32_t origin_x = page_x * m_PageSize;
     const uint32_t origin_y = page_y * m_PageSize;
-    if (origin_x >= m_VirtualWidth || origin_y >= m_VirtualHeight)
+    if (origin_x >= mip_width || origin_y >= mip_height)
     {
         return false;
     }
 
-    // 边缘页是残缺的（源尺寸不一定是 page_size 的整数倍）：只拷真实存在的那部分，
-    // 尾部补 0，把真实尺寸报回去让上传只拷真实 texel。
-    const uint32_t copy_width = std::min(m_PageSize, m_VirtualWidth - origin_x);
-    const uint32_t copy_height = std::min(m_PageSize, m_VirtualHeight - origin_y);
+    // 边缘页是残缺的（mip 尺寸不一定是 page_size 的整数倍）：真实尺寸报回去，缓冲照整块大小给。
+    const uint32_t copy_width = std::min(m_PageSize, mip_width - origin_x);
+    const uint32_t copy_height = std::min(m_PageSize, mip_height - origin_y);
 
-    out_pixels.assign(static_cast<size_t>(m_PageSize) * static_cast<size_t>(m_PageSize) * bytes_per_pixel, 0);
+    const uint32_t border = m_PageBorder;
+    const uint32_t block = m_PageSize + 2u * border;
+    out_pixels.assign(static_cast<size_t>(block) * static_cast<size_t>(block) * bytes_per_pixel, 0);
 
-    const size_t source_stride = static_cast<size_t>(m_VirtualWidth) * bytes_per_pixel;
-    const size_t dest_stride = static_cast<size_t>(m_PageSize) * bytes_per_pixel;
-    const uint8_t* source = m_SourceData->m_Pixels;
-
-    for (uint32_t row = 0; row < copy_height; ++row)
+    const size_t source_stride = static_cast<size_t>(mip_width) * bytes_per_pixel;
+    if (border == 0)
     {
-        const uint8_t* source_row =
-            source + static_cast<size_t>(origin_y + row) * source_stride + static_cast<size_t>(origin_x) * bytes_per_pixel;
-        uint8_t* dest_row = out_pixels.data() + static_cast<size_t>(row) * dest_stride;
-        memcpy(dest_row, source_row, static_cast<size_t>(copy_width) * bytes_per_pixel);
+        // 原始布局：只拷真实存在的那部分，尾部补 0（槽位 == 页，尾巴永远采不到）。
+        const size_t dest_stride = static_cast<size_t>(block) * bytes_per_pixel;
+        for (uint32_t row = 0; row < copy_height; ++row)
+        {
+            const uint8_t* source_row = source + static_cast<size_t>(origin_y + row) * source_stride +
+                                        static_cast<size_t>(origin_x) * bytes_per_pixel;
+            std::memcpy(out_pixels.data() + static_cast<size_t>(row) * dest_stride,
+                        source_row,
+                        static_cast<size_t>(copy_width) * bytes_per_pixel);
+        }
+    }
+    else
+    {
+        // v2：块里每个 texel（页内、gutter、残缺页的尾部）都等于 mip 图像上 clamp-to-edge 后的那个 texel。
+        // 这正是 clamp 寻址的双线性采样在 mip 图像边缘会看到的东西，所以 gutter 对相邻页是"真邻居"，
+        // 对图像边缘是"复制边缘"。
+        for (uint32_t y = 0; y < block; ++y)
+        {
+            const int64_t sy = std::clamp<int64_t>(static_cast<int64_t>(origin_y) + y - border, 0, mip_height - 1);
+            for (uint32_t x = 0; x < block; ++x)
+            {
+                const int64_t sx = std::clamp<int64_t>(static_cast<int64_t>(origin_x) + x - border, 0, mip_width - 1);
+                std::memcpy(out_pixels.data() + (static_cast<size_t>(y) * block + x) * bytes_per_pixel,
+                            source + static_cast<size_t>(sy) * source_stride + static_cast<size_t>(sx) * bytes_per_pixel,
+                            bytes_per_pixel);
+            }
+        }
     }
 
     out_width = copy_width;
@@ -382,6 +499,10 @@ void VirtualTextureResource::UpdatePageTableTexture(RHI* rhi)
     // 当。槽位下标是小整数，f32 能精确表示（< 2^24），语义无损。
     const RHIFormat table_format = RHIFormat::RHI_FORMAT_R32G32_SFLOAT;
     constexpr uint32_t kTableBytesPerTexel = 8;  // 2 x float32
+    // 页表是个"图集"：宽 = mip 0 的 pages_x，高 = 各采样 mip 的 pages_y 之和，mip m 的页网格从第
+    // getMipRowOffset(m) 行开始（理由见 VirtualTextureMath.h）。只有一个采样 mip 时与原来的 mip 0 网格完全一致。
+    const uint32_t table_width = m_PagesX;
+    const uint32_t table_height = getPageTableHeight();
 
     if (!VirtualTextureBackendSupported(rhi))
     {
@@ -404,8 +525,8 @@ void VirtualTextureResource::UpdatePageTableTexture(RHI* rhi)
         // 非 Vulkan 后端（DX12）：通用 RHI 路径。
         void* generic_alloc = nullptr;
         if (!VirtualTextureCreateGenericImage(rhi,
-                                              m_PagesX,
-                                              m_PagesY,
+                                              table_width,
+                                              table_height,
                                               table_format,
                                               m_PageTableTexture,
                                               m_PageTableTextureView,
@@ -423,8 +544,8 @@ void VirtualTextureResource::UpdatePageTableTexture(RHI* rhi)
         VkImageCreateInfo image_info {};
         image_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
         image_info.imageType = VK_IMAGE_TYPE_2D;
-        image_info.extent.width = m_PagesX;
-        image_info.extent.height = m_PagesY;
+        image_info.extent.width = table_width;
+        image_info.extent.height = table_height;
         image_info.extent.depth = 1;
         image_info.mipLevels = 1;
         image_info.arrayLayers = 1;
@@ -472,18 +593,30 @@ void VirtualTextureResource::UpdatePageTableTexture(RHI* rhi)
     // 2^32，再转回 uint32 是未定义行为，shader/测试都只能安全地判 "x < 0"。
     // 判据只看 is_valid，不看 physical_slot：UnloadPage 写的无效项槽位是默认值，
     // 将来任何路径若写了"无效但槽位非 MAX"的项，也不能让 GPU 以为它驻留。
-    std::vector<uint8_t> table_bytes(static_cast<size_t>(m_PagesX) * static_cast<size_t>(m_PagesY) *
+    std::vector<uint8_t> table_bytes(static_cast<size_t>(table_width) * static_cast<size_t>(table_height) *
                                      kTableBytesPerTexel);
     float* texels = reinterpret_cast<float*>(table_bytes.data());
-    for (uint32_t page_y = 0; page_y < m_PagesY; ++page_y)
+    for (size_t i = 0; i < static_cast<size_t>(table_width) * table_height; ++i)
     {
-        for (uint32_t page_x = 0; page_x < m_PagesX; ++page_x)
+        // 图集里没有页网格覆盖的 texel（较粗的 mip 比 mip 0 窄）：永远不会被 shader 读到，但也写成"不驻留"。
+        texels[i * 2 + 0] = kPageTableNotResident;
+        texels[i * 2 + 1] = 0.0f;
+    }
+    for (uint32_t mip = 0; mip < m_SampledMipCount; ++mip)
+    {
+        uint32_t mip_pages_x = 0, mip_pages_y = 0;
+        CalculatePagesForMip(mip, mip_pages_x, mip_pages_y);
+        const uint32_t row_offset = getMipRowOffset(mip);
+        for (uint32_t page_y = 0; page_y < mip_pages_y; ++page_y)
         {
-            const PageTableEntry entry = GetPageTableEntry(0, page_x, page_y);
-            const size_t index = (static_cast<size_t>(page_y) * m_PagesX + page_x) * 2;
-            const bool resident = entry.is_valid && entry.physical_slot != UINT32_MAX;
-            texels[index + 0] = resident ? static_cast<float>(entry.physical_slot) : kPageTableNotResident;
-            texels[index + 1] = static_cast<float>(entry.mip_level);
+            for (uint32_t page_x = 0; page_x < mip_pages_x; ++page_x)
+            {
+                const PageTableEntry entry = GetPageTableEntry(mip, page_x, page_y);
+                const size_t index = (static_cast<size_t>(row_offset + page_y) * table_width + page_x) * 2;
+                const bool resident = entry.is_valid && entry.physical_slot != UINT32_MAX;
+                texels[index + 0] = resident ? static_cast<float>(entry.physical_slot) : kPageTableNotResident;
+                texels[index + 1] = static_cast<float>(entry.mip_level);
+            }
         }
     }
 
@@ -496,8 +629,8 @@ void VirtualTextureResource::UpdatePageTableTexture(RHI* rhi)
                           table_bytes.size(),
                           0,
                           0,
-                          m_PagesX,
-                          m_PagesY,
+                          table_width,
+                          table_height,
                           kTableBytesPerTexel,
                           discard))
     {

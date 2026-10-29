@@ -83,7 +83,7 @@ void VirtualTextureManager::InitializeLogical(uint32_t pool_width_pages,
     if (!m_PhysicalPool)
     {
         m_PhysicalPool = std::make_shared<PhysicalTexturePool>();
-        m_PhysicalPool->InitializeLogical(pool_width_pages, pool_height_pages, page_size);
+        m_PhysicalPool->InitializeLogical(pool_width_pages, pool_height_pages, page_size, m_Config.page_border);
     }
 
     if (m_Config.enable_async_loading)
@@ -134,7 +134,7 @@ bool VirtualTextureManager::CreatePhysicalTexturePool(uint32_t pool_width_pages,
     }
 
     m_PhysicalPool = std::make_shared<PhysicalTexturePool>();
-    return m_PhysicalPool->Initialize(m_Rhi, pool_width_pages, pool_height_pages, page_size, format);
+    return m_PhysicalPool->Initialize(m_Rhi, pool_width_pages, pool_height_pages, page_size, format, m_Config.page_border);
 }
 
 VirtualTextureHandle VirtualTextureManager::RegisterVirtualTexture(const std::string& texture_path,
@@ -173,7 +173,7 @@ VirtualTextureHandle VirtualTextureManager::RegisterVirtualTexture(std::shared_p
     }
 
     auto resource = std::make_shared<VirtualTextureResource>();
-    if (!resource->Initialize(texture_data, page_size))
+    if (!resource->Initialize(texture_data, page_size, m_Config.page_border, m_Config.resident_mip_chain))
     {
         return 0;
     }
@@ -249,10 +249,12 @@ void VirtualTextureManager::RequestPages(VirtualTextureHandle handle,
     uint32_t mip_level =
         m_Config.enable_mip_streaming ? resource->CalculateRequiredMipLevel(approx_screen_size, distance, 0.0f) : 0u;
 
-    // Calculate required pages (simplified: request all pages at mip level)
-    // In a real implementation, this would calculate based on UV coordinates
-    uint32_t pages_x, pages_y;
-    resource->CalculatePagesForMip(mip_level, pages_x, pages_y);
+    // 常驻 mip 链模式（contract v2）：着色器按屏幕空间导数自己选 mip，并在缺页时回退到更粗的 mip，所以
+    // 每个可采样的 mip 都要保持驻留——这里不再按"估算的屏幕尺寸"挑一个 mip，而是请求全部。mip 0 单独按
+    // 外部给的 screen_size 定优先级，粗 mip 一律 Critical：它们页数极少，却是所有缺页的兜底。
+    const bool resident_chain = m_Config.resident_mip_chain && resource->getSampledMipCount() > 1;
+    const uint32_t first_mip = resident_chain ? 0u : mip_level;
+    const uint32_t last_mip = resident_chain ? resource->getSampledMipCount() - 1u : mip_level;
 
     uint64_t now = static_cast<uint64_t>(
         std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -260,6 +262,11 @@ void VirtualTextureManager::RequestPages(VirtualTextureHandle handle,
             .count());
 
     // Create page load requests
+    for (uint32_t request_mip = first_mip; request_mip <= last_mip; ++request_mip)
+    {
+    mip_level = request_mip;
+    uint32_t pages_x, pages_y;
+    resource->CalculatePagesForMip(mip_level, pages_x, pages_y);
     for (uint32_t y = 0; y < pages_y; ++y)
     {
         for (uint32_t x = 0; x < pages_x; ++x)
@@ -279,7 +286,11 @@ void VirtualTextureManager::RequestPages(VirtualTextureHandle handle,
 
             // Calculate priority based on screen size
             VirtualTexturePagePriority priority = VirtualTexturePagePriority::Normal;
-            if (screen_size > 0.5f)
+            if (resident_chain && mip_level > 0)
+            {
+                priority = VirtualTexturePagePriority::Critical;
+            }
+            else if (screen_size > 0.5f)
             {
                 priority = VirtualTexturePagePriority::Critical;
             }
@@ -316,6 +327,7 @@ void VirtualTextureManager::RequestPages(VirtualTextureHandle handle,
             }
         }
     }
+    }  // request_mip
 
     // 旧代码从不 notify（全文件唯一一处 notify 是关停），所以只要 cv.wait 的谓词没被
     // 虚假唤醒碰上，后台线程就一直睡着、实际上从没处理过任何请求。
@@ -397,7 +409,7 @@ void VirtualTextureManager::Update(const Vector3& camera_position,
             }
             const size_t bytes_per_pixel = 4;  // R8G8B8A8
             const size_t per_slot =
-                static_cast<size_t>(m_PhysicalPool->getPageSize()) * m_PhysicalPool->getPageSize() * bytes_per_pixel;
+                static_cast<size_t>(m_PhysicalPool->getSlotSize()) * m_PhysicalPool->getSlotSize() * bytes_per_pixel;
             m_Stats.total_memory_used = m_Stats.physical_pool_used_slots * per_slot;
         }
         m_Stats.memory_budget = static_cast<size_t>(m_Config.memory_budget_mb) * 1024 * 1024;
@@ -717,10 +729,10 @@ void VirtualTextureManager::PageLoadingThreadFunction()
         PreparedPage prepared;
         prepared.page_id = task.page_id;
         prepared.handle = task.virtual_texture_handle;
-        // 只有 mip 0 有像素可传（ExtractPagePixels 只抠 mip 0 区域）：对 mip>0 调它会把
-        // 错位的区域当成该页的内容传进槽位，比不传更糟。
-        prepared.has_pixels = task.page_id.mip_level == 0 &&
-                              resource->ExtractPagePixels(task.page_id.page_x,
+        // ExtractPagePixels 对没有 mip 链的纹理只认 mip 0（其余 mip 返回 false，页只做簿记、不传像素——
+        // 比把错位的区域当成该页的内容传进槽位好）；有 mip 链的纹理每个采样 mip 都有真像素。
+        prepared.has_pixels = resource->ExtractPagePixels(task.page_id.mip_level,
+                                                          task.page_id.page_x,
                                                           task.page_id.page_y,
                                                           prepared.pixels,
                                                           prepared.width,
@@ -924,8 +936,8 @@ bool VirtualTextureManager::LoadPage(const VirtualTexturePageID& page_id,
         std::vector<uint8_t> page_pixels;
         uint32_t page_pixel_width = 0;
         uint32_t page_pixel_height = 0;
-        if (page_id.mip_level == 0 && resource->ExtractPagePixels(
-                page_id.page_x, page_id.page_y, page_pixels, page_pixel_width, page_pixel_height))
+        if (resource->ExtractPagePixels(
+                page_id.mip_level, page_id.page_x, page_id.page_y, page_pixels, page_pixel_width, page_pixel_height))
         {
             UploadPageToPhysicalPool(page_id, handle, page_pixels.data(), page_pixel_width, page_pixel_height);
         }
@@ -985,9 +997,27 @@ void VirtualTextureManager::UploadPageToPhysicalPool(const VirtualTexturePageID&
     {
         return;
     }
+    // 槽位边长 = 页 + 两侧 gutter。页池和资源的 gutter 必须一致，否则像素块的布局和槽位对不上
+    // （BuildShaderParams 也会拒绝这种组合，这里提前挡掉，不往显存里传错位的块）。
+    const uint32_t slot_size = m_PhysicalPool->getSlotSize();
+    if (m_PhysicalPool->getPageBorder() != resource->getPageBorder())
+    {
+        // 不是静默 return：页已被标 Loaded，像素却没传——和上传失败同一类问题，同样计数、同样响一次。
+        if (m_PageUploadFailures.fetch_add(1) == 0)
+        {
+#if ZENGINE_VT_GPU
+            LOG_ERROR(ZRender,
+                      "virtual texture: page layout mismatch -- the texture was registered with gutter {} but the "
+                      "physical pool has gutter {}; its pages cannot be uploaded (config changed after registration?)",
+                      resource->getPageBorder(),
+                      m_PhysicalPool->getPageBorder());
+#endif
+        }
+        return;
+    }
 
-    const uint32_t offset_x = slot_x * page_size;
-    const uint32_t offset_y = slot_y * page_size;
+    const uint32_t offset_x = slot_x * slot_size;
+    const uint32_t offset_y = slot_y * slot_size;
 
     // 传**整页块**（page_size × page_size），不是 page_width × page_height。
     // 原因：UploadImageRegion 按"紧凑行距 = width"拷贝，而源缓冲的行距是 page_size
@@ -995,7 +1025,7 @@ void VirtualTextureManager::UploadPageToPhysicalPool(const VirtualTexturePageID&
     // 错位。整页传则行距恒等于 page_size，与缓冲布局一致，补的 0 落在槽位尾部
     // （采样不会碰到，UV 只映射真实区域）。
     const size_t data_bytes =
-        static_cast<size_t>(page_size) * static_cast<size_t>(page_size) * bytes_per_pixel;
+        static_cast<size_t>(slot_size) * static_cast<size_t>(slot_size) * bytes_per_pixel;
 
     // discard 只在页池还从没传过任何页时为 true。之后必须 false —— 否则 barrier 的
     // oldLayout=UNDEFINED 会把此前已驻留的所有页静默作废。
@@ -1006,8 +1036,8 @@ void VirtualTextureManager::UploadPageToPhysicalPool(const VirtualTexturePageID&
                           data_bytes,
                           offset_x,
                           offset_y,
-                          page_size,
-                          page_size,
+                          slot_size,
+                          slot_size,
                           bytes_per_pixel,
                           discard_prior_content))
     {
@@ -1138,8 +1168,8 @@ void VirtualTextureManager::EvictLRUPages()
     // via GetStats() rather than a separate counter, so compute the per-slot
     // cost here to avoid a round trip per eviction.
     const size_t bytes_per_pixel = 4;  // R8G8B8A8
-    const uint32_t page_size = m_PhysicalPool->getPageSize();
-    const size_t bytes_per_slot = static_cast<size_t>(page_size) * page_size * bytes_per_pixel;
+    const uint32_t slot_size = m_PhysicalPool->getSlotSize();
+    const size_t bytes_per_slot = static_cast<size_t>(slot_size) * slot_size * bytes_per_pixel;
     const size_t budget_bytes = static_cast<size_t>(m_Config.memory_budget_mb) * 1024 * 1024;
 
     // Collect the loaded slots with their last-access time, then evict oldest

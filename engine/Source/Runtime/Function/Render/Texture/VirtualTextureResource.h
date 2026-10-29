@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Runtime/Function/Render/RenderResourceBase.h"
+#include "VirtualTextureMath.h"
 #include "VirtualTextureTypes.h"
 
 #include <atomic>
@@ -30,7 +31,14 @@ public:
                     bool is_srgb = false);
 
     // Initialize virtual texture from existing texture data
-    bool Initialize(std::shared_ptr<TextureData> texture_data, uint32_t page_size);
+    //
+    // page_border / build_mip_chain: sampling contract v2 (see VirtualTextureMath.h). Both default to the
+    // original behaviour (no gutter, mip 0 only). build_mip_chain needs 4 bytes per texel; with any other format
+    // it is ignored and the texture stays mip-0-only.
+    bool Initialize(std::shared_ptr<TextureData> texture_data,
+                    uint32_t page_size,
+                    uint32_t page_border = 0,
+                    bool build_mip_chain = false);
 
     // Shutdown virtual texture
     void Shutdown();
@@ -44,6 +52,22 @@ public:
 
     // Get page size
     uint32_t getPageSize() const { return m_PageSize; }
+
+    // ---- sampling contract v2 ----
+    uint32_t getPageBorder() const { return m_PageBorder; }
+    // Number of mips the shader may select (>= 1). 1 unless the chain was built.
+    uint32_t getSampledMipCount() const { return m_SampledMipCount; }
+    bool hasMipChain() const { return m_SampledMipCount > 1u || m_HasMipChain; }
+    // Page-table atlas geometry (see VirtualTextureMath.h): width = mip-0 pages_x, height = sum of the
+    // sampled mips' pages_y. With one sampled mip this is exactly the original mip-0 grid.
+    uint32_t getPageTableWidth() const { return m_PagesX; }
+    uint32_t getPageTableHeight() const;
+    uint32_t getMipRowOffset(uint32_t mip) const;
+    // Pixels (RGBA8) and size of one sampled mip; null when the mip does not exist. mip 0 is the retained source.
+    const uint8_t* getMipPixels(uint32_t mip, uint32_t& width, uint32_t& height) const;
+    // Fill the shader-visible lookup constants for this texture + pool. False if the pool's gutter does not match
+    // the texture's (the page contents would be laid out for a different slot size).
+    bool BuildShaderParams(const PhysicalTexturePool& pool, VirtualTextureShaderParams& out) const;
 
     // Get number of pages in X and Y directions
     uint32_t getPagesX() const { return m_PagesX; }
@@ -110,6 +134,18 @@ public:
     // the upload copies only real texels into the slot. Padding the tail keeps
     // the staging buffer exactly page_size*page_size*bytes_per_pixel.
     bool ExtractPagePixels(uint32_t page_x,
+                           uint32_t page_y,
+                           std::vector<uint8_t>& out_pixels,
+                           uint32_t& out_width,
+                           uint32_t& out_height) const;
+
+    // Same for any sampled mip. The output block is (page_size + 2*border)^2 texels: the page plus its gutter.
+    // With border == 0 the tail of a partial page is zero-padded (the original behaviour); with border > 0 every
+    // texel outside the mip image -- gutter or tail padding -- is the clamp-to-edge replica of the nearest real
+    // texel, which is exactly what a clamped bilinear fetch of the mip image would return there.
+    // out_width/out_height still report the REAL extent of the page interior.
+    bool ExtractPagePixels(uint32_t mip,
+                           uint32_t page_x,
                            uint32_t page_y,
                            std::vector<uint8_t>& out_pixels,
                            uint32_t& out_width,
@@ -186,6 +222,12 @@ private:
     uint32_t m_PagesX;              // Number of pages in X direction (mip 0)
     uint32_t m_PagesY;              // Number of pages in Y direction (mip 0)
     uint32_t m_MipLevels;           // Number of mip levels
+    uint32_t m_PageBorder {0};      // Gutter texels per page edge (contract v2)
+    uint32_t m_SampledMipCount {1}; // Mips a shader may select; 1 = mip 0 only
+    bool m_HasMipChain {false};
+    // Mips 1 .. m_SampledMipCount-1 (mip 0 is m_SourceData itself). Built once in Initialize, read-only after,
+    // so the page-loading worker may read it without a lock.
+    std::vector<VTRef::Image> m_MipChain;
     RHIFormat m_Format;             // Texture format
     bool m_IsSrgb;                  // Is sRGB texture
     // Atomic: ExtractPagePixels is called from the page-loading worker thread while

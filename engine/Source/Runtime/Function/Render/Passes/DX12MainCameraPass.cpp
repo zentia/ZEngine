@@ -18,6 +18,7 @@
     #include "Runtime/Function/Render/Texture/VirtualTextureManager.h"
     #include "Runtime/Function/Render/Texture/VirtualTextureResource.h"
     #include "Runtime/Function/Render/Texture/VirtualTextureSettings.h"
+    #include "Runtime/Function/Render/Texture/VirtualTextureMath.h"
     #include "Runtime/Function/Render/Texture/VirtualTextureTypes.h"
 #endif
 
@@ -1842,8 +1843,9 @@ namespace
         uint32_t extent[4];   // virtual width, virtual height, page-table slot, pool slot
         float border[4];      // rgb frame colour
         float rect[4];        // overlay size in pixels
+        uint32_t v2[4];       // page_border, mip_count, filter (0 point / 1 mip select + bilinear), unused
     };
-    static_assert(sizeof(DX12VtOverlayConstants) == 64, "VtOverlayParams layout");
+    static_assert(sizeof(DX12VtOverlayConstants) == 80, "VtOverlayParams layout");
     constexpr uint32_t kVtOverlayConstantBufferBytes = 256;  // root CBV needs a 256-byte-aligned size
     static_assert(sizeof(DX12VtOverlayConstants) <= kVtOverlayConstantBufferBytes, "fits the CBV");
 }  // namespace
@@ -1943,20 +1945,30 @@ void DX12MainCameraPass::VerifyVirtualTextureOverlaySelfTest(uint64_t handle)
     }
     const uint8_t* bytes = static_cast<const uint8_t*>(mapped);
 
-    const float vw = static_cast<float>(source.m_Width);
-    const float vh = static_cast<float>(source.m_Height);
-    auto source_rgb = [&](uint32_t tx, uint32_t ty) -> uint32_t {
-        const uint8_t* t = source.m_Pixels + (static_cast<size_t>(ty) * source.m_Width + tx) * 4u;
-        return static_cast<uint32_t>(t[0]) | (static_cast<uint32_t>(t[1]) << 8) | (static_cast<uint32_t>(t[2]) << 16);
+    // CPU reference: the same contract the shader implements (VirtualTextureMath.h). v2 = nearest-mip selection from
+    // the uv derivatives (1/w, 1/h per pixel on a full-rect triangle), coarser-mip residency fallback, clamped bilinear.
+    // v1 (border 0) = point sample of mip 0.
+    const bool v2 = resource->getPageBorder() > 0;
+    const uint32_t mip_count = resource->getSampledMipCount();
+    std::vector<VTRef::Image> chain;
+    if (v2)
+    {
+        chain = VTRef::BuildMipChain(source.m_Pixels, source.m_Width, source.m_Height, mip_count);
+    }
+    const auto resident = [&](uint32_t mip, uint32_t px, uint32_t py) {
+        const PageTableEntry entry = resource->GetPageTableEntry(mip, px, py);
+        return entry.is_valid && entry.physical_slot != UINT32_MAX;
     };
-    auto is_boundary = [](float f) { return std::fabs(f - std::nearbyint(f)) < 1.0e-3f; };
+    const float lod = VTRef::Lod(source.m_Width, source.m_Height, 1.0f / static_cast<float>(w), 0.0f, 0.0f, 1.0f / static_cast<float>(h));
+    constexpr float kTolerance = 2.0f;  // hardware bilinear weights are ~8-bit fixed point; the reference is fp32
+    constexpr uint32_t kBorder = 3;     // 2 px frame + 1 px of slack
 
-    constexpr uint32_t kBorder = 3;  // 2 px frame + 1 px of slack
-    uint32_t checked = 0, exact = 0, boundary_ok = 0, mismatch = 0, fallback_pixels = 0, distinct_colors_probe = 0;
-    uint32_t first_bad_x = 0, first_bad_y = 0, first_bad_got = 0, first_bad_want = 0;
+    uint32_t checked = 0, within = 0, mismatch = 0, fallback_pixels = 0, colour_runs = 0, exact = 0;
+    uint32_t mip_histogram[16] = {};
+    float max_error = 0.0f;
+    uint32_t first_bad_x = 0, first_bad_y = 0;
+    float first_bad_got[3] = {}, first_bad_want[3] = {};
     uint32_t last_color = 0xFFFFFFFFu;
-    uint32_t page_total[64] = {}, page_bad[64] = {};
-    uint32_t page_shows[16][16] = {};
     for (uint32_t y = kBorder; y + kBorder < h; ++y)
     {
         for (uint32_t x = kBorder; x + kBorder < w; ++x)
@@ -1965,119 +1977,66 @@ void DX12MainCameraPass::VerifyVirtualTextureOverlaySelfTest(uint64_t handle)
             const uint32_t got = static_cast<uint32_t>(px[0]) | (static_cast<uint32_t>(px[1]) << 8) | (static_cast<uint32_t>(px[2]) << 16);
             if (got != last_color)
             {
-                ++distinct_colors_probe;
+                ++colour_runs;
                 last_color = got;
             }
-            // The shader samples at the pixel centre: uv = (x + 0.5) / w.
-            const float fx = (static_cast<float>(x) + 0.5f) / static_cast<float>(w) * vw;
-            const float fy = (static_cast<float>(y) + 0.5f) / static_cast<float>(h) * vh;
-            const uint32_t tx = std::min(static_cast<uint32_t>(fx), source.m_Width - 1);
-            const uint32_t ty = std::min(static_cast<uint32_t>(fy), source.m_Height - 1);
-            const PageTableEntry entry = resource->GetPageTableEntry(0, tx / resource->getPageSize(), ty / resource->getPageSize());
-            const bool resident = entry.is_valid && entry.physical_slot != UINT32_MAX;
-            if (!resident)
+            const float u = (static_cast<float>(x) + 0.5f) / static_cast<float>(w);
+            const float v = (static_cast<float>(y) + 0.5f) / static_cast<float>(h);
+            float want[3];
+            bool is_resident = false;
+            if (v2)
             {
-                // Non-resident texel: the shader draws a magenta checkerboard. Not comparable with the source.
-                ++fallback_pixels;
+                const VTRef::SampleResult ref = VTRef::SampleWithFallback(
+                    chain, source.m_Width, source.m_Height, resource->getPageSize(), resident, u, v, lod);
+                is_resident = ref.resident;
+                want[0] = ref.color.r;
+                want[1] = ref.color.g;
+                want[2] = ref.color.b;
+                if (is_resident)
+                {
+                    ++mip_histogram[std::min(ref.mip, 15u)];
+                }
+            }
+            else
+            {
+                const uint32_t tx = std::min(static_cast<uint32_t>(std::clamp(u, 0.0f, 1.0f) * static_cast<float>(source.m_Width)), source.m_Width - 1);
+                const uint32_t ty = std::min(static_cast<uint32_t>(std::clamp(v, 0.0f, 1.0f) * static_cast<float>(source.m_Height)), source.m_Height - 1);
+                is_resident = resident(0, tx / resource->getPageSize(), ty / resource->getPageSize());
+                const uint8_t* t = source.m_Pixels + (static_cast<size_t>(ty) * source.m_Width + tx) * 4u;
+                want[0] = t[0];
+                want[1] = t[1];
+                want[2] = t[2];
+            }
+            if (!is_resident)
+            {
+                ++fallback_pixels;  // the shader draws a magenta checkerboard there: not comparable with the source
                 continue;
             }
             ++checked;
-            const uint32_t page_index = (ty / resource->getPageSize()) * resource->getPagesX() + (tx / resource->getPageSize());
-            if (page_index < 64) { ++page_total[page_index]; }
-            if (got == source_rgb(tx, ty))
+            const float error = std::max({std::fabs(static_cast<float>(px[0]) - want[0]),
+                                          std::fabs(static_cast<float>(px[1]) - want[1]),
+                                          std::fabs(static_cast<float>(px[2]) - want[2])});
+            max_error = std::max(max_error, error);
+            if (error < 0.5f)
             {
                 ++exact;
-                continue;
             }
-            if (page_index < 64) { ++page_bad[page_index]; }
-            // Diagnostic: which OTHER page's content does this pixel equal (same in-page offset)? A clean
-            // permutation here means the page table and the pool disagree about slots.
-            if (page_index < 16)
+            if (error <= kTolerance)
             {
-                const uint32_t ps = resource->getPageSize();
-                for (uint32_t other = 0; other < resource->getPagesX() * resource->getPagesY() && other < 16; ++other)
-                {
-                    const uint32_t ox = (other % resource->getPagesX()) * ps + (tx % ps);
-                    const uint32_t oy = (other / resource->getPagesX()) * ps + (ty % ps);
-                    if (ox < source.m_Width && oy < source.m_Height && got == source_rgb(ox, oy) && source_rgb(ox, oy) != 0)
-                    {
-                        ++page_shows[page_index][other];
-                    }
-                }
-            }
-            // Only a sample that lands exactly on a texel boundary may legitimately pick the neighbour.
-            bool ok = false;
-            if (is_boundary(fx) || is_boundary(fy))
-            {
-                const uint32_t txs[2] = {tx, is_boundary(fx) && tx > 0 ? tx - 1 : tx};
-                const uint32_t tys[2] = {ty, is_boundary(fy) && ty > 0 ? ty - 1 : ty};
-                for (uint32_t i = 0; i < 2 && !ok; ++i)
-                    for (uint32_t j = 0; j < 2 && !ok; ++j)
-                        ok = (got == source_rgb(txs[i], tys[j]));
-            }
-            if (ok)
-            {
-                ++boundary_ok;
+                ++within;
                 continue;
             }
             if (mismatch == 0)
             {
                 first_bad_x = x;
                 first_bad_y = y;
-                first_bad_got = got;
-                first_bad_want = source_rgb(tx, ty);
+                for (int c = 0; c < 3; ++c)
+                {
+                    first_bad_got[c] = static_cast<float>(px[c]);
+                    first_bad_want[c] = want[c];
+                }
             }
             ++mismatch;
-        }
-    }
-    if (mismatch != 0)
-    {
-        // Failure diagnostics: is the readback even pointing at the overlay (its yellow frame = bytes 255,217,51),
-        // and what do the first few bad pixels look like next to what the CPU expected.
-        auto at = [&](uint32_t x, uint32_t y) {
-            const uint8_t* q = bytes + static_cast<size_t>(y) * m_VtSelfTestRowPitch + static_cast<size_t>(x) * 4u;
-            return (static_cast<uint32_t>(q[0]) << 24) | (static_cast<uint32_t>(q[1]) << 16) | (static_cast<uint32_t>(q[2]) << 8) | q[3];
-        };
-        LOG_INFO(ZRender, "VT overlay self-test diag: corner px (0,0)=0x{:08X} (w-1,h-1)=0x{:08X} (w/2,1)=0x{:08X} [RGBA bytes; frame should be FFD933FF]",
-                 at(0, 0), at(w - 1, h - 1), at(w / 2, 1));
-        for (uint32_t py = 0; py < resource->getPagesY() && py < 8; ++py)
-        {
-            std::string row;
-            for (uint32_t px_i = 0; px_i < resource->getPagesX() && px_i < 8; ++px_i)
-            {
-                const uint32_t idx = py * resource->getPagesX() + px_i;
-                const PageTableEntry e = resource->GetPageTableEntry(0, px_i, py);
-                row += std::format(" p({},{})slot{}:{}/{}", px_i, py, e.physical_slot, page_bad[idx], page_total[idx]);
-            }
-            LOG_INFO(ZRender, "VT overlay self-test diag [bad/total per page]:{}", row);
-        }
-        for (uint32_t pg = 0; pg < 16 && pg < resource->getPagesX() * resource->getPagesY(); ++pg)
-        {
-            uint32_t best = pg, best_n = 0;
-            for (uint32_t o = 0; o < 16; ++o)
-            {
-                if (page_shows[pg][o] > best_n) { best_n = page_shows[pg][o]; best = o; }
-            }
-            LOG_INFO(ZRender, "VT overlay self-test diag: page {} displays content of page {} ({} px, own-page hits {})",
-                     pg, best, best_n, page_shows[pg][pg]);
-        }
-        uint32_t shown = 0;
-        for (uint32_t y = kBorder; y + kBorder < h && shown < 6; y += 17)
-        {
-            for (uint32_t x = kBorder; x + kBorder < w && shown < 6; x += 53)
-            {
-                const float fx = (static_cast<float>(x) + 0.5f) / static_cast<float>(w) * vw;
-                const float fy = (static_cast<float>(y) + 0.5f) / static_cast<float>(h) * vh;
-                const uint32_t tx = std::min(static_cast<uint32_t>(fx), source.m_Width - 1);
-                const uint32_t ty = std::min(static_cast<uint32_t>(fy), source.m_Height - 1);
-                LOG_INFO(ZRender, "VT overlay self-test diag: ({},{}) -> texel ({},{}) got RGBA=0x{:08X} source RGBA=0x{:02X}{:02X}{:02X}{:02X}",
-                         x, y, tx, ty, at(x, y),
-                         source.m_Pixels[(static_cast<size_t>(ty) * source.m_Width + tx) * 4u + 0],
-                         source.m_Pixels[(static_cast<size_t>(ty) * source.m_Width + tx) * 4u + 1],
-                         source.m_Pixels[(static_cast<size_t>(ty) * source.m_Width + tx) * 4u + 2],
-                         source.m_Pixels[(static_cast<size_t>(ty) * source.m_Width + tx) * 4u + 3]);
-                ++shown;
-            }
         }
     }
     m_Rhi->UnmapMemory(m_VtSelfTestReadbackMemory);
@@ -2086,17 +2045,19 @@ void DX12MainCameraPass::VerifyVirtualTextureOverlaySelfTest(uint64_t handle)
     m_VtSelfTestReadbackMemory = nullptr;
     m_VtSelfTestReadback = nullptr;
 
-    // "distinct colour runs" is a sanity probe against a degenerate pass (a flat overlay would trivially
-    // match a flat source): the real image has many colour changes along a row.
+    // "colour runs" is a sanity probe against a degenerate pass (a flat overlay would trivially match a flat source).
     LOG_INFO(ZRender,
-             "VT overlay self-test: rect {}x{}, compared {} resident-texel pixels: exact={} boundary-neighbour={} "
-             "MISMATCH={} (non-resident/checker pixels skipped: {}; colour runs seen: {})",
-             w, h, checked, exact, boundary_ok, mismatch, fallback_pixels, distinct_colors_probe);
+             "VT overlay self-test: {} rect {}x{} lod {:.2f}, compared {} resident pixels: within +-{:.0f}={} (exact={}) "
+             "MISMATCH={} max-error={:.2f} (non-resident/checker pixels skipped: {}; colour runs seen: {}; mips 0..3: {}/{}/{}/{})",
+             v2 ? "v2(mip+bilinear)" : "v1(point)", w, h, lod, checked, kTolerance, within, exact, mismatch, max_error,
+             fallback_pixels, colour_runs, mip_histogram[0], mip_histogram[1], mip_histogram[2], mip_histogram[3]);
     if (mismatch != 0)
     {
         LOG_ERROR(ZRender,
-                  "VT overlay self-test FAILED: first mismatch at overlay pixel ({},{}): got 0x{:06X} expected 0x{:06X}",
-                  first_bad_x, first_bad_y, first_bad_got, first_bad_want);
+                  "VT overlay self-test FAILED: first mismatch at overlay pixel ({},{}): got rgb=({:.0f},{:.0f},{:.0f}) expected "
+                  "rgb=({:.1f},{:.1f},{:.1f})",
+                  first_bad_x, first_bad_y, first_bad_got[0], first_bad_got[1], first_bad_got[2], first_bad_want[0],
+                  first_bad_want[1], first_bad_want[2]);
     }
     else if (checked == 0)
     {
@@ -2229,15 +2190,25 @@ void DX12MainCameraPass::DrawVirtualTextureOverlay()
     overlay_scissor.extent.height = static_cast<uint32_t>(overlay_h);
 
     // ---- constants ----
+    VirtualTextureShaderParams shader_params {};
+    if (!resource->BuildShaderParams(*pool, shader_params))
+    {
+        static bool s_logged_layout = false;
+        if (!s_logged_layout)
+        {
+            s_logged_layout = true;
+            LOG_ERROR(ZRender, "DX12MainCameraPass: VT overlay skipped: the texture and the physical pool disagree on the page layout");
+        }
+        return;
+    }
     DX12VtOverlayConstants constants {};
-    constants.lookup[0] = pool->getPageSize();
-    constants.lookup[1] = pool->getPoolWidthPages();
-    constants.lookup[2] = resource->getPagesX();
-    constants.lookup[3] = resource->getPagesY();
-    constants.extent[0] = resource->getVirtualWidth();
-    constants.extent[1] = resource->getVirtualHeight();
+    std::memcpy(constants.lookup, shader_params.lookup, sizeof(constants.lookup));
+    std::memcpy(constants.extent, shader_params.extent, sizeof(constants.extent));
+    std::memcpy(constants.v2, shader_params.v2, sizeof(constants.v2));
     constants.extent[2] = page_table_slot;
     constants.extent[3] = pool_slot;
+    // v2 (mip selection from derivatives + bilinear) needs the gutter; a border-0 layout can only point-sample mip 0.
+    constants.v2[2] = shader_params.v2[0] > 0 ? 1u : 0u;
     constants.border[0] = 1.0f;
     constants.border[1] = 0.85f;
     constants.border[2] = 0.2f;

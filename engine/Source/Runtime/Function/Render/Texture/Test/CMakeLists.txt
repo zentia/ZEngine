@@ -214,6 +214,47 @@ if(ZENGINE_BUILD_VT_BLIT_AB_SMOKE_TEST)
 endif()
 
 # =============================================================================
+# VirtualTextureMipBilinearABSmokeTest — 采样契约 v2 A/B（mip 链 + 页 gutter + 导数选 mip + 双线性）
+# -----------------------------------------------------------------------------
+# 离屏光栅化读回 vs CPU 参考（VirtualTextureMath.h）：放大 3x 时跨页边的双线性足迹（gutter 不对必红）、
+# 1:1 / 2:1 / 4:1 / 8:1+ 各自选中的 mip、缺页回退到更粗的驻留 mip、全卸载给 fallback。
+# Vulkan 与 DX12（`--rhi dx12`）各跑一遍，同一份参考。
+#
+#   cmake -B build -DZENGINE_BUILD_VT_MIP_BILINEAR_AB_SMOKE_TEST=ON
+#   cmake --build build --target VirtualTextureMipBilinearABSmokeTest
+# =============================================================================
+option(ZENGINE_BUILD_VT_MIP_BILINEAR_AB_SMOKE_TEST
+       "Build the VirtualTexture sampling contract v2 (mip chain + gutter + bilinear) A/B smoke-test executable"
+       OFF)
+
+if(ZENGINE_BUILD_VT_MIP_BILINEAR_AB_SMOKE_TEST)
+    if(NOT WIN32 AND NOT (UNIX AND NOT APPLE))
+        message(STATUS "VT mip/bilinear A/B smoke test needs the Vulkan backend (Windows/Linux); skipping")
+    else()
+        add_executable(VirtualTextureMipBilinearABSmokeTest VirtualTextureMipBilinearABSmokeTest.cpp)
+        set_target_properties(VirtualTextureMipBilinearABSmokeTest PROPERTIES
+            CXX_STANDARD 23
+            FOLDER "Engine/Tests"
+        )
+        target_link_libraries(VirtualTextureMipBilinearABSmokeTest PRIVATE ZRuntime)
+        if(TARGET ZEnginePCH)
+            target_link_libraries(VirtualTextureMipBilinearABSmokeTest PRIVATE ZEnginePCH)
+            target_include_directories(VirtualTextureMipBilinearABSmokeTest PRIVATE ${ENGINE_ROOT_DIR}/Source/CommonPCH)
+            add_dependencies(VirtualTextureMipBilinearABSmokeTest ZEnginePCH)
+            target_precompile_headers(VirtualTextureMipBilinearABSmokeTest REUSE_FROM ZEnginePCH)
+        endif()
+        if(MSVC)
+            target_compile_options(VirtualTextureMipBilinearABSmokeTest PRIVATE /W4)
+        endif()
+        add_test(NAME VirtualTextureMipBilinearABSmokeTest COMMAND VirtualTextureMipBilinearABSmokeTest)
+        if(WIN32)
+            add_test(NAME VirtualTextureMipBilinearABSmokeTest_DX12 COMMAND VirtualTextureMipBilinearABSmokeTest --rhi dx12)
+        endif()
+        message(STATUS "Configured VT mip/bilinear A/B smoke test: VirtualTextureMipBilinearABSmokeTest")
+    endif()
+endif()
+
+# =============================================================================
 # VirtualTextureProducerABSmokeTest — 最小生产者 A/B（Vulkan headless，真异步 worker）
 # -----------------------------------------------------------------------------
 # r.VirtualTexture.Enable 1 此前是空操作：引擎里没有任何东西初始化管理器单例、注册虚拟纹理或请求页。
