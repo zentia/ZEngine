@@ -88,6 +88,7 @@
 #include "Runtime/Core/Serialize/TransferFunctions/StreamedBinaryRead.h"
 #include "Runtime/Function/Framework/Component/Camera/CameraComponent.h"
 #include "Runtime/Function/Framework/Component/Mesh/MeshRenderer.h"
+#include "Runtime/Function/Framework/Component/Motor/MotorComponent.h"
 #include "Runtime/Function/Framework/Component/Particle/ParticleComponent.h"
 #include "Runtime/Function/Framework/Component/Rigidbody/RigidbodyComponent.h"
 #include "Runtime/Function/Framework/Component/Timeline/TimelineComponent.h"
@@ -2566,6 +2567,271 @@ static void scenario_P21_load_without_systems()
     }
 }
 
+// The camera's DEFAULT parameter: who creates it, who frees it (design choice A, see
+// doc/PrefabSystem_Design.md 9.4.1 #32).
+//   * created through ObjectManager::NewObject -> a real instance ID, so the PPtr resolves
+//     (a bare MemoryManager::CreateObject object has ID 0 and reads back NULL -- which made
+//     PostLoadResource return early and the render hand-off dead code);
+//   * freed by the camera that created it, with MemoryManager::DestroyObject (the pairing
+//     for NewObject) -- and ONLY that one: a parameter handed in from outside or read from a
+//     file belongs to whoever made it;
+//   * a CLONE shares the original's parameter ID (an in-memory PPtr round trip writes the ID
+//     raw), so a clone must take its own copy, or the original's destruction would leave it
+//     holding a dead pointer.
+static void scenario_P22_camera_default_parameter_lifetime()
+{
+    std::fprintf(stderr, "[P22] camera default parameter: creation, ownership, destruction\n");
+    ObjectManager* om = GET_SYSTEM(ObjectManager);
+    if (TypeManager::GetInstance().ClassNameToType("CameraComponent") == nullptr)
+    {
+        std::fprintf(stderr, "    (P22 skipped: CameraComponent is not registered in this link -- run `verify_prefab_native.sh types`)\n");
+        return;
+    }
+
+    auto MakeCamera = [&](const char* name, GameObject*& go_out) -> CameraComponent* {
+        go_out = MakeGameObject(om, name);
+        if (go_out == nullptr)
+            return nullptr;
+        auto* cam = static_cast<CameraComponent*>(om->Produce(TypeOf<CameraComponent>(), 0));
+        if (cam == nullptr)
+            return nullptr;
+        om->AllocateAndAssignInstanceID(cam);
+        go_out->addComponent(cam);
+        return cam;
+    };
+    auto ParamId = [](CameraComponent* c) { return c->GetCameraResMutable().m_Parameter.GetInstanceID(); };
+    auto Alive = [&](int32_t id) { return id != 0 && om->IDToPointer(id) != nullptr; };
+
+    // ---- 1. the default parameter is reachable ----
+    GameObject* go = nullptr;
+    CameraComponent* cam = MakeCamera("P22Camera", go);
+    Check(cam != nullptr, "P22/default", "producing a camera");
+    if (cam == nullptr)
+        return;
+    cam->PostLoadResource(go);
+    CameraParameter* dflt = cam->GetCameraParameter();
+    const int32_t dflt_id = ParamId(cam);
+    Check(dflt != nullptr && dflt_id != 0, "P22/default",
+          "a camera with no parameter gets a default one that RESOLVES (has an instance ID)");
+    Check(dflt != nullptr && Cast<FirstPersonCameraParameter>(dflt) != nullptr, "P22/default",
+          "...of the type its mode asks for (first person)");
+
+    // ---- 2. a CLONE gets its own copy, not the original's pointer ----
+    GameObject* go2 = nullptr;
+    CameraComponent* clone = nullptr;
+    if (dflt != nullptr)
+    {
+        dflt->m_Fov = 77.f;  // distinguish a copy from a fresh default (50)
+        Object* raw = TransferUtility::CloneObjectViaSerialization(*cam);
+        clone = raw != nullptr ? Cast<CameraComponent>(raw) : nullptr;
+        go2 = MakeGameObject(om, "P22Clone");
+    }
+    Check(clone != nullptr && go2 != nullptr, "P22/clone", "cloning the camera");
+    if (clone != nullptr && go2 != nullptr)
+    {
+        Check(ParamId(clone) == dflt_id, "P22/clone",
+              "premise: before PostLoadResource the clone shares the original's parameter id");
+        go2->addComponent(clone);
+        clone->PostLoadResource(go2);
+        CameraParameter* cp = clone->GetCameraParameter();
+        Check(cp != nullptr && cp != dflt && ParamId(clone) != dflt_id, "P22/clone",
+              "after loading, the clone holds its OWN parameter object");
+        Check(cp != nullptr && cp->m_Fov == 77.f, "P22/clone", "...copied from the original's values (fov 77, not the default 50)");
+    }
+
+    // ---- 3. destroying the original frees ITS parameter, and the clone is unaffected ----
+    const int32_t clone_param_id = clone != nullptr ? ParamId(clone) : 0;
+    go->EditorRemoveComponent(cam);
+    om->Destroy(cam);
+    Check(dflt_id != 0 && !Alive(dflt_id), "P22/destroy", "destroying the camera destroys its default parameter (no leak)");
+    Check(clone != nullptr && clone->GetCameraParameter() != nullptr && Alive(clone_param_id), "P22/destroy",
+          "the clone's parameter survives the original's destruction");
+
+    // ---- 4. destroying the clone frees the clone's parameter ----
+    if (clone != nullptr)
+    {
+        go2->EditorRemoveComponent(clone);
+        om->Destroy(clone);
+        Check(clone_param_id != 0 && !Alive(clone_param_id), "P22/destroy", "...and the clone's own parameter goes with the clone");
+    }
+
+    // ---- 5. a parameter handed in from outside is NOT freed with the camera ----
+    {
+        GameObject* ego = nullptr;
+        CameraComponent* ecam = MakeCamera("P22External", ego);
+        auto* ext = static_cast<FirstPersonCameraParameter*>(om->Produce(TypeOf<FirstPersonCameraParameter>(), 0));
+        Check(ecam != nullptr && ext != nullptr, "P22/external", "producing a camera and an external parameter");
+        if (ecam != nullptr && ext != nullptr)
+        {
+            om->AllocateAndAssignInstanceID(ext);
+            const int32_t ext_id = ext->GetInstanceID();
+            ecam->Initialize(CameraMode::first_person, ext);
+            ecam->PostLoadResource(ego);
+            Check(ecam->GetCameraParameter() == ext, "P22/external", "the external parameter is used as given");
+            ego->EditorRemoveComponent(ecam);
+            om->Destroy(ecam);
+            Check(Alive(ext_id), "P22/external", "destroying the camera does NOT free a parameter it did not create");
+            om->Destroy(ext);  // Produce -> Destroy, the caller's pairing
+        }
+    }
+
+    // ---- 5b. an external parameter that REPLACES an existing default frees that default ----
+    // (#5 above starts from a camera with no default, so there is nothing to leak -- a
+    // mutation that skipped the release survived exactly because of that.)
+    {
+        GameObject* rgo = nullptr;
+        CameraComponent* rcam = MakeCamera("P22Replace", rgo);
+        auto* ext2 = static_cast<FirstPersonCameraParameter*>(om->Produce(TypeOf<FirstPersonCameraParameter>(), 0));
+        Check(rcam != nullptr && ext2 != nullptr, "P22/replace", "producing a camera and an external parameter");
+        if (rcam != nullptr && ext2 != nullptr)
+        {
+            om->AllocateAndAssignInstanceID(ext2);
+            rcam->PostLoadResource(rgo);  // now it HAS a default
+            const int32_t old_default_id = ParamId(rcam);
+            Check(Alive(old_default_id), "P22/replace", "premise: the camera holds a live default parameter");
+            rcam->Initialize(CameraMode::first_person, ext2);
+            Check(old_default_id != 0 && !Alive(old_default_id), "P22/replace",
+                  "replacing the default with an external parameter frees the default (no leak)");
+            Check(rcam->GetCameraParameter() == ext2, "P22/replace", "...and the external one is now in use");
+            rgo->EditorRemoveComponent(rcam);
+            om->Destroy(rcam);
+            Check(Alive(ext2->GetInstanceID()), "P22/replace", "destroying the camera still leaves the external parameter alone");
+            om->Destroy(ext2);
+        }
+    }
+
+    // ---- 6. a mode change replaces the default and frees the old one ----
+    {
+        GameObject* mgo = nullptr;
+        CameraComponent* mcam = MakeCamera("P22Mode", mgo);
+        Check(mcam != nullptr, "P22/mode", "producing a camera");
+        if (mcam != nullptr)
+        {
+            mcam->PostLoadResource(mgo);
+            const int32_t first_id = ParamId(mcam);
+            mcam->setCameraMode(CameraMode::third_person);
+            mcam->OnSerializedFieldsUpdated();
+            Check(Cast<ThirdPersonCameraParameter>(mcam->GetCameraParameter()) != nullptr, "P22/mode",
+                  "a mode change swaps in a parameter of the new type (and it resolves)");
+            Check(first_id != 0 && !Alive(first_id), "P22/mode", "...and the replaced default is freed, not leaked");
+            mgo->EditorRemoveComponent(mcam);
+            om->Destroy(mcam);
+        }
+    }
+}
+
+// MotorComponent / CharacterController: who frees the Capsule and the RigidBodyShape they
+// create (doc/PrefabSystem_Design.md 9.4.1 #34). Both come from ObjectManager::NewObject, i.e. a
+// registered mimalloc object with an instance ID; before this fix nothing ever released them, and
+// PostLoadResource could run twice (a prefab re-instantiate) and overwrite the controller too.
+static void scenario_P23_motor_controller_lifetime()
+{
+    std::fprintf(stderr, "[P23] motor controller: capsule / shape lifetime\n");
+    ObjectManager* om = GET_SYSTEM(ObjectManager);
+    if (TypeManager::GetInstance().ClassNameToType("MotorComponent") == nullptr ||
+        TypeManager::GetInstance().ClassNameToType("PhysicsControllerConfig") == nullptr)
+    {
+        std::fprintf(stderr, "    (P23 skipped: MotorComponent / PhysicsControllerConfig are not registered in this link -- run `verify_prefab_native.sh types`)\n");
+        return;
+    }
+
+    // Count live objects of a type by scanning the instance-ID table through a probe:
+    // every Capsule / RigidBodyShape the code under test creates must be gone afterwards.
+    auto CountLive = [&](const Type* type) {
+        int n = 0;
+        for (int32_t id = -1; id > -4000; --id)
+        {
+            Object* o = om->IDToPointer(id);
+            if (o != nullptr && o->GetType() == type)
+                ++n;
+        }
+        return n;
+    };
+    const Type* capsule_type = TypeOf<Capsule>();
+    const Type* shape_type = TypeOf<RigidBodyShape>();
+
+    auto MakeMotor = [&](const char* name, GameObject*& go_out, PhysicsControllerConfig*& cfg_out) -> MotorComponent* {
+        go_out = MakeGameObject(om, name);
+        if (go_out == nullptr)
+            return nullptr;
+        go_out->AddComponentByTypeName("Transform");
+        auto* motor = static_cast<MotorComponent*>(om->Produce(TypeOf<MotorComponent>(), 0));
+        cfg_out = static_cast<PhysicsControllerConfig*>(om->Produce(TypeOf<PhysicsControllerConfig>(), 0));
+        if (motor == nullptr || cfg_out == nullptr)
+            return nullptr;
+        om->AllocateAndAssignInstanceID(motor);
+        om->AllocateAndAssignInstanceID(cfg_out);
+        cfg_out->m_CapsuleShape.m_Radius = 0.4f;
+        cfg_out->m_CapsuleShape.m_HalfHeight = 0.9f;
+        motor->GetMotorResMutable().m_ControllerConfig = PPtr<ControllerConfig>(cfg_out);
+        go_out->addComponent(motor);
+        return motor;
+    };
+
+    const int base_capsules = CountLive(capsule_type);
+    const int base_shapes = CountLive(shape_type);
+
+    // ---- 1. one load creates exactly one capsule and one shape ----
+    GameObject* go = nullptr;
+    PhysicsControllerConfig* cfg = nullptr;
+    MotorComponent* motor = MakeMotor("P23Motor", go, cfg);
+    Check(motor != nullptr, "P23/create", "producing a motor and its config");
+    if (motor == nullptr)
+        return;
+    motor->PostLoadResource(go);
+    Check(CountLive(capsule_type) == base_capsules + 1 && CountLive(shape_type) == base_shapes + 1, "P23/create",
+          "loading a physics motor creates one capsule and one shape (premise: they are visible to the counter)");
+
+    // ---- 2. loading AGAIN replaces them instead of stacking another set ----
+    motor->PostLoadResource(go);
+    Check(CountLive(capsule_type) == base_capsules + 1 && CountLive(shape_type) == base_shapes + 1, "P23/reload",
+          "a second PostLoadResource frees the previous controller's objects (no accumulation)");
+
+    // ---- 3. destroying the motor frees them ----
+    go->EditorRemoveComponent(motor);
+    om->Destroy(motor);
+    Check(CountLive(capsule_type) == base_capsules, "P23/destroy", "destroying the motor frees its capsule");
+    Check(CountLive(shape_type) == base_shapes, "P23/destroy", "...and its rigid body shape");
+
+    // ---- 3b. CharacterController on its own: re-Initialize, and re-adopting the same capsule ----
+    // Through MotorComponent these two paths are unreachable (the motor deletes the whole
+    // controller on reload, so Initialize is always the first call on a fresh one) -- which is
+    // exactly why mutations of them survived until they were driven directly.
+    {
+        auto NewCapsule = [&]() { return om->NewObject<Capsule>(); };
+        const int c0 = CountLive(capsule_type), s0 = CountLive(shape_type);
+        auto* controller = new CharacterController();
+
+        Capsule* first_capsule = NewCapsule();
+        controller->Initialize(PPtr<Capsule>(first_capsule));
+        Check(CountLive(capsule_type) == c0 + 1 && CountLive(shape_type) == s0 + 1, "P23/ctrl",
+              "Initialize adopts the capsule and builds one shape");
+
+        // (a) a DIFFERENT capsule: the old capsule and the old shape go, the new capsule stays.
+        Capsule* second_capsule = NewCapsule();
+        const int32_t first_id = first_capsule->GetInstanceID();
+        controller->Initialize(PPtr<Capsule>(second_capsule));
+        Check(om->IDToPointer(first_id) == nullptr, "P23/ctrl", "re-Initialize with a new capsule frees the previous capsule");
+        Check(CountLive(capsule_type) == c0 + 1 && CountLive(shape_type) == s0 + 1, "P23/ctrl",
+              "...and the previous shape (one capsule and one shape live, not two)");
+
+        // (b) the SAME capsule it already owns: the shape is rebuilt, the capsule must SURVIVE.
+        const int32_t second_id = second_capsule->GetInstanceID();
+        controller->Initialize(PPtr<Capsule>(second_capsule));
+        Check(om->IDToPointer(second_id) != nullptr, "P23/ctrl",
+              "re-adopting the capsule it already owns does not free it (no use-after-free)");
+        Check(CountLive(capsule_type) == c0 + 1 && CountLive(shape_type) == s0 + 1, "P23/ctrl",
+              "...and still exactly one capsule and one shape");
+
+        delete controller;
+        Check(CountLive(capsule_type) == c0 && CountLive(shape_type) == s0, "P23/ctrl", "destroying the controller frees both");
+    }
+
+    // ---- 4. the config the motor READ from is not ours to free ----
+    Check(om->IDToPointer(cfg->GetInstanceID()) != nullptr, "P23/destroy", "the controller config (not created by the motor) is untouched");
+    om->Destroy(cfg);
+}
+
 // Plain-prefab structural Apply (doc/PrefabSystem_Design.md 9.4.1 #35).
 // A Variant could already commit added / removed components; a plain prefab could not:
 // ListOverrides marked those rows can_apply=false and ApplyToSource skipped them, so an
@@ -2785,6 +3051,8 @@ int main()
     scenario_P19_variant_structure();
     scenario_P20_structure_undo();
     scenario_P21_load_without_systems();
+    scenario_P22_camera_default_parameter_lifetime();
+    scenario_P23_motor_controller_lifetime();
     scenario_P24_plain_structural_apply();
 
     std::error_code ec;

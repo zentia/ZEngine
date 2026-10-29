@@ -3,13 +3,38 @@
 #include "Runtime/Core/Math/TransformTRS.h"
 
 #include "Runtime/BaseClasses/ObjectManager.h"
+#include "Runtime/Core/Memory/MemoryManager.h"
 #include "Runtime/Core/Base/Macro.h"
 #include "Runtime/Function/Framework/Component/Motor/MotorComponent.h"
 #include "Runtime/Function/Framework/World/WorldManager.h"
 #include "Runtime/Function/Physics/PhysicsScene.h"
 
+CharacterController::~CharacterController()
+{
+    ReleaseOwnedObjects(/*keep_capsule=*/nullptr);
+}
+
+void CharacterController::ReleaseOwnedObjects(const Capsule* keep_capsule)
+{
+    // Resolve through the PPtr (-> ObjectManager table), not through a cached raw pointer: a PPtr
+    // to an already-destroyed heap object resolves to null, so releasing twice is a no-op.
+    if (RigidBodyShape* shape = m_RigidbodyShape)
+        MemoryManager::DestroyObject(shape);
+    m_RigidbodyShape = PPtr<RigidBodyShape>();
+
+    // `keep_capsule` is the capsule about to be (re)adopted: when it IS the one already held,
+    // destroying it here would free the very object Initialize() is about to use.
+    Capsule* held = m_Capsule;
+    if (held != nullptr && held != keep_capsule)
+        MemoryManager::DestroyObject(held);
+    m_Capsule = PPtr<Capsule>();
+}
+
 void CharacterController::Initialize(PPtr<Capsule> capsule)
 {
+    // Re-initialization (a prefab re-instantiate runs PostLoadResource again): whatever this
+    // controller built before is ours to free.
+    ReleaseOwnedObjects(capsule);
     m_Capsule = capsule;
 
     if (capsule == nullptr)
