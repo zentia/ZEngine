@@ -78,8 +78,11 @@ endfunction()
 
 # z_set_config_archive_dirs
 # Sets per-config ARCHIVE output directories for a static (or import) library target.
-# Use for multi-config generators (Visual Studio, Ninja Multi-Config) so Debug/Release
-# .lib files do not overwrite each other (avoids _ITERATOR_DEBUG_LEVEL mismatch).
+#
+# The parent no longer overrides CMAKE_ARCHIVE_OUTPUT_DIRECTORY_<CONFIG>, so the
+# default is already per-config (bin/Debug, bin/Release, ...) and Debug/Release .libs
+# cannot overwrite each other. Only call this when a target deliberately wants its
+# archive somewhere else -- e.g. ZRuntime, which stays in its own build tree.
 #
 # Usage:
 #   z_set_config_archive_dirs(<target> <output_base_dir> [subdir])

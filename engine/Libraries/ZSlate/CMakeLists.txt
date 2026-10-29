@@ -30,18 +30,6 @@ add_library(ZSlate STATIC
     ${ZSLATE_SOURCES}
 )
 
-# Historical: the parent project used to point CMAKE_ARCHIVE_OUTPUT_DIRECTORY_<CONFIG>
-# at one flat directory for every config, so Debug and Release ZSlate.lib overwrote
-# each other and consumers linked a stale .lib -> LNK2038 "_ITERATOR_DEBUG_LEVEL"/
-# "RuntimeLibrary" mismatch. The parent no longer overrides the per-config variables
-# (multi-config generators then append <Config> to CMAKE_ARCHIVE_OUTPUT_DIRECTORY on
-# their own, giving bin/Debug and bin/Release), so this override is now purely
-# defensive: it keeps ZSlate in its own build tree instead of the shared bin/<Config>.
-# Guarded so standalone ZSlate builds (where the helper is undefined) are unaffected.
-if(COMMAND z_set_config_archive_dirs)
-    z_set_config_archive_dirs(ZSlate "${CMAKE_CURRENT_BINARY_DIR}")
-endif()
-
 target_include_directories(ZSlate PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${CMAKE_CURRENT_SOURCE_DIR}/thirdparty

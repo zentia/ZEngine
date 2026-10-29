@@ -55,8 +55,9 @@ elseif(WIN32)
 endif()
 
 # Helper function to configure PuertsCore and PAPI library output directories
-# For shared libraries (DLL), output to bin directory alongside executables
-# For static libraries, use archive output directory
+# For shared libraries (DLL), output to bin/<Config> alongside executables.
+# Static variants need nothing: the parent's CMAKE_ARCHIVE_OUTPUT_DIRECTORY is
+# already per-config (multi-config generators append <Config> themselves).
 function(configure_puerts_output PAPI_TARGET)
     if(TARGET PuertsCore)
         set_target_properties(PuertsCore PROPERTIES FOLDER ${third_party_folder}/puerts)
@@ -66,8 +67,6 @@ function(configure_puerts_output PAPI_TARGET)
         get_target_property(_puerts_type PuertsCore TYPE)
         if(_puerts_type STREQUAL "SHARED_LIBRARY")
             z_set_config_output_dirs(PuertsCore "${BINARY_ROOT_DIR}" LIBRARY)
-        else()
-            z_set_config_archive_dirs(PuertsCore "${CMAKE_CURRENT_BINARY_DIR}/puerts")
         endif()
     endif()
     # Also configure the PAPI library output directory (PapiLua, PapiPython, etc.)
@@ -75,8 +74,6 @@ function(configure_puerts_output PAPI_TARGET)
         get_target_property(_papi_type ${PAPI_TARGET} TYPE)
         if(_papi_type STREQUAL "SHARED_LIBRARY")
             z_set_config_output_dirs(${PAPI_TARGET} "${BINARY_ROOT_DIR}" LIBRARY)
-        else()
-            z_set_config_archive_dirs(${PAPI_TARGET} "${CMAKE_CURRENT_BINARY_DIR}/puerts")
         endif()
     endif()
 endfunction()
@@ -228,9 +225,6 @@ if(NOT TARGET BqLog)
         add_subdirectory(bqlog/src)
 
         set_target_properties(BqLog PROPERTIES FOLDER ${third_party_folder}/BqLog)
-        # BqLog's CMake uses a single output dir for win64 (no Debug/Release); force per-config
-        # archive output to avoid _ITERATOR_DEBUG_LEVEL mismatch when switching Debug/Release.
-        z_set_config_archive_dirs(BqLog "${CMAKE_CURRENT_BINARY_DIR}/bqlog/src")
     endif()
 endif()
 
@@ -266,9 +260,6 @@ if(APPLE AND NOT TARGET spirv-cross-msl)
     if(TARGET spirv-cross-msl)
         set_target_properties(spirv-cross-core spirv-cross-glsl spirv-cross-msl
             PROPERTIES FOLDER ${third_party_folder}/spirv-cross)
-        z_set_config_archive_dirs(spirv-cross-core "${CMAKE_CURRENT_BINARY_DIR}/spirv-cross")
-        z_set_config_archive_dirs(spirv-cross-glsl "${CMAKE_CURRENT_BINARY_DIR}/spirv-cross")
-        z_set_config_archive_dirs(spirv-cross-msl  "${CMAKE_CURRENT_BINARY_DIR}/spirv-cross")
         message(STATUS "3rdparty: SPIRV-Cross enabled (SPIR-V -> MSL for the Metal backend)")
     endif()
 endif()
@@ -277,7 +268,6 @@ if(NOT TARGET tinyobjloader)
     add_subdirectory(tinyobjloader)
     set_target_properties(tinyobjloader PROPERTIES FOLDER ${third_party_folder}/tinyobjloader)
     set_target_properties(uninstall PROPERTIES FOLDER ${third_party_folder}/tinyobjloader)
-    z_set_config_archive_dirs(tinyobjloader "${CMAKE_CURRENT_BINARY_DIR}/tinyobjloader")
 endif()
 
 if(NOT TARGET Jolt)
@@ -405,7 +395,6 @@ if(NOT TARGET Jolt)
         else()
             target_compile_options(Jolt PRIVATE "-Wall")
         endif()
-        z_set_config_archive_dirs(Jolt "${CMAKE_CURRENT_BINARY_DIR}/JoltPhysics/Build")
     endif()
 
 endif()
@@ -464,7 +453,6 @@ if(NOT TARGET mimalloc-static)
     set_target_properties(mimalloc-static PROPERTIES FOLDER ${third_party_folder}/mimalloc)
     set_target_properties(mimalloc-obj PROPERTIES FOLDER ${third_party_folder}/mimalloc)
     set_target_properties(mimalloc-obj-target PROPERTIES FOLDER ${third_party_folder}/mimalloc)
-    z_set_config_archive_dirs(mimalloc-static "${CMAKE_CURRENT_BINARY_DIR}/mimalloc")
 endif()
 
 # ImGui removed: the engine, editor and runtime UI render entirely through
@@ -549,7 +537,6 @@ if(NOT TARGET lmdb)
         endif()
 
         set_target_properties(lmdb PROPERTIES FOLDER ${third_party_folder}/lmdb)
-        z_set_config_archive_dirs(lmdb "${CMAKE_CURRENT_BINARY_DIR}")
     endif()
 endif()
 
@@ -594,7 +581,6 @@ if(NOT EMSCRIPTEN AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/zlib/CMakeLists.txt")
         set_target_properties(zlibstatic PROPERTIES FOLDER ${third_party_folder}/zlib)
         # Plain C library; don't let a unity build concatenate its TUs.
         set_target_properties(zlibstatic PROPERTIES UNITY_BUILD OFF)
-        z_set_config_archive_dirs(zlibstatic "${CMAKE_CURRENT_BINARY_DIR}/zlib")
 
         # Publish this copy to any in-tree find_package(ZLIB): FindZLIB skips
         # its own search when ZLIB_LIBRARY is already set, and it leaves an
@@ -699,7 +685,6 @@ if(NOT EMSCRIPTEN)
         # Disable Unity Builds for minizip (C library; some TUs share static
         # function names that collide when concatenated).
         set_target_properties(minizip-ng PROPERTIES UNITY_BUILD OFF)
-        z_set_config_archive_dirs(minizip-ng "${CMAKE_CURRENT_BINARY_DIR}/minizip-ng")
     endif()
     # The fetched zlibstatic / zlib targets land at the same build folder.
     # Keep them tucked away in the same VS solution group so they don't
@@ -764,7 +749,6 @@ if(NOT TARGET minizip-ng AND NOT EMSCRIPTEN)
     target_link_libraries(minizip-ng PRIVATE zlib-ng)
     set_target_properties(minizip-ng PROPERTIES FOLDER ${third_party_folder}/minizip-ng)
     set_target_properties(minizip-ng PROPERTIES UNITY_BUILD OFF)
-    z_set_config_archive_dirs(minizip-ng "${CMAKE_CURRENT_BINARY_DIR}/minizip-ng")
 endif()
 
 if(NOT TARGET libcurl AND NOT TARGET libcurl_static AND NOT EMSCRIPTEN)
@@ -835,7 +819,6 @@ if(NOT TARGET bc7enc AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/bc7enc_rdo/bc7enc.c
         target_compile_options(bc7enc PRIVATE -w)
     endif()
     set_target_properties(bc7enc PROPERTIES FOLDER ${third_party_folder}/bc7enc)
-    z_set_config_archive_dirs(bc7enc "${CMAKE_CURRENT_BINARY_DIR}")
 endif()
 
 # ARM astc-encoder -- ASTC LDR encoder. Compiled with the no-intrinsics
@@ -861,5 +844,4 @@ if(NOT TARGET astcenc AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/astc-encoder/Sourc
         target_compile_options(astcenc PRIVATE -w)
     endif()
     set_target_properties(astcenc PROPERTIES FOLDER ${third_party_folder}/astc-encoder)
-    z_set_config_archive_dirs(astcenc "${CMAKE_CURRENT_BINARY_DIR}")
 endif()

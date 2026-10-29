@@ -302,7 +302,7 @@ set(SHADER_COMPILE_TARGET ZShaderCompile)
 
 add_subdirectory(shader)
 
-# Per-config output dirs (bin/Debug, bin/Release) and z_set_config_archive_dirs for 3rdparty
+# Per-config output dirs (bin/Debug, bin/Release) for exes and shared libs
 include(cmake/ConfigOutputDirs.cmake)
 
 # z_embed_app_icon(<target>): embeds a tool's resource/<Name>.ico as IDI_ICON1.
