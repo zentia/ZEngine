@@ -646,7 +646,9 @@ public:
     ⚠️ **本条曾随 P22/P23 一起被上游 155ff0d 删掉**：该提交标题是 docs(gpuspine)，实际把 §9.4.1 32/33/34 的代码、测试与文档一并删除，
     2026-10-29 已按用户要求 cherry-pick 恢复。同一提交还删了 `engine/Source/Runtime/Function/Render/Spine/*` 的头文件，
     而 `SpineRenderer.cpp` 仍在 include 它们，于是本机 `types` 套件在纯净 main 上编不过（已加临时过滤：
-    SpineRenderer 的 .cpp 与 .gen.cpp **两个都**留给归档，只留一半会在启动时 dyld "symbol not found"）。等上游修好 Spine 头文件后应移除过滤。S1（不 sync 序列化清单）与 S6（不跳过仍被占用的 fileID 槽）一开始都存活，都是**测试缺口**不是实现问题，
+    SpineRenderer 的 .cpp 与 .gen.cpp **两个都**留给归档，只留一半会在启动时 dyld "symbol not found"）。等上游修好 Spine 头文件后应移除过滤。
+    **截至 3c4fdf8 仍未修复、过滤继续保留**：`Render/Spine/` 现在只剩 `SpineGpuRenderer.h/.cpp`（原 `SpineRenderer.h` 被改名），
+    但 `SpineRenderer.cpp` 依旧 include 已不存在的 `SpineGpuAnimationState.h` 与 `SpineGpuAssetFile.h`——症状从"整目录被删"变成了"改名后漏了两个头"。S1（不 sync 序列化清单）与 S6（不跳过仍被占用的 fileID 槽）一开始都存活，都是**测试缺口**不是实现问题，
     分别靠『从文件重新加载』和『被移除的对象占着最高 fileID』补上；S10（从 header 而非图内最大值起算）是等价变异——在测试覆盖到的情形里两道防线的落点相同，
     只有『某个对象被销毁、槽空出来』时才会分叉，本机没有这种路径。
 

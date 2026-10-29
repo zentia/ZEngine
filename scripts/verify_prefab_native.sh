@@ -106,6 +106,8 @@ e2e_args() {
 # relative to bin/libZRuntime.a, which is what puts it in this list. Keep the ARCHIVE member
 # instead: nothing here tests Spine. Remove this filter once the Spine headers are restored
 # (or SpineRenderer.cpp stops including them).
+# Still broken as of 3c4fdf8, just renamed: Render/Spine/ now holds only SpineGpuRenderer.h/.cpp,
+# while SpineRenderer.cpp includes the non-existent SpineGpuAnimationState.h / SpineGpuAssetFile.h.
 spine_is_broken_upstream() {
     # Both halves, or neither: the archive's SpineRenderer.cpp.o predates OnOwnerActiveChanged,
     # which the freshly generated SpineRenderer.gen.cpp calls -- keeping one and dropping the
