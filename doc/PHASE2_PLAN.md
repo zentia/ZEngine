@@ -988,7 +988,9 @@ binding 6/7（页表 / 页池）是 DX12 专属。这里踩到一个 DX12 的硬
 5. **扁平输出目录**：顶层 CMake 把 `CMAKE_ARCHIVE_OUTPUT_DIRECTORY`（及 `_DEBUG`/`_RELEASE`）**都设成同一个 `bin/`**，
    于是 `bin/GPUSpine.lib` 会被另一配置覆盖，切配置后全量构建爆 2300 个链接错（1472 个 `LNK2038`：
    `_ITERATOR_DEBUG_LEVEL` / `RuntimeLibrary` MDd vs MD）。**切配置要先删 `bin/<lib>.lib` 再单独重编该 target。**
-   这是用户正在改的 GPUSpine 接线带的，我没动 CMake，只记录。
+   **已根治（同日提交 `b9e7f089`）**：罪魁祸首只是那 8 行 `*_OUTPUT_DIRECTORY_<CONFIG>` 覆盖——多配置生成器会给
+   `*_OUTPUT_DIRECTORY` 自动追加 `<Config>`，但不会给 `*_OUTPUT_DIRECTORY_<CONFIG>` 追加。删掉这 8 行后库落在
+   `bin/Release/`、`bin/Debug/`，与既有 exe 布局一致；Release → Debug → Release 连续切换均 0 错、ctest 均 55/55。
 
 
 ### 落地记录 · 2.7 Lumen（2026-10-25，复核：CPU 侧已完整，无需动手）
