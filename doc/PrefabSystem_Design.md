@@ -619,6 +619,8 @@ public:
     测试 P22（真 `ObjectManager`）：默认参数可解析、类型正确；克隆拿到**自己的**参数且值被复制（fov 77 而非默认 50）；销毁原件释放其参数而克隆的不受影响；销毁克隆释放克隆的；外部参数不被释放；外部参数**替换**已有默认时释放默认；模式切换释放旧默认。**7 个变异：6 个被抓住，1 个等价**。其中 A4（`Initialize` 不释放旧默认）第一次存活——因为原测试先 `Initialize` 再 `PostLoadResource`，此时没有旧默认可泄漏，前提没成立；补了 5b『先有默认、后被替换』才转红。A3（`Release` 里不清零 ID）是**等价变异**：堆 ID 只递减、从不复用（`m_NextHeapInstanceID`），二次进入只会查到已注销的 ID。清零保留为防御性写法，注释里写明，不为让变异转红而硬凑测试。
     **没解决的**：登记表按相机指针记录，**相机在不同线程并发 PostLoadResource 的顺序**没测过（表有互斥）；`CharacterController` / `MotorComponent` 用 `NewObject` 造的 `RigidBodyShape` / `Capsule` 看起来有同样的泄漏，我只读了代码没追查到底，**未改**。
 
+33. **本机回归的已知断点（2026-10-29，与相机改动无关）**：`verify_prefab_native.sh runtime` 与 `check_ts_chain.py` 在 rebase 到上游脚本层改动（`33e0e33`，ScriptingManager / 编辑器脚本 P0–P5）之后**失败**，且在**不含相机提交**的 `33e0e33` 上复现——归因是上游改动 + 本机陈旧的 `bin/libZRuntime.a`：先是 33 个重复符号（现编的 `ScriptEnv`/`ScriptBinding` 等没排除归档里的同名成员，已补），补完后 `ScriptingManager::Initialize` 跳到地址 0。用新加的 `run_smoke_test.py --link-map` 求得测试真正链入的归档成员 225 个，其中 **35 个自归档以来改过**（含 `RenderSystem` / `WindowSystem` / Lumen / Nanite…，因为 `RegisterRuntime` 的 `REGISTER_SYSTEM` 把整个引擎的系统都拉进来了），重编它们会引入 Objective-C++ / Metal 头文件（`NSObjCRuntime.h`），本机编不过——所以**没有**把它们接进脚本。根治只能是新的 cmake 构建出新归档，本机没有 cmake/ninja。仍然可用的：`verify_prefab_native.sh e2e|types`（407 项）不受影响，P18–P22 都在这两段里。**受影响的：runtime 套件（N 组 34 项、链级结构）和 TS 全链路，在这台机器上现在无法验证。**
+
 **未验证**：编辑器里真的拖一个 Prefab 进场景、在 Inspector 上改值后 Apply、保存场景再打开（UI 链路本身是第 3 条，未接）。`Level::load(url)` 带物理场景的完整路径未在无头环境跑过（它与 `LoadObjectGraph` 的差别只在建物理场景）。**Inspector 的 ZSlate 渲染**（结构行的按钮、can_apply 的显隐）只过了 `-fsyntax-only`，没有上机看。
 
 
