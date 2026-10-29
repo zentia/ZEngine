@@ -15,6 +15,18 @@ else()
     message(WARNING "Runtime: ZSlate library not found at ${ZSLATE_PATH}")
 endif()
 
+# ---- Add GPUSpine (submodule; Spine .skel -> GPU container core, std-only) ----
+# Unity 侧共用同一份核心（native plugin），所以它是独立仓库，不放在 Source/ 下。
+set(GPUSPINE_PATH "${ENGINE_ROOT_DIR}/Libraries/GPUSpine")
+if(EXISTS "${GPUSPINE_PATH}/CMakeLists.txt")
+    if(NOT TARGET GPUSpine)
+        add_subdirectory("${GPUSPINE_PATH}" "${CMAKE_CURRENT_BINARY_DIR}/GPUSpine")
+    endif()
+    message(STATUS "Runtime: GPUSpine enabled from ${GPUSPINE_PATH}")
+else()
+    message(FATAL_ERROR "Runtime: GPUSpine submodule missing at ${GPUSPINE_PATH} (git submodule update --init engine/Libraries/GPUSpine)")
+endif()
+
 # ---- Add source files ----
 
 # Note: globbing sources is considered bad practice as CMake's generators may not detect new files
@@ -741,31 +753,6 @@ list(REMOVE_ITEM SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Lumen/Test/LumenSurfaceCacheSmokeTest.cpp")
 list(REMOVE_ITEM REGULAR_SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Lumen/Test/LumenSurfaceCacheSmokeTest.cpp")
-# GPU-Spine importer test main carve-out (same rationale). Built only when
-# ZENGINE_BUILD_SPINE_IMPORT_TEST=ON (see Function/Render/Spine/Test/CMakeLists.txt).
-list(REMOVE_ITEM SOURCE_FILES
-     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Spine/Test/SpineGpuImportTest.cpp")
-list(REMOVE_ITEM REGULAR_SOURCE_FILES
-     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Spine/Test/SpineGpuImportTest.cpp")
-# GPU-Spine reference-parity test main carve-out (same rationale). It has its own
-# main() and links the reference spine-cpp; pulling it into ZRuntime would give
-# LNK2005 (duplicate main) and drag third-party headers into the runtime.
-list(REMOVE_ITEM SOURCE_FILES
-     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Spine/Test/SpineGpuRefParityTest.cpp")
-list(REMOVE_ITEM REGULAR_SOURCE_FILES
-     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Spine/Test/SpineGpuRefParityTest.cpp")
-# GPU-Spine CPU benchmark main carve-out (same rationale). It has its own main()
-# and deliberately does NOT link ZRuntime, so it must not be compiled into it.
-list(REMOVE_ITEM SOURCE_FILES
-     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Spine/Test/SpineGpuBenchmark.cpp")
-list(REMOVE_ITEM REGULAR_SOURCE_FILES
-     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Spine/Test/SpineGpuBenchmark.cpp")
-# GPU-Spine hot-loop test main carve-out (same rationale): own main(), and it
-# replaces the global operator new, so it must not be compiled into ZRuntime.
-list(REMOVE_ITEM SOURCE_FILES
-     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Spine/Test/SpineGpuHotLoopTest.cpp")
-list(REMOVE_ITEM REGULAR_SOURCE_FILES
-     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Spine/Test/SpineGpuHotLoopTest.cpp")
 # Lumen global-illumination smoke-test main carve-out (same rationale). Built only
 # when ZENGINE_BUILD_LUMEN_GLOBAL_ILLUMINATION_SMOKE_TEST=ON (see
 # Function/Render/Lumen/Test/CMakeLists.txt).
@@ -1345,6 +1332,7 @@ function(configure_runtime_library target)
     
     # Link dependencies
     target_link_libraries(${target} PUBLIC BqLog)
+    target_link_libraries(${target} PUBLIC GPUSpine::Core)
     # ZSlate: standalone UI framework (when available)
     if(TARGET ZSlate)
         target_link_libraries(${target} PRIVATE ZSlate)
@@ -2129,11 +2117,6 @@ endif()
 # creates a headless MetalRHI (no window) and runs the blit; elsewhere it stops
 # at the source-text contract checks.
 add_subdirectory(Function/Render/Test)
-
-# GPU-Spine importer test. Own main(); carved out of the ZRuntime glob above and
-# built only when ZENGINE_BUILD_SPINE_IMPORT_TEST=ON. Pure CPU (atlas + json -> bake),
-# so it needs no GPU and no window.
-add_subdirectory(Function/Render/Spine/Test)
 
 # 脚本数学 API 冒烟测试。Own main(); carved out of the ZRuntime glob above and
 # built only when ZENGINE_BUILD_SCRIPT_MATH_SMOKE_TEST=ON. 三个类的方法全是
