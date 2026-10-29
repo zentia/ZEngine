@@ -1038,6 +1038,18 @@ def ts_type_for(cpp_type: str, line: int) -> str:
         raise ParseError(line, "ZFUNCTION: '%s' cannot be mapped to a TypeScript type" % cpp_type)
     if text in _TS_TYPES:
         return _TS_TYPES[text]
+    # std::vector<T> -> T[] (P4). Recursive, so vector<vector<int>> becomes
+    # number[][]; the element type goes through the same mapping, so an
+    # unsupported element is still a hard error rather than a silent `any`.
+    # ScriptBinding.h has the matching Converter<std::vector<T>>.
+    vector_match = re.match(r"^std::vector\s*<\s*(.+?)\s*>$", text)
+    if vector_match:
+        element = ts_type_for(vector_match.group(1), line)
+        # `number[]` / `number[][]` for plain names and nested arrays; anything
+        # else gets parenthesised so a compound element cannot re-associate.
+        if re.match(r"^[A-Za-z_][A-Za-z0-9_]*(\[\])*$", element):
+            return element + "[]"
+        return "(%s)[]" % element
     if re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", text):
         return text
     raise ParseError(line, "ZFUNCTION: '%s' cannot be mapped to a TypeScript type" % cpp_type)

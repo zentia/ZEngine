@@ -44,6 +44,7 @@
 #include <filesystem>
 #include <string>
 #include <type_traits>
+#include <vector>
 #include <utility>
 
 // --- registry types -------------------------------------------------------
@@ -432,6 +433,57 @@ namespace ZScript
             apis->get_value_string_utf8(env, v, &out[0], &capacity);
             out.resize(len);
             return std::filesystem::path(out);
+        }
+    };
+
+    // --- containers (P4) -------------------------------------------------
+    //
+    // std::vector<T> <-> JS array, for any T that already has a Converter. The
+    // element conversion is recursive, so vector<vector<int>> works too, and a
+    // vector of an unsupported element type still fails at compile time with
+    // the primary template's static_assert rather than misbinding.
+    //
+    // Why this is BY VALUE in both directions
+    // ---------------------------------------
+    // A JS array and a std::vector have no shared representation, so there is
+    // no way to hand a script a live view of engine memory here -- every
+    // crossing copies. That is the honest cost, and it is why a getter like
+    // `GetSelectedObjects()` is a snapshot: mutating the returned array does
+    // not touch the selection, and the array does not update when the
+    // selection changes. Counted accessors (GetObjectCount + GetObjectAt)
+    // remain the right shape for a hot loop over a large collection; this is
+    // for the ergonomic case where a script wants the whole thing at once.
+    //
+    // A non-array / null JS value converts to an EMPTY vector rather than
+    // throwing: these cross at a C ABI callback boundary where there is no
+    // exception to propagate, and every other Converter here is similarly
+    // permissive about bad input.
+    template <typename T>
+    struct Converter<std::vector<T>>
+    {
+        static pesapi_value ToJs(pesapi_ffi* apis, pesapi_env env, const std::vector<T>& v)
+        {
+            pesapi_value array = apis->create_array(env);
+            for (std::size_t i = 0; i < v.size(); ++i)
+            {
+                apis->set_property_uint32(env, array, static_cast<uint32_t>(i),
+                                          Converter<Plain<T>>::ToJs(apis, env, v[i]));
+            }
+            return array;
+        }
+
+        static std::vector<T> FromJs(pesapi_ffi* apis, pesapi_env env, pesapi_value v)
+        {
+            std::vector<T> out;
+            if (v == nullptr || apis->is_array(env, v) == 0)
+                return out;
+            const uint32_t length = apis->get_array_length(env, v);
+            out.reserve(length);
+            for (uint32_t i = 0; i < length; ++i)
+            {
+                out.push_back(Converter<Plain<T>>::FromJs(apis, env, apis->get_property_uint32(env, v, i)));
+            }
+            return out;
         }
     };
 

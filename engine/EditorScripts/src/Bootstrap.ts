@@ -140,11 +140,46 @@ export function OnSelfTestUndoRoundTrip(): void {
     EditorHistory.ClearHistory("editor script self-test");
 }
 
+// ---------------------------------------------------------------------------
+// P4 self-check: container marshalling (std::vector<T> <-> JS array).
+//
+// Covers both directions, because they fail independently: ToJs builds a JS
+// array from a vector, FromJs walks a JS array back into one. Needs a loaded
+// level for the selection half, so it runs from the console hook like the P3
+// check rather than from OnEditorLoad.
+// ---------------------------------------------------------------------------
+
+export function OnSelfTestContainers(): void {
+    // --- C++ -> JS: a real registry query returns a string[] ---------------
+    const skelMaps = EditorAssetDatabase.FindAssets("", "AnimSkelMap", "");
+    const counted = EditorAssetDatabase.CountAssets("", "AnimSkelMap", "");
+    const isArray = Array.isArray(skelMaps);
+    console.log("[EditorScripts] containers out: isArray=" + isArray +
+        " length=" + skelMaps.length + " count=" + counted +
+        " agree=" + (skelMaps.length === counted) +
+        " first='" + (skelMaps.length > 0 ? skelMaps[0] : "") + "'");
+
+    // --- JS -> C++: hand a string[] in and see it take effect --------------
+    const before = EditorSelection.GetInstanceIds();
+    const selected = EditorSelection.SelectByNames(["Wall_1", "Wall_2", "no_such_object"]);
+    const ids = EditorSelection.GetInstanceIds();
+    const active = EditorSelection.GetActiveObject();
+    console.log("[EditorScripts] containers in: requested=3 selected=" + selected +
+        " idsLength=" + ids.length + " idsIsArray=" + Array.isArray(ids) +
+        " active=" + (active ? active.GetName() : "<none>"));
+
+    // Restore whatever was selected before, so the check leaves no trace.
+    if (before.length === 0) {
+        EditorSelection.Clear();
+    }
+}
+
 export function OnEditorLoad(): void {
     reportEnvironment();
     reportP1Facades();
     registerP2Hooks();
     EditorMenu.AddItem("Self Test/Undo Round Trip", "Bootstrap", "OnSelfTestUndoRoundTrip", 20);
+    EditorMenu.AddItem("Self Test/Containers", "Bootstrap", "OnSelfTestContainers", 21);
 }
 
 export function OnEditorUnload(): void {

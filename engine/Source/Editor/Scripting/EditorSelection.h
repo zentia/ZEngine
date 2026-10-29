@@ -9,6 +9,8 @@
 
 #include <eastl/string.h>
 
+#include <vector>
+
 #include "EditorSelection.generated.h"
 
 // Editor-VM only: what the user currently has selected (Unity's
@@ -17,15 +19,18 @@
 // P1. Published only into the editor-scripting VM -- ZHeaderTool stamps every
 // ZEditor binding as ZScriptDomain::Editor, so game scripts never see it.
 //
-// Why counted access instead of an array
-// --------------------------------------
-// `GetObjectCount()` + `GetObjectAt(i)` rather than a `GetObjects()` returning
-// a vector: ZFUNCTION marshals scalars, strings and bound-class pointers, and
-// `std::vector` is a hard error in the generator (ts_type_for). An array-shaped
-// API would have to wait for a container marshaller; counted access needs
-// nothing new and reads fine from TS:
-//
-//     for (let i = 0; i < EditorSelection.GetObjectCount(); i++) { ... }
+// Counted access AND array access
+// -------------------------------
+// `GetObjectCount()` + `GetObjectAt(i)` came first because ZFUNCTION could not
+// marshal a container. P4 added Converter<std::vector<T>>, so the array-shaped
+// `GetInstanceIds()` / `SetObjects()` exist too. Both shapes are kept on
+// purpose:
+//   * counted access touches no heap and reads one element at a time -- right
+//     for a loop over a large selection, and the only shape that can hand back
+//     a live GameObject*;
+//   * the array shape is a COPY (see the Converter note in ScriptBinding.h), so
+//     it is the ergonomic choice for "give me the whole thing", and the only
+//     way to SET a multi-object selection in one call.
 //
 // Selection state lives on EditorSceneManager; this is a thin facade over it,
 // so there is exactly one source of truth and the Hierarchy / Inspector cannot
@@ -69,4 +74,26 @@ public:
     /// Empties the selection.
     ZFUNCTION()
     static void Clear();
+
+    // ---- array access (P4) -------------------------------------------------
+
+    /// InstanceIDs of everything selected, in selection order. A snapshot --
+    /// mutating the returned array does not change the selection.
+    ///
+    /// IDs rather than GameObject[]: a borrowed GameObject* is only valid for
+    /// the duration of the call that produced it, so an ARRAY of them would
+    /// outlive its own contract the moment the script held onto it. IDs stay
+    /// meaningful, and GetObjectAt / SelectByName resolve them when needed.
+    ZFUNCTION()
+    static std::vector<int> GetInstanceIds();
+
+    /// Replaces the selection with the objects named in `names`, in order; the
+    /// first one that resolves becomes active. Names that match nothing are
+    /// skipped. Returns how many were selected.
+    ///
+    /// This is the only way to set a MULTI-object selection from a script --
+    /// SetActiveObject takes one object and therefore always collapses to a
+    /// single-object selection.
+    ZFUNCTION()
+    static int SelectByNames(const std::vector<eastl::string>& names);
 };

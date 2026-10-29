@@ -349,6 +349,31 @@ class CodegenTests(unittest.TestCase):
         self.assertIn("const ZPropertyMetaRegistrar kZhtMetaRegistrar_Foo(kZhtClassMeta_Foo);", source)
         self.assertNotIn('.serializedName = "plain"', source)
 
+    def test_vector_parameters_and_returns_map_to_arrays(self):
+        # P4: std::vector<T> used to be a hard error, which is why Selection /
+        # AssetDatabase had to be counted accessors. ScriptBinding.h has the
+        # matching Converter<std::vector<T>>.
+        text = wrap(
+            "    ZFUNCTION()\n    static std::vector<int> Ints();\n"
+            "    ZFUNCTION()\n    static std::vector<eastl::string> Names();\n"
+            "    ZFUNCTION()\n    static void Take(const std::vector<float>& values);\n"
+            "    ZFUNCTION()\n    static std::vector<std::vector<int>> Grid();\n"
+            "    ZFUNCTION()\n    static std::vector<Foo*> Objects();\n"
+        )
+        cls = parse(text).classes[0]
+        self.assertEqual(cls.methods[0].ts_signature, "Ints(): number[]")
+        self.assertEqual(cls.methods[1].ts_signature, "Names(): string[]")
+        self.assertEqual(cls.methods[2].ts_signature, "Take(values: number[]): void")
+        # Nested arrays print as T[][] rather than (T[])[].
+        self.assertEqual(cls.methods[3].ts_signature, "Grid(): number[][]")
+        self.assertEqual(cls.methods[4].ts_signature, "Objects(): Foo[]")
+
+    def test_vector_of_unsupported_element_is_still_an_error(self):
+        # The element type goes through the same mapping, so an unusable element
+        # stays a build error instead of degrading to `any`.
+        with self.assertRaises(ParseError):
+            parse(wrap("    ZFUNCTION()\n    static std::vector<std::map<int, int>> Bad();\n"))
+
     def test_ts_reserved_parameter_names_are_renamed(self):
         # A C++ parameter named after a TypeScript keyword used to be emitted
         # verbatim, e.g. `AddItem(path: string, function: string)`, which is a

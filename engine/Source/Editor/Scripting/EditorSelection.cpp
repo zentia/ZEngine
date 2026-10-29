@@ -110,3 +110,47 @@ void EditorSelection::Clear()
         return;
     scene->SetGObjectSelection({}, k_invalid_gobject_id);
 }
+
+// ---- array access (P4) -----------------------------------------------------
+
+std::vector<int> EditorSelection::GetInstanceIds()
+{
+    std::vector<int> out;
+    const std::vector<GObjectID>* ids = SelectedIds();
+    if (ids == nullptr)
+        return out;
+    out.reserve(ids->size());
+    for (const GObjectID id : *ids)
+    {
+        out.push_back(static_cast<int>(id));
+    }
+    return out;
+}
+
+int EditorSelection::SelectByNames(const std::vector<eastl::string>& names)
+{
+    auto scene = GET_SYSTEM(EditorSceneManager);
+    auto world = GET_SYSTEM(WorldManager);
+    if (!scene || !world)
+        return 0;
+    Level* level = world->getCurrentActiveLevel();
+    if (level == nullptr)
+        return 0;
+
+    std::vector<GObjectID> ids;
+    ids.reserve(names.size());
+    for (const eastl::string& name : names)
+    {
+        if (name.empty())
+            continue;
+        if (GameObject* object = level->FindGObjectByName(name))
+            ids.push_back(object->GetID());
+    }
+
+    // The FIRST resolved object becomes active, matching the order the script
+    // asked for -- not the last, which is what a naive loop of SetActiveObject
+    // would leave behind (and that would also clobber the selection each pass).
+    const GObjectID active = ids.empty() ? k_invalid_gobject_id : ids.front();
+    scene->SetGObjectSelection(ids, active);
+    return static_cast<int>(ids.size());
+}
