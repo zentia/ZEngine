@@ -210,6 +210,21 @@ public:
     /// silently write the instance's structural changes along with one field.
     static int ApplyAllToVariant(PrefabInstance* instance, bool include_structure = true);
 
+    /// Commit an instance's added / removed components into a PLAIN prefab's source graph
+    /// (a Variant goes through ApplyAllToVariant instead, which records them in the variant
+    /// file). This is the harder half: a Variant only appends to a side list, while here a
+    /// brand-new object has to enter the source graph — and every object of that graph is
+    /// written under the fileID it already has in the file. So each new object gets a fileID
+    /// minted BEFORE the save (AssetManager::GetInstanceIDFromPathAndFileID + Produce() under
+    /// that ID); otherwise SaveSourcePrefab refuses the whole write with "a source object is
+    /// not in <file>" and nothing is saved.
+    ///
+    /// Saves the source itself. On a failed save it rolls the source graph back and returns 0,
+    /// because a half-applied source in memory would diverge from its file and leak into every
+    /// other instance on the next Merge. `*out_saved` reports whether the file was written (the
+    /// caller must then not save again).
+    static int ApplyStructureToSource(PrefabInstance* instance, bool* out_saved = nullptr);
+
     /// Bring `instance`'s component STRUCTURE in line with its source: the source
     /// prefab's components, plus/minus the Variant chain's net additions/removals,
     /// plus/minus the instance's own m_added_components / m_removed_components.

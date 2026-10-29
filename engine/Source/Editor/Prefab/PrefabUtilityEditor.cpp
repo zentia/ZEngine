@@ -19,6 +19,8 @@
 #include <unordered_set>
 #include "Runtime/BaseClasses/Cast.h"
 #include "Runtime/Function/Framework/Component/Component.h"
+#include "Runtime/Function/Framework/Component/Transform/Transform.h"
+#include "Editor/Prefab/PrefabOverrideModel.h"
 
 namespace
 {
@@ -1207,6 +1209,280 @@ int PrefabUtilityEditor::ApplyAllToVariant(PrefabInstance* instance, bool includ
              static_cast<int>(variant->GetVariantOverrides().size()),
              static_cast<int>(variant->GetVariantAddedComponents().size()),
              static_cast<int>(variant->GetVariantRemovedComponents().size()));
+    return applied;
+}
+
+namespace
+{
+    // Every object of a plain prefab's source graph: the root GameObject, its components, and
+    // transitively each child Transform's GameObject — the same set SaveSourcePrefab writes.
+    void CollectSourceGraphObjects(PrefabAsset* source, std::vector<Object*>& out)
+    {
+        if (source == nullptr)
+        {
+            return;
+        }
+        std::vector<GameObject*> pending;
+        if (GameObject* root = source->GetRootGameObject())
+        {
+            pending.push_back(root);
+        }
+        while (!pending.empty())
+        {
+            GameObject* go = pending.back();
+            pending.pop_back();
+            if (go == nullptr)
+            {
+                continue;
+            }
+            out.push_back(go);
+            Transform* transform = nullptr;
+            for (ImmediatePtr<Component>& entry : go->EditorGetComponentsRef())
+            {
+                Component* component = entry;
+                if (component == nullptr)
+                {
+                    continue;
+                }
+                out.push_back(component);
+                if (transform == nullptr)
+                {
+                    transform = Cast<Transform>(component);
+                }
+            }
+            if (transform == nullptr)
+            {
+                continue;
+            }
+            for (uint32_t i = 0; i < transform->GetChildCount(); ++i)
+            {
+                Transform* child = transform->GetChild(i);
+                if (child != nullptr && child->GetParentObject() != nullptr)
+                {
+                    pending.push_back(child->GetParentObject());
+                }
+            }
+        }
+    }
+}  // namespace
+
+int PrefabUtilityEditor::ApplyStructureToSource(PrefabInstance* instance, bool* out_saved)
+{
+    if (out_saved != nullptr)
+    {
+        *out_saved = false;
+    }
+    if (instance == nullptr)
+    {
+        return 0;
+    }
+    PrefabAsset* source = static_cast<PrefabAsset*>(instance->GetSourcePrefab());
+    // A Variant records structure in its own file (ApplyAllToVariant); only a plain prefab's
+    // source graph is edited in place.
+    if (source == nullptr || source->IsVariant())
+    {
+        return 0;
+    }
+    if (instance->GetAddedComponents().empty() && instance->GetRemovedComponents().empty())
+    {
+        return 0;
+    }
+
+    AssetManager* asset_manager = GET_SYSTEM(AssetManager);
+    ObjectManager* object_manager = GET_SYSTEM(ObjectManager);
+    std::filesystem::path path;
+    int64_t header_file_id = 0;
+    if (asset_manager == nullptr || object_manager == nullptr ||
+        !asset_manager->TryGetIdentityForInstance(source->GetInstanceID(), path, header_file_id) || path.empty())
+    {
+        LOG_WARNING(ZPrefab, "ApplyStructureToSource: the source prefab has no file identity — structure not applied");
+        return 0;
+    }
+
+    // Highest fileID this file uses today. New objects must take FRESH fileIDs: every object is
+    // written under the fileID it already has (SaveSourcePrefab), so reusing a slot would
+    // silently retarget any reference that still points at the old object.
+    int64_t highest_file_id = header_file_id;
+    {
+        std::vector<Object*> graph;
+        CollectSourceGraphObjects(source, graph);
+        for (const PrefabInstance::CorrespondingSourceEntry& entry : instance->GetCorrespondingSourceMap())
+        {
+            if (Object* object = static_cast<Object*>(entry.source_object))
+            {
+                graph.push_back(object);
+            }
+        }
+        for (Object* object : graph)
+        {
+            std::filesystem::path object_path;
+            int64_t file_id = 0;
+            if (asset_manager->TryGetIdentityForInstance(object->GetInstanceID(), object_path, file_id) &&
+                asset_manager->GetInstanceIDFromPathAndFileID(path, file_id) == object->GetInstanceID() &&
+                file_id > highest_file_id)
+            {
+                highest_file_id = file_id;
+            }
+        }
+    }
+
+    // (instance component, source host, source template) — kept so a failed save can be undone
+    // and so the live component can be paired with its new template afterwards.
+    struct Attachment
+    {
+        Component* instance_component;
+        GameObject* source_host;
+        Component* source_template;
+    };
+    std::vector<Attachment> attached;
+    std::vector<std::pair<GameObject*, Component*>> detached;
+    std::vector<GameObject*> touched_hosts;
+    int applied = 0;
+
+    // ---- components this instance ADDED: a new object enters the source graph ----
+    for (const PPtr<Component>& entry : instance->GetAddedComponents())
+    {
+        Component* added = static_cast<Component*>(entry);
+        if (added == nullptr)
+        {
+            continue;
+        }
+        GameObject* host = added->GetParentObject();
+        if (host == nullptr)
+        {
+            LOG_WARNING(ZPrefab, "ApplyStructureToSource: an added component has no host GameObject — skipped");
+            continue;
+        }
+        GameObject* source_host =
+            Cast<GameObject>(static_cast<Object*>(instance->FindSourceForInstance(PPtr<Object>(host))));
+        if (source_host == nullptr)
+        {
+            LOG_WARNING(ZPrefab, "ApplyStructureToSource: no source counterpart for host '{}' — skipped",
+                        host->name.c_str());
+            continue;
+        }
+
+        // Claim the next free fileID slot, then Produce the template UNDER the instance ID that
+        // (path, fileID) already mints — that is what gives it an identity in this file, which is
+        // exactly what SaveSourcePrefab demands of every object it writes.
+        int64_t file_id = highest_file_id + 1;
+        while (object_manager->IDToPointer(asset_manager->GetInstanceIDFromPathAndFileID(path, file_id)) != nullptr)
+        {
+            ++file_id;
+        }
+        highest_file_id = file_id;
+        Object* produced = object_manager->Produce(added->GetType(),
+                                                   asset_manager->GetInstanceIDFromPathAndFileID(path, file_id));
+        Component* component_template = produced != nullptr ? Cast<Component>(produced) : nullptr;
+        if (component_template == nullptr)
+        {
+            LOG_WARNING(ZPrefab, "ApplyStructureToSource: producing the source template failed — skipped");
+            continue;
+        }
+        // Copy the values across. NOT CloneObjectViaSerialization: that picks its own instance ID,
+        // and the ID is what has to match the fileID claimed above.
+        std::vector<uint8_t> bytes;
+        TransferUtility::WriteObjectToVector(*added, bytes);
+        if (!bytes.empty())
+        {
+            TransferUtility::ReadObjectFromVector(*component_template, bytes);
+        }
+
+        source_host->addComponent(component_template);
+        attached.push_back(Attachment{added, source_host, component_template});
+        touched_hosts.push_back(source_host);
+        ++applied;
+    }
+
+    // ---- components this instance REMOVED: drop them from the source graph ----
+    // Entries already name SOURCE components (SuppressSourceComponent records the source side),
+    // so unlike the additions these need no translation.
+    for (const PPtr<Component>& entry : instance->GetRemovedComponents())
+    {
+        Component* source_component = static_cast<Component*>(entry);
+        if (source_component == nullptr)
+        {
+            continue;
+        }
+        GameObject* source_host = source_component->GetParentObject();
+        if (source_host == nullptr || !source_host->EditorRemoveComponent(source_component))
+        {
+            LOG_WARNING(ZPrefab, "ApplyStructureToSource: a removed component is not on its source host — skipped");
+            continue;
+        }
+        // The object stays alive on purpose: other instances still pair their clones with it and
+        // Merge has to be able to resolve it. It simply drops out of the graph, and out of the file.
+        detached.emplace_back(source_host, source_component);
+        touched_hosts.push_back(source_host);
+        ++applied;
+    }
+
+    if (applied == 0)
+    {
+        return 0;
+    }
+
+    // m_Component (the serialized list) is a separate container from m_Components (the live one)
+    // that addComponent / EditorRemoveComponent maintain — without this the file would still
+    // carry the old shape.
+    std::unordered_set<GameObject*> synced;
+    for (GameObject* host : touched_hosts)
+    {
+        if (host != nullptr && synced.insert(host).second)
+        {
+            host->SyncSerializedComponents();
+        }
+    }
+
+    if (!PrefabOverrideModel::SaveSourcePrefab(instance))
+    {
+        LOG_ERROR(ZPrefab, "ApplyStructureToSource: saving '{}' failed — {} change(s) rolled back",
+                  path.generic_string(), applied);
+        for (const Attachment& a : attached)
+        {
+            if (a.source_host != nullptr)
+            {
+                a.source_host->EditorRemoveComponent(a.source_template);
+                a.source_host->SyncSerializedComponents();
+            }
+        }
+        for (const auto& host_template : detached)
+        {
+            if (host_template.first != nullptr)
+            {
+                host_template.first->addComponent(host_template.second);
+                host_template.first->SyncSerializedComponents();
+            }
+        }
+        // Produce() -> ObjectManager::Destroy(). Not MemoryManager::DestroyObject: Produce uses
+        // `new`, and handing that to mi_free is an EXC_BAD_ACCESS on Apple.
+        for (const Attachment& a : attached)
+        {
+            object_manager->Destroy(a.source_template);
+        }
+        return 0;
+    }
+    if (out_saved != nullptr)
+    {
+        *out_saved = true;
+    }
+
+    // Unity: after Apply the instance no longer overrides anything — the source now carries that
+    // structure itself. Pairing the live component with its new template is what stops the next
+    // ReconcileStructure (a Merge, a Revert) from cloning a SECOND copy onto the host.
+    for (const Attachment& a : attached)
+    {
+        PrefabInstance::CorrespondingSourceEntry pair;
+        pair.instance_object = PPtr<Object>(a.instance_component);
+        pair.source_object = PPtr<Object>(a.source_template);
+        instance->GetCorrespondingSourceMap().push_back(pair);
+    }
+    instance->GetAddedComponents().clear();
+    instance->GetRemovedComponents().clear();
+
+    LOG_INFO(ZPrefab, "ApplyStructureToSource: {} structural change(s) applied to '{}' "
+                      "({} added / {} removed)",
+             applied, path.generic_string(), static_cast<int>(attached.size()), static_cast<int>(detached.size()));
     return applied;
 }
 

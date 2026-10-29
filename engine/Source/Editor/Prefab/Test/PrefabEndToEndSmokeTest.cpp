@@ -2287,10 +2287,11 @@ static void scenario_P19_variant_structure()
         Check(plain != nullptr && PrefabUtilityEditor::AddComponentOverride(plain, PPtr<GameObject>(p_child), MakeMeshRenderer(om, "P.mat")),
               "P19/plain", "adding a renderer on a plain-prefab instance");
         const std::vector<M::OverrideRow> prows = M::ListOverrides(plain);
-        Check(prows.size() == 1 && !prows[0].can_apply, "P19/plain", "listed, but not applicable");
-        Check(M::ApplyAll(&level, plain).applied == 0 && plain->GetAddedComponents().size() == 1, "P19/plain",
-              "ApplyAll applies nothing and keeps the override rather than losing it");
-        Check(PrefabUtilityEditor::Revert(plain) == 1 && CountMeshRenderers(p_child) == 0, "P19/plain", "Revert still works");
+        Check(prows.size() == 1 && prows[0].can_apply, "P19/plain", "listed, and applicable");
+        Check(M::ApplyAll(&level, plain).applied == 1 && plain->GetAddedComponents().empty(), "P19/plain",
+              "ApplyAll commits it into the source prefab (a plain prefab is no longer Revert-only)");
+        Check(CountMeshRenderers(p_child) == 1 && MaterialOf(FirstMeshRenderer(p_child)) == "P.mat", "P19/plain",
+              "...and the instance keeps its component, valued");
     }
 
     PrefabSceneBinding::Uninstall();
@@ -2565,6 +2566,189 @@ static void scenario_P21_load_without_systems()
     }
 }
 
+// Plain-prefab structural Apply (doc/PrefabSystem_Design.md 9.4.1 #35).
+// A Variant could already commit added / removed components; a plain prefab could not:
+// ListOverrides marked those rows can_apply=false and ApplyToSource skipped them, so an
+// added component was Revert-only and a suppressed one could never leave the source.
+//
+// What makes it harder than the Variant path: a Variant records an addition in a side list
+// on the variant asset, while a plain prefab has to put a brand-new object INTO the source
+// graph -- and every object of that graph is written under the fileID it already has in the
+// file. A new object has no fileID yet, and SaveSourcePrefab refuses the whole write when it
+// meets one ("a source object is not in <file>"), so the fileID must be minted before the
+// save (AssetManager::GetInstanceIDFromPathAndFileID + Produce(type, that id)).
+static void scenario_P24_plain_structural_apply()
+{
+    std::fprintf(stderr, "[P24] plain prefab: structural Apply writes into the source graph\n");
+    namespace M = PrefabOverrideModel;
+    std::error_code ec;
+    const std::filesystem::path path = "p24_plain.prefab";
+    std::filesystem::remove(path, ec);
+
+    ObjectManager* om = GET_SYSTEM(ObjectManager);
+    GameObject* root = MakeGameObject(om, "P24Root");
+    GameObject* child = MakeGameObject(om, "P24Child");
+    MeshRenderer* kept = MakeMeshRenderer(om, "Kept.mat");
+    MeshRenderer* doomed = MakeMeshRenderer(om, "Doomed.mat");
+    if (root == nullptr || child == nullptr || kept == nullptr || doomed == nullptr)
+    {
+        Check(false, "P24", "authoring failed");
+        return;
+    }
+    TransformOf(child)->SetParent(TransformOf(root), false);
+    // Kept goes on the root and Doomed on the CHILD on purpose: the flattener numbers the graph
+    // root -> root's components -> child -> child's components, so Doomed ends up holding the
+    // HIGHEST fileID in the file. That is what makes round 2 below able to steal its slot.
+    root->addComponent(kept);
+    child->addComponent(doomed);
+    root->SyncSerializedComponents();
+    child->SyncSerializedComponents();
+    kept->PostLoadResource(root);
+    doomed->PostLoadResource(child);
+    Check(PrefabUtility::SaveAsPrefabAsset(root, path), "P24", "saving the prefab failed");
+
+    PrefabAsset* asset = PrefabUtility::LoadPrefabAsset(path);
+    Check(asset != nullptr, "P24", "loading the prefab failed");
+    if (asset == nullptr)
+        return;
+
+    PrefabSceneBinding::Install();
+    Level level;
+
+    PrefabInstance* a = PrefabUtilityEditor::InstantiateAsPrefab(asset);
+    PrefabInstance* c = PrefabUtilityEditor::InstantiateAsPrefab(asset);  // made BEFORE any Apply
+    GameObject* a_root = a != nullptr ? a->GetRootGameObject() : nullptr;
+    GameObject* a_child = a_root != nullptr ? FirstChild(a_root) : nullptr;
+    GameObject* c_root = c != nullptr ? c->GetRootGameObject() : nullptr;
+    Check(a != nullptr && c != nullptr && a_root != nullptr && a_child != nullptr && c_root != nullptr, "P24/inst",
+          "instantiating twice");
+    if (a == nullptr || c == nullptr || a_root == nullptr || a_child == nullptr || c_root == nullptr)
+    {
+        PrefabSceneBinding::Uninstall();
+        return;
+    }
+    auto RendererWith = [](GameObject* go, const char* material) -> MeshRenderer* {
+        if (go == nullptr)
+            return nullptr;
+        for (ImmediatePtr<Component>& entry : go->getComponents())
+        {
+            Component* component = entry;
+            MeshRenderer* mr = Cast<MeshRenderer>(component);
+            if (mr != nullptr && MaterialOf(mr) == material)
+                return mr;
+        }
+        return nullptr;
+    };
+    auto FileHas = [](const std::filesystem::path& file, const char* needle) {
+        FILE* f = fopen(file.string().c_str(), "rb");
+        if (f == nullptr)
+            return false;
+        std::string text;
+        char buffer[4096];
+        size_t n = 0;
+        while ((n = fread(buffer, 1, sizeof(buffer), f)) > 0)
+            text.append(buffer, n);
+        fclose(f);
+        return text.find(needle) != std::string::npos;
+    };
+
+    Check(MaterialOf(RendererWith(a_root, "Kept.mat")) == "Kept.mat" &&
+              MaterialOf(RendererWith(a_child, "Doomed.mat")) == "Doomed.mat",
+          "P24/inst", "the instance mirrors the source: Kept on the root, Doomed on the child");
+
+    // ---- round 1: a REMOVAL on its own ----
+    MeshRenderer* inst_doomed = RendererWith(a_child, "Doomed.mat");
+    Component* src_doomed =
+        inst_doomed != nullptr
+            ? Cast<Component>(static_cast<Object*>(a->FindSourceForInstance(PPtr<Object>(inst_doomed))))
+            : nullptr;
+    Check(src_doomed != nullptr && PrefabUtilityEditor::SuppressSourceComponent(a, PPtr<Component>(src_doomed)),
+          "P24/remove", "suppressing Doomed.mat on the instance");
+    {
+        const std::vector<M::OverrideRow> rows = M::ListOverrides(a);
+        Check(rows.size() == 1 && rows[0].kind == M::OverrideRow::Kind::RemovedComponent && rows[0].can_apply,
+              "P24/remove", "one removed-component row, and it can be applied (it used to be Revert-only)");
+    }
+    const M::ApplyReport removed = M::ApplyAll(&level, a);
+    Check(removed.applied == 1 && removed.saved, "P24/remove", "the removal is applied and written");
+    Check(!M::HasOverrides(a), "P24/remove", "the instance has nothing left to override");
+    Check(!FileHas(path, "Doomed.mat") && FileHas(path, "Kept.mat"), "P24/remove",
+          "the file lost Doomed.mat and kept Kept.mat");
+
+    // ---- round 2: an ADDITION, after a removal has already freed a high fileID ----
+    // The removed component's object is still alive (other instances may still pair with it) but
+    // is no longer part of the graph, so it is not counted in "highest fileID in use" either.
+    // Allocating straight from that maximum would hand its slot to this new object, and
+    // Produce() under the already-minted instance ID would make every PPtr to the removed
+    // component resolve to the NEW one.
+    const int32_t removed_id = src_doomed != nullptr ? src_doomed->GetInstanceID() : 0;
+    MeshRenderer* added = MakeMeshRenderer(om, "Added.mat");
+    Check(added != nullptr && PrefabUtilityEditor::AddComponentOverride(a, PPtr<GameObject>(a_root), added),
+          "P24/add", "adding Added.mat on the instance");
+    {
+        const std::vector<M::OverrideRow> rows = M::ListOverrides(a);
+        Check(rows.size() == 1 && rows[0].kind == M::OverrideRow::Kind::AddedComponent && rows[0].can_apply,
+              "P24/add", "one added-component row, and it can be applied");
+    }
+    const M::ApplyReport applied = M::ApplyAll(&level, a);
+    Check(applied.applied == 1 && applied.saved, "P24/add", "the addition is applied and written");
+    Check(IsPaired(a, added), "P24/add",
+          "the live component is now paired with the new source template — otherwise the next "
+          "Merge / Revert clones a SECOND copy onto the host");
+    Check(RendererWith(a_root, "Added.mat") == added, "P24/add", "the instance keeps the component the user added");
+    Check(FileHas(path, "Added.mat"), "P24/add", "the added component is in the file");
+    Check(removed_id != 0 && om->IDToPointer(removed_id) == src_doomed, "P24/add",
+          "the removed component's fileID slot was NOT reused — it still resolves to itself");
+
+    // ---- round 3: re-read the FILE, not the graph cached in memory ----
+    // The in-memory graph can look right while the GameObject's SERIALIZED component list
+    // (m_Component, a separate container from the live m_Components) still holds the old shape —
+    // the new component then vanishes the moment the prefab is loaded again.
+    {
+        const std::filesystem::path copy = "p24_reload.prefab";
+        std::filesystem::remove(copy, ec);
+        std::filesystem::copy_file(path, copy, ec);
+        PrefabAsset* reread = PrefabUtility::LoadPrefabAsset(copy);
+        GameObject* r_root = reread != nullptr ? reread->GetRootGameObject() : nullptr;
+        GameObject* r_child = r_root != nullptr ? FirstChild(r_root) : nullptr;
+        Check(r_root != nullptr && r_child != nullptr, "P24/reload", "the saved file loads back");
+        Check(MaterialOf(RendererWith(r_root, "Added.mat")) == "Added.mat", "P24/reload",
+              "the reloaded root carries the addition");
+        Check(MaterialOf(RendererWith(r_root, "Kept.mat")) == "Kept.mat", "P24/reload", "…and what was not touched");
+        Check(RendererWith(r_child, "Doomed.mat") == nullptr, "P24/reload", "…and not the removed one");
+        std::filesystem::remove(copy, ec);
+    }
+
+    // ---- round 4: an instance made BEFORE the Applies catches up ----
+    // Merged explicitly (as P19 does): FinishApply's automatic sweep only reaches instances
+    // placed in a Level through PrefabSceneBinding::PlaceInLevel, which this scenario does not do.
+    GameObject* c_child = FirstChild(c_root);
+    Check(c_child != nullptr && RendererWith(c_child, "Doomed.mat") != nullptr, "P24/merge",
+          "precondition: c still has the old shape (Doomed.mat on its child)");
+    PrefabUtilityEditor::MergeFromSource(c);
+    Check(RendererWith(c_root, "Added.mat") != nullptr && RendererWith(c_root, "Added.mat") != added, "P24/merge",
+          "Merge brings in the addition as a clone, not the user's live object");
+    Check(c_child != nullptr && RendererWith(c_child, "Doomed.mat") == nullptr &&
+              RendererWith(c_root, "Kept.mat") != nullptr,
+          "P24/merge", "…drops the removed one, keeps what was not touched");
+    PrefabUtilityEditor::MergeFromSource(c);
+    Check(CountMeshRenderers(c_root) == 2 && RendererWith(c_root, "Added.mat") != nullptr &&
+              c_child != nullptr && RendererWith(c_child, "Doomed.mat") == nullptr,
+          "P24/merge", "Merge is idempotent: a second pass does not add another copy");
+
+    // ---- round 5: a fresh instance of the applied prefab ----
+    {
+        PrefabInstance* b = PrefabUtilityEditor::InstantiateAsPrefab(asset);
+        GameObject* b_root = b != nullptr ? b->GetRootGameObject() : nullptr;
+        Check(b_root != nullptr && MaterialOf(RendererWith(b_root, "Added.mat")) == "Added.mat" &&
+                  MaterialOf(RendererWith(b_root, "Kept.mat")) == "Kept.mat" && CountMeshRenderers(b_root) == 2,
+              "P24/fresh", "a new instance is born with the applied shape, exactly two renderers");
+    }
+
+    PrefabSceneBinding::Uninstall();
+    std::filesystem::remove(path, ec);
+}
+
 int main()
 {
     std::fprintf(stderr, "ZEngine prefab end-to-end smoke test\n====================================\n");
@@ -2601,6 +2785,7 @@ int main()
     scenario_P19_variant_structure();
     scenario_P20_structure_undo();
     scenario_P21_load_without_systems();
+    scenario_P24_plain_structural_apply();
 
     std::error_code ec;
     for (const auto& p : {kPrefabPath, kAppliedPath, kSceneBinaryPath, kSceneYamlPath, kLevelYamlPath, kLevelDeletedPath,
