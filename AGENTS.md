@@ -2975,6 +2975,14 @@ ZEngine 的 `ParticlePass` 与 Unity 侧共用同一份发射 / 曲线 / 拼包�
   -DGPUPARTICLE_BUILD_TESTS=ON` + `ctest --test-dir build/gpuparticle -C Debug`。
   引擎侧在 `Runtime/CMakeLists.txt` 里 `add_subdirectory`（照 GPUSpine 那块），
   **目前还没 `target_link_libraries`** —— 等第 5 步 Tier-1 渲染路径落地再接。
+- **它已经是真正的子模块**（`https://github.com/zentia/GPUParticle.git`），不是
+  in-tree 目录：改核心要**先**在 `engine/Libraries/GPUParticle` 里提交推送，再回
+  ZEngine 更新 submodule 指针，否则 ZEngine 侧永远拉不到你的改动。
+- C# 镜像在 `Runtime/CSharp/`（netstandard2.1，整目录可拷进 Unity Assets），
+  跨语言对拍 `ctest -R ParticleGpuCSharpParityTest`（C++ 落盘 → C# 重算 →
+  逐字段比，当前 4622 项一致）。改任何核心公式/布局都要跑它。
+- 本仓库根 `.gitignore:312` 的 `*~` 会静默吞掉任何 `Tests~` 目录 —— GPUParticle
+  的测试就这么丢过一次（`git add -f` 才进来）。新库的 `Tests~` 要留意。
 
 ## 3. Build / test invocations
 
@@ -3927,3 +3935,34 @@ need nothing extra). Do not re-litigate Python vs C++.
   its descendants, `RuntimeTypeArray::count` == populated slots. A class with
   REGISTER_CLASS but no IMPLEMENT_REGISTER_CLASS, or a template layer that
   relays `ThisType = itself` (DataTable<TRow> once did), breaks it.
+
+## 9. RenderDoc (vendored) — Android server APK must match the host binary
+
+`tools/renderdoc` is a **git submodule**, currently detached at `16a859d4f`
+(upstream v1.46 + 212 commits, builds as **1.47**). The host binaries in
+`tools/renderdoc/x64/<config>` and the copies in `bin/<config>` were built by
+`tools/build_renderdoc.bat` **without a version hash**, so `renderdoccmd version`
+prints `v1.45 built from NO_GIT_COMMIT_HASH_DEFINED_AT_BUILD_TIME`. Source
+version and binary version are therefore allowed to drift — always read the
+version off the binary, never assume it matches the submodule.
+
+For Android capture the remote server APK must have **exactly** the host's
+`versionCode` + `versionName` (`Android::CheckAndroidServerVersion`,
+`renderdoc/android/android.cpp`: `versionCode = MAJOR+MINOR`, e.g. `"145"`;
+`versionName = GIT_COMMIT_HASH`), otherwise qrenderdoc uninstalls and reinstalls
+the server, which fails on MIUI/HyperOS. Build the APK from a tree at the
+*host's* version:
+
+    tools\build_renderdoc_android.ps1 [-Config Release] [-Install] [-Clean]
+
+It parses `x64\<config>\renderdoccmd.exe version`, checks out that tag into the
+scratch worktree `<engine_root>/renderdoc-android-src`, builds arm32+arm64 with
+the same version string, and copies both APKs into every `plugins/android/`
+next to a `renderdoc.dll` (first search path in `InstallRenderDocServer`;
+**arm32** is the file probed first on 64-bit devices, because
+`GetSupportedABIs` returns `{armeabi_v7a, arm64_v8a}`). Toolchain that is known
+to work: NDK r25c, SDK build-tools 36 + platform android-37, JDK 11/17, ninja,
+CMake 4.x. MIUI/HyperOS rejects `adb install -g`
+(`INSTALL_GRANT_RUNTIME_PERMISSIONS`) and, once the package is gone, plain
+`adb install` (`INSTALL_FAILED_USER_RESTRICTED`) — 开发者选项 → USB 安装 must be
+on, and the script installs via `adb push` + `pm install --force-queryable`.
