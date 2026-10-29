@@ -2152,7 +2152,7 @@ Release 下根本不存在。基准的分配计数同理 —— **只有 Release
 |---|---|
 | `SpineGpuWrapDegrees`（rotate 的角度归一，int 截断） | 0.11 µs/帧 |
 | rigid deform 每帧 `memcpy` 一份 setup 顶点（永不变化） | 消融估 0.20 µs/帧；**交错 A/B 实测只有 ~1%（见 §17.3）** |
-| `GetFrames` 的调用 + 边界校验 + 一次 `SpineImportResult` 返回 | 3.2 ns/条 ≈ 0.26 µs/帧 |
+| `GetFrames` 的调用 + 边界校验 + 一次 `SpineImportResult` 返回 | 3.2 ns/条 ≈ 0.26 µs/帧（⚠️ 2026-10-29：**已整条删除**，见 §17.8） |
 | 一次 `SpineImportResult`（`bool + std::string` = 40 B，非平凡 ⇒ 走 sret 内存返回）比返回 `bool` 贵 | **1.32 ns**（微基准 2000 万次：1.50 vs 0.18 ns/次）；每条时间轴 3 次（GetFrames / ApplyX / ApplyTimeline）≈ 4 ns/条 |
 | 把展开出来的 deform 关键帧按 (时间轴, 帧号) 缓存、帧号没变就不重展 | 只值 0.23 µs/帧（anim 慢 1.68x → 1.55x），命中率低 ⇒ 不值得常驻 2×deform_len 的缓存 |
 
@@ -2162,7 +2162,7 @@ Release 下根本不存在。基准的分配计数同理 —— **只有 Release
 
 **结论**：anim 的 1.4 µs 差距不是一处"加多了"，是摊在每条时间轴上的 ~11 ns。要再往下压只有三条路，
 都不是顺手能改的：① deform 帧改成加载期摊稠密（放弃省下的 59.5% 载荷，换回 ~1 µs/帧）；
-② 不变量只在加载期校验一次，热路径不再返回 `SpineImportResult`（~0.26~0.4 µs/帧）；
+② 不变量只在加载期校验一次，热路径不再返回 `SpineImportResult`（~0.26~0.4 µs/帧）（⚠️ 2026-10-29：**已做**，见 §17.8 —— 校验真的前移了，`SpineImportResult` 仍在返回值上但热路不再算偏移）；
 ③ rigid 的 setup 顶点不再每帧拷贝 —— **已做，见 §17.3**（顺带把这条的"0.20 µs/帧"这个旧估值
 修正成实测的 ~1%）。要动 ①② 之前先量，别照这两条猜。
 
@@ -2427,6 +2427,33 @@ build/Tests~/Release/SpineGpuBenchmark.exe G:/OSGame/Client_proj/Project/Assets 
 
 **下一轮该看的**：anim / pose 两段（我们慢的那一侧）—— §17.4 的 P2（解析 + 早退）与
 P3（"其余"没拆开的部分）仍然是最具体的线索。
+（⚠️ 2026-10-29 再修订：P2/P3 已被 `PERF_ACCEPTANCE.md` §1.4 / §1.5 拆完并降级 ——
+真问题是"**每条时间轴的 apply 比参考贵**"（48.6 vs 38.8 ns/条），不是某一类写坏了；
+§1.6 已经把 `GetFrames` + 曲线查表前移进载入期，见下面 §17.8。）
+
+### 17.8 载入期预解析：anim 快 16%（2026-10-29）
+
+§17.2 那张表里的 "`GetFrames` 3.2 ns/条" 已经被**整条删掉**了：`GetFrames()` 与 `FrameView`
+不复存在，换成 `SpineGpuRuntimeData::timelines[]`（`SpineGpuTimelineRt`，40 B/条），
+在 `SpineGpuBuildRuntimeData` 里一次算好 `frames` / `entries` / `target` / `type` /
+`curve` / `bezier`，并把原先每次都做的帧区间、曲线段区间、bezier 表区间检查**前移成载入期校验**。
+apply 的第一件事从"算三个偏移 + 查五次边界"变成"读一条记录"。
+
+⚠️ 副作用（写进代码注释了）：`SpineGpuRuntimeData` 现在持有**指进 `SpineGpuAsset` 内部**的裸指针
+⇒ 建完表之后那个 asset 不能再让 `frames` / `curve_types` / `curve_bezier_index` 重新分配
+（**移动** asset 是安全的）。另外"曲线缓存没建"这条错误从**求值期**前移到**建表期** ——
+两个测试的 `Check(!r.ok)` 已跟着改成建表报错。
+
+**实测**（两个 exe 交替跑、各 4 次、含一次反序；用"我们/参考"倍率消机器漂移）：
+
+| 口径 | 旧 | 新 |
+|---|---|---|
+| anim 合计（我们/参考） | 1.293x 慢 | **1.088x 慢**（−15.9%） |
+| anim 逐资产中位（我们/参考） | 1.489x 慢 | **1.268x 慢**（−14.8%） |
+| total | 我们 1.383x 快 | 我们 **1.532x 快** |
+
+代价：781 资产 CPU 共享内存 343792.6 → 353776.8 KB（**+9.75 MB**），仍 1.17x 小于参考。
+完整的方法与逐次原始数字在 `engine/Libraries/GPUSpine/doc/PERF_ACCEPTANCE.md` §1.6。
 
 ## 附：事实来源（已核对）
 
