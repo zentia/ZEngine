@@ -40,3 +40,6 @@
 [submodule "engine/3rdparty/zlib"]
 	path = engine/3rdparty/zlib
 	url = https://github.com/madler/zlib.git
+[submodule "engine/Libraries/GPUSpine"]
+	path = engine/Libraries/GPUSpine
+	url = https://github.com/zentia/GPUSpine.git
