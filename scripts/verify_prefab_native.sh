@@ -138,40 +138,56 @@ run_e2e() {
     fi
 }
 
+# KNOWN LIMIT (2026-10-29): this suite links the whole scripting + system layer, and
+# bin/libZRuntime.a is days old. When upstream changes that layer (ScriptingManager, ProjectInfo,
+# RegisterRuntime ... 35 stale members were pulled in at the time) the old archive members no
+# longer match the headers: first duplicate symbols, then a jump to address 0 inside
+# ScriptingManager::Initialize. Recompiling them is NOT an option here -- the set includes the
+# render / window layer, which drags in Objective-C++ / Metal headers that do not compile in this
+# environment (NSObjCRuntime.h). `run_smoke_test.py --link-map <file>` lists the archive members a
+# test really links, if you need to re-derive that set. The proper fix is a fresh cmake build of
+# libZRuntime.a, which this machine cannot do (no cmake/ninja).
+# Verified NOT caused by the camera change: the suite fails identically on upstream 33e0e33.
 run_runtime() {
     echo "==> ScriptComponentPrefabTest (native)"
     local out
+    RT_ARGS=(
+      --template Function/Audio/AudioSystem.cpp
+      --extra-source engine/Source/Runtime/Scripting/Backends/QuickJS/BackendQuickJS.cpp
+      --extra-source engine/Source/Runtime/Scripting/Binding/ScriptBinding.cpp
+      --extra-source engine/Source/Runtime/Scripting/Wrapper/ScriptEnv.cpp
+      --extra-source "${G}/KeyCodes.gen.cpp"
+      --extra-source engine/Source/Runtime/Core/Time/TimeState.cpp
+      --extra-source engine/Source/Runtime/BaseClasses/TypeManager.cpp
+      --extra-source engine/Source/Runtime/BaseClasses/GameObject.cpp
+      --extra-source engine/Source/Runtime/Function/Framework/Component/Script/TypeScriptComponent.cpp
+      --extra-source "${G}/GameObject.gen.cpp"
+      --extra-source "${G}/Transform.gen.cpp"
+      --extra-source "${G}/Behaviour.gen.cpp"
+      --extra-source "${G}/TypeScriptComponent.gen.cpp"
+      --extra-source engine/Source/Runtime/Resource/Prefab/PrefabUtility.cpp
+      --extra-source engine/Source/Runtime/Resource/Prefab/PrefabSubtreeCloner.cpp
+      --extra-source engine/Source/Runtime/Core/YamlSerialize/YamlObjectGraph.cpp
+      --extra-source engine/Source/Runtime/Resource/Asset/AssetManager.cpp
+      --extra-source engine/Source/Runtime/BaseClasses/ImmediatePtr.cpp
+      --extra-source engine/Source/Runtime/BaseClasses/IPPtrResolver.cpp
+      --extra-source engine/Source/Runtime/Function/Framework/Component/Transform/Transform.cpp
+      --extra-source "${G}/PrefabAsset.gen.cpp"
+      --extra-source "${G}/PrefabRefComponent.gen.cpp"
+      --extra-source "${G}/RigidbodyComponent.gen.cpp"
+      --extra-source engine/Source/Runtime/Resource/Prefab/PropertyModification.cpp
+      --extra-source engine/Source/Runtime/Resource/Prefab/PropertyPathResolver.cpp
+      --extra-source engine/Source/Runtime/Resource/Prefab/PropertyValueLocator.cpp
+      --exclude-archive-member YamlObjectGraph.cpp.o --exclude-archive-member AssetManager.cpp.o
+      --exclude-archive-member ImmediatePtr.cpp.o --exclude-archive-member IPPtrResolver.cpp.o
+      --exclude-archive-member Transform.cpp.o
+      --exclude-archive-member ScriptEnv.cpp.o --exclude-archive-member ScriptBinding.cpp.o
+      --exclude-archive-member BackendQuickJS.cpp.o --exclude-archive-member TypeManager.cpp.o
+      --exclude-archive-member GameObject.cpp.o --exclude-archive-member TypeScriptComponent.cpp.o
+      --exclude-archive-member PrefabUtility.cpp.o
+    )
     out="$(python3 scripts/run_smoke_test.py engine/Source/Runtime/Scripting/ScriptVM/Test/ScriptComponentPrefabTest.cpp \
-      --template Function/Audio/AudioSystem.cpp \
-      --extra-source engine/Source/Runtime/Scripting/Backends/QuickJS/BackendQuickJS.cpp \
-      --extra-source engine/Source/Runtime/Scripting/Binding/ScriptBinding.cpp \
-      --extra-source engine/Source/Runtime/Scripting/Wrapper/ScriptEnv.cpp \
-      --extra-source "${G}/KeyCodes.gen.cpp" \
-      --extra-source engine/Source/Runtime/Core/Time/TimeState.cpp \
-      --extra-source engine/Source/Runtime/BaseClasses/TypeManager.cpp \
-      --extra-source engine/Source/Runtime/BaseClasses/GameObject.cpp \
-      --extra-source engine/Source/Runtime/Function/Framework/Component/Script/TypeScriptComponent.cpp \
-      --extra-source "${G}/GameObject.gen.cpp" \
-      --extra-source "${G}/Transform.gen.cpp" \
-      --extra-source "${G}/Behaviour.gen.cpp" \
-      --extra-source "${G}/TypeScriptComponent.gen.cpp" \
-      --extra-source engine/Source/Runtime/Resource/Prefab/PrefabUtility.cpp \
-      --extra-source engine/Source/Runtime/Resource/Prefab/PrefabSubtreeCloner.cpp \
-      --extra-source engine/Source/Runtime/Core/YamlSerialize/YamlObjectGraph.cpp \
-      --extra-source engine/Source/Runtime/Resource/Asset/AssetManager.cpp \
-      --extra-source engine/Source/Runtime/BaseClasses/ImmediatePtr.cpp \
-      --extra-source engine/Source/Runtime/BaseClasses/IPPtrResolver.cpp \
-      --extra-source engine/Source/Runtime/Function/Framework/Component/Transform/Transform.cpp \
-      --extra-source "${G}/PrefabAsset.gen.cpp" \
-      --extra-source "${G}/PrefabRefComponent.gen.cpp" \
-      --extra-source "${G}/RigidbodyComponent.gen.cpp" \
-      --extra-source engine/Source/Runtime/Resource/Prefab/PropertyModification.cpp \
-      --extra-source engine/Source/Runtime/Resource/Prefab/PropertyPathResolver.cpp \
-      --extra-source engine/Source/Runtime/Resource/Prefab/PropertyValueLocator.cpp \
-      --exclude-archive-member YamlObjectGraph.cpp.o --exclude-archive-member AssetManager.cpp.o \
-      --exclude-archive-member ImmediatePtr.cpp.o --exclude-archive-member IPPtrResolver.cpp.o \
-      --exclude-archive-member Transform.cpp.o \
-      --run-arg=--resource-dir --run-arg="engine/Source/Runtime/Scripting/ScriptVM/Test" 2>&1)"
+      "${RT_ARGS[@]}" --run-arg=--resource-dir --run-arg="engine/Source/Runtime/Scripting/ScriptVM/Test" 2>&1)"
     echo "${out}" | grep -E "\[FAIL\]|checks=|error:|Undefined symbols|RESULT" || echo "${out}" | tail -20
     if ! echo "${out}" | grep -q "RESULT: ALL PASSED"; then status=1; fi
 }
