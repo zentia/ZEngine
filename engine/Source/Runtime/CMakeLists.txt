@@ -27,6 +27,24 @@ else()
     message(FATAL_ERROR "Runtime: GPUSpine submodule missing at ${GPUSPINE_PATH} (git submodule update --init engine/Libraries/GPUSpine)")
 endif()
 
+# ---- Add GPUParticle (library; 无状态 GPU 粒子的 std-only 核心) ----
+# 与 GPUSpine 同款定位：核心只吃标准库，ZEngine 的 ParticlePass 与 Unity 侧共用
+# 同一份发射/曲线/拼包逻辑，所以它是独立仓库，不放在 Source/ 下。
+#
+# 注意：这里**还没有** target_link_libraries —— 核心暂时没有消费者，链接在第 5 步
+# （Tier-1 渲染路径落地、ParticlePass 瘦成适配器）时接上。add_subdirectory 先放进来
+# 是为了让"库缺失"跟 GPUSpine 一样在 configure 期就炸，而不是等到链接期报一堆
+# undefined symbol。
+set(GPUPARTICLE_PATH "${ENGINE_ROOT_DIR}/Libraries/GPUParticle")
+if(EXISTS "${GPUPARTICLE_PATH}/CMakeLists.txt")
+    if(NOT TARGET GPUParticle)
+        add_subdirectory("${GPUPARTICLE_PATH}" "${CMAKE_CURRENT_BINARY_DIR}/GPUParticle")
+    endif()
+    message(STATUS "Runtime: GPUParticle enabled from ${GPUPARTICLE_PATH}")
+else()
+    message(FATAL_ERROR "Runtime: GPUParticle submodule missing at ${GPUPARTICLE_PATH} (git submodule update --init engine/Libraries/GPUParticle)")
+endif()
+
 # ---- Add source files ----
 
 # Note: globbing sources is considered bad practice as CMake's generators may not detect new files

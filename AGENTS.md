@@ -2941,6 +2941,30 @@ Rules:
   `m_Rhi` is acquired); check that line first when a pass mysteriously draws
   nothing on one platform.
 
+### 2.44 GPUParticle: 独立库（std-only core + 引擎适配器）
+
+`engine/Libraries/GPUParticle/` 是与 GPUSpine 同款定位的库：核心**只吃标准库**，
+ZEngine 的 `ParticlePass` 与 Unity 侧共用同一份发射 / 曲线 / 拼包逻辑。设计
+（三档能力分级、Tier-1 无状态粒子、core/adapter 边界）见
+`engine/Libraries/GPUParticle/doc/GPU_PARTICLE_DESIGN.md`。
+
+- **Tier 1 是主力档**：粒子没有状态，出生时烘焙成一条 `ParticleGpuSpawn`
+  （4 × vec4），之后 VS 用闭式解 `p0 + v0*t + 0.5*a*t²` 求位置 ⇒ 不需要 compute
+  pass、alive/dead 链表、counter buffer、indirect dispatch。所以能在 GLES3.0 /
+  WebGL2（无 compute、无 SSBO）上跑。
+- **发射调度是 O(1)**：恒定速率的第 k 个粒子出生在 `k/rate` 秒，存活窗口
+  `k ∈ ((t-life)*rate, t*rate]` 取整即得。不要改成 `carry += rate*dt` —— 那会让
+  发射节奏随帧率漂移（测试 `ParticleGpuCoreTest` 有断言守着）。
+- **出生记录布局要能同时当实例属性和 SSBO 一行**：GLES3.0 没有 SSBO，只能走
+  `vertexAttribDivisor`；Vulkan/DX12/Metal 走 SSBO 或 VTF。改布局必须两边一起改。
+- **随机器必须可跨语言复现**：`ParticleGpuRandom01` / `ParticleGpuSpawnSeed`
+  用 lowbias32（C# 侧要 `unchecked`）；种子掩码到 24 位，因为载体是 float
+  （实例属性通道没有 uint）。
+- 构建：`cmake -S engine/Libraries/GPUParticle -B build/gpuparticle
+  -DGPUPARTICLE_BUILD_TESTS=ON` + `ctest --test-dir build/gpuparticle -C Debug`。
+  引擎侧在 `Runtime/CMakeLists.txt` 里 `add_subdirectory`（照 GPUSpine 那块），
+  **目前还没 `target_link_libraries`** —— 等第 5 步 Tier-1 渲染路径落地再接。
+
 ## 3. Build / test invocations
 
 - Configure: pre-existing `build/` is fine; CMake presets in `CMakePresets.json`.
