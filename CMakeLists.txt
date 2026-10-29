@@ -18,6 +18,10 @@ endif()
 
 include(CMakeDependentOption)
 
+# IDE solution folders (Visual Studio / Xcode). USE_FOLDERS must be ON or every
+# FOLDER assignment in the tree is ignored and the solution comes out flat.
+include(${CMAKE_CURRENT_SOURCE_DIR}/engine/cmake/TargetFolders.cmake)
+
 # ---- Include guards ----
 if(PROJECT_SOURCE_DIR STREQUAL PROJECT_BINARY_DIR)
     message(
@@ -534,3 +538,8 @@ add_subdirectory(engine)
 # renderdoc submodule, tools/renderdoc_build, tools/renderdoc-mcp and the
 # analyze_*.py capture-analysis scripts. Nothing here is added by CMake, so
 # there is deliberately no add_subdirectory(tools).
+
+# Give every target that never got an explicit FOLDER one derived from its source
+# directory, so nothing is left dangling at the solution root. Must run after all
+# add_subdirectory() calls.
+z_assign_default_target_folders()
