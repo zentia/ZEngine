@@ -5,6 +5,7 @@
 #include "Editor/Build/AssetBundleBuilder.h"
 #include "Editor/EditorApplication/EditorApplication.h"
 #include "Editor/EditorUI/EditorUI.h"
+#include "Editor/Scripting/EditorScriptHooks.h"
 #include "Editor/Undo/EditorUndo.h"
 #include "Editor/ZSlate/Backend/EditorSlateHost.h"
 #include "Editor/ZSlate/Backend/ZSlateEditorOverlay.h"
@@ -24,7 +25,9 @@
 
 #include <algorithm>
 #include <functional>
+#include <map>
 #include <memory>
+#include <string>
 
 namespace
 {
@@ -215,7 +218,52 @@ void MenuController::EnsureZSlateMenuEntries()
                                }
                            }, scale, !can_undo && !can_redo);
                        }});
-    entries.push_back({"Tools", empty_menu});
+    // P2: script-registered items (EditorMenu.AddItem). The builder runs on
+    // every open, so items registered after startup -- or re-registered by a
+    // script reload -- appear without rebuilding the bar. "a/b" nests into
+    // submenus; identical prefixes share one submenu.
+    entries.push_back({"Tools", [](ZSlate::SMenu& menu, float scale) {
+                           const auto& items = EditorScriptHooks::GetMenuItems();
+                           if (items.empty())
+                           {
+                               menu.AddItem("(no script tools registered)", nullptr, scale, /*disabled=*/true);
+                               return;
+                           }
+                           // Submenus are memoised by their full prefix so
+                           // "A/x" and "A/y" land in the same "A".
+                           std::map<std::string, std::shared_ptr<ZSlate::SMenu>> submenus;
+                           for (const EditorScriptHooks::MenuItem& item : items)
+                           {
+                               ZSlate::SMenu* target = &menu;
+                               std::string prefix;
+                               std::string label = item.path;
+                               size_t start = 0;
+                               for (size_t slash = item.path.find('/'); slash != std::string::npos;
+                                    slash = item.path.find('/', start))
+                               {
+                                   const std::string segment = item.path.substr(start, slash - start);
+                                   start = slash + 1;
+                                   if (segment.empty())
+                                       continue;
+                                   prefix += prefix.empty() ? segment : ("/" + segment);
+                                   auto found = submenus.find(prefix);
+                                   if (found == submenus.end())
+                                       found = submenus.emplace(prefix, target->AddSubMenu(segment, scale)).first;
+                                   if (!found->second)
+                                       break;
+                                   target = found->second.get();
+                               }
+                               label = item.path.substr(start);
+                               if (label.empty())
+                                   continue;
+                               // The callback captures the names, not an
+                               // iterator: the registry can be mutated by a
+                               // reload between building this row and clicking
+                               // it, and Invoke() re-resolves by name anyway.
+                               const EditorScriptHooks::Callback callback = item.callback;
+                               target->AddItem(label, [callback]() { EditorScriptHooks::Invoke(callback); }, scale);
+                           }
+                       }});
     entries.push_back({"Build", [](ZSlate::SMenu& menu, float scale) {
                            // Texture cook (Phase 6): cook all project textures
                            // for the chosen platform into

@@ -1043,9 +1043,37 @@ def ts_type_for(cpp_type: str, line: int) -> str:
     raise ParseError(line, "ZFUNCTION: '%s' cannot be mapped to a TypeScript type" % cpp_type)
 
 
+# TypeScript reserved words that are legal C++ identifiers. A parameter named
+# any of these would be emitted verbatim into the .d.ts and make the whole file
+# fail to parse -- `static AddItem(path: string, function: string)` is a syntax
+# error, which then breaks tsc for every editor script, not just the offending
+# signature. Renaming in the declaration is safe: .d.ts parameter names are
+# documentation only, callers pass positionally.
+_TS_RESERVED_PARAM_NAMES = frozenset(
+    {
+        "any", "as", "async", "await", "boolean", "break", "case", "catch", "class", "const",
+        "continue", "debugger", "declare", "default", "delete", "do", "else", "enum", "export",
+        "extends", "false", "finally", "for", "function", "if", "implements", "import", "in",
+        "instanceof", "interface", "let", "new", "null", "number", "package", "private",
+        "protected", "public", "return", "static", "super", "switch", "symbol", "this", "throw",
+        "true", "try", "typeof", "var", "void", "while", "with", "yield",
+    }
+)
+
+
+def _ts_param_name(name: Optional[str], index: int) -> str:
+    """Parameter name for a .d.ts signature: the C++ name when it is usable,
+    else something that parses."""
+    if not name:
+        return "arg%d" % (index + 1)
+    if name in _TS_RESERVED_PARAM_NAMES:
+        return name + "_"
+    return name
+
+
 def _build_ts_signature(method: MethodInfo) -> None:
     params = ", ".join(
-        "%s: %s" % (p.name or "arg%d" % (i + 1), ts_type_for(p.cpp_type, method.line))
+        "%s: %s" % (_ts_param_name(p.name, i), ts_type_for(p.cpp_type, method.line))
         for i, p in enumerate(method.params)
     )
     method.ts_signature = "%s(%s): %s" % (method.ts_name, params, ts_type_for(method.return_type, method.line))

@@ -349,6 +349,23 @@ class CodegenTests(unittest.TestCase):
         self.assertIn("const ZPropertyMetaRegistrar kZhtMetaRegistrar_Foo(kZhtClassMeta_Foo);", source)
         self.assertNotIn('.serializedName = "plain"', source)
 
+    def test_ts_reserved_parameter_names_are_renamed(self):
+        # A C++ parameter named after a TypeScript keyword used to be emitted
+        # verbatim, e.g. `AddItem(path: string, function: string)`, which is a
+        # syntax error that breaks the WHOLE .d.ts -- so tsc then fails on every
+        # editor script, not just the offending signature. .d.ts parameter names
+        # are documentation only (callers pass positionally), so renaming is safe.
+        text = wrap(
+            "    ZFUNCTION()\n    static bool AddItem(const eastl::string& path, const eastl::string& function);\n"
+            "    ZFUNCTION()\n    static void Pick(int var, int interface, int any);\n"
+            "    ZFUNCTION()\n    static void Fine(int index, bool recursive);\n"
+        )
+        cls = parse(text).classes[0]
+        self.assertEqual(cls.methods[0].ts_signature, "AddItem(path: string, function_: string): boolean")
+        self.assertEqual(cls.methods[1].ts_signature, "Pick(var_: number, interface_: number, any_: number): void")
+        # Non-reserved names are left exactly as the C++ spells them.
+        self.assertEqual(cls.methods[2].ts_signature, "Fine(index: number, recursive: boolean): void")
+
     def test_script_binding_table(self):
         text = wrap(
             "    ZFUNCTION()\n    const eastl::string& GetName() const;\n"

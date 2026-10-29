@@ -1,5 +1,6 @@
 #include "EditorScriptingManager.h"
 
+#include "Editor/Scripting/EditorScriptHooks.h"
 #include "Runtime/Core/Base/SystemRegistry.h"
 #include "Runtime/Project/ProjectInfo.h"
 #include "Runtime/Resource/Config/ConfigManager.h"
@@ -154,4 +155,9 @@ void EditorScriptingManager::Shutdown()
     delete m_Env;
     m_Env = nullptr;
     m_Bootstrapped = false;
+    // P2: drop menu items / Inspector buttons with the VM that owns their
+    // handlers. Leaving them registered would show rows that call into a
+    // destroyed env -- Invoke() would refuse, but the UI would be lying about
+    // what the editor can do.
+    EditorScriptHooks::Clear();
 }

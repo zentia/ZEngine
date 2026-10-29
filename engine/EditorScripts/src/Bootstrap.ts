@@ -39,9 +39,55 @@ function reportP1Facades(): void {
         "' guid='" + EditorAssetDatabase.GetGuid(probe) + "'");
 }
 
+// ---------------------------------------------------------------------------
+// P2: menu items and Inspector buttons.
+//
+// Handlers are exported BY NAME (EditorMenu/EditorInspector take a module id
+// and a function name, not a closure) because ScriptEnv can only invoke
+// `module.exports.<fn>()`. That is also why they have to be exported: a
+// module-local function is invisible to the invoker.
+// ---------------------------------------------------------------------------
+
+export function OnToolsSayHello(): void {
+    console.log("[EditorScripts] Tools > Say Hello clicked. project='" +
+        EditorEnvironment.GetProjectRoot() + "'");
+}
+
+export function OnToolsReportSelection(): void {
+    const count = EditorSelection.GetObjectCount();
+    const active = EditorSelection.GetActiveObject();
+    console.log("[EditorScripts] Tools > Report Selection: count=" + count +
+        " active=" + (active ? active.GetName() : "<none>"));
+}
+
+export function OnInspectAnimationComponent(): void {
+    console.log("[EditorScripts] Inspector button on AnimationComponent clicked.");
+}
+
+function registerP2Hooks(): void {
+    // "Report/..." nests: Tools > Report > Selection.
+    EditorMenu.AddItem("Say Hello", "Bootstrap", "OnToolsSayHello", 0);
+    EditorMenu.AddItem("Report/Selection", "Bootstrap", "OnToolsReportSelection", 10);
+    EditorInspector.AddButton("AnimationComponent", "Log From Script",
+                              "Bootstrap", "OnInspectAnimationComponent");
+
+    console.log("[EditorScripts] hooks: menuItems=" + EditorMenu.GetItemCount() +
+        " first='" + EditorMenu.GetItemPathAt(0) +
+        "' animButtons=" + EditorInspector.GetButtonCount("AnimationComponent"));
+
+    // Invoke both through the registry, which is the only way to exercise a
+    // menu row / Inspector button headlessly -- a ZSlate click cannot be
+    // synthesised from script. Proves the whole path: registry lookup ->
+    // InvokeExportedFunction -> back into this module.
+    console.log("[EditorScripts] hooks: invokeMenu=" + EditorMenu.InvokeItem("Say Hello") +
+        " invokeButton=" + EditorInspector.InvokeButton("AnimationComponent", "Log From Script") +
+        " invokeMissing=" + EditorMenu.InvokeItem("No Such Item"));
+}
+
 export function OnEditorLoad(): void {
     reportEnvironment();
     reportP1Facades();
+    registerP2Hooks();
 }
 
 export function OnEditorUnload(): void {

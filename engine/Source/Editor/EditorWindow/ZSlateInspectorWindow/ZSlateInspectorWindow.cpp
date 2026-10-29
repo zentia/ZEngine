@@ -4,6 +4,7 @@
 #include "Editor/EditorUI/EditorEulerHint.h"
 #include "Editor/EditorUI/EditorSelection.h"
 #include "Editor/EditorUI/PropertyDrawer/EditorPropertyDrawer.h"  // MakeDisplayLabel / MakeTypeHeaderLabel
+#include "Editor/Scripting/EditorScriptHooks.h"          // P2: script-registered buttons
 #include "Editor/Undo/EditorUndo.h"                              // Ctrl+Z for every field commit
 #include "Editor/Undo/UndoSystem.h"
 #include "Editor/Prefab/PrefabInstance.h"                         // prefab instance section
@@ -1680,6 +1681,36 @@ namespace
         }
     }
 
+    /// P2: appends the buttons a script registered for this component type
+    /// (EditorInspector.AddButton). Called right after the header, BEFORE the
+    /// per-type early-returns below, so a script can extend a specialised
+    /// section (BaseRenderer / AnimationComponent / SpineRenderer) too.
+    ///
+    /// Laid out as rows of buttons rather than one per line to keep a section
+    /// with several tool actions compact.
+    void BuildScriptButtons(const std::shared_ptr<SVerticalBox>& column, Component* component, float scale)
+    {
+        const std::vector<const EditorScriptHooks::InspectorButton*> buttons =
+            EditorScriptHooks::GetInspectorButtons(component->GetTypeName());
+        if (buttons.empty())
+            return;
+
+        auto row = std::make_shared<SHorizontalBox>();
+        for (const EditorScriptHooks::InspectorButton* button : buttons)
+        {
+            auto widget = std::make_shared<SButton>();
+            widget->Padding = ZSlate::FMargin(10.0f * scale, 4.0f * scale);
+            widget->SetContent(MakeText(button->label.c_str(), 14.0f * scale, kValueColor));
+            // Capture the names by value: the registry can be rebuilt by a
+            // script reload between laying this row out and clicking it, and
+            // Invoke() re-resolves the module/function by name regardless.
+            const EditorScriptHooks::Callback callback = button->callback;
+            widget->OnClicked = [callback]() { EditorScriptHooks::Invoke(callback); };
+            row->AddSlot(widget).AutoSize().SetPadding(ZSlate::FMargin(0.0f, 0.0f, 6.0f * scale, 0.0f));
+        }
+        column->AddSlot(row).AutoSize().SetPadding(ZSlate::FMargin(0.0f, 2.0f * scale, 0.0f, 6.0f * scale));
+    }
+
     void BuildComponentSection(const std::shared_ptr<SVerticalBox>& column,
                                Component* component,
                                size_t comp_index,
@@ -1720,6 +1751,8 @@ namespace
         enable_binding.check = enable_check;
         enable_binding.title = title;
         enable_bindings.push_back(enable_binding);
+
+        BuildScriptButtons(column, component, scale);
 
         // BaseRenderer (incl. MeshRenderer) gets a dedicated layout: per-sub-mesh
         // mesh + material assets with read-only material introspection, mirroring
