@@ -46,7 +46,7 @@
 | C1 | **RenderGraph 接管流水线** | 帧图编译器：自动屏障、瞬态 RT 别名、剔除 | **✅ 已默认开·真机验证 PASS**（165 编译+92 执行断言；RP2 图路径 2026-10-26 翻默认开 `c0d1bcfc`，同帧 A/B 逐位等价 + soak 无异常，见 §2 落地记录·2.6） | 阶段一 RHI 注册表 | ★★★ 高价值/低风险 |
 | C2 | **RenderGraph → RP1**（`render_pass_refactor`） | RP1 三子pass 拆成 3 独立 pass，纳入图管理 | **✅ 已默认开·真机验证 PASS**（2.3 三分已在代码：3 独立 render pass/subpass 恒 0；2.4 compiler 200/200 + executor 121/121 已验。`DrawRP1WithGraph` 2026-10-26 翻默认开 `871878e3`，同帧 A/B `rp1.backup_odd` 逐位 IDENTICAL + soak 无异常，见 §2 落地记录·2.6） | **必须在 C1 之后** | ★★ 高价值/中风险 |
 | C3 | **Nanite 收尾** | 流送 → 几何压缩 → HiZ 遮挡 → 页池 | **大部分实现**（真 GPU dispatch 已有；几何压缩✅ + streaming✅ + **页池簿记层✅ 已落地 2026-10-26**（opt-in，`streaming_pool_budget_bytes>0`；显存上传待真机），见 §2 落地记录·2.5 页池；**HiZ CPU 侧✅ 已落地 2026-10-26**，见 §2 落地记录·2.5 HiZ；**HiZ GPU 侧✅ 已落地 2026-10-27**：切法一 compute 生成金字塔 14/14、切法二 GPU 遮挡剔除 16/16，见 `doc/PHASE2_STEP2.5_HIZ_GPU.md` §6/§7；**页池 GPU 路径✅ 逐像素一致 13/13**。剩切法三（device-local+真 mip 纹理，可选打磨）与顶点去重（回归面>收益，主动推迟）） | C1/C2 给其 RG 管理的目标 | ★★★ 高价值/中风险 |
-| C4 | **Virtual Texture 接线** | 分页纹理虚拟化，从"孤儿"到可用 | **CPU 侧✅ + GPU 侧✅ 2026-10-27**（页上传进物理页池 + 页表纹理上传，headless A/B 18/18 全绿、逐字节比对 0 失配，见 §2 落地记录·2.6 VirtualTexture GPU 侧）。页表间接寻址 shader（`vt_common.h` + `vt_resolve.comp`）2026-10-27 已落地并 A/B 22/22（见 §2 落地记录·2.6 VT 页表间接寻址 shader）。片元阶段消费者（`vt_blit.frag`，离屏全屏三角形）2026-10-27 也已落地并 A/B 22/22（见 §2 落地记录·2.6 VT 片元阶段页表消费者）。**仍未接进真实材质 / 主相机 pass**（需 2.4 的 RG 资源注册与描述符绑定），。**最小生产者 2026-10-27 已落地**（`r.VirtualTexture.Source`，A/B 48/48，见 §2 落地记录·2.6 VT 最小生产者），；**接线 2026-10-28 已在真实 Vulkan 编辑器里验证**（见 §2 落地记录·2.6 VT 生产者拆成渲染线程 / RHI 线程两半，附未验证清单）。**DX12 后端 2026-10-28 已落地**（RHI 新增 `UploadImageRegionImmediate`，HLSL 消费者 + DX12 无头模式，blit A/B 在 DX12 上 23/23，真实 DX12 编辑器 `GPU page uploads ok 16 failed 0`；compute resolver 仍仅 Vulkan，见 §2 落地记录·2.6 VT 的 DX12 后端）。**第一个帧内消费者 2026-10-28 已落地**（DX12 编辑器叠加层 `r.VirtualTexture.Overlay`，经 bindless 页表间接寻址画到屏幕，后备缓冲读回自检 97636 像素 0 失配；仍不是材质，见 §2 落地记录·2.6 VT 的第一个帧内消费者） | C1/C2 的 RG 资源注册 | ★★ 高价值/中高风险 |
+| C4 | **Virtual Texture 接线** | 分页纹理虚拟化，从"孤儿"到可用 | **CPU 侧✅ + GPU 侧✅ 2026-10-27**（页上传进物理页池 + 页表纹理上传，headless A/B 18/18 全绿、逐字节比对 0 失配，见 §2 落地记录·2.6 VirtualTexture GPU 侧）。页表间接寻址 shader（`vt_common.h` + `vt_resolve.comp`）2026-10-27 已落地并 A/B 22/22（见 §2 落地记录·2.6 VT 页表间接寻址 shader）。片元阶段消费者（`vt_blit.frag`，离屏全屏三角形）2026-10-27 也已落地并 A/B 22/22（见 §2 落地记录·2.6 VT 片元阶段页表消费者）。**仍未接进真实材质 / 主相机 pass**（需 2.4 的 RG 资源注册与描述符绑定；**2026-10-29 已在 DX12 gbuffer 路径上解除**），。**最小生产者 2026-10-27 已落地**（`r.VirtualTexture.Source`，A/B 48/48，见 §2 落地记录·2.6 VT 最小生产者），；**接线 2026-10-28 已在真实 Vulkan 编辑器里验证**（见 §2 落地记录·2.6 VT 生产者拆成渲染线程 / RHI 线程两半，附未验证清单）。**DX12 后端 2026-10-28 已落地**（RHI 新增 `UploadImageRegionImmediate`，HLSL 消费者 + DX12 无头模式，blit A/B 在 DX12 上 23/23，真实 DX12 编辑器 `GPU page uploads ok 16 failed 0`；compute resolver 仍仅 Vulkan，见 §2 落地记录·2.6 VT 的 DX12 后端）。**第一个帧内消费者 2026-10-28 已落地**（DX12 编辑器叠加层 `r.VirtualTexture.Overlay`，经 bindless 页表间接寻址画到屏幕，后备缓冲读回自检 97636 像素 0 失配；仍不是材质，见 §2 落地记录·2.6 VT 的第一个帧内消费者）。**材质 VT 槽位 2026-10-29 已落地**（`MeshMaterialUniform` **128 B 不扩容**：`vt_flags` bit0/bit1 + `customParams[2..3]` 的 uint 位模式；`mesh_gbuffer.frag.hlsl` 的 base color 走页表间接寻址 + 屏幕空间导数选 mip + 双线性；像素 A/B 37/37、与 CPU 参考逐通道 max-error 0.00、8/8 变异全红；Release/Debug 各 55/55、WASM 15/15、真实 DX12 与 Vulkan 编辑器均干净，**DX12 专属**，见 §2 落地记录·2.6 VT 的材质槽位） | C1/C2 的 RG 资源注册 | ★★ 高价值/中高风险 |
 | C5 | ~~**Vulkan `MainCameraPass` 崩溃根因修复**~~ | 跨切面阻塞：解除 Vulkan 侧验证能力 | **✅ 已被 `7e5d2521` 修掉（2026-10-25 复核关闭）** | — | ★★★ 已关闭（见 §2 step 2.0） |
 | C6 | **Lumen 收尾（SSR → GPU 化）** | 动态 GI + 反射；取 SSR 一半 + 首个 Lumen shader | **✅ CPU 侧已完整**（GI/反射/接线/CVar/发布桥全落地 + 7 smoke test；2026-10-25 复核，见 §2 落地记录·2.7）。剩 SSR/HWRT/首个 shader 全 GPU 侧 | C2 的 GBuffer/depth 声明 | ★★ 中价值/高风险（CPU 侧无活，剩 GPU 放最后） |
 | C7 | **编辑器/内容管线填充**（低风险稳态轨） | 平台窗口化收尾 / Timeline 四片段 / Prefab §9.4 | 各为**部分实现·机械收尾**（**Timeline 四片段 2026-10-25 已落地**，见 `doc/timeline/TIMELINE_IMPLEMENTATION.md`“片段语义”；**Prefab §9.4 第 1 条落地、第 2 条对象图层已验**，见 `doc/PrefabSystem_Design.md` §9.4.1，顺带修 7 个真 bug；平台窗口化未动；**平台窗口化 2026-10-25 对代码核对**：Step 1-5 早已兑现（零 GLFW 引用），计划文档勾选已按代码更新；核对时修了 Win32 修饰键恒 0 / 拖放不派发 / Linux 原生 #error / Web 启动空指针等，见 `doc/platform_windowing_plan.md`；剩 Linux X11 窗口层与多显示器枚举） | — | ★★ 低风险填缝 |
@@ -907,6 +907,89 @@ commit `1841dc71`。**上一节"最小生产者"的接线在真实 Vulkan 编辑
 - 页表 / 池销毁时 `WaitForDeviceIdle` 会阻塞 RHI 线程直到在飞帧完成（罕见路径：VT 关闭 / 换源）；没有做延迟销毁。
 
 ---
+### 落地记录 · 2.6 VT 的材质槽位：DX12 gbuffer 的 base color 经 VT 采样（2026-10-29）
+
+**用户要求**："接着做材质 VT 槽位，用 MeshMaterialUniform 128 字节，并补上完整回归测试"；补像素自测时选了
+"① 先写一个材质 VT 的 A/B 读回冒烟测试，对比开和关时 gbuffer 像素"。
+
+这一步把上一节末尾"**不是材质**"那条限制里的三件事（材质描述符里的 VT 槽位 / 句柄、屏幕空间导数选 mip、
+双线性）**全部做掉并像素级验证**：DX12 的 `mesh_gbuffer.frag.hlsl` 的 base color 现在真的走页表间接寻址。
+
+**128 字节 `MeshMaterialUniform` 不扩容**（扩容要碰所有材质的上传路径，没必要）：
+- `vt_flags`（复用原 `_padding_0`，offset 52）：bit0 = base color 走 VT，bit1 = 结果做 sRGB→linear。
+- `customParams[2]` = `{page_size, page_border, mip_count, 0}`，`customParams[3]` = `{virtual_width, virtual_height, 0, 0}`，
+  都按 **uint 位模式**写入，HLSL 侧用 `asuint` 还原（`customParams` 声明是 `float4`，不能塞浮点语义）。
+- `RenderCommon.h` 新增 `ApplyMaterialVirtualTextureSlot` / `ReadMaterialVirtualTextureSlot` 一对读写器，
+  保证"写进去的位"和"读出来的位"只有一个定义。
+
+**描述符布局走单一来源 `MeshMaterialLayout.h`**：`BuildMeshMaterialLayoutBindings(with_vt, out[8])` 返回 6 或 8 个 binding，
+binding 6/7（页表 / 页池）是 DX12 专属。这里踩到一个 DX12 的硬约束——**描述符集在 pipeline layout 里的槽位序号
+必须等于 HLSL 的 `RegisterSpace`**，所以材质集必须放在槽位 2：`RHIDescriptorSetLayout* layouts[3] = {nullptr, nullptr, set_layout}`
+（`setLayoutCount = 3`），绑定时 `CmdBindDescriptorSetsPFN(..., firstSet = 2, ...)`。槽位放错 HLSL 就会读到空描述符，
+且 debug layer 不一定报错。
+
+**接线**：`SyncMaterialVirtualTexture` 跑在 **RHI 线程**、VT GPU 半帧之后（页上传与页表更新都已完成，拿到的句柄本帧有效）；
+非 DX12 后端直接 return——**槽位是 DX12 专属**。两个新 CVar：`r.VirtualTexture.MaterialSlot`（默认 0）、
+`r.VirtualTexture.MaterialSrgb`（默认 1）。
+
+**像素级验证 `VirtualTextureMaterialSlotABSmokeTest`（DX12 专属，37 checks 全绿）**
+关键取舍：**不写"测试专用的近似着色器"**，而是直接编译真实的 `mesh_gbuffer.frag.hlsl`（配一个只补 `PsInput` 的
+测试用 vertex scaffold `vt/vt_material_gbuffer.vert.hlsl`）、用**生产环境的** `BuildMeshMaterialLayoutBindings(true, ...)`（8 binding），
+离屏开 3 附件 MRT（gbuffer a/b/c）画一个全屏三角形，把三个附件回读逐像素比。这样"槽位真的驱动了采样"是被
+生产代码证明的，不是被测试自己的复制品证明的。
+- **A/B**：槽位关 → 24000/24000 像素**精确等于**平铺 base color；槽位开 → 24000/24000 像素**全部不同**；
+  gbuffer a/b 逐字节相同（证明只动了 base color 一条支路）。
+- **1:1**：开着的每一像素与 CPU 参考（`VTRef::SampleWithFallback` + 可选 sRGB 解码）逐通道比对，**max-error = 0.00**。
+- **导数选 mip**：6 个缩放用例（600x360 / 150x90 / 130x78 / 100x60 / 50x30 / 17x11）全部落在容差内，
+  参考本身选出的 mip 直方图是 **0/0/1/1/2/3**——导数那条公式真的在挑 mip，不是恒 0。
+- **sRGB**：解码结果与参考一致（max-error 0.54）且单调不增、覆盖 ≥90% 像素。
+- **驻留回退**：mip 0 被驱逐 → 全部改由 mip 1 服务；全部不驻留 → 退回平铺 base color（24000/24000）；
+  **全部不驻留 + sRGB 开 → 回退值保持"未解码"**（这一条是专门为了让"忽略 `vt_resident`"这个变异可见才加的）。
+- D3D12 debug layer：绘制后 `DrainDebugLayerMessagesForTest()`，只允许已知告警 820/1361，其余一律算失败。
+
+**自检不空转（8 个变异，8 个全红）**：去掉 sRGB 解码（2 fail）、lod 恒取 0（3）、flags bit0/bit1 互换（10）、
+忽略 `vt_resident`（1）、池宽度忘掉 gutter（8）、采样点忘掉 gutter 偏移（9）、UBO 里 `page_size`/`page_border`
+写反（12）、`GetMaterialBinding` 放行 border=0 的池（1）。
+其中两个变异**一开始是绿的**，值得单列：
+1. "池宽度忘掉 gutter" 在 8x8 池上完全看不出来（272/32 恰好 = 8）。改成 **16x4 对抗性池**（池图宽 16*34=544，
+   544/32=17 ≠ 16）之后立刻红 8 项——**对抗性选参数是这类测试能不能拦住 bug 的分水岭**。
+2. "忽略 `vt_resident`" 在 sRGB 关时与正确实现等价（回退值就是平铺色），所以补了上面那条"不驻留 + sRGB 开"的检查。
+
+**回归**：WASM 脚本 15/15；原生 Release 全量构建 0 错 + `ctest -C Release` **55/55**；Debug 全量构建 0 错 +
+`ctest -C Debug` **55/55**；真实 DX12 编辑器（`ZGameSmoke.zproject` + spineboy.png，`MaterialSlot=1`，600 帧，exit 0）打印
+`material VT slot ON (page 128 + 2*1 gutter, 4 mips, virtual 1024x256, srgb=TRUE): 4 built-in-layout materials updated`
+且叠加层自检 `MISMATCH=0 max-error=1.25` PASSED；真实 Vulkan 编辑器 0 条 error / 0 条 validation error、
+且 **0 条 `material VT slot` 输出**（正确——槽位在 Vulkan 上惰性）；DX12 + VT 全关的基线也干净退出。
+
+**提交按用户要求拆成两个**（原本一个 `f12ea50f` 里混进了别人已暂存的 GPUSpine 改动，`git commit -- <paths>`
+只能限定文件、排除不了同一文件里别人的 hunk）：`git reset --soft HEAD~` 后先提交 `2ee60256`（build: GPUSpine 接线，
+别人的改动），再提交 `79f69c1a`（test: 材质 VT 的 A/B）。`git diff --stat f12ea50f HEAD` 为空（树完全一致），
+`git push --force-with-lease` 推送。
+
+**⚠️ 仍未做 / 限制（如实）**
+- **只覆盖 base color 一条支路**。metallic-roughness / normal / emissive 仍走普通纹理；把它们也接进 VT 需要
+  per-material 的多路句柄（见下）。
+- **DX12 专属**。Vulkan 的材质 pass 是另一份代码，`SyncMaterialVirtualTexture` 在非 DX12 上直接 return。
+- **只支持一张流送纹理**（还是 `VirtualTextureManager` 单例 + 生产者句柄）：所有共享同一布局的材质拿到的是
+  **同一份**页表 / 池绑定（编辑器日志里的"4 built-in-layout materials updated (4 shared, 0 instances)"就是这个意思）。
+  要 per-material 的 VT，得先做"句柄 → 描述符"的间接层。
+- sRGB 开关是**全局 CVar**，不是 per-material 属性（材质资源里还没有这一列）。
+- 我**没有肉眼看到** gbuffer——环境禁止 .NET 反射 / Add-Type，截屏做不了。证据是离屏回读 + CPU 参考 + 8 个变异，不是眼睛。
+
+**这一步踩到的 5 个坑（都是"看起来通过了其实没通过"那类）**
+1. **MRT 的 `pAttachments` 必须是 3 个独立的 `RHIAttachmentDescription`**，不能传 1 个结构体 + `attachmentCount = 3`：
+   DX12 会越过结构体读栈内存，于是 PSO 的 `RTVFormats[1..2]` 变成 UNKNOWN，debug layer 报 #679（期望 RTV 没绑）
+   和 #613（RT 格式不匹配）。症状是"编译过、跑得动、但只有第 0 个附件是对的"。
+2. **回读行对齐**：D3D12 的 buffer←texture 拷贝要求行 pitch 256 字节对齐 → `ReadbackRowTexels(w) = (w + 63) & ~63`，
+   回读后要按真实宽度去 padding。
+3. **CBV 尺寸 ≥ 256 B**（debug layer #649）：`MeshMaterialUniform` 只有 128 B，但缓冲区要按 256 B 分配。
+4. **变异还原后必须 `os.utime(path, None)`**：`shutil.copy2` 会保留 mtime，MSVC 因此**跳过重编译**，变异残留在 `.obj`
+   里，污染下一轮变异的结果（我第一轮的 M8 报 13 个失败，其实是 M7 没清干净）。
+5. **扁平输出目录**：顶层 CMake 把 `CMAKE_ARCHIVE_OUTPUT_DIRECTORY`（及 `_DEBUG`/`_RELEASE`）**都设成同一个 `bin/`**，
+   于是 `bin/GPUSpine.lib` 会被另一配置覆盖，切配置后全量构建爆 2300 个链接错（1472 个 `LNK2038`：
+   `_ITERATOR_DEBUG_LEVEL` / `RuntimeLibrary` MDd vs MD）。**切配置要先删 `bin/<lib>.lib` 再单独重编该 target。**
+   这是用户正在改的 GPUSpine 接线带的，我没动 CMake，只记录。
+
 
 ### 落地记录 · 2.7 Lumen（2026-10-25，复核：CPU 侧已完整，无需动手）
 
