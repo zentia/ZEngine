@@ -13,6 +13,7 @@
 #endif
 #include "Editor/EditorUI/EditorSelection.h"
 #include "Editor/EditorWindow/ZSlateInspectorWindow/ZSlateInspectorWindow.h"
+#include "Editor/Scripting/EditorScriptHooks.h"
 #include "Editor/Undo/EditorUndo.h"
 #include "Runtime/Core/Base/SystemRegistry.h"
 #include "Runtime/Function/Console/ConsoleManager.h"
@@ -860,10 +861,58 @@ namespace
         LOG_INFO(ZConsole, "Undo history cleared");
         return true;
     }
+    // P3: drive script-registered hooks from the console.
+    //
+    // The editor VM comes up at PostInit, BEFORE a level is loaded, so a tool
+    // that touches scene objects cannot run from OnEditorLoad -- there is
+    // nothing there yet. This is the hook that lets one run at a point where
+    // the world exists: interactively, or headlessly via
+    //   --cvar "exec.after <frames> script.menu <path>"
+    // which is also how the undo round-trip is verified in CI-style runs.
+    bool CmdScriptMenu(const std::vector<std::string>& args)
+    {
+        const std::vector<EditorScriptHooks::MenuItem>& items = EditorScriptHooks::GetMenuItems();
+        if (args.empty())
+        {
+            LOG_INFO(ZConsole, "Script menu items: {}", items.size());
+            for (const EditorScriptHooks::MenuItem& item : items)
+            {
+                LOG_INFO(ZConsole, "  {}  ->  {}.{}", item.path, item.callback.module, item.callback.function);
+            }
+            return true;
+        }
+
+        // Re-joined with spaces: the console splits on whitespace and menu
+        // paths legitimately contain spaces ("Self Test/Undo Round Trip").
+        std::string path = args[0];
+        for (size_t i = 1; i < args.size(); ++i)
+        {
+            path += " ";
+            path += args[i];
+        }
+
+        for (const EditorScriptHooks::MenuItem& item : items)
+        {
+            if (item.path != path)
+                continue;
+            if (!EditorScriptHooks::Invoke(item.callback))
+            {
+                LOG_ERROR(ZConsole, "script.menu: '{}' handler failed", path);
+                return false;
+            }
+            return true;
+        }
+        LOG_ERROR(ZConsole, "script.menu: no item registered at '{}'", path);
+        return false;
+    }
 }  // namespace
 
 void RegisterEditorConsoleCommands(ConsoleManager& console)
 {
+    console.RegisterCommand("script.menu",
+                            "Run a script-registered Tools menu item. "
+                            "Usage: script.menu (list) | script.menu <path>",
+                            CmdScriptMenu);
     console.RegisterCommand("obj", "Scene objects. Usage: obj list | obj select <id | name>", CmdObj);
     console.RegisterCommand("inspector.pick",
                             "Pick an option in an Inspector combo (same path as clicking it). "

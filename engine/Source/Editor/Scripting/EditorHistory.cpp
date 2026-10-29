@@ -4,6 +4,7 @@
 #include "Runtime/Core/Base/SystemRegistry.h"
 
 #include <string>
+#include <vector>
 
 namespace
 {
@@ -86,4 +87,61 @@ void EditorHistory::ClearHistory(const eastl::string& reason)
     if (undo == nullptr)
         return;
     undo->ClearHistory(reason.empty() ? "cleared from editor script" : reason.c_str());
+}
+
+// ---- recording (P3) --------------------------------------------------------
+
+namespace
+{
+    /// Falls back to a generic title rather than passing "" down: an undo entry
+    /// with an empty label shows up as "Undo " in the menu.
+    std::string RecordTitle(const eastl::string& title, const char* fallback)
+    {
+        if (title.empty())
+            return fallback;
+        return std::string(title.c_str(), title.size());
+    }
+}  // namespace
+
+void EditorHistory::RecordComponent(Component* component, const eastl::string& title)
+{
+    if (component == nullptr)
+        return;
+    // EditorUndo::RecordComponent already no-ops when recording is off and
+    // routes a Transform to RecordTransform, so nothing is duplicated here.
+    EditorUndo::RecordComponent(component, RecordTitle(title, "Modify Component"));
+}
+
+void EditorHistory::RecordTransform(Transform* transform, const eastl::string& title)
+{
+    if (transform == nullptr)
+        return;
+    EditorUndo::RecordTransform(transform, RecordTitle(title, "Modify Transform"));
+}
+
+void EditorHistory::RecordGameObject(GameObject* object, const eastl::string& title)
+{
+    if (object == nullptr)
+        return;
+    // The object's identity for undo purposes is its Transform: that record
+    // carries local TRS, parent, sibling index and the active flag.
+    Transform* transform = object->tryGetComponent<Transform>("Transform");
+    if (transform == nullptr)
+        return;
+    EditorUndo::RecordTransform(transform, RecordTitle(title, "Modify GameObject"));
+}
+
+void EditorHistory::RegisterCreatedGameObject(GameObject* object, const eastl::string& title)
+{
+    if (object == nullptr)
+        return;
+    EditorUndo::RegisterCreatedGameObject(object->GetID(), RecordTitle(title, "Create GameObject"));
+}
+
+int EditorHistory::DestroyGameObject(GameObject* object, const eastl::string& title)
+{
+    if (object == nullptr)
+        return 0;
+    const std::vector<GObjectID> ids {object->GetID()};
+    return static_cast<int>(EditorUndo::DestroyGameObjects(ids, RecordTitle(title, "Delete GameObject")));
 }
