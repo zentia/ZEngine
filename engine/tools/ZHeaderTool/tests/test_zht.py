@@ -545,6 +545,22 @@ class CodegenTests(unittest.TestCase):
         self.assertIn("kZhtScriptEnum_gfx_Format",
                       generate_source(parse("namespace gfx\n{\nZENUM()\nenum class Format { rgb };\n}\n")))
 
+    def test_editor_domain_stamps_class_and_enum_bindings(self):
+        # ZEditor's module is generated with --script-domain editor: its
+        # bindings must land in the editor VM only. The Runtime domain is the
+        # struct default and must not change a single byte of ZRuntime output.
+        text = wrap("public:\n    ZFUNCTION()\n    static int GetV();\n")
+        runtime = generate_source(parse(text))
+        editor = generate_source(parse(text), domain="editor")
+        self.assertNotIn("ZScriptDomain", runtime)
+        self.assertIn(", nullptr, ZScriptDomain::Editor};", editor)
+        self.assertEqual(runtime, generate_source(parse(text), domain="runtime"))
+
+        enum_text = "ZENUM()\nenum class Mode : unsigned char { a, b };\n"
+        self.assertNotIn("ZScriptDomain", generate_source(parse(enum_text)))
+        self.assertIn('kZhtScriptEnumValues_Mode, 2, nullptr, ZScriptDomain::Editor};',
+                      generate_source(parse(enum_text), domain="editor"))
+
     def test_zenum_field_is_exposed_as_a_typed_property(self):
         # Without the enum table the field is skipped (see
         # test_field_property_generates_typed_accessors); with it, the script
