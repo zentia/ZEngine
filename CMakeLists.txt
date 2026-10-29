@@ -46,18 +46,21 @@ endif()
 # Set library output directory to unified location
 # This ensures all engine libraries are built to the same location
 # regardless of which project is building them
+#
+# NOTE: do NOT add CMAKE_LIBRARY_OUTPUT_DIRECTORY_<CONFIG> /
+# CMAKE_ARCHIVE_OUTPUT_DIRECTORY_<CONFIG> overrides here. Multi-config generators
+# append a per-configuration subdirectory to the plain *_OUTPUT_DIRECTORY value
+# (bin/Debug, bin/Release, ...), but they append NOTHING to the per-config variables.
+# Pointing every _<CONFIG> variant at one flat directory therefore makes Debug and
+# Release artifacts overwrite each other, and consumers end up linking a stale .lib
+# from the other configuration: LNK2038 ("_ITERATOR_DEBUG_LEVEL" / "RuntimeLibrary"
+# mismatch) plus a cascade of LNK2001 ("__imp__invalid_parameter"). This is also why
+# exes/tools opt in per target via z_set_config_output_dirs() -> bin/<Config>;
+# libraries get the same layout here simply by not overriding the per-config vars.
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${ZENGINE_UNIFIED_OUTPUT_DIR}")
-set(CMAKE_LIBRARY_OUTPUT_DIRECTORY_DEBUG "${ZENGINE_UNIFIED_OUTPUT_DIR}")
-set(CMAKE_LIBRARY_OUTPUT_DIRECTORY_RELEASE "${ZENGINE_UNIFIED_OUTPUT_DIR}")
-set(CMAKE_LIBRARY_OUTPUT_DIRECTORY_RELWITHDEBINFO "${ZENGINE_UNIFIED_OUTPUT_DIR}")
-set(CMAKE_LIBRARY_OUTPUT_DIRECTORY_MINSIZEREL "${ZENGINE_UNIFIED_OUTPUT_DIR}")
 
 # Set archive (static library) output directory
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${ZENGINE_UNIFIED_OUTPUT_DIR}")
-set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY_DEBUG "${ZENGINE_UNIFIED_OUTPUT_DIR}")
-set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY_RELEASE "${ZENGINE_UNIFIED_OUTPUT_DIR}")
-set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY_RELWITHDEBINFO "${ZENGINE_UNIFIED_OUTPUT_DIR}")
-set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY_MINSIZEREL "${ZENGINE_UNIFIED_OUTPUT_DIR}")
 
 message(STATUS "ZEngine unified output directory: ${ZENGINE_UNIFIED_OUTPUT_DIR}")
 
