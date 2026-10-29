@@ -174,12 +174,56 @@ export function OnSelfTestContainers(): void {
     }
 }
 
+// ---------------------------------------------------------------------------
+// P5: the Script Panel (Window > Script Panel).
+//
+// Push model -- the panel shows whatever was last pushed and does NOT refresh
+// itself, so the content is (re)built here and from the Refresh button below.
+// SetLines takes a string[], which is the P4 container marshaller at work.
+// ---------------------------------------------------------------------------
+
+export function OnPanelRefresh(): void {
+    const ids = EditorSelection.GetInstanceIds();
+    const active = EditorSelection.GetActiveObject();
+    const skelMaps = EditorAssetDatabase.CountAssets("", "AnimSkelMap", "");
+
+    EditorScriptPanel.SetLines([
+        "Project: " + EditorEnvironment.GetProjectRoot(),
+        "Playing: " + EditorEnvironment.IsPlaying(),
+        "",
+        "Selection: " + ids.length + " object(s)",
+        "Active: " + (active ? active.GetName() : "<none>"),
+        "Selected ids: " + (ids.length > 0 ? ids.join(", ") : "-"),
+        "",
+        "Undo depth: " + EditorHistory.GetUndoCount() +
+            "  Redo depth: " + EditorHistory.GetRedoCount(),
+        "AnimSkelMap assets: " + skelMaps,
+    ]);
+}
+
+function registerP5Panel(): void {
+    OnPanelRefresh();
+    EditorScriptPanel.AddButton("Refresh", "Bootstrap", "OnPanelRefresh");
+    // Re-adding the same label replaces rather than stacks, so a script reload
+    // cannot leave two Refresh buttons behind.
+    EditorScriptPanel.AddButton("Refresh", "Bootstrap", "OnPanelRefresh");
+
+    const lines = EditorScriptPanel.GetLines();
+    console.log("[EditorScripts] panel: lines=" + lines.length +
+        " linesIsArray=" + Array.isArray(lines) +
+        " buttons=" + EditorScriptPanel.GetButtonCount() +
+        " invokeRefresh=" + EditorScriptPanel.InvokeButton("Refresh") +
+        " invokeMissing=" + EditorScriptPanel.InvokeButton("No Such Button"));
+}
+
 export function OnEditorLoad(): void {
     reportEnvironment();
     reportP1Facades();
     registerP2Hooks();
     EditorMenu.AddItem("Self Test/Undo Round Trip", "Bootstrap", "OnSelfTestUndoRoundTrip", 20);
     EditorMenu.AddItem("Self Test/Containers", "Bootstrap", "OnSelfTestContainers", 21);
+    EditorMenu.AddItem("Refresh Script Panel", "Bootstrap", "OnPanelRefresh", 5);
+    registerP5Panel();
 }
 
 export function OnEditorUnload(): void {

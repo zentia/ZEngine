@@ -9,6 +9,7 @@
 // ZSlateDemoWindow: deleted.
 #include "Editor/EditorWindow/ZSlateInspectorWindow/ZSlateInspectorWindow.h"
 #include "Editor/EditorWindow/ZSlatePackageManagerWindow/ZSlatePackageManagerWindow.h"
+#include "Editor/EditorWindow/ZSlateScriptPanelWindow/ZSlateScriptPanelWindow.h"
 #include "Editor/EditorWindow/ZSlatePreviewWindow/ZSlatePreviewWindow.h"
 #include "Editor/EditorWindow/ZSlateContentBrowserWindow/ZSlateContentBrowserWindow.h"
 #include "Editor/EditorWindow/ZSlateAnimationWindow/ZSlateAnimationWindow.h"
@@ -65,6 +66,10 @@ namespace
         // not somewhere you want taking dock space on every launch.
         {EditorLayoutWindowIds::kAddComponent, EditorWindowCategory::General, false,
          typeid(AddComponentWindow), NewEditorPanel<AddComponentWindow>},
+        // P5: content comes from editor TypeScript (EditorScriptPanel). Closed by
+        // default -- a project with no editor scripts has nothing to show in it.
+        {EditorLayoutWindowIds::kScriptPanel, EditorWindowCategory::General, false,
+         typeid(ZSlateScriptPanelWindow), NewEditorPanel<ZSlateScriptPanelWindow>},
     };
 }  // namespace
 

@@ -21,6 +21,8 @@ namespace EditorLayoutWindowIds
     inline constexpr const char* kAnimator = "Animator";
     inline constexpr const char* kMaterial = "Material";
     inline constexpr const char* kPackageManager = "Package Manager";
+    // P5: panel whose content editor TypeScript pushes (EditorScriptPanel).
+    inline constexpr const char* kScriptPanel = "Script Panel";
     // kInsights / kZSlate: removed with the Insights and Demo windows.
     // Legacy dock titles from the parallel ZSlate rollout (pre-default-switch).
     // Kept so old .zlayout.json / imgui.ini that reference these strings can
