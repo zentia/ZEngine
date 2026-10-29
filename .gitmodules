@@ -43,3 +43,6 @@
 [submodule "engine/Libraries/GPUSpine"]
 	path = engine/Libraries/GPUSpine
 	url = https://github.com/zentia/GPUSpine.git
+[submodule "engine/Libraries/GPUParticle"]
+	path = engine/Libraries/GPUParticle
+	url = https://github.com/zentia/GPUParticle.git
