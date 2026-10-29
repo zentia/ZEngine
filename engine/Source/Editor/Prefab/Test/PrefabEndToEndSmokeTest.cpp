@@ -3015,6 +3015,152 @@ static void scenario_P24_plain_structural_apply()
     std::filesystem::remove(path, ec);
 }
 
+// --------------------------------------------------------------------------------------
+// P25 -- a PLAIN prefab whose structural Revert happens AFTER a structural Apply.
+// --------------------------------------------------------------------------------------
+// P20 covers the structural undo for a Variant instance that was never applied. This one
+// covers the shape P24 made possible: the instance added a component, Apply pushed it into
+// the SOURCE (so it is a source component now, paired with a brand-new template), and the
+// user then suppresses that very component. A Revert has to bring it back, and Ctrl+Z has
+// to put the suppression back -- with the pairing intact, or the next Merge / Revert would
+// clone a SECOND copy on top of the parked one (P19's lesson).
+static void scenario_P25_plain_structure_undo_after_apply()
+{
+    std::fprintf(stderr, "[P25] plain prefab: structural Revert after an Apply is undoable\n");
+    namespace M = PrefabOverrideModel;
+    std::error_code ec;
+    const std::filesystem::path path = "p25_plain.prefab";
+    std::filesystem::remove(path, ec);
+
+    ObjectManager* om = GET_SYSTEM(ObjectManager);
+    GameObject* root = MakeGameObject(om, "P25Root");
+    GameObject* child = MakeGameObject(om, "P25Child");
+    MeshRenderer* kept = MakeMeshRenderer(om, "Kept.mat");
+    MeshRenderer* doomed = MakeMeshRenderer(om, "Doomed.mat");
+    if (root == nullptr || child == nullptr || kept == nullptr || doomed == nullptr)
+    {
+        Check(false, "P25", "authoring failed");
+        return;
+    }
+    TransformOf(child)->SetParent(TransformOf(root), false);
+    root->addComponent(kept);
+    child->addComponent(doomed);
+    root->SyncSerializedComponents();
+    child->SyncSerializedComponents();
+    kept->PostLoadResource(root);
+    doomed->PostLoadResource(child);
+    Check(PrefabUtility::SaveAsPrefabAsset(root, path), "P25", "saving the prefab failed");
+
+    PrefabAsset* asset = PrefabUtility::LoadPrefabAsset(path);
+    Check(asset != nullptr, "P25", "loading the prefab failed");
+    if (asset == nullptr)
+        return;
+
+    PrefabSceneBinding::Install();
+    Level level;
+
+    PrefabInstance* a = PrefabUtilityEditor::InstantiateAsPrefab(asset);
+    GameObject* a_root = a != nullptr ? a->GetRootGameObject() : nullptr;
+    GameObject* a_child = a_root != nullptr ? FirstChild(a_root) : nullptr;
+    Check(a != nullptr && a_root != nullptr && a_child != nullptr, "P25/inst", "instantiating the plain prefab");
+    if (a == nullptr || a_root == nullptr || a_child == nullptr)
+    {
+        PrefabSceneBinding::Uninstall();
+        return;
+    }
+    auto RendererWith = [](GameObject* go, const char* material) -> MeshRenderer* {
+        if (go == nullptr)
+            return nullptr;
+        for (ImmediatePtr<Component>& entry : go->getComponents())
+        {
+            MeshRenderer* mr = Cast<MeshRenderer>(static_cast<Component*>(entry));
+            if (mr != nullptr && MaterialOf(mr) == material)
+                return mr;
+        }
+        return nullptr;
+    };
+
+    // ---- 1. a structural ADDITION, then Apply it into the source (P24's path) ----
+    MeshRenderer* added = MakeMeshRenderer(om, "Added.mat");
+    Check(added != nullptr && PrefabUtilityEditor::AddComponentOverride(a, PPtr<GameObject>(a_root), added),
+          "P25/apply", "adding Added.mat on the instance");
+    const M::ApplyReport applied = M::ApplyAll(&level, a);
+    Check(applied.applied == 1 && applied.saved, "P25/apply", "the addition is applied and written");
+    Check(IsPaired(a, added), "P25/apply", "precondition: the live component is paired with the new source template");
+    Check(!M::HasOverrides(a), "P25/apply", "precondition: the instance has nothing left to override");
+
+    // ---- 2. suppress that very component -- it is a SOURCE component now ----
+    Component* src_added = Cast<Component>(static_cast<Object*>(a->FindSourceForInstance(PPtr<Object>(added))));
+    Check(src_added != nullptr && PrefabUtilityEditor::SuppressSourceComponent(a, PPtr<Component>(src_added)),
+          "P25/suppress", "suppressing the applied component again");
+    Check(RendererWith(a_root, "Added.mat") == nullptr && CountMeshRenderers(a_root) == 1, "P25/suppress",
+          "it is gone from the host: only Kept.mat is left");
+    {
+        const std::vector<M::OverrideRow> rows = M::ListOverrides(a);
+        Check(rows.size() == 1 && rows[0].kind == M::OverrideRow::Kind::RemovedComponent, "P25/suppress",
+              "one removed-component row");
+    }
+
+    // ---- 3. Revert, recorded BEFORE the mutation (what the Inspector does) ----
+    UndoSystem undo;
+    undo.BeginTransaction("Revert Prefab Structure");
+    undo.AddRecord(M::MakeStructureUndoRecord(a));
+    undo.AddRecord(M::MakeOverrideListUndoRecord(a));
+    const int reverted = PrefabUtilityEditor::Revert(a);
+    undo.EndTransaction();
+    Check(undo.GetUndoCount() == 1, "P25/revert", "Revert made exactly one undo step");
+    Check(reverted >= 1 && !M::HasOverrides(a), "P25/revert", "Revert cleared the overrides");
+    MeshRenderer* back = RendererWith(a_root, "Added.mat");
+    Check(back != nullptr && CountMeshRenderers(a_root) == 2, "P25/revert",
+          "the component is back, and only once (Kept + Added)");
+    Check(back != nullptr && static_cast<Object*>(back) != static_cast<Object*>(src_added), "P25/revert",
+          "…as a clone: the SOURCE template itself must never be handed to the instance");
+
+    // ---- 4. Undo: the suppression comes back, and the pairing must survive ----
+    Check(undo.Undo(), "P25/undo", "Undo succeeded");
+    Check(RendererWith(a_root, "Added.mat") == nullptr && CountMeshRenderers(a_root) == 1, "P25/undo",
+          "undo suppresses it again");
+    Check(a->GetRemovedComponents().size() == 1 && a->GetAddedComponents().empty(), "P25/undo",
+          "undo restores the removed list");
+    Check(M::ListOverrides(a).size() == 1, "P25/undo", "…so the Inspector lists the component row again");
+    Check(om->IDToPointer(added->GetInstanceID()) == added, "P25/undo",
+          "the parked component is still a live object (nothing was destroyed)");
+    // A suppressed component has NO counterpart by design: SuppressSourceComponent erases the
+    // pair on purpose (keeping it made "has a counterpart" stop implying "is attached", and
+    // Unsuppress then paired the same source twice). So undo must land on the UNPAIRED state.
+    Check(a->FindInstanceForSource(PPtr<Object>(src_added)).IsNull(), "P25/undo",
+          "undo lands on the by-design unpaired state, not on a stale pair");
+
+    // ---- 5. Redo, and a second cycle must not grow anything ----
+    Check(undo.Redo(), "P25/redo", "Redo succeeded");
+    Check(RendererWith(a_root, "Added.mat") == back, "P25/redo",
+          "redo brings back the SAME re-introduced clone, not another one");
+    Check(undo.Undo() && undo.Redo() && undo.Undo(), "P25/cycle", "undo / redo / undo");
+    Check(CountMeshRenderers(a_root) == 1 && RendererWith(a_root, "Added.mat") == nullptr, "P25/cycle",
+          "repeated cycling still lands on the suppressed shape, with no duplicate");
+    Check(undo.Redo() && CountMeshRenderers(a_root) == 2, "P25/cycle", "final redo: exactly two renderers again");
+
+    // ---- 6. the consequence that actually matters -----------------------------------
+    // From the undone (suppressed) state, a SECOND Revert must bring back exactly one copy.
+    // A stale pair left behind by undo would make ReconcileStructure treat the parked object
+    // as already represented and either skip the clone (component silently missing) or clone
+    // a second one beside it -- the P19 failure mode, one Apply further down the road.
+    Check(undo.Undo() && CountMeshRenderers(a_root) == 1, "P25/again", "back to the suppressed shape");
+    {
+        UndoSystem again;
+        again.BeginTransaction("Revert again");
+        again.AddRecord(M::MakeStructureUndoRecord(a));
+        PrefabUtilityEditor::Revert(a);
+        again.EndTransaction();
+        Check(CountMeshRenderers(a_root) == 2 && RendererWith(a_root, "Added.mat") != nullptr, "P25/again",
+              "a second Revert after the undo brings back exactly ONE copy (not two, not zero)");
+        Check(again.Undo() && CountMeshRenderers(a_root) == 1, "P25/again", "…and that step undoes as well");
+    }
+
+    PrefabSceneBinding::Uninstall();
+    std::filesystem::remove(path, ec);
+}
+
 int main()
 {
     std::fprintf(stderr, "ZEngine prefab end-to-end smoke test\n====================================\n");
@@ -3054,6 +3200,7 @@ int main()
     scenario_P22_camera_default_parameter_lifetime();
     scenario_P23_motor_controller_lifetime();
     scenario_P24_plain_structural_apply();
+    scenario_P25_plain_structure_undo_after_apply();
 
     std::error_code ec;
     for (const auto& p : {kPrefabPath, kAppliedPath, kSceneBinaryPath, kSceneYamlPath, kLevelYamlPath, kLevelDeletedPath,

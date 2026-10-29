@@ -2446,6 +2446,17 @@ downstream reads it.
   Current ones: gizmo `MoveEntity`, `OnDeleteSelectedGObject`,
   `ZSlateInspectorWindow` (every field commit), `CreateEmpty`,
   `EditorHierarchyReparent`, `EditorScenePlacement`.
+- **Prefab overrides have their own two records** (both offered by the Inspector
+  before it writes, keyed so they coalesce within one transaction):
+  `PrefabOverrideModel::MakeOverrideListUndoRecord` for the property override
+  list, and `MakeStructureUndoRecord` for the component STRUCTURE -- the
+  component list of every GameObject the instance owns, plus the added / removed
+  lists and the corresponding-source map. The structure one backs **Revert All**
+  and a component row's **Revert** (an added component is detached, a suppressed
+  one comes back as a clone). Undo/redo never destroys a component: a detached
+  one stays parked and the record re-attaches the very same instance.
+  Structural **Apply** is deliberately NOT recorded -- it rewrites the asset on
+  disk, and asset edits are outside the undo stack.
 - Entry points for the user: Ctrl/Cmd+Z, Ctrl+Y, Ctrl+Shift+Z
   (`EditorInputManager::OnKey`), the Edit menu (`MenuController`), and the
   console (`undo [steps]` / `redo [steps]` / `undo.history [rows]` /
