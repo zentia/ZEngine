@@ -86,6 +86,19 @@ set(HEADER_CONTENT "#pragma once
 
 #include \"bq_log/bq_log.h\"
 
+// BqLog renamed the empty-base-optimisation macro from EBCO to BQ_EBCO. Which one exists
+// depends on the checked-out submodule (Release_2.4.1 still only has EBCO), so bridge them
+// instead of emitting one name: when BQ_EBCO is unknown, `struct BQ_EBCO : public base<N> {}`
+// declares a struct NAMED BQ_EBCO and every category redefines it -- one fresh configure then
+// fails the whole tree (ZEnginePCH first). Found 2026-10-29, building with cmake.
+#ifndef BQ_EBCO
+#   ifdef EBCO
+#       define BQ_EBCO EBCO
+#   else
+#       define BQ_EBCO
+#   endif
+#endif
+
 
 namespace bq {
     class ${CLASS_NAME} : public category_log

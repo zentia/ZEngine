@@ -113,10 +113,18 @@ def prepare_pruned_lib_dir(members: list[str]) -> Path:
     """
     import hashlib
 
-    key = hashlib.sha1("\n".join(sorted(members)).encode()).hexdigest()[:12]
+    # 缓存键必须带上归档自身的指纹：libZRuntime.a 是 cmake 的构建产物，重编之后
+    # 内容变了但"排除列表"没变。只按 members 做键会一直复用重编前那份副本，
+    # 于是"我把 .a 刷新了"看起来毫无效果（2026-10-29：插桩进了归档却没进二进制，
+    # 就是这个缓存）。
+    archive = BIN_DIR / "libZRuntime.a"
+    st = archive.stat()
+    fingerprint = ("\n".join(sorted(members))
+                   + f"\narchive:{st.st_mtime_ns}:{st.st_size}")
+    key = hashlib.sha1(fingerprint.encode()).hexdigest()[:12]
     out = Path(tempfile.gettempdir()) / f"zengine_libs_{key}"
     marker = out / ".pruned"
-    if marker.is_file() and marker.read_text() == "\n".join(sorted(members)):
+    if marker.is_file() and marker.read_text() == fingerprint:
         return out
 
     out.mkdir(parents=True, exist_ok=True)
@@ -131,7 +139,7 @@ def prepare_pruned_lib_dir(members: list[str]) -> Path:
 
     subprocess.run(["ar", "-d", str(out / "libZRuntime.a")] + members,
                    check=True, capture_output=True, text=True)
-    marker.write_text("\n".join(sorted(members)))
+    marker.write_text(fingerprint)
     return out
 
 
