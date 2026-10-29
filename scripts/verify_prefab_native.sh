@@ -160,16 +160,21 @@ run_e2e() {
     fi
 }
 
-# KNOWN LIMIT (2026-10-29): this suite links the whole scripting + system layer, and
-# bin/libZRuntime.a is days old. When upstream changes that layer (ScriptingManager, ProjectInfo,
-# RegisterRuntime ... 35 stale members were pulled in at the time) the old archive members no
-# longer match the headers: first duplicate symbols, then a jump to address 0 inside
-# ScriptingManager::Initialize. Recompiling them is NOT an option here -- the set includes the
-# render / window layer, which drags in Objective-C++ / Metal headers that do not compile in this
-# environment (NSObjCRuntime.h). `run_smoke_test.py --link-map <file>` lists the archive members a
-# test really links, if you need to re-derive that set. The proper fix is a fresh cmake build of
-# libZRuntime.a, which this machine cannot do (no cmake/ninja).
-# Verified NOT caused by the camera change: the suite fails identically on upstream 33e0e33.
+# WAS A KNOWN LIMIT, FIXED 2026-10-29 (cmake 4.4.5 + the ninja already sitting in
+# ~/Library/Python/3.9/bin): the suite links the whole scripting + system layer, and
+# bin/libZRuntime.a was days old, so the old archive members no longer matched the headers --
+# first duplicate symbols, then a jump to address 0 inside ScriptingManager::Initialize.
+# Two real causes, both fixed:
+#   1. a fresh configure did not even compile: generate_engine_log.cmake emitted `struct BQ_EBCO`
+#      while the recorded bqlog submodule only defines EBCO, so all 37 categories redefined
+#      BQ_EBCO and ZEnginePCH died first (now bridged in the generated header);
+#   2. run_smoke_test.py cached its pruned copy of libZRuntime.a under a key that ignored the
+#      archive's contents, so refreshing the archive had no effect at all (key now includes
+#      mtime_ns + size).
+# If it breaks again: `ninja -C build ZRuntime` (expect the two Spine sources to fail -- they need
+# the GPUSpine repo that upstream never registered in .gitmodules), then `ar -r bin/libZRuntime.a`
+# the freshly built objects, EXCEPT SpineRenderer.gen.cpp.o, which must stay paired with the old
+# SpineRenderer.cpp.o (mismatched halves => dyld "symbol not found in flat namespace").
 run_runtime() {
     echo "==> ScriptComponentPrefabTest (native)"
     local out
