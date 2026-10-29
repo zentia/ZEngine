@@ -625,7 +625,10 @@ public:
     * **"刷新归档"根本没生效**：`run_smoke_test.py` 的 `prepare_pruned_lib_dir` 把 `bin/libZRuntime.a` 复制到 `/tmp/zengine_libs_<key>` 做缓存，**缓存键只按排除列表算、不看归档内容**。重编归档后仍在链重编前那份副本——表现是"插桩进了归档却没进二进制"。缓存键改为带上归档的 `mtime_ns + size`。
     修好后用 cmake 重编 ZRuntime（453 个源里 451 个编过，只有两个 Spine 源编不过，见下条），把 367 个对象写回归档（含 24 个此前归档里根本没有的新源对象，如 `NetworkSystem.cpp.o`）。
     **当前状态**：`verify_prefab_native.sh all` 三节全绿（runtime `RESULT: ALL PASSED` / e2e 420 checks 0 failures / types 444 checks 0 failures），`check_ts_chain.py` 242 checks 0 failed。
-    ⚠️ **仍有一个卡点**：`Runtime/CMakeLists.txt` 要求 `engine/Libraries/GPUSpine`（独立仓库，`.gitmodules` 里**没登记**），本机没有 → `SpineRenderer.cpp` / `SpineGpuRenderer.cpp` 编不过（缺 `GPUSpine/SpineGpuClipper.h` 等），所以 `ninja ZRuntime` 无法自己完成归档那一步，那两个成员仍是旧的，由手工 `ar -r` 补齐其余部分。本机放了一个未纳入版本库的 GPUSpine 桩（只提供空的 `GPUSpine::Core` interface target）让 configure 能过。
+    **最后的卡点也已清掉（2026-10-29）**：`Runtime/CMakeLists.txt` 要求 `engine/Libraries/GPUSpine`，而 `.gitmodules` 里**从没有这一项** —— 报错信息明明写着
+    `git submodule update --init engine/Libraries/GPUSpine`，可这条命令注定失败，于是任何 fresh clone 都 configure 不过。现已登记为子模块（pin `4aa1951`）。
+    补齐之后还暴露出搬家时的漏改：`Component/Spine/SpineRenderer.cpp` 仍在 include `Runtime/Function/Render/Spine/SpineGpuAnimationState.h`（两个头已随 GPUSpine 搬走），
+    改成 `GPUSpine/...` 后 **`ninja -C build ZRuntime` 退出 0**，cmake 自己完成归档重链，手工 `ar -r` 与 `spine_is_broken_upstream` 过滤一并退役。
 
 34. **MotorComponent / CharacterController 的泄漏（P23）**：§9.4.1 32 里的『疑似』现在是**实测**的。`MotorComponent::PostLoadResource` 用 `NewObject` 造 `Capsule`，`CharacterController::Initialize` 再 `NewObject` 造 `RigidBodyShape`，二者只被 `PPtr` 持有、没有任何地方释放（`~CharacterController() = default`）；而且 `PostLoadResource` 可重入（prefab 重实例化），旧控制器被直接覆盖——**第二个**泄漏点。测试先红：重载累积、销毁不释放，3 项失败（前提『计数器看得到这些对象』的断言是过的，所以红是真泄漏）。
     修法：`CharacterController` 成为 `Capsule` 与 `RigidBodyShape` 的所有者（`Initialize` 接管传入的 capsule，文档里写明），析构与重入时用 `MemoryManager::DestroyObject` 释放（`NewObject` 的配对）；拷贝构造/赋值删除（拥有一对裸堆对象，拷贝即双释放）。`MotorComponent` 重载时先 `delete` 旧控制器，析构**改按指针判断**而不是按 `m_ControllerType`（指针才是『有没有东西要释放』的真相，`delete nullptr` 安全）。通过 `PPtr` 解析而非缓存裸指针来释放：已销毁的堆对象解析为 null，重复释放是 no-op。
