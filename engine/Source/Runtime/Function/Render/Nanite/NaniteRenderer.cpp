@@ -1098,6 +1098,14 @@ void NaniteRenderer::UpdateDescriptorWrites()
     m_Rhi->UpdateDescriptorSets(static_cast<uint32_t>(sizeof(writes) / sizeof(writes[0])), writes, 0, nullptr);
 }
 
+bool NaniteRenderer::HasGPUComputeSupport() const
+{
+    // 事实查询，不是猜后端：WebGL2 上 compute 是空实现（历史上只能靠"建失败才锁"
+    // 兜底，而建之前已经白建了一堆 descriptor layout / shader module），Metal 则
+    // 完全支持，所以这里问的是能力而不是 API 身份。
+    return m_Rhi != nullptr && m_Rhi->supportsComputeShaders() && m_Rhi->supportsStorageBuffers();
+}
+
 bool NaniteRenderer::EnsureComputePipeline()
 {
     if (m_GPU.compute_ready)
@@ -1108,22 +1116,37 @@ bool NaniteRenderer::EnsureComputePipeline()
     {
         return false;
     }
+
+    // 第一层：问 RHI 有没有 compute + SSBO。没有就别往下建了。
+    if (!HasGPUComputeSupport())
+    {
+        // 同样锁住 + 只打一次：没有 compute / SSBO 的后端（WebGL2）每帧试一次只会
+        // 每帧刷一条日志，而且日志会说成"管线创建失败"，看不出是能力缺失。
+        m_GPU.gpu_pipelines_unsupported = true;
+        LOG_WARNING(ZRender,
+                    "nanite: RHI reports no compute / storage-buffer support -- GPU cluster culling "
+                    "stays off for this session");
+        return false;
+    }
+
     if (m_Rhi == nullptr || Z::Shader::NANITE_CLUSTER_CULL_COMP.empty())
     {
         return false;
     }
 
-    // 这里以前判的是"只要不是 Vulkan 后端就直接放弃"。
-    // 那条判据是给 DX12 写的（DX12 会把 SPIR-V blob 包成一个"成功"的 shader module，
-    // 但建 compute pipeline 时失败 ⇒ 每帧重试、每帧刷一条日志），可是它顺手把
-    // **Metal 也挡掉了**：MetalRHI 有 SPIRV-Cross，`CreateShaderModule` 把 SPIR-V
-    // 转成 MSL、`CreateComputePipelines` 也是完整实现的，完全能吃这份 kernel。
-    // 结果就是 Nanite 的 GPU 剔除在 Apple 上**一直静默退化到 CPU 路径** —— 真机日志
-    // 里那条 "unavailable on this RHI (graphics api 2)" 就是它，冒烟测试则红 21 条。
+    // 第二层：仍然是"试着建、建失败就锁"。能力报 true 不等于这份 SPIR-V 一定能在这个
+    // 后端上建出管线（DX12 会把 blob 包成一个"成功"的 shader module，建 pipeline 时
+    // 才失败），所以创建结果仍然是最终判据。
     //
-    // 不猜后端，让创建结果说话：下面建 shader / 建管线失败时会锁
-    // `gpu_pipelines_unsupported`，所以 DX12 的行为跟以前一样（第一帧试一次就锁死，
-    // 不再每帧重试、也不再每帧刷日志），而 Metal 能真正走到 GPU 路径。
+    // 这里以前判的是"只要不是 Vulkan 后端就直接放弃"。那条判据是给 DX12 写的（每帧
+    // 重试 + 每帧刷一条日志），可是它顺手把 **Metal 也挡掉了**：MetalRHI 有
+    // SPIRV-Cross，`CreateShaderModule` 把 SPIR-V 转成 MSL、`CreateComputePipelines`
+    // 也是完整实现，完全能吃这份 kernel。结果就是 Nanite 的 GPU 剔除在 Apple 上
+    // **一直静默退化到 CPU 路径** —— 真机日志里那条
+    // "unavailable on this RHI (graphics api 2)" 就是它，冒烟测试则红 21 条。
+    //
+    // 现在的分层：先看能力（事实查询，不猜后端，Metal 照样通过），再看创建结果（DX12
+    // 第一帧试一次就锁死，不再每帧重试、也不再每帧刷日志）。
 
     // descriptor set layout：一个 set 同时给 compute 和 graphics。
     if (m_GPU.descriptor_set_layout == nullptr)
@@ -1603,6 +1626,10 @@ bool NaniteRenderer::EnsureHiZResources(uint32_t width, uint32_t height)
     if (Z::Shader::NANITE_HIZ_COMP.empty())
     {
         return false;  // shader 没编出来（无 glslangValidator 的环境），静默不启用
+    }
+    if (!HasGPUComputeSupport())
+    {
+        return false;  // 后端没有 compute / SSBO（WebGL2），静默不启用
     }
     if (m_GPU.target_depth == nullptr)
     {

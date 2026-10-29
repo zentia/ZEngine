@@ -410,6 +410,13 @@ private:
     // 描述符集绑定。缓冲重建之后必须重调一次，否则 kernel 还指着旧的句柄。
     void UpdateDescriptorWrites();
 
+    // Nanite 的两条 GPU 路径（集群剔除 + HiZ 归约）能不能跑：要 compute stage 和
+    // SSBO，两者都由 RHI 报（RHI::supportsComputeShaders /
+    // supportsStorageBuffers）。问 RHI 而不是猜后端——graphics api 只说明哪个后端
+    // 被编译了，不说明设备能做什么；dispatch 只用非间接的 CmdDispatch（group 数
+    // CPU 算），所以 supportsIndirectDispatch() 不参与判断。
+    bool HasGPUComputeSupport() const;
+
     // 建剔除的 compute 管线（懒建：shader 不可用时失败，之后不再重试到每帧刷日志）。
     bool EnsureComputePipeline();
 

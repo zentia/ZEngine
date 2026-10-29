@@ -2921,9 +2921,19 @@ Rules:
   output and zero errors. They now log **once** through
   `LOG_UNSUPPORTED_ONCE` (WebGL2RHI.cpp) instead.
 - Capability is latched per backend and read during pass setup; do not call
-  `vkGetPhysicalDevice*` per frame. Follow the `NaniteRenderer` template:
-  probe once, latch, expose an `Is*Ready()`-style accessor, and surface it in
-  the heartbeat so "which tier is running" is visible in telemetry.
+  `vkGetPhysicalDevice*` per frame. Probe once, latch, expose an
+  `Is*Ready()`-style accessor, and surface it in the heartbeat so "which tier
+  is running" is visible in telemetry.
+- **`NaniteRenderer` is the first consumer** and defines the two-layer shape to
+  copy: `HasGPUComputeSupport()` (= `supportsComputeShaders()` +
+  `supportsStorageBuffers()`) gates `EnsureComputePipeline()` /
+  `EnsureHiZResources()` up front and latches `gpu_pipelines_unsupported` with
+  one log; the "try to build, latch on failure" layer stays underneath as the
+  final arbiter, because a capability of `true` does not guarantee that this
+  SPIR-V builds on that backend (DX12 wraps the blob into a "successful"
+  shader module and only fails at pipeline creation). Note that Nanite's
+  dispatch is plain `CmdDispatch` with CPU-computed group counts, so
+  `supportsIndirectDispatch()` is deliberately NOT part of its gate.
 - When adding a new backend or a new GPU-driven pass, override all four
   explicitly (even to `return true`) so the decision is stated in that backend
   rather than silently inherited from the base class.
