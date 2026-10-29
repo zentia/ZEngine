@@ -507,6 +507,18 @@ public:
 
     RHIBindlessTextureManager* getBindlessTextureManager() override { return m_BindlessTextureManager.get(); }
 
+    // ---- Compute / advanced-GPU capability --------------------------------
+    // Unconditional: compute shaders, UAV (the D3D12 equivalent of a storage
+    // buffer), ExecuteIndirect and typed float UAV / RGBA16F render targets are
+    // all part of D3D12's baseline feature set at feature level 11_0+, which is
+    // this backend's minimum. Overridden explicitly (rather than inheriting the
+    // RHI base-class defaults, which are also true) so the answer is stated
+    // here and a future down-level path has one place to change it.
+    bool supportsComputeShaders() const override { return true; }
+    bool supportsIndirectDispatch() const override { return true; }
+    bool supportsStorageBuffers() const override { return true; }
+    bool supportsFloatRenderTargets() const override { return true; }
+
     // ---- PR7: bindless static-sampler bank size (s0..s3 at b0/space0).
     // Whenever a pipeline layout contains at least one bindless descriptor
     // set, createPipelineLayout attaches exactly this many static samplers

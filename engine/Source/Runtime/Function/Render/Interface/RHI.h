@@ -644,6 +644,41 @@ public:
     // pointer is owned by the RHI and stays valid until RHI::clear().
     virtual RHIBindlessTextureManager* getBindlessTextureManager() { return nullptr; }
 
+    // ---------------------------------------------------------------------
+    // Compute / advanced-GPU capability queries.
+    //
+    // Why a query and not a switch on GraphicsAPI: the API enum tells you
+    // which backend was *compiled*, not what the device can actually do,
+    // and it is wrong in the two cases that actually matter:
+    //   - WebGL2 / GLSL ES 3.00 has no compute stage at all, and its
+    //     CreateComputePipelines / CmdDispatch* entry points are no-ops
+    //     (see WebGL2RHI). A renderer that never asks gets zero particles
+    //     and zero errors -- which is exactly how the Web build behaves
+    //     today for anything compute-driven.
+    //   - "compute exists" is NOT the same question as "I may use a
+    //     storage buffer": SSBOs are ES 3.1+/Vulkan/D3D12/Metal, so a
+    //     GLES 3.0-class device needs supportsStorageBuffers() to say no
+    //     even when some other tier would have worked.
+    //
+    // Defaults are TRUE because compute queues, SSBO/UAV descriptor types
+    // and indirect dispatch are core in Vulkan 1.0, D3D12 and Metal; a
+    // backend that cannot do them opts OUT by overriding (WebGL2 today).
+    // supportsFloatRenderTargets() is the one genuinely optional item on
+    // every API (a device may report COLOR_ATTACHMENT only for 8-bit
+    // formats), so backends that can probe it should probe it -- see
+    // VulkanRHI::m_FloatRenderTargetSupported.
+    //
+    // Intended consumers: GPU-particle tier selection, Nanite
+    // (which currently latches its own probe in
+    // NaniteRenderer::EnsureComputePipeline), and any future GPU-driven
+    // pass. Callers must branch on these BEFORE recording compute work,
+    // never after.
+    // ---------------------------------------------------------------------
+    virtual bool supportsComputeShaders() const { return true; }
+    virtual bool supportsIndirectDispatch() const { return true; }
+    virtual bool supportsStorageBuffers() const { return true; }
+    virtual bool supportsFloatRenderTargets() const { return true; }
+
     // command write
     virtual RHICommandBuffer* BeginSingleTimeCommands() = 0;
     virtual void EndSingleTimeCommands(RHICommandBuffer* command_buffer) = 0;

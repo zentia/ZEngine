@@ -1041,6 +1041,18 @@ bool RenderSystem::Initialize()
         return false;
     }
 
+    // Log the compute-tier capabilities the moment the RHI is known. These are
+    // what GPU-driven passes (particles today, Nanite / Lumen later) branch on
+    // to pick a tier instead of recording work the backend will silently drop,
+    // so "what did this device report" belongs in the startup log next to the
+    // backend name rather than being inferred from which backend compiled.
+    LOG_INFO(ZRender,
+             "RHI compute capability: compute={} indirectDispatch={} storageBuffer={} floatRenderTarget={}",
+             m_Rhi->supportsComputeShaders(),
+             m_Rhi->supportsIndirectDispatch(),
+             m_Rhi->supportsStorageBuffers(),
+             m_Rhi->supportsFloatRenderTargets());
+
     if (m_Rhi->getGraphicsAPI() == GraphicsAPI::DirectX12)
     {
         const CameraPose& camera_pose = global_rendering_res->m_CameraConfig.m_Pose;

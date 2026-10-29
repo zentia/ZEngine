@@ -3374,6 +3374,36 @@ uint32_t MetalRHI::maxBindlessStorageBuffers() const
     return m_MaxBindlessStorageBuffers;
 }
 
+// -------------------------------------------------------------------------
+// Compute / advanced-GPU capability.
+//
+// compute (dispatchThreadgroups), indirect dispatch, storage buffers
+// (device-address / buffer-backed argument tables) and float render targets
+// are all baseline Metal on every GPU family this backend targets, so these
+// are unconditional. Overridden explicitly rather than inheriting the RHI
+// base-class defaults (which are also true) so the answer is stated here --
+// a future iOS/macOS tier split has one place to change it.
+// -------------------------------------------------------------------------
+bool MetalRHI::supportsComputeShaders() const
+{
+    return true;
+}
+
+bool MetalRHI::supportsIndirectDispatch() const
+{
+    return true;
+}
+
+bool MetalRHI::supportsStorageBuffers() const
+{
+    return true;
+}
+
+bool MetalRHI::supportsFloatRenderTargets() const
+{
+    return true;
+}
+
 void MetalRHI::CmdSetBindlessIndexPFN(RHICommandBuffer*    /*commandBuffer*/,
                                       RHIPipelineBindPoint /*pipelineBindPoint*/,
                                       RHIPipelineLayout*   /*layout*/,

@@ -79,6 +79,29 @@ namespace ZEngine
             uint32_t maxBindlessStorageBuffers() const override { return 0; }
             RHIBindlessTextureManager* getBindlessTextureManager() override { return nullptr; }
 
+            // ---------------- Compute capability (permanently disabled) ----------------
+            // WebGL 2.0 / GLSL ES 3.00 has no compute stage at all, and the GL
+            // ES 3.0 feature set it inherits gives it none of the other three
+            // either:
+            //   - compute shaders: no glDispatchCompute / no CS stage
+            //   - indirect dispatch: no glDispatchComputeIndirect (and no
+            //     glDraw*Indirect of any kind -- see CmdDrawIndexedIndirect)
+            //   - storage buffers: SSBOs are GLSL ES 3.10+, i.e. WebGPU /
+            //     desktop GL 4.3 territory, not WebGL2. Per-instance vertex
+            //     attributes or vertex-texture-fetch are the only way to feed
+            //     a shader a big data array here.
+            //   - float render targets: RGBA16F/RGBA32F colour attachment needs
+            //     EXT_color_buffer_float, which is an *extension* on WebGL2 and
+            //     therefore not guaranteed. Do not build a ping-pong simulation
+            //     on it without asking.
+            // Overridden explicitly so the decision is visible without reading
+            // the RHI base-class defaults -- the base defaults are true, and
+            // "forgot to ask" would otherwise look like "supported".
+            bool supportsComputeShaders() const override { return false; }
+            bool supportsIndirectDispatch() const override { return false; }
+            bool supportsStorageBuffers() const override { return false; }
+            bool supportsFloatRenderTargets() const override { return false; }
+
             virtual void PrepareContext() override final;
 
             virtual bool IsPointLightShadowEnabled() override;

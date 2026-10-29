@@ -303,6 +303,12 @@ public:
     virtual uint32_t maxBindlessSampledImages() const override;
     virtual uint32_t maxBindlessStorageBuffers() const override;
     virtual RHIBindlessTextureManager* getBindlessTextureManager() override;
+
+    // Compute / advanced-GPU capability (all baseline Metal -- see MetalRHI.mm).
+    virtual bool supportsComputeShaders() const override;
+    virtual bool supportsIndirectDispatch() const override;
+    virtual bool supportsStorageBuffers() const override;
+    virtual bool supportsFloatRenderTargets() const override;
     virtual void CmdSetBindlessIndexPFN(RHICommandBuffer* commandBuffer,
                                         RHIPipelineBindPoint pipelineBindPoint,
                                         RHIPipelineLayout* layout,

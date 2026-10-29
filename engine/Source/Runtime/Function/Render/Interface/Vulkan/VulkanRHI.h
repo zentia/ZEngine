@@ -319,6 +319,20 @@ public:
     // m_BindlessSupported is true and the manager initialized cleanly.
     RHIBindlessTextureManager* getBindlessTextureManager() override { return m_BindlessTextureManager.get(); }
 
+    // Compute / advanced-GPU capability.
+    //
+    // compute / indirect dispatch / storage buffers are core in Vulkan 1.0, so
+    // they are unconditional here. Float colour attachments are NOT: a device
+    // may report VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT only for 8-bit formats,
+    // which is exactly what a ping-pong particle simulation would need, so that
+    // one is probed in CreateLogicalDevice (m_FloatRenderTargetSupported) rather
+    // than assumed. Overridden explicitly so the decision is visible here
+    // instead of being inherited from the RHI base-class defaults.
+    bool supportsComputeShaders() const override { return true; }
+    bool supportsIndirectDispatch() const override { return true; }
+    bool supportsStorageBuffers() const override { return true; }
+    bool supportsFloatRenderTargets() const override { return m_FloatRenderTargetSupported; }
+
     // command write
     RHICommandBuffer* BeginSingleTimeCommands() override;
     void EndSingleTimeCommands(RHICommandBuffer* command_buffer) override;
@@ -426,6 +440,15 @@ public:
     /// clamps drawCount to 1 instead of asking the driver for a batch it does
     /// not support.
     bool m_MultiDrawIndirectSupported {false};
+
+    /// Probed once in CreateLogicalDevice and cached: unlike compute / SSBO /
+    /// indirect dispatch (all core in Vulkan 1.0), float colour attachments are
+    /// optional -- a device may expose VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT
+    /// only for 8-bit formats. GPU simulation that ping-pongs particle state
+    /// through an RGBA16F render target must ask before building that path.
+    /// Probed on R16G16B16A16_SFLOAT (the cheapest format with enough range for
+    /// a position/velocity payload); RGBA32F is strictly less available.
+    bool m_FloatRenderTargetSupported {false};
 
     VkSwapchainKHR m_Swapchain {nullptr};
     std::vector<VkImage> m_SwapchainImages;

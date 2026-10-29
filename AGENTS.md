@@ -2893,6 +2893,44 @@ Known gaps, in the order they should be closed (PR-SK3+):
   and 64 instances per drawcall (`s_MeshVertexBlendingMaxJointCount`,
   `s_MeshPerDrawcallMaxInstanceCount`).
 
+### 2.43 RHI compute-capability queries: ask before you record
+
+`RHI` now carries four capability predicates, declared in
+`runtime/function/render/interface/rhi.h` immediately after the bindless block:
+
+- `supportsComputeShaders()`
+- `supportsIndirectDispatch()`
+- `supportsStorageBuffers()`
+- `supportsFloatRenderTargets()`
+
+Defaults are **true** (compute / SSBO / indirect dispatch are core in Vulkan
+1.0, D3D12 and Metal); a backend opts **out** by overriding. `WebGL2RHI`
+overrides all four to false — WebGL2 / GLSL ES 3.00 has no compute stage, no
+indirect dispatch, no SSBO (that is ES 3.1+), and float colour attachments only
+via the optional `EXT_color_buffer_float`. `VulkanRHI` probes the one item that
+is genuinely optional everywhere — renderable float formats — with
+`vkGetPhysicalDeviceFormatProperties` on `VK_FORMAT_R16G16B16A16_SFLOAT` and
+caches it in `m_FloatRenderTargetSupported`.
+
+Rules:
+
+- **Branch on the predicate BEFORE recording the work**, never after. The
+  `GraphicsAPI` enum tells you which backend *compiled*, not what the device can
+  do; WebGL2's `CreateComputePipelines` / `CmdDispatch` / `CmdDraw*Indirect`
+  were silent no-ops, so a compute-driven pass that forgot to ask produced zero
+  output and zero errors. They now log **once** through
+  `LOG_UNSUPPORTED_ONCE` (WebGL2RHI.cpp) instead.
+- Capability is latched per backend and read during pass setup; do not call
+  `vkGetPhysicalDevice*` per frame. Follow the `NaniteRenderer` template:
+  probe once, latch, expose an `Is*Ready()`-style accessor, and surface it in
+  the heartbeat so "which tier is running" is visible in telemetry.
+- When adding a new backend or a new GPU-driven pass, override all four
+  explicitly (even to `return true`) so the decision is stated in that backend
+  rather than silently inherited from the base class.
+- Startup already logs all four (`RenderSystem::Initialize`, right after
+  `m_Rhi` is acquired); check that line first when a pass mysteriously draws
+  nothing on one platform.
+
 ## 3. Build / test invocations
 
 - Configure: pre-existing `build/` is fine; CMake presets in `CMakePresets.json`.
@@ -2963,6 +3001,39 @@ Known gaps, in the order they should be closed (PR-SK3+):
 "P5..P8" wording in `inspector_window.cpp:5404` is pre-merge and
 predates the AssetRegistry-persistence work being split out into
 its own track below.)
+
+### TypeScript editor layer (`doc/editor/EDITOR_TYPESCRIPT_LAYER.md`)
+
+Goal: "C++ core + TS editor shell", the UnityEditor.dll model. TS takes the
+slot Unity gives C#; it does NOT mean rewriting renderer/AssetRegistry/Undo
+core in TS. Key conventions (do not re-litigate):
+
+- **Two VMs, one pesapi registry.** `ScriptingManager` owns the game VM
+  (`ZScriptDomain::Runtime` only). `EditorScriptingManager` owns a second,
+  isolated editor VM that additionally gets `ZScriptDomain::Editor` bindings.
+  Game scripts must never see editor API.
+- **Domain is per-module, not per-annotation.** `zengine_header_tool(... SCRIPT_DOMAIN editor)`
+  on ZEditor stamps every generated binding as Editor. Annotate an editor class
+  with plain `ZCLASS`/`ZFUNCTION` (static-facade pattern: `Object` subclass,
+  see `Editor/Scripting/EditorEnvironment.h`).
+- **Typings:** `zengine.d.ts` (Runtime) + `zengine-editor.d.ts` (Editor only).
+  Editor scripts compile against both; the editor rewrites them into
+  `engine/EditorScripts/typings/` (gitignored) on every start in a checkout.
+- **Engine-shipped editor scripts** live in `engine/EditorScripts/src/*.ts`,
+  precompiled by the `ZEditorScripts` CMake target to
+  `<bin>/<config>/EditorScripts/*.js` (engine asset, no tsc needed at runtime,
+  no hot reload). Entry: `Bootstrap.js` exports `OnEditorLoad`/`OnEditorUnload`.
+  Override dir: `ZENGINE_EDITOR_SCRIPTS_DIR`; inspector: `ZENGINE_EDITOR_V8_DEBUG_PORT`.
+- Editor-domain classes should not inherit from Runtime-domain ones until the
+  Editor d.ts placeholder-super handling is revisited (see doc).
+
+| Phase | Status | Summary |
+|-------|--------|---------|
+| P0 | done (build-unverified) | Domain split in `ScriptBinding`, ZHeaderTool `--script-domain`, ZEditor wired into ZHeaderTool, `EditorScriptingManager` + `EditorEnvironment`, `engine/EditorScripts` package, `ZEditorScripts` CMake target. |
+| P1 | todo | Facades: `EditorSelection`, `EditorUndo`, `AssetDatabase`; TS `@MenuItem`. |
+| P2 | todo | ZSlate TS bindings, runtime-registrable window registry, `EditorWindow` base. |
+| P3 | todo | Pluggable `CustomEditor`/`PropertyDrawer` in the Inspector, real `SerializedObject`/`SerializedProperty`. |
+| P4+ | todo | Migrate Package Manager / Console / Add Component etc.; open `Scripts/Editor/**` to users. |
 
 ### Asset registry persistence (`doc/asset_management/AUTO_IMPORT_AND_FILE_WATCHER.md`)
 

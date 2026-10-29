@@ -1403,6 +1403,27 @@ void VulkanRHI::CreateLogicalDevice()
                     "command of a batch");
     }
 
+    // -----------------------------------------------------------------
+    // Float colour attachments. Compute / SSBO / indirect dispatch are core in
+    // Vulkan 1.0, but renderable float formats are not: a device is free to
+    // report COLOR_ATTACHMENT only for 8-bit formats. Anything that ping-pongs
+    // state through an RGBA16F target (GPU particle simulation being the first
+    // customer) has to ask instead of assuming, otherwise it builds the whole
+    // pass and discovers at vkCreateFramebuffer that it cannot render to it.
+    // Cached because the capability query is read during pass setup, not once
+    // at startup.
+    // -----------------------------------------------------------------
+    VkFormatProperties float_format_properties = {};
+    vkGetPhysicalDeviceFormatProperties(m_PhysicalDevice, VK_FORMAT_R16G16B16A16_SFLOAT, &float_format_properties);
+    m_FloatRenderTargetSupported =
+        (float_format_properties.optimalTilingFeatures & VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT) != 0;
+    if (!m_FloatRenderTargetSupported)
+    {
+        LOG_WARNING(ZVulkan,
+                    "R16G16B16A16_SFLOAT is not renderable on this device -- float render-target paths "
+                    "(e.g. ping-pong particle simulation) are unavailable; use RHI::supportsFloatRenderTargets()");
+    }
+
     physical_device_features.samplerAnisotropy = VK_TRUE;
 
     // support inefficient readback storage buffer

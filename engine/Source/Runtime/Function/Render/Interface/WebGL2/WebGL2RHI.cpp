@@ -31,6 +31,28 @@ namespace ZEngine
     #define WEBGL2_NOOP()    ((void)0)
     #define WEBGL2_TODO(msg) ((void)0)  // hook your logger here
 
+    // One-shot "this entry point does not exist on WebGL2" warning.
+    //
+    // Used by the compute / indirect-dispatch no-ops. Once, not never and not
+    // every call: never is what made a compute-driven pass (particles, Nanite)
+    // silently draw nothing on this backend with no error anywhere, while every
+    // call would make a per-frame pass emit thousands of lines a second.
+    // `why` is expected to name the missing capability so the reader can map it
+    // straight onto the RHI::supports*() predicate they should have tested.
+    #define LOG_UNSUPPORTED_ONCE(fn, why)                                                             \
+        do                                                                                            \
+        {                                                                                             \
+            static bool z_unsupported_logged = false;                                                 \
+            if (!z_unsupported_logged)                                                                \
+            {                                                                                         \
+                z_unsupported_logged = true;                                                          \
+                LOG_WARNING(ZRender,                                                                  \
+                            "WebGL2RHI::{} is unsupported ({}) -- guard with the matching "           \
+                            "RHI::supports*() capability query before calling",                       \
+                            fn, why);                                                                 \
+            }                                                                                         \
+        } while (0)
+
         // ---------- EngineSystem ----------
 
         std::vector<std::type_index> WebGL2RHI::GetDependencies() const
@@ -353,6 +375,14 @@ namespace ZEngine
 
         bool WebGL2RHI::CreateComputePipelines(RHIPipelineCache*, uint32_t, const RHIComputePipelineCreateInfo*, RHIPipeline*& out)
         {
+            // WebGL2 has no compute stage at all. `false` is the contract; the
+            // one-shot warning exists because a silent false makes "this backend
+            // cannot do it" indistinguishable from "nobody asked for it" -- which
+            // is precisely how a compute-driven pass (particles, Nanite) can end
+            // up drawing nothing with no error anywhere. Callers must branch on
+            // RHI::supportsComputeShaders() BEFORE recording; this log is the
+            // backstop for the ones that forgot.
+            LOG_UNSUPPORTED_ONCE("CreateComputePipelines", "no compute stage in WebGL2 / GLSL ES 3.00");
             out = nullptr;
             return false;  // unsupported on WebGL2
         }
@@ -672,21 +702,28 @@ namespace ZEngine
             cb->record(WebGL2CommandBuffer::CommandKind::Draw, pl);
         }
         void WebGL2RHI::CmdDispatch(RHICommandBuffer*, uint32_t, uint32_t, uint32_t)
-        { /* unsupported */
+        {
+            LOG_UNSUPPORTED_ONCE("CmdDispatch", "no compute stage in WebGL2 (see supportsComputeShaders())");
         }
         void WebGL2RHI::CmdDispatchIndirect(RHICommandBuffer*, RHIBuffer*, RHIDeviceSize)
-        { /* unsupported */
+        {
+            LOG_UNSUPPORTED_ONCE("CmdDispatchIndirect",
+                                 "no compute stage and no indirect dispatch in WebGL2 "
+                                 "(see supportsComputeShaders() / supportsIndirectDispatch())");
         }
-        // WebGL2 has no indirect draw of any kind (there is no
-        // glMultiDrawElementsIndirect equivalent), and Lumen/Nanite are not
-        // compiled for Emscripten anyway. Silent no-ops, matching
-        // CmdDispatchIndirect: an unsupported draw does nothing rather than fail.
         void WebGL2RHI::CmdDrawIndexedIndirect(RHICommandBuffer*, RHIBuffer*, RHIDeviceSize, uint32_t, uint32_t)
-        { /* unsupported */
+        {
+            LOG_UNSUPPORTED_ONCE("CmdDrawIndexedIndirect",
+                                 "WebGL2 has no indirect draw of any kind (no glMultiDrawElementsIndirect)");
         }
         void WebGL2RHI::CmdDrawIndirect(RHICommandBuffer*, RHIBuffer*, RHIDeviceSize, uint32_t, uint32_t)
-        { /* unsupported */
+        {
+            LOG_UNSUPPORTED_ONCE("CmdDrawIndirect",
+                                 "WebGL2 has no indirect draw of any kind (no glMultiDrawElementsIndirect)");
         }
+        // (CmdDraw*Indirect are defined just above and warn once -- see
+        // LOG_UNSUPPORTED_ONCE. Lumen/Nanite are not compiled for Emscripten
+        // anyway, so nothing reaches them today.)
         void WebGL2RHI::CmdPipelineBarrier(RHICommandBuffer*, RHIPipelineStageFlags, RHIPipelineStageFlags, RHIDependencyFlags, uint32_t, const RHIMemoryBarrier*, uint32_t, const RHIBufferMemoryBarrier*, uint32_t, const RHIImageMemoryBarrier*)
         { /* implicit in GL */
         }
