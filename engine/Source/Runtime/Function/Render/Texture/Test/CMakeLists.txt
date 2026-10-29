@@ -331,3 +331,48 @@ if(ZENGINE_BUILD_VT_PRODUCER_THREADED_AB_SMOKE_TEST)
         message(STATUS "Configured VT producer threaded A/B smoke test: VirtualTextureProducerThreadedABSmokeTest")
     endif()
 endif()
+
+# =============================================================================
+# VirtualTextureMaterialSlotABSmokeTest — 材质里的 VT 槽位 A/B（DX12 headless，离屏 MRT）
+# -----------------------------------------------------------------------------
+# 采样契约 v2 已经对着专用 vt_blit 着色器验过（MipBilinear）。这里验材质那一层：MeshMaterialUniform
+# 那 128 个字节是否真的把 VT 参数送进了**真实的 mesh_gbuffer.frag.hlsl**，而且开关是干净的。
+#
+# 夹具用 MeshMaterialLayout.h 那一份 8 binding 布局（生产也用它），set 下标 2 ⇒ DX12 的
+# RegisterSpace 2，片元着色器编译自 hlsl/rp1/mesh_gbuffer.frag.hlsl，顶点着色器是脚手架
+# （hlsl/vt/vt_material_gbuffer.vert.hlsl）。三张 gbuffer 附件全部读回。
+#
+# 判据：关时逐字节等于常量 1x1 base color；开时逐像素等于 CPU 参考（VTRef::SampleWithFallback
+# + 可选 sRGB 解码）；开 vs 关绝大多数像素不同；gbuffer a / b 两遍逐字节相同；全缺页回落到
+# 普通 base color；GetMaterialBinding 在 border 0 的池上拒绝。
+#
+#   cmake -B build -DZENGINE_BUILD_VT_MATERIAL_SLOT_AB_SMOKE_TEST=ON
+#   cmake --build build --target VirtualTextureMaterialSlotABSmokeTest
+# =============================================================================
+option(ZENGINE_BUILD_VT_MATERIAL_SLOT_AB_SMOKE_TEST
+       "Build the VirtualTexture material-slot A/B (DX12 headless, real gbuffer shader) smoke-test executable"
+       OFF)
+
+if(ZENGINE_BUILD_VT_MATERIAL_SLOT_AB_SMOKE_TEST)
+    if(NOT WIN32)
+        message(STATUS "VT material slot A/B smoke test needs the DX12 backend (Windows); skipping")
+    else()
+        add_executable(VirtualTextureMaterialSlotABSmokeTest VirtualTextureMaterialSlotABSmokeTest.cpp)
+        set_target_properties(VirtualTextureMaterialSlotABSmokeTest PROPERTIES
+            CXX_STANDARD 23
+            FOLDER "Engine/Tests"
+        )
+        target_link_libraries(VirtualTextureMaterialSlotABSmokeTest PRIVATE ZRuntime)
+        if(TARGET ZEnginePCH)
+            target_link_libraries(VirtualTextureMaterialSlotABSmokeTest PRIVATE ZEnginePCH)
+            target_include_directories(VirtualTextureMaterialSlotABSmokeTest PRIVATE ${ENGINE_ROOT_DIR}/Source/CommonPCH)
+            add_dependencies(VirtualTextureMaterialSlotABSmokeTest ZEnginePCH)
+            target_precompile_headers(VirtualTextureMaterialSlotABSmokeTest REUSE_FROM ZEnginePCH)
+        endif()
+        if(MSVC)
+            target_compile_options(VirtualTextureMaterialSlotABSmokeTest PRIVATE /W4)
+        endif()
+        add_test(NAME VirtualTextureMaterialSlotABSmokeTest COMMAND VirtualTextureMaterialSlotABSmokeTest)
+        message(STATUS "Configured VT material slot A/B smoke test: VirtualTextureMaterialSlotABSmokeTest")
+    endif()
+endif()

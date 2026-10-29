@@ -467,6 +467,11 @@ list(REMOVE_ITEM SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Texture/Test/VirtualTextureMipBilinearABSmokeTest.cpp")
 list(REMOVE_ITEM REGULAR_SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Texture/Test/VirtualTextureMipBilinearABSmokeTest.cpp")
+# 材质里的 VT 槽位 A/B 的 main（同上：独立 exe，由 ZENGINE_BUILD_VT_MATERIAL_SLOT_AB_SMOKE_TEST 控制）。
+list(REMOVE_ITEM SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Texture/Test/VirtualTextureMaterialSlotABSmokeTest.cpp")
+list(REMOVE_ITEM REGULAR_SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Texture/Test/VirtualTextureMaterialSlotABSmokeTest.cpp")
 list(REMOVE_ITEM SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Texture/Test/VirtualTextureBlitABSmokeTest.cpp")
 list(REMOVE_ITEM REGULAR_SOURCE_FILES
