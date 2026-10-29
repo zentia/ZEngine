@@ -40,7 +40,7 @@
 #include "Runtime/Function/Render/RenderType.h"
 // 顶点/骨骼布局直接吃规格头文件，不在这里重抄一份 ——
 // 否则头文件改了、夹具没改，static_assert 就形同虚设。
-#include "Runtime/Function/Render/Spine/SpineGpuFormat.h"
+#include "GPUSpine/SpineGpuFormat.h"
 
 #include <cfloat>
 #include <cmath>
@@ -143,7 +143,7 @@ Float2 SkinWeightedCpu(const VtxWeighted& v, const std::vector<Bone>& bones,
     {
         const std::uint32_t at = v.influence_offset + i;
         const Bone& bone = bones[bone_stream[at].bone_idx];
-        const float w = static_cast<float>(bone_stream[at].weight) / 255.0f;
+        const float w = SpineGpuDecodeWeight(bone_stream[at].weight);
         const float bx = bind_stream[at * 2u + 0u];
         const float by = bind_stream[at * 2u + 1u];
         wx += (bx * bone.a + by * bone.b + bone.world_x) * w;
@@ -247,7 +247,7 @@ void SkinMain(uint3 tid : SV_DispatchThreadID)
             //    字段是同一个道理）。weight 的**位移量**由 offsetof 推出来传进来。
             const uint packed = gInfluenceBone.Load(at * gInfBoneStride);
             const uint bone_index = packed & 0xFFFFu;
-            const float w = float((packed >> gInfWeightShift) & 0xFFu) / 255.0;
+            const float w = float((packed >> gInfWeightShift) & 0xFFFFu) / 65535.0;   // v17 unorm16
             const float2 skinned = LoadBoneApply(bone_index, bind_pos);
             wx += skinned.x * w;
             wy += skinned.y * w;
@@ -410,8 +410,8 @@ Fixture BuildFixture()
             f.influence_bind.push_back(bind[i * 2 + 1]);
             InfluBone ib {};
             ib.bone_idx = idx[i];
-            ib.weight = w[i];
-            ib.pad = 0;
+            // 夹具按 unorm8 写（和 = 255，好读），×257 正好映射到 unorm16（255 × 257 = 65535）
+            ib.weight = static_cast<std::uint16_t>(w[i] * 257u);
             f.influence_bone.push_back(ib);
         }
         return v;
@@ -620,7 +620,7 @@ int main()
         return 1;
     }
 
-    // 静态 VB（按规格 §3.1 的字节布局填入，weight 已归一到和 = 255）
+    // 静态 VB（按规格 §3.1 的字节布局填入，weight 已归一到和 = 65535，v17）
     auto upload = [](ID3D12Resource* target, const void* data, std::uint64_t size) {
         void* mapped = nullptr;
         const D3D12_RANGE read_range {0, 0};  // 我们不读

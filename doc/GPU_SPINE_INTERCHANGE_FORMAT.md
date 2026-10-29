@@ -213,7 +213,7 @@ wy += (vx * bone._c + vy * bone._d + bone._worldY) * weight;
 | chunk | 内容 | 每条 | 用途 |
 |---|---|---|---|
 | 21 `influence_bind` | `bindPos f32×2` | 8 B | `bind.Load2((influence_offset + k) * 8)` |
-| 22 `influence_bone` | `boneIdx u16` (0-1) + `weight unorm8` (2) + `pad` (3) | 4 B | `bone.Load((influence_offset + k) * 4)`，整条一次 Load 再拆 |
+| 22 `influence_bone` | `boneIdx u16` (0-1) + `weight unorm16` (2-3，**v17**；v16 及以前是 unorm8 + u8 pad) | 4 B | `bone.Load((influence_offset + k) * 4)`，整条一次 Load 再拆 |
 
 > ⚠️ **UV 不在这里。** 顶点只存"几何 / 引用"，UV 在独立的 chunk 4 里
 > （`float2` × `uv_count`，8 B/条），由 `DrawItem::uv_offset` 索引。见 §3.2。
@@ -235,8 +235,12 @@ wy += (vx * bone._c + vy * bone._d + bone._worldY) * weight;
 - `MAX_INFLUENCES = 255` —— v7 起它**不再是"固定槽位数"**，只是"单个顶点影响数的硬上限"，
   用来挡"数据坏了"（把 n 读成 300 之类）。正常资产永远碰不到它。
   导入器遇到 `n > 255` 仍然**报错并报出附件名**，不允许静默截断。
-- **权重归一化**：导入期把该顶点 `influence_count` 个 unorm8 调整到**和恰好 255**
-  （余量补给权重最大的那个），运行时统一 `/ 255.0`。不要在 shader 里做除法归一化
+- **权重归一化**：导入期把该顶点 `influence_count` 个 unorm16 调整到**和恰好 65535**
+  （v17；v16 及以前是 unorm8 / 255），余量补给权重最大的那个，运行时统一 `/ 65535.0`。
+  不要在 shader 里做除法归一化，也不要写成 `* (1.0 / 65535.0)`（倒数先舍入 ⇒ 差 1 ulp）。
+  **体积没变**：原来 @3 的 pad 被吃掉。
+  为什么升：端到端蒙皮对拍里 weighted 顶点最大误差 **5.21 骨架单位**（与 deform 无关），
+  全来自 u8 量化（步长 1/255 × 骨骼到顶点的距离 ~1000 单位）；u16 降到 **0.071**（§15）。
   （每个影响一次除法，且引入与 CPU 不一致的舍入）。
 - **顶点色不在静态 VB 里** —— Spine 的颜色是**槽位色**（`slot.getColor()`），每实例可变，属于实例数据。
 
@@ -828,7 +832,7 @@ float2 SkinVertex(uint vertexIndex, uint drawItemIndex)   // UV 不参与，见 
         [unroll]
         for (int i = 0; i < 4; ++i)
         {
-            float w = weight[i] / 255.0;
+            float w = weight[i] / 65535.0;      // v17：unorm16（v16 及以前 / 255.0）
             Bone B = bones[inst.bone_base + boneIdx[i]];
             p.x += (bindPos[i].x * B.a + bindPos[i].y * B.b + B.worldX) * w;
             p.y += (bindPos[i].x * B.c + bindPos[i].y * B.d + B.worldY) * w;
@@ -1101,6 +1105,15 @@ Header (64 B)
                                       （v15 及以前不烘事件 ⇒ 少算，complete 时机错）；
                                     ② 混合期 totalAlpha / timelineMode 多一条事件
                                       时间轴参与
+                               v17 = **骨骼权重 unorm8 → unorm16**（§3.1）：chunk 22 每条仍是
+                                    4 B（`boneIdx u16 @0` + `weight unorm16 @2`，原 @3 的 pad
+                                    被吃掉），**布局字节数没变、语义变** —— v16 读端会把高字节
+                                    当 pad、低字节当 u8 权重 ⇒ 权重全错、**不报错**。
+                                    每个权重顶点的权重和恰好 65535（原来 255），读端逐顶点校验。
+                                    跨端影响：`spine_skinning.h::SpineInfluenceWeight`、
+                                    `SpineGpuDecodeWeight()`、C# `IbWeight` 宽度、两处手搓夹具
+                                    （`SpineSkinningParityTest` / `SpineGpuDx12RasterTest` 的
+                                    u8 值要 ×257 迁移到 unorm16）
   0x08  spine_runtime    u32   产生它的 spine-cpp 版本（3.8.xx → 30800）
         ⚠️ 必须记录：3.8 的 _bones 是 u16，4.x 是 int，布局不同
   0x0C  flags            u32   kIndex32 / kHasDrawOrderTimeline / kUsesTintBlack / kHasClipping
@@ -1169,7 +1182,7 @@ Chunks:
                        + SpineGpuPathAttachment[] 40 B/条 + u16 骨骼池
                        + f32 顶点池 + f32 lengths 池（§3.7.3，v11）
   id=21 influence_bind bindPos f32×2 × 影响条目数，8 B/条（§3.1，v7）
-  id=22 influence_bone (boneIdx u16, weight unorm8, pad u8) × 影响条目数，4 B/条（v7）
+  id=22 influence_bone (boneIdx u16, weight unorm16) × 影响条目数，4 B/条（v7；v17：pad 变成权重高字节）
                        ⚠️ 21 与 22 **共用同一个条目下标**（= 权重顶点的
                        `influence_offset`）⇒ 读端必须校验两条的条目数**相等**，
                        对不上就报错（配错了对不报错，只是每个影响取到别人的数据）。
@@ -1402,7 +1415,8 @@ RHI、世界、资源系统，跑一个"读文件 → 算 → 写文件"的烘�
    * ⚠️ **必须有权重顶点的 `influence_offset` 非 0**：全是 0 时"写错成恒 0"测不出来
      （跟裁剪多边形 `vertex_offset` 那条是同一个道理）
    * 影响数 **> 4 的顶点必须能被烘焙**（v7 的目的就是这个）——夹具里放了 5 个影响的顶点
-   * `influence_count` 个 unorm8 权重的和必须**恰好 255**
+   * `influence_count` 个 unorm16 权重的和必须**恰好 65535**（v17；v16 及以前 255）——
+     把旧容器的 u8 权重当 u16 读，或写端量化错，都会在这里被抓到
 13. **必须跨语言对拍，不能两端各自自测**（§11.1）：C++ 落的 `.zspg`，C# 读回来再写一遍
     必须**逐字节相同**；同时要有语义断言，因为 round-trip 抓不到"解读"漂。
 14. **槽位 setup 的语义断言**（§3.6，v10）—— 三条都是"错了不报错"的：
@@ -1664,9 +1678,10 @@ setup 姿势的包围盒自动居中、占视口 80%。
   1 131 万个 float，**最大相对误差 0**（逐位相同）；
 * 影响流"附件内连续"：592 540 个 weighted 顶点；
 * 端到端：照 shader 同一套寻址 / 公式在 CPU 上蒙皮，与参考 `computeWorldVertices()` 比世界坐标 ——
-  rigid（无 / 有 deform）最大误差 1.2e-4 / 1.2e-4；weighted 5.21 / 5.14 骨架单位。
-  weighted 的误差来自**容器里权重是 u8 量化的**（与 deform 无关，两格同量级）；
-  把 deform 偏移错一个顶点，这两格会变成 9724 / 402（门槛已接进 verdict）。
+  rigid（无 / 有 deform）最大误差 1.2e-4 / 1.2e-4；weighted 5.21 / 5.14 骨架单位
+  （**v16 及以前的数字**，误差来自 u8 权重量化，与 deform 无关）。
+  **v17（unorm16 权重）后：weighted 0.071 / 0.071**，rigid 不变 → 门槛收紧到 0.1 并接进
+  verdict（u8 时代的 5.2 会被挡住）。把 deform 偏移错一个顶点，两格会变成 9724 / 402。
 
 **仍然不做**（不是忘了）：WebGL2（没有 SSBO）。（tint black、DX12 / Metal、多实例、换肤已接，见下面。）
 
@@ -1677,7 +1692,7 @@ setup 姿势的包围盒自动居中、占视口 80%。
 1. `SpineGpuClipFrame()` 按**当前**绘制顺序跑 `MeshGeneration/SpineMesh.h:107-259` 的状态机：
    NULL 附件 / 不可画附件 ⇒ `clipEnd(slot)`；裁剪附件 ⇒ `clipStart` 后**直接 continue**（不收尾）；
    可画项 ⇒ 在作用域内就裁，然后 `clipEnd(slot)`；末尾无条件 `clipEnd()`。嵌套被忽略。
-2. 作用域内的项在 CPU 上蒙皮（与 `spine_gpu.vert` 同公式、同 u8 权重），裁剪多边形同样蒙皮
+2. 作用域内的项在 CPU 上蒙皮（与 `spine_gpu.vert` 同公式、同 unorm16 权重，v17），裁剪多边形同样蒙皮
    （**含裁剪附件自己的 deform** —— v15 起进容器，target 次高位 0x4000），喂给逐行转录的
    `SpineGpuSkeletonClipping` / `SpineGpuTriangulator`（SkeletonClipping.cpp / Triangulator.cpp）。
 3. 结果上传 b8（`vec4 x,y,u,v`，骨架空间）+ 每帧动态 u16 索引缓冲；绘制项 flags bit3，`deform_base`
@@ -1694,7 +1709,7 @@ CPU 裁剪时按 {3,0,1,2} 重排（不裁时两条对角线画出来一样，�
 | 可画槽位"在不在作用域、被哪条裁" | 593 030 次，**0 分叉** |
 | 同输入 `clipTriangles`（喂参考的世界坐标 / UV / 三角形 / 多边形） | 333 640 次，输出 2110 万顶点，**逐位相同** |
 | 端到端，全 rigid（179 104 项） | 世界坐标最大误差 3.7e-4，UV 3.6e-7 |
-| 端到端，含 weighted | 拓扑相同 99.84%；最大误差 35.5 骨架单位 / UV 0.151 —— u8 权重的 5 单位底噪在**近乎平行的裁剪边**上被放大 |
+| 端到端，含 weighted | 拓扑相同 99.84%；最大误差 35.5 骨架单位 / UV 0.151 —— 当时（v16）u8 权重的 5 单位底噪在**近乎平行的裁剪边**上被放大；v17 的 unorm16 把底噪降到 0.071，**这一格应随之下移**（未重测） |
 
 **同时修掉的两个 UV bug**（v15 之前参考侧加载器不配图集，UV 从没和参考比过）：
 
@@ -2348,6 +2363,63 @@ P4（载入期稠密化 96 MB）仍然只在 P2/P3 做完还差得远时才考�
 214.8 µs）和 P3（"其余"391.9 µs 还没拆开）**；P4（载入期稠密化 96 MB）仍然只在 P2/P3 做完还差得远时才考虑。
 
 ---
+
+---
+
+### 17.7 多实例与内存（2026-10-29）
+
+§17 的主表只回答了"1 个实例、CPU 时间"，而 §0 的收益主张是 **CPU + 内存**，另一半没量过。
+这一节补上：基准加了 `--instances N`（每资产同时跑 N 个实例，两边都按"一帧把 N 个实例拼进
+同一个合包 / 同一个动态 VB"的方式做）和**常驻字节**统计。
+
+⚠️ **量法修正**：spine-cpp 的分配**不走 `operator new`** —— `SpineObject::operator new` 与
+`SpineExtension::alloc` 最终落到 `DefaultSpineExtension::_alloc` → `::malloc`。所以只替换
+`operator new` 数不到它（2026-10-23 那版"spine-cpp 稳态分配合计 11 次"其实只数到了基准
+自己的 `std::vector`，spine-cpp 内部一次都没数到）。现在装了一个计数的 `SpineExtension`
+（`SpineExtension::setInstance`），两条路径共用同一套带头的分配器，常驻字节可以直接比。
+
+**构建（模块已移到 `engine/Libraries/GPUSpine`，自带 CMake）**：
+
+```
+cmake -S engine/Libraries/GPUSpine -B build -DGPUSPINE_BUILD_TESTS=ON \
+      -DGPUSPINE_RAPIDJSON_DIR=<rapidjson include> -DGPUSPINE_REF_ROOT=<spine-cpp 根>
+cmake --build build --config Release --target SpineGpuBenchmark
+build/Tests~/Release/SpineGpuBenchmark.exe G:/OSGame/Client_proj/Project/Assets [--instances N]
+```
+
+**结果（781 资产 / Ryzen 9 9950X / MSVC Release；N=1 用 360 帧、N=16 用 120 帧）**：
+
+| 项（每实例每帧） | 我们 N=1 | 参考 N=1 | 我们 N=16 | 参考 N=16 | 参考/我们 |
+|---|---|---|---|---|---|
+| anim（update+apply） | 3.30 µs | 2.24 | 3.26 | 2.10 | **0.74~0.78x** |
+| pose（约束+世界变换） | 0.93 µs | 0.64 | 0.96 | 0.68 | **0.85~0.86x** |
+| geo（裁剪+攒批 / 顶点生成） | 0.77 µs | 5.18 | 0.81 | 5.16 | **2.28~2.30x** |
+| 合计 | 5.37 µs | 8.49 | 5.35 | 8.28 | **1.40~1.42x** |
+| 上传 | 5.53 KB | 17.29 | 5.58 | 17.27 | **2.57~2.62x** |
+| CPU 顶点数 | 0 | 666 | 0 | 668 | **10.1~10.2x** |
+
+* **两边都随 N 线性增长**（每实例成本与 N=1 基本一致）⇒ 上表可以直接乘 N，没有"攒批摊薄"
+  这类只在某一侧成立的效应。
+* ⚠️ **anim / pose 两段我们比参考慢**（0.78x / 0.86x）：我们多做了 deform 采样、槽位→绘制项
+  解析、每帧裁剪作用域重算；参考侧这些成本被算进了它的 geo（顶点生成）里。赢面全部来自
+  **geo 段不再在 CPU 上算顶点**（2.3x，且 CPU 顶点数 10x 少）。
+* **内存（堆常驻，781 资产平均；GPU 动态部分按 3 帧在途）**：
+
+| | CPU 共享 | CPU 每实例 | GPU 共享 | GPU 每实例/帧 | N=1 总 | N=10 总 | N=100 总 |
+|---|---|---|---|---|---|---|---|
+| 我们 | 229 KB | 43~47 KB | 33.7 KB | 5.5 KB | 571~576 KB | 1331~1382 KB | 8932~9442 KB |
+| spine-cpp | 310 KB | 49~54 KB | 0 | 17.3 KB | 663~670 KB | 1861~1929 KB | 13 833~14 521 KB |
+| 参考/我们 | 1.20x | 1.10x | — | 2.6x | 1.16x | 1.40x | 1.54x |
+
+  ⇒ 共享与每实例两项我们都不大于参考，**任何 N 都是我们更少**；N 越大优势越大（N=100 时
+  1.54x）。原因是每实例那份里参考要存一份动态顶点（每帧 17 KB 上传 × 3 帧在途）。
+
+**v17（unorm16 权重）对这条基准没有影响**：字节数不变，只是解码除数从 255 变 65535。
+它影响的是**精度**——端到端蒙皮对拍里 weighted 顶点的最大误差 **5.21 → 0.071** 骨架单位
+（rigid 不变，1.2e-4），门槛随即从"只跟自己的底噪比"收紧成绝对 0.1 并接进 verdict。
+
+**下一轮该看的**：anim / pose 两段（我们慢的那一侧）—— §17.4 的 P2（解析 + 早退）与
+P3（"其余"没拆开的部分）仍然是最具体的线索。
 
 ## 附：事实来源（已核对）
 

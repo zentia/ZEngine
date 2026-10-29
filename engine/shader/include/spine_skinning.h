@@ -66,11 +66,13 @@ SPINE_PRECISE SPINE_FLOAT2 SpineRootApply(SPINE_FLOAT2 p, float a, float b, floa
     return SpineAffineApply(p, a, b, c, d, tx, ty);
 }
 
-// ---- 影响条目 packed 解码（chunk 22：u16 boneIdx | u8 weight << 16）------
+// ---- 影响条目 packed 解码（chunk 22：u16 boneIdx | u16 weight << 16，v17 起 unorm16）------
 //
 // 整条 4 B 一次读出来再拆，不能单独 Load @2 —— 那个地址不是 4 字节对齐的。
-// ⚠️ 权重必须是 `x / 255.0`，**不要**改成 `x * (1.0 / 255.0)`：
-//    两者在 f32 下不逐位等价，改了就与 CPU 参考实现差一点。
+// ⚠️ 权重必须是 `x / 65535.0`，**不要**改成 `x * (1.0 / 65535.0)`：
+//    两者在 f32 下不逐位等价，改了就与 CPU 侧 `SpineGpuDecodeWeight()` 差一点。
+// v16 及以前是 unorm8（`(packed >> 16) & 0xFF) / 255`）—— 实测 weighted 顶点误差 5.2 骨架单位，
+// u16 降到 0.07（GPUSpine 对拍台 781 资产全量）。
 uint SpineInfluenceBoneIndex(uint packed)
 {
     return packed & 0xFFFFu;
@@ -78,7 +80,7 @@ uint SpineInfluenceBoneIndex(uint packed)
 
 float SpineInfluenceWeight(uint packed)
 {
-    return float((packed >> 16u) & 0xFFu) / 255.0;
+    return float(packed >> 16u) / 65535.0;
 }
 
 // ---- deform 语义（§5 b7）：rigid 替换、weighted 相加 ---------------------

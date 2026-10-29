@@ -13,7 +13,7 @@
 //       手搭根签名，一个 binding 一张表）。
 //     * 裁剪空间 y 方向：DX12 NDC y 向上 ⇒ 渲染器给正的 sy（ClipSpaceYSign）；骨架空间左上象限的
 //       项必须落在图像左上。
-//     * weighted 权重（u8 / 255）、tint 的字节序（alpha 在最高字节）、tint black 公式、b8（CPU 裁剪顶点）。
+//     * weighted 权重（u16 / 65535，v17）、tint 的字节序（alpha 在最高字节）、tint black 公式、b8（CPU 裁剪顶点）。
 //
 // 夹具（64×64 RGBA8，清成 0；骨架空间 [-32,32]² 正好铺满）：
 //   item0 rigid，骨骼 2（平移 +32）⇒ 右上象限，白 —— **永远不该出现**
@@ -262,8 +262,9 @@ int main()
             infl_bind.push_back(q[v * 2]);
             infl_bind.push_back(q[v * 2 + 1]);
         }
-        infl_bone.push_back(0u | (153u << 16));   // 153/255 = 0.6
-        infl_bone.push_back(1u | (102u << 16));   // 102/255 = 0.4
+        // v17 unorm16：round(0.6·65535) = 39321、round(0.4·65535) = 26214，和恰好 65535
+        infl_bone.push_back(0u | (39321u << 16));   // 0.6
+        infl_bone.push_back(1u | (26214u << 16));   // 0.4
     }
     // 2×2 图集：(0,0) 红 (1,0) 蓝 (0,1) 绿 (1,1) 白；texel 中心 UV
     std::vector<float> uvs;

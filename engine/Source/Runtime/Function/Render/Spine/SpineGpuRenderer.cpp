@@ -1,16 +1,16 @@
 #include "Runtime/Function/Render/Spine/SpineGpuRenderer.h"
-#include "Runtime/Function/Render/Spine/SpineGpuClipper.h"
+#include "GPUSpine/SpineGpuClipper.h"
 
 #include "Runtime/Function/Render/Interface/RHI.h"
 #include "Runtime/Core/Base/Macro.h"
 #include "Runtime/Function/Render/RenderCamera.h"
 #include "Runtime/Function/Render/RenderSystem.h"
 #include "Runtime/Function/Render/RenderType.h"
-#include "Runtime/Function/Render/Spine/SpineGpuAnimationState.h"
-#include "Runtime/Function/Render/Spine/SpineGpuAssetFile.h"
-#include "Runtime/Function/Render/Spine/SpineGpuBatch.h"
-#include "Runtime/Function/Render/Spine/SpineGpuPoseSolver.h"
-#include "Runtime/Function/Render/Spine/SpineGpuTintBlack.h"
+#include "GPUSpine/SpineGpuAnimationState.h"
+#include "GPUSpine/SpineGpuAssetFile.h"
+#include "GPUSpine/SpineGpuBatch.h"
+#include "GPUSpine/SpineGpuPoseSolver.h"
+#include "GPUSpine/SpineGpuTintBlack.h"
 #include "core/Log/LogSystem.h"
 
 #include <algorithm>
@@ -1020,7 +1020,7 @@ struct SpineGpuRenderer::Impl
                         const float by = a.influence_bind[(off + k) * 2u + 1u];
                         const SpineInfluenceBone& ib = a.influence_bone[off + k];
                         const SpineGpuBoneSample& b = pose.bones[ib.bone_idx];
-                        const float wgt = static_cast<float>(ib.weight) / 255.0f;
+                        const float wgt = SpineGpuDecodeWeight(ib.weight);
                         x += (bx * b.a + by * b.b + b.world_x) * wgt;
                         y += (bx * b.c + by * b.d + b.world_y) * wgt;
                     }

@@ -1,7 +1,8 @@
 #include "Editor/AssetPipeline/SpineImporter/SpineAutoCook.h"
 
 #include "Runtime/Function/Framework/Component/Spine/SpineRenderer.h"
-#include "Runtime/Function/Render/Spine/SpineGpuAssetFile.h"
+#include "GPUSpine/SpineGpuAssetFile.h"
+#include "GPUSpine/SpineGpuFormat.h"
 #include "core/Log/LogSystem.h"
 
 #include <algorithm>
@@ -55,7 +56,7 @@ namespace SpineAutoCook
             }
             const std::filesystem::path stem = atlas.parent_path() / SpineGpuPathFromUtf8(name.substr(0, name.size() - cut));
             std::error_code ec;
-            for (const char* ext : {".skel.bytes", ".skel", ".json"})
+            for (const char* ext : {".skel.bytes", ".skel"})
             {
                 std::filesystem::path candidate = stem;
                 candidate += ext;
@@ -97,6 +98,20 @@ namespace SpineAutoCook
         }
     }  // namespace
 
+    // 产物的容器版本是不是当前版本。**只比 mtime 不够**：格式升版本（例如 v16 → v17 的 u16 权重）后，
+    // 源文件没动 ⇒ mtime 说"不旧"⇒ 不重烘 ⇒ 读端按规矩硬拒旧版本 ⇒ 场景里的 Spine 全部加载失败。
+    // 只读头 8 字节（magic + version），不解析整个容器。
+    bool CookedVersionIsCurrent(const std::filesystem::path& cooked)
+    {
+        std::ifstream f(cooked, std::ios::binary);
+        uint32_t head[2] = {0, 0};
+        if (!f.read(reinterpret_cast<char*>(head), sizeof(head)))
+        {
+            return false;
+        }
+        return head[0] == SpineGpuConstants::kMagic && head[1] == SpineGpuConstants::kFormatVersion;
+    }
+
     bool IsStale(const std::filesystem::path& skeleton_path)
     {
         const std::filesystem::path out = SpineGpuCookedPathFor(skeleton_path);
@@ -105,6 +120,10 @@ namespace SpineAutoCook
         if (ec)
         {
             return true;   // 没有产物
+        }
+        if (!CookedVersionIsCurrent(out))
+        {
+            return true;   // 旧版本 / 坏头 ⇒ 重烘（读端会硬拒，不重烘就是加载失败）
         }
         const auto skel_time = std::filesystem::last_write_time(skeleton_path, ec);
         if (ec || skel_time > out_time)
