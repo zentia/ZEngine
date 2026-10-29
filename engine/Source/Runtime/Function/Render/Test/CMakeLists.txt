@@ -109,6 +109,21 @@ if(ZENGINE_BUILD_METAL_SPIRV_SHADER_SMOKE_TEST)
     # generated SPIR-V headers live.
     target_link_libraries(MetalSpirvShaderSmokeTest PRIVATE ZRuntime)
 
+    # SPIRV-Cross' MSL backend is plain portable C++, so the test can translate the
+    # built-in SPIR-V to MSL right here on the host and assert the emitted
+    # [[buffer(n)]] / [[texture(n)]] / [[sampler(n)]] indices -- the numbers
+    # MetalRHI's CmdBindDescriptorSetsPFN has to match. That turns "does the Metal
+    # shader still line up" from a Mac-only question into a CI one. On Apple the
+    # target already comes from 3rdparty; off Apple this option pulls it in.
+    if(TARGET spirv-cross-msl)
+        target_link_libraries(MetalSpirvShaderSmokeTest PRIVATE spirv-cross-msl)
+        target_compile_definitions(MetalSpirvShaderSmokeTest PRIVATE
+            ZENGINE_METAL_SPIRV_SMOKE_HAS_SPIRV_CROSS=1)
+    else()
+        message(STATUS
+            "Metal SPIR-V smoke test: spirv-cross-msl unavailable -- host-side MSL checks skipped")
+    endif()
+
     if(TARGET ZEnginePCH)
         target_link_libraries(MetalSpirvShaderSmokeTest PRIVATE ZEnginePCH)
         target_include_directories(MetalSpirvShaderSmokeTest PRIVATE ${ENGINE_ROOT_DIR}/Source/CommonPCH)
@@ -119,6 +134,13 @@ if(ZENGINE_BUILD_METAL_SPIRV_SHADER_SMOKE_TEST)
     if(APPLE)
         target_sources(MetalSpirvShaderSmokeTest PRIVATE
             ${ENGINE_ROOT_DIR}/Source/Runtime/Core/Serialize/Test/SmokeTestAppleLinkStubs.cpp)
+    endif()
+
+    # D 段要把 MSL 槽位的期望值跟 MetalRHI.mm 里的常量对齐（读它的源码文本），
+    # 所以跟 AppleSceneBlitSmokeTest 一样在 configure 期钉死 engine 根。
+    if(DEFINED ENGINE_ROOT_DIR)
+        target_compile_definitions(MetalSpirvShaderSmokeTest PRIVATE
+            "ZENGINE_ENGINE_ROOT_DIR=\"${ENGINE_ROOT_DIR}\"")
     endif()
 
     add_test(NAME MetalSpirvShaderSmokeTest COMMAND MetalSpirvShaderSmokeTest)

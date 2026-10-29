@@ -1780,9 +1780,26 @@ CPU 裁剪时按 {3,0,1,2} 重排（不裁时两条对角线画出来一样，�
   ⚠️ DX12RHI 只在建设备和 device removed 时抽调试层消息；临时每帧抽取 + 故意传负宽视口也抽不到消息
   ⇒ **这台机器上调试层的逐帧校验不可观测**，"无调试层报错"不能当证据。
 * Vulkan 回归：同两份资产实跑，validation 层无报错（图集页改为自建、set 改为一次绑之后）。
-* Metal：**没编译、没跑过**（这台机器没有 Apple 工具链）。只做了静态核对：SPIR-V 用 `spirv-cross --msl
-  --msl-version 20100 --msl-decoration-binding` 按 MetalRHI 的选项能生成 MSL，`gl_InstanceIndex → [[instance_id]]`，
-  9 个 buffer 在 `[[buffer(0..8)]]`（运行时 MetalRHI 再加 8 的偏移）。
+* Metal：**没在 Apple 上跑过**（这台机器没有 Apple 工具链），但"SPIR-V → MSL"这一环已经从
+  "得有一台 Mac 才发现得了"挪到了 CI：`MetalSpirvShaderSmokeTest` 新增的 D 段在**主机上**跑
+  SPIRV-Cross（纯 C++，Windows / Linux 都编得出），按 `MetalRHI::CreateShaderModule` 同一套配置翻译，
+  再直接断言**产物 MSL 的文本**（不是"我们推算的槽位 == 我们推算的槽位"）：
+    - `spine_gpu_vert`：9 个 SSBO 正好落在 `[[buffer(8..16)]]`，一个不多一个不少（多一个就顶到 17、
+      跟顶点 buffer 槽位撞；少一个说明有 binding 没拿到槽位，SPIRV-Cross 会自己从 0 编号）；
+      `gl_InstanceIndex → [[instance_id]]`、`gl_VertexIndex → [[vertex_id]]`；`spvFMul` 在 ⇒
+      `invariant_float_math` 生效（丢了它 fma 会被拆成 mul+add，跟 Vulkan 的逐位一致性没了且不报错）；
+    - `spine_gpu_frag`：`Draws` 在 `[[buffer(13)]]`、图集在 `[[texture(8)]]` / `[[sampler(0)]]`；
+    - 所有内置 blob 的 `[[sampler(n)]]` 全部 <= 15（MSL 硬上限）。
+  另有 4 条把"测试里的期望值"与"实现里的常量"对齐（读 `MetalRHI.mm` 文本，防止两边一起漂）：
+  `k_msl_descriptor_buffer_offset = 8` / `k_msl_descriptor_set_stride = 8` / `k_msl_max_sampler_index = 15` /
+  `baseInstance:firstInstance`。
+  变异（把 buffer 偏移 8 → 9）：顶点与片元各红一条 ⇒ 不是空断言。实测 **73 checks / 0 failures**
+  （Windows，`ctest -R MetalSpirvShaderSmokeTest`）。
+  **仍未覆盖**：转出来的 MSL 过不过 Metal 的运行时编译器、以及实际像素 —— 这两步还是要 Mac。
+* `[[instance_id]]` 含 baseInstance 已按 Apple 官方文档钉死：`drawIndexedPrimitives(...baseInstance:)`
+  写的是"instance_id 从 `baseInstance` 递增到 `baseInstance + instanceCount - 1`"。Spine 是引擎里
+  **唯一**用非零 `firstInstance` 的调用方（其余 pass 全传 0，`mesh.vert` 那种
+  `mesh_instances[gl_InstanceIndex]` 也是配 instanceCount 用的）⇒ 这条语义此前没有任何代码路径验证过。
 * 画面没有人眼看过：屏幕截图（GDI BitBlt）在这台机器上得到全黑（桌面不可见）。
 
 #### 多实例（2026-10-23）

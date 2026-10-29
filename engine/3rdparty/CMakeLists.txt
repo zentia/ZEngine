@@ -242,25 +242,44 @@ endif()
 # The engine's shaders are GLSL compiled to SPIR-V; Metal only accepts MSL, so
 # the Metal backend runs SPIR-V through SPIRV-Cross' MSL backend at shader
 # module creation time (see MetalRHI::CreateShaderModule). Only needed where the
-# Metal backend is built (Apple).
-if(APPLE AND NOT TARGET spirv-cross-msl)
-    set(SPIRV_CROSS_CLI           OFF CACHE BOOL "" FORCE)
-    set(SPIRV_CROSS_ENABLE_TESTS  OFF CACHE BOOL "" FORCE)
-    # NOTE: SPIRV-Cross' MSL backend is implemented on top of its GLSL backend
-    # (CompilerMSL derives from CompilerGLSL), so GLSL support must stay ON.
-    set(SPIRV_CROSS_ENABLE_GLSL   ON  CACHE BOOL "" FORCE)
-    set(SPIRV_CROSS_ENABLE_HLSL   OFF CACHE BOOL "" FORCE)
-    set(SPIRV_CROSS_ENABLE_CPP    OFF CACHE BOOL "" FORCE)
-    set(SPIRV_CROSS_ENABLE_REFLECT OFF CACHE BOOL "" FORCE)
-    set(SPIRV_CROSS_ENABLE_C_API  OFF CACHE BOOL "" FORCE)
-    set(SPIRV_CROSS_ENABLE_UTIL   OFF CACHE BOOL "" FORCE)
-    set(SPIRV_CROSS_SKIP_INSTALL  ON  CACHE BOOL "" FORCE)
-    set(SPIRV_CROSS_WERROR        OFF CACHE BOOL "" FORCE)
-    add_subdirectory(spirv-cross)
-    if(TARGET spirv-cross-msl)
-        set_target_properties(spirv-cross-core spirv-cross-glsl spirv-cross-msl
-            PROPERTIES FOLDER ${third_party_folder}/spirv-cross)
-        message(STATUS "3rdparty: SPIRV-Cross enabled (SPIR-V -> MSL for the Metal backend)")
+# Metal backend is built (Apple)...
+#
+# ...plus one host-side consumer: MetalSpirvShaderSmokeTest translates the
+# built-in SPIR-V to MSL and asserts the emitted [[buffer(n)]]/[[texture(n)]]/
+# [[sampler(n)]] indices still match what MetalRHI's CmdBindDescriptorSetsPFN
+# binds. SPIRV-Cross is plain portable C++, so that check does not need a Metal
+# device and can run on the Windows/Linux CI boxes -- which is the whole point:
+# without it, a slot-number drift in the Metal path stays invisible until
+# somebody runs the editor on a Mac.
+#
+# NOTE: this is read before Source/Runtime declares the option, so it only sees
+# the value when it comes from the cache (-DZENGINE_BUILD_METAL_SPIRV_SHADER_SMOKE_TEST=ON).
+if((APPLE OR ZENGINE_BUILD_METAL_SPIRV_SHADER_SMOKE_TEST) AND NOT TARGET spirv-cross-msl)
+    if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/spirv-cross/CMakeLists.txt")
+        # 子模块没拉。add_subdirectory 会甩一句"找不到 CMakeLists.txt"就中止，
+        # 那句话看不出要补的是哪一步，所以这里先说清楚。
+        message(WARNING
+            "3rdparty: spirv-cross submodule is missing -- SPIR-V -> MSL unavailable. "
+            "Run: git submodule update --init --depth 1 engine/3rdparty/spirv-cross")
+    else()
+        set(SPIRV_CROSS_CLI           OFF CACHE BOOL "" FORCE)
+        set(SPIRV_CROSS_ENABLE_TESTS  OFF CACHE BOOL "" FORCE)
+        # NOTE: SPIRV-Cross' MSL backend is implemented on top of its GLSL backend
+        # (CompilerMSL derives from CompilerGLSL), so GLSL support must stay ON.
+        set(SPIRV_CROSS_ENABLE_GLSL   ON  CACHE BOOL "" FORCE)
+        set(SPIRV_CROSS_ENABLE_HLSL   OFF CACHE BOOL "" FORCE)
+        set(SPIRV_CROSS_ENABLE_CPP    OFF CACHE BOOL "" FORCE)
+        set(SPIRV_CROSS_ENABLE_REFLECT OFF CACHE BOOL "" FORCE)
+        set(SPIRV_CROSS_ENABLE_C_API  OFF CACHE BOOL "" FORCE)
+        set(SPIRV_CROSS_ENABLE_UTIL   OFF CACHE BOOL "" FORCE)
+        set(SPIRV_CROSS_SKIP_INSTALL  ON  CACHE BOOL "" FORCE)
+        set(SPIRV_CROSS_WERROR        OFF CACHE BOOL "" FORCE)
+        add_subdirectory(spirv-cross)
+        if(TARGET spirv-cross-msl)
+            set_target_properties(spirv-cross-core spirv-cross-glsl spirv-cross-msl
+                PROPERTIES FOLDER ${third_party_folder}/spirv-cross)
+            message(STATUS "3rdparty: SPIRV-Cross enabled (SPIR-V -> MSL for the Metal backend)")
+        endif()
     endif()
 endif()
 
