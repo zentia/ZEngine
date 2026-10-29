@@ -131,10 +131,19 @@ namespace
             out_already_saved = true;
             return PrefabUtilityEditor::ApplyAllToVariant(instance, include_structure);
         }
-        // A plain prefab has no structural Apply: the source graph would need new
-        // objects with new fileIDs. ApplyAll applies properties only; component
-        // overrides stay on the instance (the Inspector lists them as Revert-only).
-        return instance->GetModifications().empty() ? 0 : PrefabUtilityEditor::ApplyAll(instance);
+        // A plain prefab: properties splice into the shared source objects, and structure
+        // goes into the source graph itself (PrefabUtilityEditor::ApplyStructureToSource —
+        // new objects minted under fresh fileIDs before the file is written).
+        int applied = instance->GetModifications().empty() ? 0 : PrefabUtilityEditor::ApplyAll(instance);
+        if (include_structure)
+        {
+            bool structure_saved = false;
+            applied += PrefabUtilityEditor::ApplyStructureToSource(instance, &structure_saved);
+            // ApplyStructureToSource writes the file itself (it has to: the new objects need
+            // their fileIDs registered first). Tell FinishApply not to save again.
+            out_already_saved = out_already_saved || structure_saved;
+        }
+        return applied;
     }
 
     PrefabOverrideModel::ApplyReport FinishApply(const Level* level, PrefabInstance* instance, int applied,
@@ -218,14 +227,13 @@ namespace PrefabOverrideModel
             rows.push_back(row);
         }
 
-        const bool variant = SourceIsVariant(instance);
         for (const PPtr<Component>& p : instance->GetAddedComponents())
         {
             OverrideRow row;
             row.kind = OverrideRow::Kind::AddedComponent;
             row.target = PPtr<Object>(static_cast<Component*>(p));
             row.label = label_of(static_cast<Component*>(p));
-            row.can_apply = variant;
+            row.can_apply = true;  // both a Variant and a plain prefab can now take structure
             rows.push_back(row);
         }
         for (const PPtr<Component>& p : instance->GetRemovedComponents())
@@ -244,7 +252,7 @@ namespace PrefabOverrideModel
                 if (GameObject* go = Cast<GameObject>(inst_host))
                     row.label = go->GetName() + " / " + row.label;
             }
-            row.can_apply = variant;
+            row.can_apply = true;  // both a Variant and a plain prefab can now take structure
             rows.push_back(row);
         }
         return rows;

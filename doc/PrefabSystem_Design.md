@@ -614,6 +614,31 @@ public:
     - `MotorComponent::PostLoadResource` 的 `ObjectManager`：`RegisterCore` 注册，所有进程都有，不改。
     - **剩下约 150 处未逐个看**（AssetManager 26、WorldManager 21、WindowSystem 19、InputSystem 11…，多在渲染 / 窗口 / 输入层）：它们不在 prefab 加载路径上，本轮没有证据说它们会在无头进程里被执行，所以**没有改动**。这是『没发现问题』而不是『确认没有问题』。
 
+32. **普通 prefab 的结构性 Apply（P24）**：Variant 早就能提交新增/移除的组件，普通 prefab 不能——`ListOverrides` 把这些行标成 `can_apply=false`，
+    `ApplyToSource` 直接跳过，于是实例上新增的组件只能 Revert，被抑制的组件永远无法真正从源里删掉。**为什么比 Variant 路径难**：Variant 只是往自己的侧表追加一条记录，
+    普通 prefab 却要往**源图里塞一个新对象**——而源图里每个对象是按它已有的 fileID 写的，新对象还没有 fileID，`SaveSourcePrefab` 遇到没有 identity 的对象会拒绝**整个写入**
+    （"a source object is not in <file>"）。所以新对象必须在保存**之前**先领 fileID：`GetInstanceIDFromPathAndFileID(path, id)` 拿到 ID，再用 `Produce(type, 该ID)` 造对象。
+    不能用 `CloneObjectViaSerialization`：它自己挑 ID，和 fileID 对不上（变异 S9 验证过，它会让保存失败、整轮回滚）。
+
+    两处**不看代码根本想不到**的坑：
+    * `m_Component`（序列化清单）和 `m_Components`（活列表）是两个容器，`addComponent`/`EditorRemoveComponent` 只动后者；不调 `SyncSerializedComponents()` 的话，
+      **文件里的 GameObject 仍是旧形状**，新组件要到**重新加载**时才消失——只看内存里缓存的那张图完全看不出来（这正是 S1 第一次存活的原因，补了『把文件复制一份重新加载』才转红）。
+    * 被移除的组件对象**故意不销毁**：别的实例还拿它配对，Merge 要能解析到它；它只退出图，也就退出文件。于是它的 fileID 槽仍被占着，却**不在**『图内最大值』里。
+      若上一次 Apply 移除的正好是最高 fileID 的那个，下一次新增就会抢它的槽——`Produce` 到那个已铸造的 ID 上会让所有指向旧组件的 PPtr 解析成**新对象**。
+      分配规则：图内最大值 +1，再跳过仍被活对象占着的槽；测试把 doomed 挂在子节点上（它拿到最高 fileID）并分两轮 Apply（先只移除、再只新增）才覆盖到（S6）。
+
+    保存失败会**回滚**（摘掉新挂的模板、把移除的挂回去、销毁新建对象），因为半应用的源会和文件不一致，下一次 Merge 会渗进所有实例。回滚路径本身**没测到**——本机造不出写失败。
+
+    测试 P24：先红 12 项；实现后第一轮仍红 3 项（Merge），原因是**测试自己的问题**——实例没有 `PlaceInLevel`，`FinishApply` 的自动合并扫不到它，改成和 P19 一样显式 `MergeFromSource`。
+    **10 个变异：9 个抓住，2 个先存活后补测转红，1 个等价**。
+
+    ⚠️ **上游 155ff0d（标题是 docs(gpuspine)）把 §9.4.1 32/33/34 对应的代码、测试与文档全部删掉了**——即 P22（相机默认参数）与 P23（Motor/Controller 泄漏）
+    的修复被整体回退，同一提交还删了 `engine/Source/Runtime/Function/Render/Spine/*` 的头文件，而 `SpineRenderer.cpp` 仍在 include 它们，
+    于是本机 `types` 套件在纯净 origin/main 上就编不过（已加临时过滤：SpineRenderer 的 .cpp 与 .gen.cpp **两个都**留给归档，
+    只留一半会在启动时 dyld "symbol not found"）。本条 P24 是在这个被回退过的基线上重新落地的。S1（不 sync 序列化清单）与 S6（不跳过仍被占用的 fileID 槽）一开始都存活，都是**测试缺口**不是实现问题，
+    分别靠『从文件重新加载』和『被移除的对象占着最高 fileID』补上；S10（从 header 而非图内最大值起算）是等价变异——在测试覆盖到的情形里两道防线的落点相同，
+    只有『某个对象被销毁、槽空出来』时才会分叉，本机没有这种路径。
+
 **未验证**：编辑器里真的拖一个 Prefab 进场景、在 Inspector 上改值后 Apply、保存场景再打开（UI 链路本身是第 3 条，未接）。`Level::load(url)` 带物理场景的完整路径未在无头环境跑过（它与 `LoadObjectGraph` 的差别只在建物理场景）。**Inspector 的 ZSlate 渲染**（结构行的按钮、can_apply 的显隐）只过了 `-fsyntax-only`，没有上机看。
 
 
