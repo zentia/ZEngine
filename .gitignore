@@ -499,3 +499,21 @@ build_ctest_check/
 # 脚本全链路测试用的 zengine.d.ts：scripts/check_ts_chain.py 从运行时注册表现导
 # 出来的，和编辑器给项目写的那份同源，不能签进 VCS。
 /engine/Source/Runtime/Scripting/ScriptVM/Test/Typings/
+
+# ---------------------------------------------------------------------------
+# Vendored ZSlate (engine/Libraries/ZSlate, de-submoduled 2026-10-29).
+#
+# Two of the CMake/VS boilerplate rules above are written for BUILD OUTPUT and
+# swallow real ZSlate SOURCE once the library is tracked in this repo:
+#   line 34  `Testing`        -> include/ZSlate/Testing/   (SlateRecordingRenderer.h)
+#   line 102 `[Ww][Ii][Nn]32/`-> {include/ZSlate,src}/Platform/Win32/
+# Five source files silently vanished from `git add` before these negations --
+# including the Win32 host and DPI code the Windows build needs.
+#
+# Scoped re-includes rather than narrowing the rules above: those rules still
+# earn their keep elsewhere in the tree, and a negation cannot re-include a
+# file whose parent directory is excluded, so the DIRECTORY has to be named.
+# ZSlate's own engine/Libraries/ZSlate/.gitignore keeps its build/ out.
+!engine/Libraries/ZSlate/include/ZSlate/Testing/
+!engine/Libraries/ZSlate/include/ZSlate/Platform/Win32/
+!engine/Libraries/ZSlate/src/Platform/Win32/

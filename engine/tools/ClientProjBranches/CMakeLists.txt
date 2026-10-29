@@ -4,10 +4,12 @@ project(ClientProjBranches LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# ZSlate: the engine's canonical copy (git submodule), built as a static library.
+# ZSlate: the engine's canonical copy, built as a static library. Vendored
+# in-tree since 2026-10-29 (it used to be a git submodule), so a plain checkout
+# already has it -- there is no submodule to initialise.
 set(ZSLATE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/../../Libraries/ZSlate")
 if(NOT EXISTS "${ZSLATE_PATH}/CMakeLists.txt")
-    message(FATAL_ERROR "ZSlate not found at ${ZSLATE_PATH} - run 'git submodule update --init engine/Libraries/ZSlate'")
+    message(FATAL_ERROR "ZSlate not found at ${ZSLATE_PATH} - the tree is incomplete")
 endif()
 # Guarded so this project can also be added to a full-tree configure, where
 # add_subdirectory(engine) has already created the ZSlate target. Adding it a

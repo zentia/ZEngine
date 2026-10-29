@@ -1,0 +1,32 @@
+# Build output
+build/
+out/
+*.o
+*.obj
+*.a
+*.lib
+*.dll
+*.so
+*.dylib
+
+# IDE
+.vs/
+.vscode/
+*.user
+*.suo
+*.opensdf
+*.sdf
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test artifacts
+test-results/
+coverage/
+
+# Dependencies (when vendored)
+third_party/
+external/
+vendor/
+build_example*.log
