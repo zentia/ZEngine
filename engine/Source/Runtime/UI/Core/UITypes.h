@@ -68,28 +68,17 @@ struct UIRect
     }
 };
 
-// UI边距（用于padding、margin等）
-struct FMargin
-{
-    float Left {0.0f};
-    float Top {0.0f};
-    float Right {0.0f};
-    float Bottom {0.0f};
-
-    FMargin() = default;
-    explicit FMargin(float uniform)
-        : Left(uniform), Top(uniform), Right(uniform), Bottom(uniform) {}
-    FMargin(float horizontal, float vertical)
-        : Left(horizontal), Top(vertical), Right(horizontal), Bottom(vertical) {}
-    FMargin(float l, float t, float r, float b)
-        : Left(l), Top(t), Right(r), Bottom(b) {}
-
-    ZSlate::FMargin ToZSlate() const { return ZSlate::FMargin(Left, Top, Right, Bottom); }
-    static FMargin FromZSlate(const ZSlate::FMargin& z) { return FMargin(z.Left, z.Top, z.Right, z.Bottom); }
-
-    float GetTotalHorizontal() const { return Left + Right; }
-    float GetTotalVertical() const { return Top + Bottom; }
-};
+// UI边距（用于padding、margin等）。
+//
+// 就是 ZSlate::FMargin，不是副本。这里原本有一份字段与构造函数逐一相同的
+// 独立 struct，外加 ToZSlate() / FromZSlate() 两个桥接（两者都没有任何调用
+// 点——它们只为了在两份相同的类型之间倒腾而存在）。
+//
+// 两份同名类型的真实代价：编辑器里的文件既 include 本头文件、又写
+// `using namespace ZSlate`，于是 `FMargin(...)` 变成 C2872 二义性，必须处处
+// 写成 `ZSlate::FMargin(...)` 才能编过。做成别名之后两个名字指向同一个实体，
+// 查找不再有歧义，限定与非限定写法都能用。
+using FMargin = ZSlate::FMargin;
 
 // 矩形偏移（用于padding等）
 struct RectOffset
