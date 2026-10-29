@@ -47,6 +47,9 @@ class CameraComponent : public Component
 
 public:
     CameraComponent() = default;
+    /// Frees the DEFAULT camera parameter this component created (and only that one:
+    /// a parameter passed to Initialize() or read from a file belongs to its creator).
+    ~CameraComponent() override;
 
     void PostLoadResource(GameObject* parent_object) override;
     void OnSerializedFieldsUpdated() override;
@@ -93,6 +96,23 @@ private:
     bool m_IsMainCamera {false};
     ZPROPERTY(Name="settings")
     CameraComponentRes m_CameraRes;
+
+    /// Instance ID of the default CameraParameter this component created itself, or 0 when
+    /// the current parameter came from elsewhere. Held as an ID, not a pointer, on purpose:
+    /// it is compared against the live parameter's ID, so a parameter that was replaced
+    /// from outside (Initialize / a field edit) is never freed by mistake. NOT serialized.
+    int32_t m_OwnedDefaultParameterId {0};
+
+    /// Create a default parameter for `mode` through ObjectManager::NewObject (real instance
+    /// ID, so the PPtr resolves) and remember it as owned. Frees a previously owned one.
+    void CreateOwnedDefaultParameter();
+    /// Destroy the owned default parameter, if any (looked up by the remembered ID, so it is
+    /// freed even after something else replaced it as the current parameter).
+    void ReleaseOwnedDefaultParameter();
+    /// A CLONE (prefab instantiate, copy/paste) comes out of a serialization round trip with
+    /// the original's parameter ID, i.e. pointing at a default the ORIGINAL owns and will free.
+    /// If this camera's parameter is owned by another camera, replace it with a private copy.
+    void DetachFromParameterOwnedElsewhere();
 
     Vector3 m_Position;
 

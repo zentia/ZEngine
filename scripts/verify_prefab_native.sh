@@ -133,8 +133,8 @@ run_e2e() {
     if ! echo "${out}" | grep -q "checks,"; then echo "(no result line — the test crashed or did not link)"; status=1; fi
     # In `types` mode every runtime type is registered, so a skipped P21 means the link line
     # lost Camera / Particle -- and the null-system regression guard would silently vanish.
-    if [ "${1:-}" = "types" ] && echo "${out}" | grep -q "P21 skipped"; then
-        echo "(P21 was skipped in types mode: CameraComponent / ParticleComponent are not registered)"; status=1
+    if [ "${1:-}" = "types" ] && echo "${out}" | grep -qE "P2[12] skipped"; then
+        echo "(P21/P22 was skipped in types mode: CameraComponent / ParticleComponent are not registered)"; status=1
     fi
 }
 

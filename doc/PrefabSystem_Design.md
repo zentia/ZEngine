@@ -515,7 +515,7 @@ public:
    - ~~**Variant 结构性覆盖**~~ —— **已落地（2026-10-27）**。上面那轮只覆盖了"改值"，加/删组件仍只有 `PrefabInstance` 那一份（`m_added_components` / `m_removed_components`），Variant 的永远为空。难点在"加组件"：Variant 不拥有对象树，那个组件对象得有去处 —— 解法是让 Variant 文件携带它（header 在 fileID 1，新增组件在 2..N，`SaveVariantAsset` 一起写，header 用 `ImmediatePtr` 指向），于是 `SaveVariantAsset` 不再是恒写单对象。实例化时新增组件**必须克隆**（它和 base 模板一样是共享的，交出去就是 P14 的翻版），顺序是先删后加、且整体在 `PostLoadResource` 之前。测试 M 组 32 项（两轨各 12），其中 M11 / M12 钉的就是"拿到的不是模板对象本身"和"两次实例化拿到两个独立组件"。2 处变异各转红。
    - ~~**结构性覆盖的 Revert / MergeFromSource / Inspector**~~ —— **已落地（A8，2026-10-27）**，见 §9.4.1 的 21–26。
    - ~~结构性 Revert 没进撤销栈~~ —— **已落地（2026-10-28）**，见 §9.4.1 的 29。
-   - **尚未做**：① ~~结构性 Revert 没进撤销栈~~（已做）；② **普通 prefab 的结构性 Apply**——要给源图加新对象、分新 fileID，Inspector 对这类行只给 Revert；③ **结构性覆盖的 ZSlate 界面没上机看**，只过 `-fsyntax-only`；④ ~~Camera / Particle 里同型的空指针~~（已修，§9.4.1 30）；⑤ **相机默认参数没有 instance ID**（§9.4.1 30，未改）。
+   - **尚未做**：① ~~结构性 Revert 没进撤销栈~~（已做）；② **普通 prefab 的结构性 Apply**——要给源图加新对象、分新 fileID，Inspector 对这类行只给 Revert；③ **结构性覆盖的 ZSlate 界面没上机看**，只过 `-fsyntax-only`；④ ~~Camera / Particle 里同型的空指针~~（已修，§9.4.1 30）；⑤ ~~相机默认参数没有 instance ID~~（已修，§9.4.1 32）。
 
 5. ~~**Cook 阶段 flatten**~~ —— **已落地（2026-10-26）**。场景里的 GameObject 树本来就是实例化 + 覆盖后的实体（`PrefabSceneBinding` 保存的就是它），所以 flatten = 去掉簿记对象，不需要重新展开。`Editor/Build/SceneCook.{h,cpp}`：`CookSceneFile` 去掉所有 `kTypeIsEditorOnly` 类型的对象，并裁掉只被它们引用的外部引用（源 `.prefab`），其余对象里的外部引用索引随之重编号；指向被删对象的引用置空并计数。纯文本层（`ZYaml::StripObjectsFromGraph`），不 Produce 对象，编辑器里开着同一个场景时打包也不受影响。`AssetBundleBuilder` 对 `.scene` 在源文件比烘焙副本新时重烘焙到 `Intermediate/Cooked/<平台>/` 并打包烘焙副本。只处理 YAML 场景；二进制关卡原样拷贝并告警。
    - 顺带修：`REGISTER_CLASS_TRAITS(kTypeIsEditorOnly)` 以前是**死元数据**——`IMPLEMENT_REGISTER_CLASS` 只把 `kTypeIsAbstract` 传进运行时 `Type`。现在 `Type::isEditorOnly` / `IsEditorOnly()`（末位成员带默认值，既有的位置初始化列表不受影响）。
@@ -613,6 +613,11 @@ public:
     - **`TimelineComponent::PostLoadResource`**：同型，已加空检查；**但没有被测试保护**——默认组件的资产路径为空，`LoadTimelineAsset()` 立刻返回 false，WorldManager 那行在默认状态下**不可达**；把守卫还原成无保护，测试仍是绿的（变异存活，如实记录）。要覆盖需要真实 `.timeline` 文件 + 设置私有 `m_TimelineRes`，成本明显高于它要保护的 3 行空检查，所以选择不硬凑。P21 里该断言的措辞已改成它真实证明的东西。
     - `MotorComponent::PostLoadResource` 的 `ObjectManager`：`RegisterCore` 注册，所有进程都有，不改。
     - **剩下约 150 处未逐个看**（AssetManager 26、WorldManager 21、WindowSystem 19、InputSystem 11…，多在渲染 / 窗口 / 输入层）：它们不在 prefab 加载路径上，本轮没有证据说它们会在无头进程里被执行，所以**没有改动**。这是『没发现问题』而不是『确认没有问题』。
+
+32. **相机默认参数的创建与销毁（方案 A，P22）**：§9.4.1 30 发现 `createDefaultCameraParameter()` 用 `MemoryManager::CreateObject` 造的默认参数**没有 instance ID**，`PPtr<CameraParameter>(ptr)` 读回 null，`PostLoadResource` 在 "camera parameter is null" 处提前返回，渲染交接是死代码；同时没有任何地方销毁它，**每个相机泄漏一个**。现在：① 改用 `ObjectManager::NewObject<T>()`（真实的负 instance ID，PPtr 可解析）；② `CameraComponent` 加析构，`ReleaseOwnedDefaultParameter()` 只释放**自己创建的**那一个（`m_OwnedDefaultParameterId`，按 ID 查找而非按 PPtr），用 `MemoryManager::DestroyObject` 释放——`NewObject` 是 mimalloc，这是它的正确配对；③ 外部传入（`Initialize`）或文件读出的参数**不归相机管**，`Initialize` 替换时只释放被替换掉的默认；④ 模式切换（`OnSerializedFieldsUpdated`）换新默认时释放旧默认。
+    **克隆是整个设计里最容易漏的一环**：克隆（prefab 实例化、复制粘贴）经过序列化往返，PPtr 原样写入 instance ID，于是克隆和原件指向**同一个**参数，原件一销毁克隆就悬空。所以 `PostLoadResource` 里 `DetachFromParameterOwnedElsewhere()` 查一张 `参数ID → 拥有它的相机` 的登记表（匿名命名空间里的 side table，没有改可序列化的 `CameraParameter`），发现参数属于另一个相机就用 `NewObject` 复制一份私有的（**不用** `CloneObjectViaSerialization`：它走 `Produce`/`new`，和 `DestroyObject` 不配对）。
+    测试 P22（真 `ObjectManager`）：默认参数可解析、类型正确；克隆拿到**自己的**参数且值被复制（fov 77 而非默认 50）；销毁原件释放其参数而克隆的不受影响；销毁克隆释放克隆的；外部参数不被释放；外部参数**替换**已有默认时释放默认；模式切换释放旧默认。**7 个变异：6 个被抓住，1 个等价**。其中 A4（`Initialize` 不释放旧默认）第一次存活——因为原测试先 `Initialize` 再 `PostLoadResource`，此时没有旧默认可泄漏，前提没成立；补了 5b『先有默认、后被替换』才转红。A3（`Release` 里不清零 ID）是**等价变异**：堆 ID 只递减、从不复用（`m_NextHeapInstanceID`），二次进入只会查到已注销的 ID。清零保留为防御性写法，注释里写明，不为让变异转红而硬凑测试。
+    **没解决的**：登记表按相机指针记录，**相机在不同线程并发 PostLoadResource 的顺序**没测过（表有互斥）；`CharacterController` / `MotorComponent` 用 `NewObject` 造的 `RigidBodyShape` / `Capsule` 看起来有同样的泄漏，我只读了代码没追查到底，**未改**。
 
 **未验证**：编辑器里真的拖一个 Prefab 进场景、在 Inspector 上改值后 Apply、保存场景再打开（UI 链路本身是第 3 条，未接）。`Level::load(url)` 带物理场景的完整路径未在无头环境跑过（它与 `LoadObjectGraph` 的差别只在建物理场景）。**Inspector 的 ZSlate 渲染**（结构行的按钮、can_apply 的显隐）只过了 `-fsyntax-only`，没有上机看。
 
