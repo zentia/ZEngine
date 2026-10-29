@@ -999,7 +999,7 @@ spine.alpha <track> <0..1>                         # 轨道当前那条的 alpha
   工程里 0 / 782 资产有，未接时间轴。对拍：`SpineGpuRefParityTest` S5 用 `AnimationStateListener` 收参考事件逐帧比，
   全量 **101,369 条事件逐条一致**（start 13969 / interrupt 7696 / end 10369 / complete 58121 / dispose 11214）；
   变异（去掉 SetCurrent 的 interrupt）⇒ 425 个资产报不一致，证明比较是有牙的。`SpineGpuImportTest` §8 有手算用例。
-* **IK / transform / pathSpacing 时间轴**：仍**显式报错**（实测 0 / 782 资产用到）。
+* ~~**IK / transform / pathSpacing 时间轴**~~ —— **已做（2026-10-30）**，见下面 §7.0.9。
 * **换肤**：附件仍只在 default 皮肤里解析。
 
 ### 7.0.8 用户事件已落地（2026-10-23）：chunk 23 + 时间轴 type 7（格式 v15 → v16）
@@ -1026,6 +1026,45 @@ spine.alpha <track> <0..1>                         # 轨道当前那条的 alpha
   调度事件**只**来自"动画变长了"，不是调度逻辑被改坏。手算夹具 `SpineGpuEventFixture.h`（step / sfx / blank / mute 四类事件 ×
   walk / late / solo / burst 四条动画）45 条检查、1491 断言；变异（去掉 `mix < eventThreshold` 判据、
   事件全放 complete 之后）都被抓到；C# 往返逐字节相同；spineboy 自动 cook + TS 探针收到用户事件。
+
+### 7.0.9 约束参数时间轴已落地（2026-10-30）：IK / transform / pathSpacing
+
+上面"仍显式报错"那条已被**推翻**。这三类时间轴不改骨骼 / 槽位，只改"约束这一帧用多少权重"
+（`IkConstraint::_mix / _bendDirection / _compress / _stretch`、`TransformConstraint::_rotateMix` 等、
+`PathConstraint::_spacing`），而**约束解算读的就是这些运行时值**：
+
+* `SpineGpuSkeletonState` 新增 IK（mix / bend_dir / compress / stretch）与 transform
+  （rotate / translate / scale / shear mix）的运行时数组，初值 = setup
+  （`Skeleton::setBonesToSetupPose()`，`Skeleton.cpp:223-258`）。
+* `SpineGpuUpdateWorld` **改读状态里的值**：以前 `PoseContext` 读的是 `asset.iks[].mix` /
+  `asset.transforms[].*_mix`（setup 常量）⇒ 时间轴写了也不生效（静默错的姿势）。
+  顺带把每帧 4 次 path 参数 `vector` 拷贝换成直接引用（少 4 次 assign / 帧）。
+
+三条"照抄"的参考语义（改了就与参考对不上，且不报错）：
+
+| # | 位置 | 行为 |
+|---|---|---|
+| 1 | `IkConstraintTimeline.cpp:126-134` | `MixBlend_Setup` 分支里 `bendDirection` 读 `_frames[_frames.size() + PREV_BEND_DIRECTION]` = **末帧**，而同一处的 compress / stretch 读 `frame + PREV_*` = **前一帧** —— 3.8 的笔误 |
+| 2 | `IkConstraintTimeline.cpp:137-141` | `Replace / First` 分支三个都读**前一帧**（没有笔误）。第一次实现把 #1 当成通例写进两支，夹具立刻分叉（`ik.bendDir 我们 1 vs 参考 -1`） |
+| 3 | 两个分支都 | `MixDirection_Out`（淡出）时：`Setup` 分支把三个开关复位成 setup，`Replace / First` 分支**干脆不写**；只有 `mix` 始终按 alpha 混合 |
+
+**覆盖面**：OSGame 782 个资产用到这三类时间轴的仍是 **0** 个 ⇒ 靠手写的
+`SpineGpuConstraintFixture.h`（1 个 IK + 2 个 transform（absolute-world / relative-local）+ 1 个 path，
+三个动画，帧值全不等于 setup，bezier + stepped 各一条，`bendPositive` 帧间翻转）。
+夹具里两个"静默坑"：曲线只能写在**非末帧**（`CurveTimeline.cpp:78` 断言 `frameIndex < _segmentCount`，
+带曲线的时间轴必须 ≥ 3 帧）；动画里的 path 时间轴段键名是 **`"paths"`**（约束定义才是 `"path"`），
+写成 `"path"` 时**两边都静默忽略**（`SkeletonJson.cpp:770`），时间轴凭空消失且无任何报错。
+
+**验证**（2026-10-30）：
+
+* `SpineGpuImportTest` 手算 16 条检查 / 1536 断言全过（含"把 `ik_mix` 改回 setup ⇒ 骨骼世界位置变了"
+  这条牙口，证明解算器读的是状态不是 setup）。
+* `SpineGpuRefParityTest`：新增**约束运行时参数的逐帧语义对拍**（不只是骨骼坐标）——
+  每帧拿 `state.ik_mix / tf_*_mix / path_*` 与参考的 `getMix() / getRotateMix() / getSpacing()` 直接比。
+  全量 **3,694,800 次比较，其中不等于 setup 的 210,058 次，与参考对不上 0**；
+  verdict 新增一条门：覆盖面（`constraint_param_moved`）必须 ≠ 0，否则"夹具没加载成功 /
+  时间轴被静默跳过"会伪装成 PASS。
+* 781 资产：**0 分叉**，骨骼最大相对误差 3.6e-06（与改动前一致）。
 
 ---
 
