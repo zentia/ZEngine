@@ -470,30 +470,66 @@ void ParticlePass::EnsureAttachmentsInitialized()
         return;
     }
 
+    // 缺资源时**必须**早退，不能照样往下解引用。
+    //
+    // LoadTextureHDR() 在 stbi_loadf 读不到文件时返回 nullptr
+    // (RenderResourceBase.cpp)，原来的代码直接拿返回值取 ->m_Width：
+    //     EXC_BAD_ACCESS / SIGSEGV, KERN_INVALID_ADDRESS at 0x0
+    // 栈停在 ParticlePass::EnsureAttachmentsInitialized()，也就是每帧第一件事
+    // —— 首帧就崩，而且从崩溃报告上只会看到"粒子 pass 里空指针"，看不出其实是
+    // **纹理没打进包 / 工程没配**。2026-10-30 在 iOS 模拟器上踩到：DeviceSmoke
+    // 是个空工程，GlobalParticleRes 里两张图的路径是空的，于是每次都崩。
+    auto skip_once = [this](const char* what) {
+        if (!m_AttachmentLoadFailedLogged)
+        {
+            m_AttachmentLoadFailedLogged = true;
+            LOG_ERROR(ZParticle,
+                      "ParticlePass: attachments not initialized ({}) -- particles stay invisible",
+                      what);
+        }
+    };
+
+    GlobalParticleRes* global_res = m_ParticleManager->GetGlobalParticleRes();
+    if (global_res == nullptr)
+    {
+        skip_once("no GlobalParticleRes loaded");
+        return;
+    }
+
     // Load billboard texture
     {
-        std::shared_ptr<TextureData> m_ParticleBillboardTextureResource = m_RenderResource->LoadTextureHDR(
-            m_ParticleManager->GetGlobalParticleRes()->m_ParticleBillboardTexturePath);
+        std::shared_ptr<TextureData> billboard_texture =
+            m_RenderResource->LoadTextureHDR(global_res->m_ParticleBillboardTexturePath);
+        if (!billboard_texture)
+        {
+            skip_once("particle billboard texture could not be loaded");
+            return;
+        }
         m_Rhi->CreateGlobalImage(m_ParticleBillboardTextureImage,
                                  m_ParticleBillboardTextureImageView,
                                  m_ParticleBillboardTextureVmaAllocation,
-                                 m_ParticleBillboardTextureResource->m_Width,
-                                 m_ParticleBillboardTextureResource->m_Height,
-                                 m_ParticleBillboardTextureResource->m_Pixels,
-                                 m_ParticleBillboardTextureResource->m_Format);
+                                 billboard_texture->m_Width,
+                                 billboard_texture->m_Height,
+                                 billboard_texture->m_Pixels,
+                                 billboard_texture->m_Format);
     }
 
     // Load Z texture
     {
-        std::shared_ptr<TextureData> m_ZengineLogoTextureResource = m_RenderResource->LoadTexture(
-            m_ParticleManager->GetGlobalParticleRes()->m_ZengineLogoTexturePath, true);
+        std::shared_ptr<TextureData> zengine_logo_texture =
+            m_RenderResource->LoadTexture(global_res->m_ZengineLogoTexturePath, true);
+        if (!zengine_logo_texture)
+        {
+            skip_once("zengine logo texture could not be loaded");
+            return;
+        }
         m_Rhi->CreateGlobalImage(m_ZengineLogoTextureImage,
                                  m_ZengineLogoTextureImageView,
                                  m_ZengineLogoTextureVmaAllocation,
-                                 m_ZengineLogoTextureResource->m_Width,
-                                 m_ZengineLogoTextureResource->m_Height,
-                                 m_ZengineLogoTextureResource->m_Pixels,
-                                 m_ZengineLogoTextureResource->m_Format);
+                                 zengine_logo_texture->m_Width,
+                                 zengine_logo_texture->m_Height,
+                                 zengine_logo_texture->m_Pixels,
+                                 zengine_logo_texture->m_Format);
     }
 
     m_AttachmentsInitialized = true;

@@ -62,5 +62,27 @@
     <!-- Retina：CADisplayLink 与 CAMetalLayer 都按 nativeScale 算。 -->
     <key>NSHighResolutionCapable</key>
     <true/>
+
+    <!-- iOS 26+ SDK 强制 UIScene 生命周期。缺这段（或 IOSMain.mm 里缺
+         application:configurationForConnectingSceneSession:）时 App 启动即被判死：
+         "Application failed to launch: UIScene life cycle is required for apps
+          built with this SDK." —— 只在运行期报，编译期完全无声。
+         具体的 UISceneDelegate 类由代码给出（configuration.delegateClass），
+         这里不写死类名，免得重构改名后 plist 静默失配。 -->
+    <key>UIApplicationSceneManifest</key>
+    <dict>
+        <key>UIApplicationSupportsMultipleScenes</key>
+        <false/>
+        <key>UISceneConfigurations</key>
+        <dict>
+            <key>UIWindowSceneSessionRoleApplication</key>
+            <array>
+                <dict>
+                    <key>UISceneConfigurationName</key>
+                    <string>Default Configuration</string>
+                </dict>
+            </array>
+        </dict>
+    </dict>
 </dict>
 </plist>

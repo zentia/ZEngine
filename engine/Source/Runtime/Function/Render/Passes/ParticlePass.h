@@ -232,6 +232,11 @@ private:
     // 直接 memcpy 会 SEGV，必须守住而不是崩）。
     bool m_DrawSkippedLogged = false;
 
+    // EnsureAttachmentsInitialized() 早退的一次性日志（见那里的注释：
+    // LoadTextureHDR 读不到文件返回 nullptr，照样 ->m_Width 就是
+    // EXC_BAD_ACCESS at 0x0）。
+    bool m_AttachmentLoadFailedLogged = false;
+
     // 上一帧 Draw() 实际发出的 emitter / 粒子数（心跳 `particle=` 用）。
     int      m_LastDrawnEmitters {0};
     uint32_t m_LastDrawnParticles {0};
