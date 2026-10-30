@@ -901,6 +901,14 @@ list(REMOVE_ITEM SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Core/Time/Test/FixedTimeStepSmokeTest.cpp")
 list(REMOVE_ITEM REGULAR_SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Core/Time/Test/FixedTimeStepSmokeTest.cpp")
+# 资产可移植性冒烟测试的 main carve-out（同理由）。它是"资产里不许出现机器
+# 绝对路径"唯一的守卫，含一层扫描覆盖率断言防空测试（见
+# Resource/Asset/Test/CMakeLists.txt）。
+# Only built when ZENGINE_BUILD_ASSET_PATH_PORTABILITY_SMOKE_TEST=ON.
+list(REMOVE_ITEM SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Resource/Asset/Test/AssetPathPortabilitySmokeTest.cpp")
+list(REMOVE_ITEM REGULAR_SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Resource/Asset/Test/AssetPathPortabilitySmokeTest.cpp")
 # ShaderRegistry 路径大小写冒烟测试的 main carve-out（同理由）。它是 ShaderRegistry
 # 唯一的守卫，钉的是"m_SourceRelPath / m_ZassetRelPath 保留磁盘原大小写"与"m_Guid
 # 仍以查找 key 为种子、与改动前逐字节一致"（见 Function/Render/Test/CMakeLists.txt）。
@@ -2044,6 +2052,13 @@ add_subdirectory(Core/Memory/Test)
 # 守卫：钉"模拟量与帧率解耦"、死亡螺旋闸门、timeScale/暂停语义，以及源码级
 # 接线门（LogicalTick 按步数循环、物理已移进 Level::FixedTick）。
 add_subdirectory(Core/Time/Test)
+
+# 资产可移植性冒烟测试。Own main()；只在
+# ZENGINE_BUILD_ASSET_PATH_PORTABILITY_SMOKE_TEST=ON 时构建。守的是"资产文件里
+# 不许出现机器绝对路径"：2026-10-30 之前 8 个 prefab 的 externals 表嵌了
+# `E:/Engine/ZEngine/...`，换机器静默断链且无日志。不链 ZRuntime（纯文件系统
+# 扫描），见 Resource/Asset/Test/CMakeLists.txt。
+add_subdirectory(Resource/Asset/Test)
 
 # 崩溃安全日志环形缓冲冒烟测试（§3.9，#11）。Own main()；只在
 # ZENGINE_BUILD_CRASH_LOG_TAIL_SMOKE_TEST=ON 时构建。验证 CrashLogTail 环形缓冲

@@ -1,16 +1,16 @@
 externals:
   - guid: feb6765a4cf9d787afdd64f49722ca10
     type: Box
-    path: "E:/Engine/ZEngine/engine/asset/objects/environment/fence/geometry/fence.object_shape0.zasset"
+    path: "asset/objects/environment/fence/geometry/fence.object_shape0.zasset"
   - guid: f34a0616df8ebf36d6ecf989217278e0
     type: Box
-    path: "E:/Engine/ZEngine/engine/asset/objects/environment/fence/geometry/fence.object_shape1.zasset"
+    path: "asset/objects/environment/fence/geometry/fence.object_shape1.zasset"
   - guid: 7a5f0daea8ebc595042186c64795f968
     type: Box
-    path: "E:/Engine/ZEngine/engine/asset/objects/environment/fence/geometry/fence.object_shape2.zasset"
+    path: "asset/objects/environment/fence/geometry/fence.object_shape2.zasset"
   - guid: 6ed181ba59c70c145f39553e657bcf10
     type: Box
-    path: "E:/Engine/ZEngine/engine/asset/objects/environment/fence/geometry/fence.object_shape3.zasset"
+    path: "asset/objects/environment/fence/geometry/fence.object_shape3.zasset"
 objects:
   - fileID: 1
     type: PrefabAsset

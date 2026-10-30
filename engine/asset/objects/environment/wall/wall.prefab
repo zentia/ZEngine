@@ -1,7 +1,7 @@
 externals:
   - guid: 1beab8297845721993fd3db14fa9fbec
     type: Box
-    path: "E:/Engine/ZEngine/engine/asset/objects/environment/wall/geometry/wall.object_shape0.zasset"
+    path: "asset/objects/environment/wall/geometry/wall.object_shape0.zasset"
 objects:
   - fileID: 1
     type: PrefabAsset

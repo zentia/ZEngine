@@ -1,13 +1,13 @@
 externals:
   - guid: 48226bbc9cddd4afc82131c0580e6c00
     type: Box
-    path: "E:/Engine/ZEngine/engine/asset/objects/environment/wall/geometry/wall_with_door.object_shape0.zasset"
+    path: "asset/objects/environment/wall/geometry/wall_with_door.object_shape0.zasset"
   - guid: 1bf0d956600abf5e8ca7d6beeb3fe668
     type: Box
-    path: "E:/Engine/ZEngine/engine/asset/objects/environment/wall/geometry/wall_with_door.object_shape1.zasset"
+    path: "asset/objects/environment/wall/geometry/wall_with_door.object_shape1.zasset"
   - guid: d3c56ad18e7999bdef325ea8bed83ef0
     type: Box
-    path: "E:/Engine/ZEngine/engine/asset/objects/environment/wall/geometry/wall_with_door.object_shape2.zasset"
+    path: "asset/objects/environment/wall/geometry/wall_with_door.object_shape2.zasset"
 objects:
   - fileID: 1
     type: PrefabAsset

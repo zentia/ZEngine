@@ -1,25 +1,25 @@
 externals:
   - guid: f3b01ecf0e33b7fbc475190b6981a410
     type: Box
-    path: "E:/Engine/ZEngine/engine/asset/objects/environment/wall/geometry/wall_with_window.object_shape0.zasset"
+    path: "asset/objects/environment/wall/geometry/wall_with_window.object_shape0.zasset"
   - guid: f0a6c4c5b77d25ea475e577229e84454
     type: Box
-    path: "E:/Engine/ZEngine/engine/asset/objects/environment/wall/geometry/wall_with_window.object_shape1.zasset"
+    path: "asset/objects/environment/wall/geometry/wall_with_window.object_shape1.zasset"
   - guid: 14e5c9e52499eec9c7d0cad31c90fd34
     type: Box
-    path: "E:/Engine/ZEngine/engine/asset/objects/environment/wall/geometry/wall_with_window.object_shape2.zasset"
+    path: "asset/objects/environment/wall/geometry/wall_with_window.object_shape2.zasset"
   - guid: c72e280e13422ad876f0df1c9dcce210
     type: Box
-    path: "E:/Engine/ZEngine/engine/asset/objects/environment/wall/geometry/wall_with_window.object_shape3.zasset"
+    path: "asset/objects/environment/wall/geometry/wall_with_window.object_shape3.zasset"
   - guid: 2b1557c6a562da47a26f2ceb93677190
     type: Box
-    path: "E:/Engine/ZEngine/engine/asset/objects/environment/wall/geometry/wall_with_window.object_shape4.zasset"
+    path: "asset/objects/environment/wall/geometry/wall_with_window.object_shape4.zasset"
   - guid: fe6ff84a0d2cfff6369b63d73a4d1b9c
     type: Box
-    path: "E:/Engine/ZEngine/engine/asset/objects/environment/wall/geometry/wall_with_window.object_shape5.zasset"
+    path: "asset/objects/environment/wall/geometry/wall_with_window.object_shape5.zasset"
   - guid: a156c4a299eac35522e11164ca93a04c
     type: Box
-    path: "E:/Engine/ZEngine/engine/asset/objects/environment/wall/geometry/wall_with_window.object_shape6.zasset"
+    path: "asset/objects/environment/wall/geometry/wall_with_window.object_shape6.zasset"
 objects:
   - fileID: 1
     type: PrefabAsset

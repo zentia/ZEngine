@@ -1,28 +1,28 @@
 externals:
   - guid: 6c3b700e1d9e08756384c970cbf9039c
     type: Box
-    path: "E:/Engine/ZEngine/engine/asset/objects/environment/stairs/geometry/stairs.object_shape0.zasset"
+    path: "asset/objects/environment/stairs/geometry/stairs.object_shape0.zasset"
   - guid: f914418024c816f4199c7c028acef320
     type: Box
-    path: "E:/Engine/ZEngine/engine/asset/objects/environment/stairs/geometry/stairs.object_shape1.zasset"
+    path: "asset/objects/environment/stairs/geometry/stairs.object_shape1.zasset"
   - guid: 874879524eafd9e73c917a08c27d8800
     type: Box
-    path: "E:/Engine/ZEngine/engine/asset/objects/environment/stairs/geometry/stairs.object_shape2.zasset"
+    path: "asset/objects/environment/stairs/geometry/stairs.object_shape2.zasset"
   - guid: c991de918ef582965e455382a9be7cac
     type: Box
-    path: "E:/Engine/ZEngine/engine/asset/objects/environment/stairs/geometry/stairs.object_shape3.zasset"
+    path: "asset/objects/environment/stairs/geometry/stairs.object_shape3.zasset"
   - guid: dab4b882dc20b5691adf41897ad275e4
     type: Box
-    path: "E:/Engine/ZEngine/engine/asset/objects/environment/stairs/geometry/stairs.object_shape4.zasset"
+    path: "asset/objects/environment/stairs/geometry/stairs.object_shape4.zasset"
   - guid: 3b8dd37e7ef41af829900fb3053e2680
     type: Box
-    path: "E:/Engine/ZEngine/engine/asset/objects/environment/stairs/geometry/stairs.object_shape5.zasset"
+    path: "asset/objects/environment/stairs/geometry/stairs.object_shape5.zasset"
   - guid: 10040d67ddbbd39b959a220012575600
     type: Box
-    path: "E:/Engine/ZEngine/engine/asset/objects/environment/stairs/geometry/stairs.object_shape6.zasset"
+    path: "asset/objects/environment/stairs/geometry/stairs.object_shape6.zasset"
   - guid: a8b1ddf6430d368a430c0705d984acd4
     type: Box
-    path: "E:/Engine/ZEngine/engine/asset/objects/environment/stairs/geometry/stairs.object_shape7.zasset"
+    path: "asset/objects/environment/stairs/geometry/stairs.object_shape7.zasset"
 objects:
   - fileID: 1
     type: PrefabAsset

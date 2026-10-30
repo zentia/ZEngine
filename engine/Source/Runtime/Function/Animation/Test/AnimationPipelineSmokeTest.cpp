@@ -698,12 +698,24 @@ int main(int argc, char** argv)
             // this field existed. This is the check that a hand-made fixture
             // cannot give: it proves SafeBinaryRead tolerates the missing node
             // on bytes that are actually on disk in the repo.
-            const eastl::string legacy =
-                "E:/Engine/ZEngine/engine/asset/objects/character/player/components/animation/data/"
+            // 从工程根推导，不再硬编码作者机器的盘符路径。
+            //
+            // 原来是 `"E:/Engine/ZEngine/engine/asset/.../xxx.zasset"` 并包在
+            // `if (exists)` 里 —— 于是除了那台机器，下面这些断言全部静默跳过，
+            // 而测试照样全绿。这正是"看起来有覆盖、实际零覆盖"：P8 唯一的价值
+            // 就是拿仓库里的真实历史字节验证 SafeBinaryRead 容忍缺失字段，跳过
+            // 等于没跑。文件在仓库里，找不到就该当失败报出来。
+            const std::filesystem::path legacy =
+                std::filesystem::path(ZENGINE_ENGINE_ROOT_DIR) /
+                "asset/objects/character/player/components/animation/data/"
                 "W2_CrouchWalk_Aim_F_Loop_IP.animation_clip.zasset";
-            if (std::filesystem::exists(legacy.c_str()))
+            Check(std::filesystem::exists(legacy),
+                  "P8: the committed legacy clip must exist (it is in the repo; "
+                  "a missing file silently disabled this whole block)");
+            if (std::filesystem::exists(legacy))
             {
-                const std::shared_ptr<AnimationClip> old_clip = AnimationSystem::TryLoadAnimation(legacy);
+                const std::shared_ptr<AnimationClip> old_clip =
+                    AnimationSystem::TryLoadAnimation(legacy.generic_string().c_str());
                 Check(old_clip != nullptr, "P8: a clip written before `duration` existed still loads");
                 if (old_clip != nullptr)
                 {

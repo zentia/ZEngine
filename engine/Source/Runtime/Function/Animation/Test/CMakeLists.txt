@@ -102,6 +102,13 @@ if(ZENGINE_BUILD_ANIMATION_PIPELINE_SMOKE_TEST)
         target_compile_options(AnimationPipelineSmokeTest PRIVATE /W4)
     endif()
 
+    # P8 要读仓库里一份"真实的历史资产"来验证 SafeBinaryRead 容忍缺失字段。
+    # 那条路径原先硬编码成 `E:/Engine/ZEngine/engine/asset/...`，外面还包着
+    # `if (exists)` —— 于是除了作者机器，P8 全程静默跳过（空测试）。改成从
+    # 工程根推导，缺文件就报错。
+    target_compile_definitions(AnimationPipelineSmokeTest PRIVATE
+        "ZENGINE_ENGINE_ROOT_DIR=\"${ENGINE_ROOT_DIR}\"")
+
     add_test(NAME AnimationPipelineSmokeTest COMMAND AnimationPipelineSmokeTest)
 
     message(STATUS "Configured animation pipeline smoke-test target: AnimationPipelineSmokeTest")

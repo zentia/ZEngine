@@ -1,10 +1,10 @@
 externals:
   - guid: a283d24874d103064f717688a5031804
     type: PhysicsControllerConfig
-    path: "E:/Engine/ZEngine/engine/asset/objects/character/player/player.object_controller_config.zasset"
+    path: "asset/objects/character/player/player.object_controller_config.zasset"
   - guid: 7b4a7c7476faa410c99497533791fc70
     type: ThirdPersonCameraParameter
-    path: "E:/Engine/ZEngine/engine/asset/objects/character/player/player.object_camera_parameter.zasset"
+    path: "asset/objects/character/player/player.object_camera_parameter.zasset"
 objects:
   - fileID: 1
     type: PrefabAsset
