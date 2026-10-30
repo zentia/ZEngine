@@ -3966,3 +3966,36 @@ CMake 4.x. MIUI/HyperOS rejects `adb install -g`
 (`INSTALL_GRANT_RUNTIME_PERMISSIONS`) and, once the package is gone, plain
 `adb install` (`INSTALL_FAILED_USER_RESTRICTED`) — 开发者选项 → USB 安装 must be
 on, and the script installs via `adb push` + `pm install --force-queryable`.
+
+### 2.45 CI：每个交叉编译平台都要有自己的 job
+
+`.github/workflows/` 里 `build_linux` / `build_macos` / `build_windows` 全是**宿主**平台，
+`smoke_tests.yml` 是 Windows-only。也就是说 **iOS / Android / OHOS 的源码从来没被 CI 编译过**，
+唯一会去编它们的人，是机器上恰好装了对应 SDK 的开发者 —— 实际上就是没有。
+
+2026-10-29 第一次把 iOS arm64 交叉编译跑通，一次就炸出 4 个真实缺陷（PCH 栈检查标志的
+作用域、`if(APPLE)` 的 `.mm` glob 拉进 macOS AppKit 源、MetalRHI 6 处 macOS 专属 API、
+`CrashHandler.h` 的块作用域函数声明落进 `zcrash_posix`）。它们没有任何机会被别的方式发现。
+**没有 job 去编的配置，等于根本没编译过。**
+
+2026-10-30 补了 `.github/workflows/build_ios.yml`（`macos-latest` + Ninja + Release），
+细节与四条产物断言见 `doc/MOBILE_PACKAGING.md` §3.6。要点：
+
+- 定位是**编译闸门**，不是出包：不签名、不打包、不运行。Ninja 生成器不做 codesign，所以
+  公开 runner 没有证书也能编（产物装不上设备，无所谓），因此也不传
+  `-DZENGINE_IOS_DEVELOPMENT_TEAM`。
+- `cmake -S .` 必须是**仓库根**，不是 `engine/`：只有根 CMakeLists 登记了 GPUSpine /
+  GPUParticle 子模块，`-S engine` 会报 *GPUSpine submodule missing* 并建议你跑一条对未登记
+  路径必然失败的 `git submodule update --init`，看上去极像"仓库坏了"。
+- 只装 `ninja`，不装 glslang / spirv-tools（`build_macos.yml` 装了）—— iOS 路径全程
+  0 次提及它们。
+- **"编译成功"本身不是证据**，最后一步断言四件事（每条都做过正向 + 负向实跑）：`file` 是
+  `Mach-O 64-bit executable arm64`；`LC_BUILD_VERSION platform == 2`（1 表示 macOS SDK
+  漏进来了）；`nm -m | grep -c "dynamically looked up" == 0`
+  （`-Wl,-undefined,dynamic_lookup` 会把缺的符号**绑成 0**，链接期零报错、首调崩在 `0x0`；
+  该 flag 在 iOS 上是 *deprecated* 而非禁止，所以这条不是多余的）；`Info.plist` 存在。
+- 产物路径 `build/ios/engine/Source/Player/IOS/ZEngine.app/ZEngine` **故意写死**：target 名
+  是 `ZGameIOS` 而 `OUTPUT_NAME` 是 `ZEngine`，谁改了它就让 job 红，而不是静默跳过 ——
+  同 `smoke_tests.yml` 的哲学（没跑起来的测试等于没测试）。
+
+Android / OHOS 是同一个洞，目前仍然没有 job。

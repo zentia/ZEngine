@@ -1,0 +1,131 @@
+name: Build iOS
+
+# =============================================================================
+# Why this job exists:
+#   Every other build workflow targets the *host* (Linux / macOS / Windows) and
+#   smoke_tests.yml is Windows-only. Nothing in CI ever compiled engine sources
+#   with CMAKE_SYSTEM_NAME=iOS, so that whole path was only ever built by whoever
+#   happened to own a Mac with Xcode installed -- in practice, nobody.
+#
+#   On 2026-10-29 the first-ever iOS cross compile turned up four real defects
+#   that had been sitting in the tree undetected:
+#     1. -fno-stack-check was applied per-target instead of directory-globally,
+#        so the shared PCH (ZEnginePCH) and the TUs consuming it disagreed and
+#        AppleClang refused the PCH outright;
+#     2. the `if(APPLE)` *.mm glob pulled macOS AppKit sources into the iOS
+#        build -- APPLE is TRUE for iOS as well as macOS;
+#     3. six Metal calls that do not exist on iOS: MTLPixelFormatDepth24Unorm_
+#        Stencil8, MTLStorageModeManaged (unified memory -> Shared), UIView's
+#        convertRectToBacking:, and assigning the readonly UIView.layer;
+#     4. CrashHandler.h declared two free functions at *block* scope, which puts
+#        those names in the nearest enclosing namespace (zcrash_posix) instead of
+#        the global namespace where they are actually defined.
+#   None of these had any chance of being caught without a job that compiles this
+#   configuration. A build nobody runs protects nothing.
+#
+# What this job deliberately does NOT do:
+#   It does not sign, package or run anything. No iOS device or simulator is
+#   attached to a runner, and signing needs a certificate no public CI has. This
+#   is a *compile gate* for the iOS translation units -- the cheapest thing that
+#   would have caught all four defects above.
+# =============================================================================
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    name: iOS arm64 (device SDK)
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install dependencies
+        # Only ninja. build_macos.yml also installs glslang and spirv-tools, but
+        # the iOS path never touches them -- zero occurrences in either the
+        # configure or the build log -- so installing them here would only burn
+        # runner minutes. Add them the day iOS grows a runtime shader compiler.
+        run: brew install ninja
+
+      - name: Configure
+        # -S . must be the REPO ROOT, not engine/. Only the root CMakeLists.txt
+        # registers the engine/Libraries/GPUSpine and GPUParticle submodules; with
+        # -S engine the configure dies on "GPUSpine submodule missing" and advises
+        # `git submodule update --init <path>`, a command that can never succeed
+        # for a path that was never registered. That makes it look like a broken
+        # checkout rather than a wrong -S argument.
+        #
+        # No -DZENGINE_IOS_DEVELOPMENT_TEAM: signing cannot work on a public
+        # runner (no certificate), and the Ninja generator performs no code
+        # signing anyway, so the build does not need it. The resulting .app is
+        # unsigned and not installable -- fine, this is a compile gate.
+        #
+        # Release only. Debug would double the runner minutes without adding any
+        # coverage of *compile* errors, which is the only class this job is for.
+        run: |
+          cmake -S . -B build/ios -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_TOOLCHAIN_FILE="$GITHUB_WORKSPACE/engine/toolchain/ios.cmake"
+
+      - name: Build
+        run: ninja -C build/ios ZGameIOS
+
+      - name: Verify the artifact is really iOS arm64
+        # A green build is not evidence on its own. Three distinct failure modes
+        # are worth naming explicitly because all three print nothing at build
+        # time:
+        #   * `file` catches the toolchain quietly falling back to the host SDK
+        #     and producing a macOS binary while still reporting success;
+        #   * LC_BUILD_VERSION `platform 2` is iOS; 1 would mean macOS leaked in.
+        #     This is the same check that caught macOS and iOS archives landing
+        #     in one shared bin/ directory on a developer machine and overwriting
+        #     each other (see doc/MOBILE_PACKAGING.md);
+        #   * "dynamically looked up" is the footprint of
+        #     -Wl,-undefined,dynamic_lookup: a missing static-library symbol does
+        #     not fail the link, it is bound to address 0 and crashes on first
+        #     call with EXC_BAD_ACCESS at 0x0000000000000000. Zero is the only
+        #     acceptable count. (The iOS link currently does not pass that flag --
+        #     measured 0 -- so this assertion also fails loudly if someone adds
+        #     it.)
+        run: |
+          set -u
+          APP="build/ios/engine/Source/Player/IOS/ZEngine.app"
+          BIN="$APP/ZEngine"
+
+          if [ ! -f "$BIN" ]; then
+            echo "::error::$BIN not found -- did OUTPUT_NAME in engine/Source/Player/IOS/CMakeLists.txt change?"
+            exit 1
+          fi
+
+          FILE_OUT="$(file "$BIN")"
+          case "$FILE_OUT" in
+            *"Mach-O 64-bit executable arm64"*) ;;
+            *) echo "::error::not an arm64 Mach-O executable: $FILE_OUT"; exit 1 ;;
+          esac
+
+          PLATFORM="$(otool -l "$BIN" | awk '/LC_BUILD_VERSION/{f=1} f&&/platform/{print $2; exit}')"
+          if [ "$PLATFORM" != "2" ]; then
+            echo "::error::LC_BUILD_VERSION platform is '$PLATFORM', expected 2 (iOS). 1 means the macOS SDK leaked into this build."
+            exit 1
+          fi
+
+          LOOKED_UP="$(nm -m "$BIN" | grep -c "dynamically looked up" || true)"
+          if [ "$LOOKED_UP" != "0" ]; then
+            echo "::error::$LOOKED_UP symbol(s) are (dynamically looked up): bound to 0 instead of failing the link, they crash at 0x0 on first call."
+            nm -m "$BIN" | grep "dynamically looked up" | head -20
+            exit 1
+          fi
+
+          if [ ! -f "$APP/Info.plist" ]; then
+            echo "::error::bundle has no Info.plist -- MACOSX_BUNDLE_INFO_PLIST did not take effect."
+            exit 1
+          fi
+
+          echo "OK: $FILE_OUT"
+          echo "OK: LC_BUILD_VERSION platform 2 (iOS), 0 dynamically-looked-up symbols, Info.plist present"

@@ -164,9 +164,9 @@ iOS job（只有 macos / linux / windows），所以这条路径此前从未被�
 5 处问题。
 
 ```bash
-# 工程根是**仓库根**，不是 engine/ —— ios.cmake 顶部注释和
-# Player/IOS/CMakeLists.txt 里写的 `-S engine` 是错的（那样配会把路径解析成
-# /engine/Libraries/... 并报"GPUSpine submodule missing"）。
+# 工程根是**仓库根**，不是 engine/。（ios.cmake 顶部与 Player/IOS/CMakeLists.txt
+# 里原先写的 `-S engine` 已于 2026-10-30 改成 `-S .`：那样配会把路径解析成
+# /engine/Libraries/... 并报"GPUSpine submodule missing"。）
 cmake -S . -B build/ios -G Ninja -DCMAKE_BUILD_TYPE=Release \
       -DCMAKE_TOOLCHAIN_FILE=$PWD/engine/toolchain/ios.cmake
 ninja -C build/ios ZGameIOS
@@ -227,6 +227,33 @@ Xcode.app 在弹窗里点。
   `ImmediatePtrResolveRead(int,long)` 两参版）。识别信号是 `nm -m <bin> | grep "dynamically
   looked up"`。这种只能**全量重编**，不要去补声明。
 
+### 3.6 iOS 交叉编译进 CI（2026-10-30）
+
+§3.5 是"第一次编通"，但一次性成果会腐烂：下次谁改一行 MetalRHI 或 `if(APPLE)`，
+没有 CI 就没人知道又坏了。所以补了 `.github/workflows/build_ios.yml`
+（`macos-latest`，Release + Ninja，跑的就是 §3.5 那两条命令）。
+
+它的定位是**编译闸门**，不是出包：不签名、不打包、不运行。不加
+`-DZENGINE_IOS_DEVELOPMENT_TEAM`，因为公开 runner 没有证书；而 Ninja 生成器本身不做
+codesign，所以缺证书也能编出 `.app`（只是装不上设备）。同理只编 Release——Debug 只会让
+runner 分钟数翻倍，却不会多覆盖任何一类"编译错误"。
+
+只装 `ninja`，**不装** `glslang` / `spirv-tools`（`build_macos.yml` 装了）：iOS 路径全程
+没碰过它们（configure 与构建日志各 0 次提及）。哪天 iOS 要接运行时 shader 编译再补。
+
+**光"编译成功"不算证据**，所以最后一步是四条断言 —— 都做过正向 + 负向实跑：
+
+| 断言 | 拦的是什么 | 负向构造 |
+| --- | --- | --- |
+| `file` 含 `Mach-O 64-bit executable arm64` | toolchain 悄悄退回宿主 SDK，照样报成功 | 用非 arm64 二进制 |
+| `LC_BUILD_VERSION platform == 2`（1 = macOS） | 宿主 SDK 漏进来 | 拿 `/bin/ls` 冒充产物 → 报 `platform is '1'` |
+| `nm -m \| grep -c "dynamically looked up"` == 0 | 缺库符号被 `-Wl,-undefined,dynamic_lookup` **绑成 0**，链接期零报错、首调崩在 `0x0`（§3.5 末尾） | 用 iphoneos clang 真编一个带未定义符号 + 该 flag 的二进制（在 iOS 上是 *deprecated* 不是禁止，所以这条不是多余的） |
+| `Info.plist` 存在 | `MACOSX_BUNDLE_INFO_PLIST` 没生效 | 删掉真 `.app` 里的 plist |
+
+产物路径 `build/ios/engine/Source/Player/IOS/ZEngine.app/ZEngine` 是**故意写死**的：
+target 名是 `ZGameIOS` 但 `OUTPUT_NAME` 是 `ZEngine`，谁改了 OUTPUT_NAME 就让这个 job 红，
+而不是静默跳过（同 `smoke_tests.yml` 的哲学：没跑起来的测试等于没测试）。
+
 ---
 
 ## 4. 仍然只能真机验的
@@ -261,4 +288,6 @@ Xcode.app 在弹窗里点。
 | iOS 配置报 `GPUSpine submodule missing at /engine/Libraries/...` | 用了 `-S engine`；工程根是**仓库根** | §3.5 的命令（`cmake -S . -B build/ios`） |
 | PCH 报 *stack checking was enabled ... but is currently disabled* | `-fno-stack-check` 没同时覆盖 PCH 与所有消费方 | §3.5 第 1 条 |
 | 宿主测试崩在 `EXC_BAD_ACCESS at 0x0` 且链接期无报错 | 某个库没链上 + `dynamic_lookup` 绑成 0（或刚被 iOS 构建覆盖 `bin/`） | §3.5 末尾两条；`nm -m <bin> \| grep "dynamically looked up"` |
+| iOS CI 报 `ZEngine not found` | target 名是 `ZGameIOS` 而 `OUTPUT_NAME` 是 `ZEngine`；后者被改了 | §3.6；`.github/workflows/build_ios.yml` 写死路径是故意的 |
+| iOS CI 报 `platform is '1'` | 宿主 SDK 漏进来了（toolchain 没生效，`CMAKE_SYSTEM_NAME` 不是 iOS） | §3.6 断言表；`otool -l <bin> \| grep -A3 LC_BUILD_VERSION` |
 | 链接期 undefined symbol | 宿主用了没有 `ZPLAYER_API` 的符号 | 自检"宿主符号"两项 |
