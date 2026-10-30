@@ -457,6 +457,42 @@ built for 'iOS-simulator'
 > 这是记忆里"宿主与 iOS 共用输出目录"那条坑的新变体：上一轮只把 `bin/` 隔离了，
 > 漏了第三方库自己写源码树的那一半。
 
+### 3.11 iOS boot 闸门：把"能编译"升级成"能启动"（2026-10-30）
+
+§3.6 的 `build` job 只证明 iOS 源码**编得过**。§3.9 那四个缺陷证明这远远不够 ——
+它们没有一个会在编译或链接期报错。所以补了 `scripts/verify_ios_boot.sh`，CI 里是
+`build_ios.yml` 的第二个 job `boot-simulator`。
+
+```bash
+scripts/verify_ios_boot.sh [app_bundle]     # 默认 build/iossim/.../ZEngine.app
+IOS_SIM_UDID=<udid> IOS_BOOT_WAIT=30 scripts/verify_ios_boot.sh
+```
+
+选模拟器（已 Booted 优先，否则起一个 iPhone）→ uninstall → install → launch →
+跑 `IOS_BOOT_WAIT` 秒（默认 15）→ 断言：
+
+| 断言 | 拦住的是 | 负向是怎么构造的 |
+| --- | --- | --- |
+| 运行期间没有新的崩溃报告 `.ips` | 空指针崩溃（§3.9 缺陷 4） | 把 `ParticlePass` 的 nullptr 检查改回不检查 → 首帧崩 → 报 `app crashed during the run: ZEngine-2026-10-30-194110.ips` |
+| 日志有 `ZPlayer: booted` | UIScene 缺失导致启动即退（§3.9 缺陷 1） | 把 `application:configurationForConnectingSceneSession:` 改名 → 报 `no engine log ... the app never got far enough to open it` |
+| 日志有 `MetalRHI: swapchain ready` | RHI 没起来 | 同上（一起红） |
+| 日志没有 `[F]`（fatal）行 | 系统初始化失败（§3.9 缺陷 2、3） | 同上 |
+
+实现上两个坑：
+
+* ⚠️ **必须先 `uninstall` 再 `install`**：容器 UUID 每次 install 都可能变，而日志是
+  **累积**的 —— 不清掉就会读到上一次运行留下的 `[F]` 行，那条断言等于没做。
+* ⚠️ 用 `simctl list devices -j` + python 解析，不要 grep 文本：本机沙箱里 bash 的
+  `grep` 会静默返回空，脚本会退化成"永远找不到设备"（§3.6 那条假阴性是同一个坑）。
+
+**顺带发现：`Info.plist` 的 `UIApplicationSceneManifest` 其实是冗余的。**
+把整个 manifest 删掉、重新构建（确认 bundle 里那份也确实没有 manifest 了），app
+**照样 boot 成功**。真正必需的是代码里的
+`application:configurationForConnectingSceneSession:options:` 返回一个带
+`delegateClass = [ZEngineSceneDelegate class]` 的 `UISceneConfiguration` —— UIKit 有
+这个回调就不需要 plist 声明。当时两处一起加，很容易误以为是 plist 那处在起作用。
+留着无害（声明式、更明确），但**别指望只靠 plist 能救回删掉的代码那处**。
+
 ---
 
 ## 4. 仍然只能真机验的

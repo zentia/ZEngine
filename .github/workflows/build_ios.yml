@@ -23,11 +23,26 @@ name: Build iOS
 #   None of these had any chance of being caught without a job that compiles this
 #   configuration. A build nobody runs protects nothing.
 #
-# What this job deliberately does NOT do:
-#   It does not sign, package or run anything. No iOS device or simulator is
-#   attached to a runner, and signing needs a certificate no public CI has. This
-#   is a *compile gate* for the iOS translation units -- the cheapest thing that
-#   would have caught all four defects above.
+# What the `build` job deliberately does NOT do:
+#   It does not sign, package or run anything. Signing needs a certificate no
+#   public CI has. This is a *compile gate* for the iOS translation units -- the
+#   cheapest thing that would have caught all four defects above.
+#
+# What the `boot-simulator` job adds (2026-10-30):
+#   "It compiles" is not "it starts". The day the tree first booted on iOS, four
+#   more defects turned up, none of which fail to compile or link:
+#     1. iOS 26+ requires the UIScene life cycle -- without it the app is killed
+#        at launch and never reaches main()'s own logging;
+#     2. there is no ZEditor.ini inside a .app, and ConfigManager treated that as
+#        fatal, rolling back all 39 systems;
+#     3. ProjectInfo got no project path, because mobile has no `-p` command line
+#        and both places that should have carried the path failed silently;
+#     4. a missing particle texture made LoadTextureHDR return nullptr, and the
+#        caller dereferenced it anyway -- EXC_BAD_ACCESS on the first frame.
+#   The second job builds the simulator SDK and actually boots the app on one
+#   (a simulator needs no signing, so a public runner can do this), then asserts
+#   on what the engine log says. See scripts/verify_ios_boot.sh; every assertion
+#   there was proven to go red before it was trusted.
 # =============================================================================
 
 on:
@@ -157,3 +172,69 @@ jobs:
 
           echo "OK: $FILE_OUT"
           echo "OK: LC_BUILD_VERSION platform 2 (iOS), 0 dynamically-looked-up symbols, Info.plist present"
+
+  boot-simulator:
+    # --- why a second job, and why a simulator --------------------------------
+    # The `build` job above proves the iOS sources compile. That is exactly the
+    # class of defect it was written for, and exactly the class it can see.
+    # Everything that only shows up at runtime slips straight through it, and on
+    # 2026-10-30 that turned out to be four separate blockers (see the header).
+    #
+    # A simulator is the only way to run iOS code here: it needs no signing, so a
+    # public runner with no certificate can still boot the app. (A real device
+    # would need a team ID we do not have.)
+    #
+    # The checks themselves live in scripts/verify_ios_boot.sh so they can be run
+    # locally too -- and so they were proven to fail before being trusted:
+    #   * renaming the UIScene configuration callback -> app never reaches boot,
+    #     script reports "no engine log ... never got far enough";
+    #   * restoring the un-checked LoadTextureHDR dereference -> first frame
+    #     crash, script reports "app crashed during the run: <.ips>".
+    name: iOS boot (simulator)
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install dependencies
+        # Same reasoning as the `build` job: without glslang the shader step is
+        # silently skipped and the .app quietly keeps whatever generated headers
+        # happen to be lying around.
+        run: brew install ninja glslang spirv-tools
+
+      - name: Show available simulators (diagnostics)
+        # Not an assertion -- just so a red run tells us whether the runner had
+        # any iOS simulator runtime at all, instead of guessing.
+        run: xcrun simctl list devices available
+
+      - name: Configure (simulator SDK)
+        # ios-simulator.cmake includes ios.cmake and then swaps the sysroot to
+        # iphonesimulator. It has to be a separate toolchain file rather than
+        # -DCMAKE_OSX_SYSROOT=... because ios.cmake uses a plain set() that would
+        # overwrite anything passed on the command line.
+        run: |
+          set -o pipefail
+          cmake -S . -B build/iossim -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_TOOLCHAIN_FILE="$GITHUB_WORKSPACE/engine/toolchain/ios-simulator.cmake" 2>&1 \
+            | tee build/iossim-configure.log
+
+      - name: Assert no build step was silently skipped
+        run: |
+          if grep -q "glslangValidator is unavailable" build/iossim-configure.log; then
+            echo "::error::SPIR-V generation was skipped (glslangValidator missing on the runner)."
+            exit 1
+          fi
+          echo "OK: SPIR-V generation not skipped"
+
+      - name: Build
+        run: ninja -C build/iossim ZGameIOS
+
+      - name: Boot the engine on a simulator
+        # Asserts, in order: a new run produced no crash report; the log contains
+        # "ZPlayer: booted"; it contains "MetalRHI: swapchain ready"; and it has
+        # no [F] (fatal) lines. Between them those cover all four runtime
+        # blockers listed in the header.
+        run: scripts/verify_ios_boot.sh build/iossim/engine/Source/Player/IOS/ZEngine.app
