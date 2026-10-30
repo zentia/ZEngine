@@ -201,10 +201,19 @@ Xcode.app 在弹窗里点。
    影响（它的 handler 本身在全局作用域）。iOS 是第一个把这条路径真正链起来的平台。
    修法：在 `namespace zcrash_posix` 之前于全局作用域声明。
 
-⚠️ **两个构建树共用 `bin/`**：宿主的 `build/` 与 `build/ios` 都往仓库根的 `bin/` 输出同名
-`.a`。iOS 构建跑完，宿主那套静态库就全变成 iOS 版（platform 2），宿主测试随即崩溃。编完
-iOS 必须重建宿主（`ninja -C build <targets>`；归档是 ninja 的产物，删掉后会从现存的 `.o`
-重新链接）。建议后续给 iOS 单独设 `CMAKE_ARCHIVE_OUTPUT_DIRECTORY` 以根治。
+⚠️ **两个构建树共用 `bin/`（已根治）**：宿主的 `build/` 与 `build/ios` 都往仓库根的 `bin/`
+输出同名 `.a`，谁后编谁覆盖，被覆盖的一方随后以完全不相关的症状炸掉：
+
+* 编完 iOS　→ 宿主测试链上 iOS 归档，跑起来 SIGSEGV，栈指向 `MemoryManager::Malloc` 这类
+  地方，**看不出是库被换了**；
+* 编完宿主 → iOS 链接报 *building for 'iOS', but linking in object file
+  (bin/libz.a[2](adler32.c.o)) built for 'macOS'*。
+
+现在交叉构建（iOS / Android / OHOS）输出到自己的构建树 `<build tree>/bin`
+（根 `CMakeLists.txt` 里按 `IOS/ANDROID/OHOS` 覆盖 `ZENGINE_UNIFIED_OUTPUT_DIR`，
+`FORCE` 是故意的——交叉构建的缓存里可能残留宿主的值）。想指定别处传
+`-DZENGINE_CROSS_UNIFIED_OUTPUT_DIR=<path>`。判别某归档是哪个平台的：
+`otool -l <x.a> | grep -A3 LC_BUILD_VERSION`（platform 1 = macOS，2 = iOS）。
 
 ⚠️ 这条链路上还牵出两个**静默失败**的测试脚本问题（都不是 iOS 专属，但只有在这时被撞出来）：
 
