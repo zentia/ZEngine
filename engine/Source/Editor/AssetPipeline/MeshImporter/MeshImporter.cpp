@@ -2,6 +2,7 @@
 
 #include "Editor/AssetPipeline/FbxAnimation.h"
 #include "Editor/AssetPipeline/FbxSkeleton.h"
+#include "Editor/AssetPipeline/MeshImporter/GltfMeshReader.h"
 #include "Editor/EditorAsset/EditorAssetManager.h"
 #include "Editor/EditorWindow/PreviewWindow/MeshDataPreview.h"
 #include "Runtime/BaseClasses/ObjectManager.h"
@@ -45,10 +46,42 @@ namespace
         return ext;
     }
 
+    // ⚠️ 扩展名清单必须与"解析器真的在"严格一致。
+    //
+    // 以前这张表无条件列出 .fbx/.gltf/.glb，而 Import() 里对应分支要么直接报
+    // 一句"此格式还没做"的占位错、要么在解析器缺失时报"requires ufbx"。后果是
+    // ContentBrowser 里能选中、能点导入，然后必然失败 —— 用户只会看到"导入失败"，
+    // 看不出是"这引擎不支持"还是"我的文件坏了"。
+    //
+    // 现在解析器缺失 => 扩展名根本不出现 => 文件被当作不支持的类型，走"不支持"
+    // 而不是"导入失败"。这是"真不支持"与"假支持"的区别。
     bool IsSupportedMeshExtension(const std::string& ext_lower)
 
     {
-        return ext_lower == ".fbx" || ext_lower == ".obj" || ext_lower == ".gltf" || ext_lower == ".glb";
+        if (ext_lower == ".obj")
+        {
+            return true;
+        }
+
+#if defined(ZENGINE_HAS_UFBX)
+
+        if (ext_lower == ".fbx")
+        {
+            return true;
+        }
+
+#endif
+
+#if defined(ZENGINE_HAS_CGLTF)
+
+        if (ext_lower == ".gltf" || ext_lower == ".glb")
+        {
+            return true;
+        }
+
+#endif
+
+        return false;
     }
 
     std::string GenerateGuid()
@@ -600,7 +633,23 @@ bool MeshImporter::CanImport(const std::filesystem::path& file_path) const
 std::vector<std::string> MeshImporter::GetSupportedExtensions() const
 
 {
-    return {".fbx", ".obj", ".gltf", ".glb"};
+    // 与 IsSupportedMeshExtension 同一套门控，理由见那里。
+    std::vector<std::string> extensions {".obj"};
+
+#if defined(ZENGINE_HAS_UFBX)
+
+    extensions.push_back(".fbx");
+
+#endif
+
+#if defined(ZENGINE_HAS_CGLTF)
+
+    extensions.push_back(".gltf");
+    extensions.push_back(".glb");
+
+#endif
+
+    return extensions;
 }
 
 bool MeshImporter::Import(const std::filesystem::path& source_path,
@@ -681,10 +730,41 @@ bool MeshImporter::Import(const std::filesystem::path& source_path,
         }
     }
 
+    else if (ext_lower == ".gltf" || ext_lower == ".glb")
+
+    {
+#if defined(ZENGINE_HAS_CGLTF)
+
+        std::vector<std::string> warnings;
+
+        ok = zgltf::ReadGltfMeshGeometry(source_path, mesh_settings->scale, mesh_geometry, error, warnings);
+
+        for (const std::string& warning : warnings)
+
+        {
+            LOG_WARNING(ZEditor, "MeshImporter: {}: {}", source_path.string(), warning);
+        }
+
+        if (ok)
+
+        {
+            // 与 OBJ 同样的后处理：不这么做的话，同样的模型走 OBJ 和走 glTF
+            // 会得到不同的原点/朝向，而两套路径的设置在 Inspector 里是同一份。
+            RecenterMeshAtOrigin(mesh_geometry);
+            ApplyAxisFlip(mesh_geometry, mesh_settings->flip_y);
+        }
+
+#else
+
+        error = "glTF import requires cgltf (place cgltf.h under engine/3rdparty/cgltf/)";
+
+#endif
+    }
+
     else
 
     {
-        error = "glTF/GLB import is not implemented yet";
+        error = "unsupported extension " + ext_lower;
     }
 
     if (!ok)

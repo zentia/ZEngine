@@ -110,6 +110,7 @@ jobs:
           -DZENGINE_BUILD_FIXED_TIME_STEP_SMOKE_TEST=ON
           -DZENGINE_BUILD_SCRIPT_TIME_SMOKE_TEST=ON
           -DZENGINE_BUILD_ASSET_PATH_PORTABILITY_SMOKE_TEST=ON
+          -DZENGINE_BUILD_GLTF_MESH_IMPORT_SMOKE_TEST=ON
           -DZENGINE_BUILD_ENVIRONMENT_CHECK_TESTS=ON
 
       - name: Build smoke tests
@@ -147,6 +148,7 @@ jobs:
           FixedTimeStepSmokeTest
           ScriptTimeSmokeTest
           AssetPathPortabilitySmokeTest
+          GltfMeshImportSmokeTest
           DX12BindlessSmokeTest
           EnvironmentCollectorTests
           EnvironmentPreflightTests

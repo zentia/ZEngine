@@ -332,6 +332,24 @@ else()
     message(WARNING "Editor: ufbx not found at ${ZENGINE_UFBX_DIR}; FBX import disabled (OBJ still works)")
 endif()
 
+# cgltf: single-file glTF 2.0 reader (editor-only mesh import).
+#
+# 与 ufbx 同一套路：实现单独编一个 .c（cgltf 是 C99，当 C 编免掉一堆 C++ 告警），
+# 头文件只放声明。缺了它 glTF 就是"假支持"（扩展名列在 CanImport 里但导入必失败），
+# 所以是否列出扩展名由 ZENGINE_HAS_CGLTF 决定，见 MeshImporter.cpp。
+set(ZENGINE_CGLTF_DIR "${ENGINE_ROOT_DIR}/3rdparty/cgltf")
+if(EXISTS "${ZENGINE_CGLTF_DIR}/cgltf.h" AND EXISTS "${ZENGINE_CGLTF_DIR}/cgltf_impl.c")
+    add_library(cgltf STATIC "${ZENGINE_CGLTF_DIR}/cgltf_impl.c")
+    target_include_directories(cgltf PUBLIC "${ZENGINE_CGLTF_DIR}")
+    set_target_properties(cgltf PROPERTIES FOLDER "ThirdParty/cgltf")
+    target_compile_definitions(${TARGET_NAME} PRIVATE ZENGINE_HAS_CGLTF=1)
+    target_link_libraries(${TARGET_NAME} PRIVATE cgltf)
+    message(STATUS "Editor: cgltf glTF/GLB mesh import enabled")
+else()
+    message(WARNING "Editor: cgltf not found at ${ZENGINE_CGLTF_DIR}; glTF/GLB import disabled "
+                    "(the extensions are hidden from CanImport so they cannot be picked and then fail)")
+endif()
+
 # ---------------------------------------------------------------------------
 # ShaderLab side-target.
 #
@@ -416,6 +434,7 @@ message(STATUS "Z_ROOT_DIR:${Z_ROOT_DIR}")
 
 # Opt-in editor-side smoke tests (own main(); excluded from the ZEditor glob above).
 add_subdirectory(AssetPipeline/TextureImporter/Test)
+add_subdirectory(AssetPipeline/MeshImporter/Test)
 add_subdirectory(Undo/Test)
 add_subdirectory(Build/Test)
 add_subdirectory(Launcher/Test)
