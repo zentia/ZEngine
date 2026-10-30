@@ -47,11 +47,23 @@ jobs:
           submodules: recursive
 
       - name: Install dependencies
-        # Only ninja. build_macos.yml also installs glslang and spirv-tools, but
-        # the iOS path never touches them -- zero occurrences in either the
-        # configure or the build log -- so installing them here would only burn
-        # runner minutes. Add them the day iOS grows a runtime shader compiler.
-        run: brew install ninja
+        # glslang and spirv-tools are NOT optional here. iOS renders through
+        # Metal, but the built-in shaders are authored once and translated:
+        #   "Engine: built-in shaders available as SPIR-V
+        #    (Vulkan path + Metal via SPIRV-Cross)"
+        # so SPIR-V has to be generated on the host, and glslangValidator is what
+        # generates it. Without it the configure only prints
+        #   "ShaderCompile: glslangValidator is unavailable; skipping SPIR-V
+        #    generation"
+        # and the whole shader step is *silently skipped* -- the build stays
+        # green and the artifact is quietly missing its shader data.
+        #
+        # (An earlier version of this file installed ninja only, justified by
+        #  "zero mentions of glslang anywhere in the iOS logs". That was a false
+        #  negative: grepping those logs locally silently returns nothing in
+        #  this environment. Trust what configure actually prints, not a grep
+        #  that reports no matches.)
+        run: brew install ninja glslang spirv-tools
 
       - name: Configure
         # -S . must be the REPO ROOT, not engine/. Only the root CMakeLists.txt
@@ -69,9 +81,25 @@ jobs:
         # Release only. Debug would double the runner minutes without adding any
         # coverage of *compile* errors, which is the only class this job is for.
         run: |
+          # pipefail: without it `cmake ... | tee` reports tee's status, so a
+          # failed configure would sail through as green.
+          set -o pipefail
           cmake -S . -B build/ios -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_TOOLCHAIN_FILE="$GITHUB_WORKSPACE/engine/toolchain/ios.cmake"
+            -DCMAKE_TOOLCHAIN_FILE="$GITHUB_WORKSPACE/engine/toolchain/ios.cmake" 2>&1 \
+            | tee build/ios-configure.log
+
+      - name: Assert no build step was silently skipped
+        # A skipped step is worse than a failed one: it is invisible. Turning
+        # this particular one into a hard failure is the point -- otherwise a
+        # runner without glslang produces a green build whose .app has no
+        # shader data, and nothing anywhere says so.
+        run: |
+          if grep -q "glslangValidator is unavailable" build/ios-configure.log; then
+            echo "::error::SPIR-V generation was skipped (glslangValidator missing on the runner) -- the .app would ship without built-in shader data."
+            exit 1
+          fi
+          echo "OK: SPIR-V generation not skipped"
 
       - name: Build
         run: ninja -C build/ios ZGameIOS

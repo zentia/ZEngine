@@ -3987,8 +3987,12 @@ on, and the script installs via `adb push` + `pm install --force-queryable`.
 - `cmake -S .` 必须是**仓库根**，不是 `engine/`：只有根 CMakeLists 登记了 GPUSpine /
   GPUParticle 子模块，`-S engine` 会报 *GPUSpine submodule missing* 并建议你跑一条对未登记
   路径必然失败的 `git submodule update --init`，看上去极像"仓库坏了"。
-- 只装 `ninja`，不装 glslang / spirv-tools（`build_macos.yml` 装了）—— iOS 路径全程
-  0 次提及它们。
+- **必须装** `glslang` / `spirv-tools`：iOS 走 Metal，但内置 shader 是"宿主上编成
+  SPIR-V → SPIRV-Cross 转 MSL"。没有 glslangValidator 时 configure 只打一行
+  `skipping SPIR-V generation` 然后**静默跳过**，构建照样绿、产物却没 shader 数据。
+  所以 job 里还加了一步断言：configure 日志出现该字符串就判红。
+  ⚠️ 这一条最初写反成"只装 ninja，0 次提及 glslang"——那是**假阴性**：本机 bash 的
+  `grep` 在这个环境里会静默返回空。**"grep 没匹配到"不等于"不存在"。**
 - **"编译成功"本身不是证据**，最后一步断言四件事（每条都做过正向 + 负向实跑）：`file` 是
   `Mach-O 64-bit executable arm64`；`LC_BUILD_VERSION platform == 2`（1 表示 macOS SDK
   漏进来了）；`nm -m | grep -c "dynamically looked up" == 0`

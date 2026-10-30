@@ -238,8 +238,21 @@ Xcode.app 在弹窗里点。
 codesign，所以缺证书也能编出 `.app`（只是装不上设备）。同理只编 Release——Debug 只会让
 runner 分钟数翻倍，却不会多覆盖任何一类"编译错误"。
 
-只装 `ninja`，**不装** `glslang` / `spirv-tools`（`build_macos.yml` 装了）：iOS 路径全程
-没碰过它们（configure 与构建日志各 0 次提及）。哪天 iOS 要接运行时 shader 编译再补。
+**必须装 `glslang` / `spirv-tools`**（和 `build_macos.yml` 一样）。iOS 虽然走 Metal，
+但内置 shader 是"先在宿主上编成 SPIR-V、再用 SPIRV-Cross 转 MSL"：
+
+```
+-- Engine: built-in shaders available as SPIR-V (Vulkan path + Metal via SPIRV-Cross)
+-- ShaderCompile: glslangValidator is unavailable; skipping SPIR-V generation
+```
+
+没有 `glslangValidator` 时，整个 shader 生成步骤被**静默跳过** —— 构建照样绿，产物却少了
+shader 数据，真机上一片黑还查不到原因。所以 job 里除了装它，还加了一步断言：
+configure 日志里出现 `glslangValidator is unavailable` 就直接判红。
+
+⚠️ 这一条最初写反过：当时写的是"只装 ninja，iOS 路径 0 次提及 glslang"。那是**假阴性**——
+本机 bash 的 `grep` 在这个环境里会静默返回空，看着像"没有匹配"。教训：
+**"grep 没匹配到"不等于"不存在"**，尤其在这个环境里一律用工具而不是 bash grep 下结论。
 
 **光"编译成功"不算证据**，所以最后一步是四条断言 —— 都做过正向 + 负向实跑：
 
@@ -319,4 +332,5 @@ previously*。`build/ios` 是 CI 编译闸门（Ninja）用的，`zbuild_ios.py`
 | 宿主测试崩在 `EXC_BAD_ACCESS at 0x0` 且链接期无报错 | 某个库没链上 + `dynamic_lookup` 绑成 0（或刚被 iOS 构建覆盖 `bin/`） | §3.5 末尾两条；`nm -m <bin> \| grep "dynamically looked up"` |
 | iOS CI 报 `ZEngine not found` | target 名是 `ZGameIOS` 而 `OUTPUT_NAME` 是 `ZEngine`；后者被改了 | §3.6；`.github/workflows/build_ios.yml` 写死路径是故意的 |
 | iOS CI 报 `platform is '1'` | 宿主 SDK 漏进来了（toolchain 没生效，`CMAKE_SYSTEM_NAME` 不是 iOS） | §3.6 断言表；`otool -l <bin> \| grep -A3 LC_BUILD_VERSION` |
+| 带项目内容构建报 `mkdir(.../ZEngine.app/zengine/Build): Not a directory` | bundle 内的项目目录原本叫 `zengine`，而可执行文件 `OUTPUT_NAME` 是 `ZEngine` —— macOS 默认卷宗**大小写不敏感**，两者被当成同一条路径 | 已改名 `zengine_project`（`IOSMain.mm` 的 `k_bundled_project_dir` / `Player/IOS/CMakeLists.txt` 的 glob / `zbuild_ios.py` 的 `STAGING_PROJECT` 三处必须同步）。**设备上是大小写敏感的，所以只在构建宿主机发作，真机永不复现** |
 | 链接期 undefined symbol | 宿主用了没有 `ZPLAYER_API` 的符号 | 自检"宿主符号"两项 |

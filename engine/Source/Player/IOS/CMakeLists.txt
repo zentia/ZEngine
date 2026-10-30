@@ -73,9 +73,9 @@ endif()
 set(ZENGINE_IOS_STAGING_DIR "${CMAKE_CURRENT_SOURCE_DIR}/staging"
     CACHE PATH "Directory holding the packaged project (staging/zengine) to embed in the app bundle")
 
-if(EXISTS "${ZENGINE_IOS_STAGING_DIR}/zengine")
+if(EXISTS "${ZENGINE_IOS_STAGING_DIR}/zengine_project")
     file(GLOB_RECURSE _zengine_ios_project_files RELATIVE "${ZENGINE_IOS_STAGING_DIR}"
-         "${ZENGINE_IOS_STAGING_DIR}/zengine/*")
+         "${ZENGINE_IOS_STAGING_DIR}/zengine_project/*")
 
     set(_zengine_ios_abs_files "")
     foreach(_rel ${_zengine_ios_project_files})
@@ -97,7 +97,7 @@ if(EXISTS "${ZENGINE_IOS_STAGING_DIR}/zengine")
     unset(_zengine_ios_file_count)
     unset(_zengine_ios_project_files)
 else()
-    message(WARNING "ZGameIOS: ${ZENGINE_IOS_STAGING_DIR}/zengine does not exist -- "
+    message(WARNING "ZGameIOS: ${ZENGINE_IOS_STAGING_DIR}/zengine_project does not exist -- "
                     "the app will launch with no project. Run zbuild_ios.py first.")
 endif()
 

@@ -32,7 +32,11 @@ REPO_ROOT = Path(__file__).resolve().parent
 ENGINE_DIR = REPO_ROOT / "engine"
 IOS_PROJECT_DIR = ENGINE_DIR / "Source" / "Player" / "IOS"
 STAGING_DIR = IOS_PROJECT_DIR / "staging"
-STAGING_PROJECT = STAGING_DIR / "zengine"
+# 目录名**不能**叫 "zengine"：可执行文件的 OUTPUT_NAME 是 "ZEngine"，而 macOS
+# 默认卷宗大小写不敏感，`<app>/zengine` 会跟 `<app>/ZEngine` 撞成同一条路径，
+# 拷贝资源时 mkdir 直接 ENOTDIR（ninja 报 "Not a directory"，看不出是大小写）。
+# 详见 IOSMain.mm 里 k_bundled_project_dir 的注释。改这里必须同步改那边。
+STAGING_PROJECT = STAGING_DIR / "zengine_project"
 TOOLCHAIN_FILE = ENGINE_DIR / "toolchain" / "ios.cmake"
 # Xcode 生成器**不能**与 Ninja 共用同一个构建树：CMake 缓存里写着
 # CMAKE_GENERATOR，两者不一致时 cmake 直接报
@@ -44,6 +48,9 @@ BUILD_DIR = REPO_ROOT / "build" / "ios-xcode"
 
 EXCLUDED_DIR_NAMES = {".git", ".svn", ".vs", ".idea", "Intermediate", "Saved", "Logs"}
 KEEP_BUILD_SUBDIRS = {"iOS"}
+# macOS 的 Finder 会在项目目录里留下 .DS_Store，rglob 会把它一起打进 bundle。
+# 它不是目录所以 EXCLUDED_DIR_NAMES 挡不住，得单独按文件名过滤。
+EXCLUDED_FILE_NAMES = {".DS_Store"}
 
 
 def log(msg: str) -> None:
@@ -76,6 +83,8 @@ def stage_project(project_root: Path) -> int:
             continue
         rel = src.relative_to(project_root)
         if any(part in EXCLUDED_DIR_NAMES for part in rel.parts):
+            continue
+        if src.name in EXCLUDED_FILE_NAMES:
             continue
         # 只带 iOS 的构建产物（Bundles / manifest 都在 Build/<Platform> 下）。
         if rel.parts[0] == "Build" and (len(rel.parts) < 2 or rel.parts[1] not in KEEP_BUILD_SUBDIRS):

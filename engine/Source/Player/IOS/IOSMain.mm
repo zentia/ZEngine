@@ -24,7 +24,15 @@
 namespace
 {
     /// 项目内容在 .app 里的位置（由 zbuild_ios.py 拷进 bundle 的 Resources）。
-    constexpr const char* k_bundled_project_dir = "zengine";
+    ///
+    /// ⚠️ 名字**不能**叫 "zengine"：可执行文件的 OUTPUT_NAME 是 "ZEngine"，
+    /// 而 macOS 默认卷宗是**大小写不敏感**的，于是 `<app>/zengine` 与
+    /// `<app>/ZEngine` 被当成同一条路径 —— 拷贝资源时 mkdir 得到
+    /// ENOTDIR / EEXIST（ninja 报法：`mkdir(.../ZEngine.app/zengine/Build):
+    /// Not a directory`，看上去完全不像大小写问题），带项目内容的 iOS 构建
+    /// 在 Mac 上根本编不出来。iOS 设备本身是大小写敏感的，所以这个坑只在
+    /// 构建宿主机上发作，真机上永远不会复现。
+    constexpr const char* k_bundled_project_dir = "zengine_project";
 }  // namespace
 
 // ---------------------------------------------------------------------------
