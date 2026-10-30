@@ -268,14 +268,23 @@ int main()
         b.EnableKeyword(0, "_A_ON");
         b.EnableKeyword(0, "_B_ON");
 
-        const eastl::string* ka = a.Parts()[0].m_MaterialDesc.m_EnabledShaderKeywords.data();
-        const eastl::string* kb = b.Parts()[0].m_MaterialDesc.m_EnabledShaderKeywords.data();
-        const size_t na = a.Parts()[0].m_MaterialDesc.m_EnabledShaderKeywords.size();
-        const size_t nb = b.Parts()[0].m_MaterialDesc.m_EnabledShaderKeywords.size();
+        // Parts() 返回的是**值**。以前这里写成
+        // `const eastl::string* ka = a.Parts()[0]...data();`，那个临时 vector 在
+        // 分号处就析构了，ka/kb 全是悬空指针 —— K4b 于是读已释放内存，
+        // 读出来的顺序是随机的（实测打出乱码），跟被测的排序逻辑毫无关系。
+        // 必须先落到具名局部量，再从它取引用。
+        const std::vector<GameObjectPartDesc> parts_a = a.Parts();
+        const std::vector<GameObjectPartDesc> parts_b = b.Parts();
+        const eastl::vector<eastl::string>& keywords_a = parts_a[0].m_MaterialDesc.m_EnabledShaderKeywords;
+        const eastl::vector<eastl::string>& keywords_b = parts_b[0].m_MaterialDesc.m_EnabledShaderKeywords;
+        const size_t na = keywords_a.size();
+        const size_t nb = keywords_b.size();
         Check(na == 2 && nb == 2, "K4 both renderers ended up with 2 keywords");
-        Check(na == 2 && nb == 2 && ka != nullptr && kb != nullptr && ka[0] == kb[0] && ka[1] == kb[1],
+        Check(na == 2 && nb == 2 && keywords_a[0] == keywords_b[0] && keywords_a[1] == keywords_b[1],
               "K4b enabling A-then-B and B-then-A produce the same (sorted) keyword list -- "
               "otherwise MaterialSourceDesc::getHashValue would mint two identical shared materials");
+        Check(na == 2 && keywords_a[0] == "_A_ON" && keywords_a[1] == "_B_ON",
+              "K4c the list is actually sorted, not merely equal by accident");
     }
 
     // ---- K5: ClearKeywords -------------------------------------------

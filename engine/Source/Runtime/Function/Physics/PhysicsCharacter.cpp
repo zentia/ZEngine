@@ -102,6 +102,11 @@ bool PhysicsCharacter::Create(const CharacterControllerDesc& in_desc,
                                                 JPH::RVec3(toVec3(in_position.ToVector3())),
                                                 toQuat(in_rotation),
                                                 in_scene->GetJoltPhysicsSystem());
+    // Same rule as the shape above: `new` leaves the refcount at 0, so this is
+    // the reference Destroy() releases. Without it the controller was never
+    // freed at all (Release() on a 0 count deletes nothing) and the shape was
+    // then deleted out from under the leaked character.
+    m_JoltCharacter->AddRef();
 
     return true;
 }
@@ -110,8 +115,9 @@ void PhysicsCharacter::Destroy()
 {
     if (m_JoltCharacter != nullptr)
     {
-        // CharacterVirtual is a Jolt RefTarget: it was created with refcount 1,
-        // so releasing it is what destroys it.
+        // CharacterVirtual is a Jolt RefTarget and Create() took a reference,
+        // so releasing it here is what destroys it -- and what drops the
+        // character's own reference to the shape.
         m_JoltCharacter->Release();
         m_JoltCharacter = nullptr;
     }
@@ -142,6 +148,13 @@ bool PhysicsCharacter::BuildAndInstallShape(float in_radius, float in_half_heigh
         LOG_ERROR(ZPhysics, "CharacterController: capsule shape allocation failed");
         return false;
     }
+
+    // Jolt's RefTarget starts at refcount **0** -- `new` does not take a
+    // reference, only Ref/RefConst assignment does. Taking ownership of a raw
+    // `new` therefore means AddRef-ing it once here, or the matching Release()
+    // in Destroy() underflows the count (and, in an assert-enabled build,
+    // aborts inside Release()).
+    new_shape->AddRef();
 
     if (in_is_initial)
     {
@@ -212,7 +225,16 @@ CharacterMoveResult PhysicsCharacter::Move(const Vector3& in_velocity, float in_
 
     // ExtendedUpdate() reads the velocity off the character, it is not a
     // parameter — so the desired velocity has to be pushed in first.
-    m_JoltCharacter->SetLinearVelocity(toVec3(in_velocity));
+    //
+    // Gravity has to be folded in *here*: Jolt's own header states that
+    // ExtendedUpdate()'s inGravity "is only used when the character is standing
+    // on top of another object to apply downward force". Free fall is the
+    // caller's job -- CharacterVirtual.h documents the expected velocity as
+    // "horizontal input + optional vertical jump velocity + delta time * gravity".
+    // Without the term below the character simply hangs in the air, which is
+    // what this function's own contract ("Gravity is added on top") promised and
+    // did not deliver.
+    m_JoltCharacter->SetLinearVelocity(toVec3(in_velocity) + toVec3(in_gravity) * in_delta_time);
 
     m_JoltCharacter->ExtendedUpdate(in_delta_time,
                                     toVec3(in_gravity),

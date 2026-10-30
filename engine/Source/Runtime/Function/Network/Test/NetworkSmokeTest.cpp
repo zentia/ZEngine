@@ -200,6 +200,11 @@ namespace
 
 int main()
 {
+    // stdout is fully buffered when it is not a console (ctest redirects it),
+    // so a crash anywhere below used to discard every line printed so far and
+    // leave nothing but an exit code. Keep it unbuffered.
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
+
     // -------------------------------------------------------------------------
     Section("endpoint");
     // -------------------------------------------------------------------------
@@ -253,6 +258,29 @@ int main()
     {
         HttpRequestDesc desc;
         desc.url = "http://127.0.0.1:1/";
+        // Layout split guard. ZENGINE_NETWORK_HAS_CURL decides whether
+        // NetworkSystem *has* its curl members, so a consumer built without it
+        // sees a different sizeof() for the same class: it links, it runs, and
+        // then every mutex sits at the wrong offset. That used to be exactly
+        // this test's fate -- it hung inside GetActiveRequestCount() below and
+        // printed nothing because stdout was buffered. Assert the two sides
+        // agree *before* touching an instance.
+        const bool layout_matches = NetworkSystem::GetAbiSize() == sizeof(NetworkSystem);
+        Check(layout_matches, "ZRuntime and this TU agree on sizeof(NetworkSystem)");
+        if (!layout_matches)
+        {
+            // Do not carry on: every member access below lands at the wrong
+            // offset, so the honest outcomes are a hang or an abort -- and the
+            // hang is what this test did for its whole life before the guard
+            // existed. Fail here, loudly, in milliseconds.
+            std::printf("\n  !!  %zu vs %zu: ZENGINE_NETWORK_HAS_CURL is not reaching "
+                        "consumers of ZRuntime. It must be PUBLIC -- it changes this "
+                        "class's layout.\n",
+                        NetworkSystem::GetAbiSize(), sizeof(NetworkSystem));
+            std::printf("\n%d checks, %d failures\n", g_checks, g_failures);
+            return EXIT_FAILURE;
+        }
+
         Check(network.SendAsync(desc) == kInvalidHttpHandle, "SendAsync before Initialize() is refused");
         Check(network.GetActiveRequestCount() == 0, "nothing is in flight before Initialize()");
 

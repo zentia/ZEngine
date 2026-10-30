@@ -58,6 +58,19 @@ public:
     /// null device instead of returning false from Initialize().
     bool IsBackendAvailable() const { return m_BackendReady.load(std::memory_order_acquire); }
 
+    /// ABI fingerprint. The body lives in NetworkSystem.cpp, so the value it
+    /// returns is the sizeof() that ZRuntime was compiled with. A consumer
+    /// whose ZENGINE_NETWORK_HAS_CURL disagrees gets a *different* layout for
+    /// this very class -- the curl members below simply do not exist on its
+    /// side -- and every mutex lands at the wrong offset. That links cleanly,
+    /// runs, and then hangs or aborts with no diagnostic at all.
+    ///
+    /// Compare this against sizeof(NetworkSystem) before touching an instance
+    /// and the split becomes a one-line failure instead. (See NetworkSmokeTest,
+    /// "system" section: the macro used to be PRIVATE on ZRuntime, so the test
+    /// was the first victim.)
+    static std::size_t GetAbiSize();
+
     // =========================================================================
     // Asynchronous HTTP (worker thread)
     // =========================================================================

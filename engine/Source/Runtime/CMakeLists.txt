@@ -1474,21 +1474,30 @@ function(configure_runtime_library target)
     # NetworkStatus::Unsupported instead of failing. That is exactly what
     # ZENGINE_NETWORK_HAS_CURL gates, so it is only defined when the library is
     # really there.
+    #
+    # PUBLIC, not PRIVATE -- and this is not cosmetic. The macro also decides
+    # whether NetworkSystem/HttpRequest/WebSocket *have* their curl members
+    # (CURLM* m_Multi, the CURL*-keyed map). A consumer compiled without it
+    # sees a different sizeof() for the same class, links cleanly, and then
+    # locks a mutex at the wrong offset: it hangs or aborts with no diagnostic
+    # whatsoever, which is exactly how NetworkSmokeTest behaved. Any macro that
+    # changes a public header's layout is part of the ABI and has to travel
+    # with the target's usage requirements.
     if(TARGET libcurl_static)
-        target_link_libraries(${target} PRIVATE libcurl_static)
-        target_compile_definitions(${target} PRIVATE ZENGINE_NETWORK_HAS_CURL=1)
+        target_link_libraries(${target} PUBLIC libcurl_static)
+        target_compile_definitions(${target} PUBLIC ZENGINE_NETWORK_HAS_CURL=1)
         if(WIN32)
             # curl's own build puts CURL_STATICLIB on libcurl_static but not on
             # its INTERFACE, so consumers still see __declspec(dllimport) in
             # curl.h unless they define it themselves.
-            target_compile_definitions(${target} PRIVATE CURL_STATICLIB=1)
-            target_link_libraries(${target} PRIVATE crypt32 ws2_32 wldap32 normaliz)
+            target_compile_definitions(${target} PUBLIC CURL_STATICLIB=1)
+            target_link_libraries(${target} PUBLIC crypt32 ws2_32 wldap32 normaliz)
         elseif(APPLE)
             # SystemConfiguration (proxy settings) and CoreFoundation (DNS
             # configuration) are pulled in by curl's own build for its own
             # objects; a static archive does not carry them along, so repeat
             # them for the final link.
-            target_link_libraries(${target} PRIVATE
+            target_link_libraries(${target} PUBLIC
                 "-framework CoreFoundation" "-framework SystemConfiguration")
         endif()
         message(STATUS "Runtime: network layer linked against libcurl_static")

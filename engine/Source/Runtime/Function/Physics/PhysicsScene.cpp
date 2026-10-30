@@ -9,6 +9,7 @@
 #include "Jolt/Jolt.h"
 #include "Jolt/Physics/Body/BodyCreationSettings.h"
 #include "Jolt/Physics/Body/BodyLock.h"
+#include "Jolt/Physics/Body/BodyLockMulti.h"
 #include "Jolt/Physics/Collision/CastResult.h"
 #include "Jolt/Physics/Collision/CollideShape.h"
 #include "Jolt/Physics/Collision/CollisionCollectorImpl.h"
@@ -664,17 +665,25 @@ uint32_t PhysicsScene::CreateJoint(const PhysicsJointDesc& in_desc)
     // Constraint settings take world-space points and turn them into each
     // body's local frame while the constraint is created, which is why both
     // bodies have to be locked for the whole switch below.
-    JPH::BodyLockWrite lock_a(m_Physics.m_JoltPhysicsSystem->GetBodyLockInterface(), JPH::BodyID(in_desc.m_BodyA));
-    JPH::BodyLockWrite lock_b(m_Physics.m_JoltPhysicsSystem->GetBodyLockInterface(), JPH::BodyID(in_desc.m_BodyB));
+    //
+    // One BodyLockMultiWrite, not two BodyLockWrite: Jolt tracks lock order per
+    // thread and both bodies are the same priority (EPhysicsLockTypes::PerBody),
+    // so a second per-body lock trips "A lock of same or higher priority was
+    // already taken, this can create a deadlock!" and then "Mutex was not
+    // locked!" when the second one is released. That is not cosmetic -- two
+    // independent locks on two bodies really can deadlock against another
+    // thread doing the same in the opposite order. BodyLockMultiWrite takes the
+    // mutex mask once and locks it in a consistent order.
+    const JPH::BodyID body_ids[2] = {JPH::BodyID(in_desc.m_BodyA), JPH::BodyID(in_desc.m_BodyB)};
+    JPH::BodyLockMultiWrite joint_lock(m_Physics.m_JoltPhysicsSystem->GetBodyLockInterface(), body_ids, 2);
 
-    if (!lock_a.Succeeded() || !lock_b.Succeeded())
+    JPH::Body* jph_body_a = joint_lock.GetBody(0);
+    JPH::Body* jph_body_b = joint_lock.GetBody(1);
+    if (jph_body_a == nullptr || jph_body_b == nullptr)
     {
         LOG_ERROR(ZPhysics, "CreateJoint: body not found ({}, {})", in_desc.m_BodyA, in_desc.m_BodyB);
         return s_InvalidJointId;
     }
-
-    JPH::Body& jph_body_a = lock_a.GetBody();
-    JPH::Body& jph_body_b = lock_b.GetBody();
 
     JPH::Constraint* jph_constraint = nullptr;
 
@@ -689,7 +698,7 @@ uint32_t PhysicsScene::CreateJoint(const PhysicsJointDesc& in_desc)
                 settings.mPoint1 = JPH::RVec3(toVec3(in_desc.m_PivotA));
                 settings.mPoint2 = JPH::RVec3(toVec3(in_desc.m_PivotB));
             }
-            jph_constraint = settings.Create(jph_body_a, jph_body_b);
+            jph_constraint = settings.Create(*jph_body_a, *jph_body_b);
             break;
         }
         case PhysicsJointType::hinge:
@@ -709,7 +718,7 @@ uint32_t PhysicsScene::CreateJoint(const PhysicsJointDesc& in_desc)
                 settings.mLimitsMin = in_desc.m_MinLimit;
                 settings.mLimitsMax = in_desc.m_MaxLimit;
             }
-            jph_constraint = settings.Create(jph_body_a, jph_body_b);
+            jph_constraint = settings.Create(*jph_body_a, *jph_body_b);
             break;
         }
         case PhysicsJointType::point:
@@ -717,7 +726,7 @@ uint32_t PhysicsScene::CreateJoint(const PhysicsJointDesc& in_desc)
             JPH::PointConstraintSettings settings;
             settings.mPoint1 = JPH::RVec3(toVec3(in_desc.m_PivotA));
             settings.mPoint2 = JPH::RVec3(toVec3(in_desc.m_PivotB));
-            jph_constraint = settings.Create(jph_body_a, jph_body_b);
+            jph_constraint = settings.Create(*jph_body_a, *jph_body_b);
             break;
         }
         case PhysicsJointType::slider:
@@ -735,7 +744,7 @@ uint32_t PhysicsScene::CreateJoint(const PhysicsJointDesc& in_desc)
                 settings.mLimitsMin = in_desc.m_MinLimit;
                 settings.mLimitsMax = in_desc.m_MaxLimit;
             }
-            jph_constraint = settings.Create(jph_body_a, jph_body_b);
+            jph_constraint = settings.Create(*jph_body_a, *jph_body_b);
             break;
         }
         case PhysicsJointType::distance:
@@ -750,7 +759,7 @@ uint32_t PhysicsScene::CreateJoint(const PhysicsJointDesc& in_desc)
                 settings.mMinDistance = in_desc.m_MinLimit;
                 settings.mMaxDistance = in_desc.m_MaxLimit;
             }
-            jph_constraint = settings.Create(jph_body_a, jph_body_b);
+            jph_constraint = settings.Create(*jph_body_a, *jph_body_b);
             break;
         }
         default:

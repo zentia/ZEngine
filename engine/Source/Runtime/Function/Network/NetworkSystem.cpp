@@ -22,6 +22,11 @@ namespace
 // IEngineSystem
 // =============================================================================
 
+std::size_t NetworkSystem::GetAbiSize()
+{
+    return sizeof(NetworkSystem);
+}
+
 bool NetworkSystem::Initialize()
 {
     if (m_Initialized.load(std::memory_order_acquire))

@@ -21,20 +21,26 @@ name: Smoke tests (Windows + Vulkan)
 #
 # 它是三个新宿主里**唯一能在本机端到端验证**的一个（Linux 无 WSL、macOS 无
 # 机器）：本机 Vulkan SDK 1.4.363.0，`ZENGINE_USE_VULKAN=ON`，108 个测试注册、
-# 106 通过、2 失败（见下）。所以下面的失败清单是实测的，不是估计的。
+# **108 通过、0 失败**。下面的数字是实测的，不是估计的。
 #
-# 已知失败（2026-10-30 实测，均为此前从未被任何 CI 编过的测试）
-# ----------------------------------------------------------
-#   MaterialCustomParamSmokeTest  K4b：先 enable A 再 B 与先 B 再 A 得到的
-#     keyword 列表顺序不一致 ⇒ MaterialSourceDesc::getHashValue 会给两份等价
-#     材质 mint 出两个不同的 shared material。疑似**产品 bug**，不是测试问题，
-#     修之前需要确认排序该在哪一层归一化。
-#   AppleSceneBlitSmokeTest  4/286：失败的全是**非 Apple 降级路径**的源码文本
-#     断言（UpdateViewport 日志、RenderNaniteCmd 委托、.prefab yaml 转发、
-#     scene-placement 实例化）。源码改了、断言没跟。Apple 上跑的是另一段。
+# 首跑暴露的 4 个问题（都是"此前从未被任何 CI 编过的测试"，已在 d3b2c78a /
+# 后续提交里修掉，这里留着是因为它们说明了这份 job 为什么必须有）
+# ----------------------------------------------------------------------
+#   1. Z_HAS_VULKAN 是全局 define，Vulkan include 目录却只挂在 ZRuntime 上
+#      ⇒ 两个"故意不链 ZRuntime"的测试 C1083。**只有 Vulkan=ON 才能复现**。
+#   2. AppleSceneBlitSmokeTest 4 条：源文件在 Windows 上检出为 **CRLF**，而
+#      断言里的跨行字面量写的是 `\n` ⇒ 永远匹配不上。同一个测试在 Windows 红、
+#      在 Linux/macOS（LF）绿 —— 这类平台差异只有 Windows job 抓得到。
+#   3. 同测试另 2 条：盯的是 `driver.Run(root, graph_gameobjects, ...)` 这种
+#      带变量名的调用形式，参数改名后就红了（功能没变）；以及一条
+#      `placement_call == npos || ...` 的**恒真**断言 —— 调用点找不到时它
+#      永远绿，什么都没查。
+#   4. MaterialCustomParamSmokeTest K4b：`const auto* ka = a.Parts()[0]...data()`
+#      从**临时** vector 取指针 ⇒ 悬空，读已释放内存。我一开始误判成产品 bug
+#      （keyword 排序没归一化），实际排序逻辑是对的，坏的是测试自己。
 #
-# 两处都不是"环境噪音"，所以**不**用 `-E` 排除掉假装绿色 —— 排除会让这份
-# job 失去它唯一的价值。修好之前它们就该是红的。
+# 顺带一提：正因为 2 和 4 这类问题只在特定宿主/行尾下出现，才更不该用 `-E`
+# 把红着的测试排除掉假装绿色。
 #
 # 失败语义同 smoke_tests_linux.yml / smoke_tests_macos.yml：
 #   1. configure / "0 个测试" / Build ZRuntime  => 红

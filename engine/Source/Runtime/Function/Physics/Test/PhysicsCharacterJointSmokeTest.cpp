@@ -26,6 +26,10 @@
 #include <cstdio>
 #include <cstdlib>
 
+#if defined(_MSC_VER) && defined(_DEBUG)
+    #include <crtdbg.h>
+#endif
+
 namespace
 {
     int g_failures = 0;
@@ -46,11 +50,22 @@ namespace
     /// the object + reflection layer into a headless test.
     uint32_t SpawnBody(PhysicsScene& in_scene, const Vector3& in_position, bool in_is_dynamic)
     {
-        JPH::BodyInterface& body_interface = in_scene.GetJoltPhysicsSystem()->GetBodyInterface();
+    JPH::BodyInterface& body_interface = in_scene.GetJoltPhysicsSystem()->GetBodyInterface();
 
-        JPH::BoxShapeSettings box_settings(JPH::Vec3(0.5f, 0.5f, 0.5f));
+    JPH::BoxShapeSettings box_settings(JPH::Vec3(0.5f, 0.5f, 0.5f));
+    // BodyCreationSettings keeps the ShapeSettings* as a RefConst, and Jolt's
+    // RefTarget starts at refcount 0 and *deletes* the object as soon as the
+    // count falls back to zero. Handing it a stack object therefore means
+    // "delete a stack pointer": the debug heap reports it as freeing memory
+    // filled with 0xCCCCCCCC, which is exactly what this test used to do (and,
+    // because the CRT raised a modal dialog, it hung instead of failing).
+    // SetEmbedded() is Jolt's own opt-out for stack/embedded shape settings.
+    // The other spelling is `new JPH::BoxShapeSettings(...)` and let the Ref
+    // own it -- PhysicsScene.cpp does that; either is fine, silently doing
+    // neither is not.
+    box_settings.SetEmbedded();
 
-        JPH::BodyCreationSettings body_settings(&box_settings,
+    JPH::BodyCreationSettings body_settings(&box_settings,
                                                 JPH::RVec3(toVec3(in_position)),
                                                 JPH::Quat::sIdentity(),
                                                 in_is_dynamic ? JPH::EMotionType::Dynamic : JPH::EMotionType::Static,
@@ -69,6 +84,45 @@ namespace
 
 int main()
 {
+    // ctest redirects stdout to a file, which makes it fully buffered: a hang
+    // or a crash below would otherwise discard every line printed so far and
+    // leave nothing to diagnose but an exit code.
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
+
+#if defined(_MSC_VER) && defined(_DEBUG)
+    // A Debug-CRT assertion or a failed pure-call check opens a modal
+    // "Microsoft Visual C++ Runtime Library" dialog and then waits. Nobody can
+    // click it on a headless CI machine, so the job would hang until the
+    // runner's own timeout -- strictly worse than a red test. Report to stderr
+    // and let the process actually exit.
+    _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE | _CRTDBG_MODE_DEBUG);
+    _CrtSetReportFile(_CRT_ASSERT, _CRTDBG_FILE_STDERR);
+    _CrtSetReportMode(_CRT_ERROR, _CRTDBG_MODE_FILE | _CRTDBG_MODE_DEBUG);
+    _CrtSetReportFile(_CRT_ERROR, _CRTDBG_FILE_STDERR);
+    _CrtSetDbgFlag(_CRTDBG_ALLOC_MEM_DF | _CRTDBG_DELAY_FREE_MEM_DF);
+#endif
+
+    // Jolt's default AssertFailed returns true, i.e. "break into the debugger",
+    // which on a machine with no debugger kills the process with
+    // STATUS_BREAKPOINT (0x80000003) and prints nothing at all -- its default
+    // Trace is a no-op too. Report the assertion instead, and count it: a
+    // violated Jolt precondition is a failure, even when the code happened to
+    // limp on past it. This is how the double per-body lock in CreateJoint()
+    // was found.
+    //
+    // Guarded because AssertFailed only exists when Jolt compiled its asserts
+    // in (JPH_ENABLE_ASSERTS, which JPH_DEBUG turns on whenever NDEBUG is off).
+    // A Release build has no asserts and no hook to install.
+#if defined(JPH_ENABLE_ASSERTS)
+    JPH::AssertFailed = [](const char* in_expression, const char* in_message, const char* in_file,
+                           JPH::uint in_line) -> bool {
+        std::fprintf(stderr, "JPH ASSERT FAILED: %s\n  at %s:%u\n  %s\n", in_expression, in_file,
+                     in_line, in_message != nullptr ? in_message : "");
+        ++g_failures;  // with a note on stderr, so the count is never a mystery
+        return false;  // do not breakpoint: let the run finish and report
+    };
+#endif
+
     PhysicsScene scene(Vector3(0.f, -9.81f, 0.f));
 
     // --- bodies -------------------------------------------------------------

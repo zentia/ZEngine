@@ -92,6 +92,16 @@ namespace
         }
     }
 
+    /// 读进来统一成 LF。
+    ///
+    /// 这台机器上这些源文件是 CRLF（git 在 Windows 上检出的行尾），而下面的断言
+    /// 用的是跨行字面量，比如 `body_of(cmd_source, "void Execute() override\n    {\n
+    /// // 走 RenderSystem")` —— 带 `\r` 的话**永远匹配不上**，于是 4 条断言在
+    /// Windows 全红、在 Linux/macOS（LF 检出）全绿。同一个测试在三个宿主上给出
+    /// 不同结论，跟被测代码一点关系都没有：那 4 条其实全是对的。
+    ///
+    /// 在读取处归一，而不是去改那 4 条断言：断言写 LF 是对的，错的是"源文件
+    /// 行尾随平台变"这件事泄漏进了比较。
     std::string ReadFileText(const std::string& path)
     {
         std::ifstream file(path, std::ios::binary);
@@ -101,7 +111,19 @@ namespace
         }
         std::ostringstream buffer;
         buffer << file.rdbuf();
-        return buffer.str();
+        std::string text = buffer.str();
+
+        std::string normalized;
+        normalized.reserve(text.size());
+        for (size_t at = 0; at < text.size(); ++at)
+        {
+            if (text[at] == '\r')
+            {
+                continue;
+            }
+            normalized.push_back(text[at]);
+        }
+        return normalized;
     }
 
     bool Contains(const std::string& text, const char* token)
@@ -1392,7 +1414,16 @@ namespace
         Check(CountOccurrences(prefab_source, "component->PostLoadResource(go)") == 1,
               "there is exactly one PostLoadResource call site to gate (a second one would leak again)");
         // flag 必须**真的传下去**（两条路各一个转发点），否则签名改了等于没改。
-        Check(code_line_mentions(prefab_source, "driver.Run(root, graph_gameobjects, invoke_post_load)"),
+        //
+        // 这里只钉"driver.Run( 这一行带着 invoke_post_load"，不写死实参变量名：
+        // 以前写成 `driver.Run(root, graph_gameobjects, invoke_post_load)`，后来
+        // 那两个参数改名成 clone.clone_root / clone_gameobjects，功能没变而断言
+        // 变红 —— 盯变量名只会让人在改名时误以为转发被删了。
+        const size_t driver_run_at = code_line_find(prefab_source, "driver.Run(");
+        Check(driver_run_at != std::string::npos &&
+                  prefab_source.substr(driver_run_at,
+                                       prefab_source.find('\n', driver_run_at) - driver_run_at)
+                      .find("invoke_post_load") != std::string::npos,
               "the .prefab (yaml) path forwards the flag to the driver");
         Check(code_line_mentions(prefab_source, "return Instantiate(asset, invoke_post_load);"),
               "the binary .zasset path forwards the flag too");
@@ -1412,9 +1443,20 @@ namespace
         Check(!expand_body.empty() &&
                   code_line_mentions(expand_body, "InstantiateFromPath(prefab_path, /*invoke_post_load=*/false)"),
               "definition expansion turns post-load OFF (its components get post-loaded by load() instead)");
-        const size_t placement_call = code_line_find(placement_source, "PrefabUtility::InstantiateFromPath(prefab_path)");
+        // 场景拖放这条路现在走 PrefabSceneBinding::InstantiateIntoLevel →
+        // PrefabUtilityEditor::InstantiateAsPrefab，**不再经过**
+        // PrefabUtility::InstantiateFromPath（那条才是带 invoke_post_load 的）。
+        // 意图没变：拖进来的 prefab 是真对象，子树要真的 post-load 一遍。
+        const std::string prefab_editor_source =
+            ReadFileText(engine_root + "/Source/Editor/Prefab/PrefabUtilityEditor.cpp");
+        Check(!prefab_editor_source.empty(), "PrefabUtilityEditor.cpp is readable as text (scene placement)");
+
+        const size_t placement_call = code_line_find(placement_source, "PrefabSceneBinding::InstantiateIntoLevel(");
         Check(placement_call != std::string::npos,
-              "the scene-placement path still instantiates with post-load ON (dropping a prefab is a real object)");
+              "the scene-placement path goes through PrefabSceneBinding::InstantiateIntoLevel");
+        Check(code_line_mentions(prefab_editor_source, "comp->PostLoadResource(clone_go)"),
+              "the scene-placement path still instantiates with post-load ON "
+              "(dropping a prefab is a real object -- the clone subtree is post-loaded)");
         // 取到行尾，别写死长度；`placement_call` 为 npos 时**不能** substr（会抛
         // out_of_range 把整个测试带崩，变异就报不成"几条红"了）。
         std::string placement_line;
@@ -1424,7 +1466,10 @@ namespace
             placement_line   = placement_source.substr(
                 placement_call, (eol == std::string::npos ? placement_source.size() : eol) - placement_call);
         }
-        Check(placement_call == std::string::npos || !Contains(placement_line, "invoke_post_load"),
+        // 这一条以前写成 `placement_call == npos || !Contains(...)`：调用点一旦
+        // 找不到（重构改名就是这么发生的），它就**恒真** —— 典型的空断言，看起来
+        // 绿，其实什么都没查。现在要求先找到调用点。
+        Check(placement_call != std::string::npos && !Contains(placement_line, "invoke_post_load"),
               "the scene-placement call passes no flag (it must keep the default = post-load)");
 
         // ---- 8. 心跳：三个数分开打，才能分辨"没 pass / 没 emitter / 没画" ----
