@@ -104,6 +104,37 @@ LINK_LIBS = [
 ]
 
 
+def resolve_link_libs(link_dir: Path) -> list[str]:
+    """把 LINK_LIBS 的裸名解析成 -l 参数，按"实际存在的归档"来拼。
+
+    LINK_LIBS 写的是裸名（mimalloc），但本机 cmake 是 Debug 配置，产物叫
+    libmimalloc-debug.a；Release 才叫 libmimalloc.a。原来只认 lib<name>.a，
+    认不到就**静默跳过**——而 Apple 这条链接带了 -Wl,-undefined,dynamic_lookup
+    （见 build_command 里的说明），于是 mi_malloc 这类符号被推迟到运行时解析、
+    绑成 0：测试一调用就是 EXC_BAD_ACCESS at 0x0000000000000000，链接期一声
+    不响，crash 栈还指向调用方而不是缺失的库，极难归因。
+
+    （2026-10-30 就是这样：iOS 交叉构建把 bin/libmimalloc.a 覆盖成 iOS 版，
+    清理共享产物时删掉它，宿主测试随即全线崩溃在 MemoryManager::Malloc。）
+    """
+    resolved: list[str] = []
+    missing: list[str] = []
+    for lib in LINK_LIBS:
+        for stem in (f"lib{lib}.a", f"lib{lib}-debug.a", f"lib{lib}-d.a"):
+            if (link_dir / stem).is_file():
+                resolved.append("-l" + stem[len("lib"):-len(".a")])
+                break
+        else:
+            missing.append(lib)
+    if missing:
+        # 不 raise：这些库本来就"按需提供"，缺了也许只是本测试用不到。但必须
+        # 说出来——否则缺口会以"运行时跳到 0"的形式出现，而不是链接期报错。
+        print(f"[warn] LINK_LIBS 中以下库在 {link_dir} 下都不存在，相关符号将依赖 "
+              f"dynamic_lookup（缺失时会绑成 0 而非链接期报错）：{missing}",
+              file=sys.stderr)
+    return resolved
+
+
 def prepare_pruned_lib_dir(members: list[str]) -> Path:
     """造一个 bin/ 的替身目录：其余 .a 软链过去，libZRuntime.a 复制后 ar -d 掉 members。
 
@@ -237,10 +268,10 @@ def main() -> int:
         cmd.append(f"-Wl,-map,{args.link_map}")
     # 静态库顺序敏感（依赖者在前、被依赖者在后），而我们无从知道真实依赖
     # 图 —— 列两遍是链接静态库时的常规兜底。
+    resolved_libs = resolve_link_libs(link_dir)
     for _ in range(2):
-        for lib in LINK_LIBS:
-            if (link_dir / f"lib{lib}.a").is_file():
-                cmd.append(f"-l{lib}")
+        for flag in resolved_libs:
+            cmd.append(flag)
     if (BIN_DIR / "BqLog.framework").exists():
         cmd += ["-framework", "BqLog"]
 
