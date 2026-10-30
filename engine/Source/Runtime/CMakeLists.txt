@@ -575,6 +575,13 @@ list(REMOVE_ITEM SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/Audio/Test/AudioMixerSmokeTest.cpp")
 list(REMOVE_ITEM REGULAR_SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/Audio/Test/AudioMixerSmokeTest.cpp")
+# CI coverage gate main. Same carve-out rationale as every entry above: it owns
+# main() and must not be whole-archived into ZRuntime. Built only when
+# ZENGINE_BUILD_CI_COVERAGE_SMOKE_TEST=ON (see Core/Test/CMakeLists.txt).
+list(REMOVE_ITEM SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Core/Test/CiSmokeTestCoverageSmokeTest.cpp")
+list(REMOVE_ITEM REGULAR_SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Core/Test/CiSmokeTestCoverageSmokeTest.cpp")
 # Wwise backend smoke-test main. Same carve-out rationale as every entry above:
 # it owns main() and must not be whole-archived into ZRuntime. Built only when
 # ZENGINE_BUILD_WWISE_SMOKE_TEST=ON (see Function/Audio/Wwise/Test/
@@ -2072,6 +2079,12 @@ add_subdirectory(Core/Memory/Test)
 # 守卫：钉"模拟量与帧率解耦"、死亡螺旋闸门、timeScale/暂停语义，以及源码级
 # 接线门（LogicalTick 按步数循环、物理已移进 Level::FixedTick）。
 add_subdirectory(Core/Time/Test)
+
+# CI 覆盖率门禁。Own main()；只在 ZENGINE_BUILD_CI_COVERAGE_SMOKE_TEST=ON 时
+# 构建。守的是"一个 smoke test 只有在某个 workflow 里出现 -D<NAME>=ON 才算真
+# 的在跑"：双向棘轮（已启用只许增、从未跑过的只许减），外加"不许出现指向不
+# 存在开关的 -D"（拼错的 flag 不会让 CMake 报错，只会让测试静默不跑）。
+add_subdirectory(Core/Test)
 
 # 资产可移植性冒烟测试。Own main()；只在
 # ZENGINE_BUILD_ASSET_PATH_PORTABILITY_SMOKE_TEST=ON 时构建。守的是"资产文件里

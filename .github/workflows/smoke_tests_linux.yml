@@ -1,0 +1,169 @@
+name: Smoke tests (Linux)
+
+# =============================================================================
+# 为什么单独一个文件，而不是塞进 build_linux.yml
+#
+# build_linux.yml 是**构建门禁**：它必须保持红 = 真的编译不过。
+# 这个文件是**测量**：ZEngine 的 67 个测试此前只在 windows-latest 上跑过，
+# Linux 一次都没有。第一次在 Linux 上跑必然有一批失败（无 GPU 的 runner 跑
+# 不了需要 Vulkan device 的测试、字节序/路径分隔符/CRT 差异等），在拿到真实
+# 数据之前硬门禁没有意义 —— 那只会得到一个永久红的 CI，然后被人忽略。
+#
+# 因此分三层，每层的失败含义不同：
+#
+#   1. configure / "0 个测试"  => 红。这是基建坏了，必须有人看。
+#   2. 单个目标编译失败        => 黄（continue-on-error），写进日志和产物。
+#   3. 单个测试失败            => 黄（continue-on-error），写进日志和产物。
+#
+# 拿到第一次运行的产物后，把"稳定通过"的集合固化成 -E 排除表的反面
+# （即显式 -R 名单），再把第 2、3 层的 continue-on-error 去掉，这个文件
+# 就从测量变成门禁。在那之前不要假装它是门禁。
+#
+# 空套件守卫不可省：ctest 一个测试都没注册时返回 0，job 会绿 —— 绿的理由
+# 是"没跑"，这正是本项目反复栽的"空测试"陷阱。
+#
+# Lumen 那一组在这里是**打开**的：smoke_tests.yml 用 ZENGINE_USE_VULKAN=OFF，
+# 该分支会把 Function/Render/Lumen/*.cpp 从 ZRuntime 里剔除，所以那边跑不了；
+# 那边注释里写了"它们由 Apple / Linux / Windows+Vulkan 宿主负责"。Linux 正是
+# 其中之一，一直没接上而已。
+# =============================================================================
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  linux-smoke-tests:
+    name: smoke tests (ubuntu-latest, debug)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libx11-dev \
+            libxrandr-dev \
+            libxinerama-dev \
+            libxcursor-dev \
+            libxi-dev \
+            libglvnd-dev \
+            libvulkan-dev \
+            libvulkan1 \
+            glslang-tools \
+            spirv-tools \
+            libwayland-dev \
+            wayland-protocols \
+            libxkbcommon-dev
+
+      # 不开 ZENGINE_BUILD_BINDLESS_SMOKE_TEST：它是 DX12 的，
+      # Function/Render/Interface/DX12/Test/CMakeLists.txt 在非 Windows 上直接
+      # return()，开了只会多一条 "Manually-specified variables were not used"。
+      #
+      # 不开 ZENGINE_BUILD_ENVIRONMENT_CHECK_TESTS：那套是 Windows 环境采集器
+      # （注册表 / WerRegisterRuntimeExceptionModule），在 Linux 上没有意义。
+      #
+      # 注意：run 用的是 `>` 折叠块，块内的 `#` 行会被折进命令尾部当 shell
+      # 注释，写坏了会吃掉后面的参数 —— 所以说明一律放在块外。
+      - name: Configure with smoke tests enabled
+        # Linux 走系统 Vulkan + X11（engine/CMakeLists.txt 的 Linux 分支
+        # find_package(Vulkan REQUIRED) / find_package(X11 REQUIRED)），
+        # 所以这里**不能**像 Windows 那样传 ZENGINE_USE_VULKAN=OFF —— 关掉
+        # Vulkan 会走 "using Metal backend"，在 Linux 上根本不成立。
+        # 依赖就是上面 apt 装的那些。
+        run: >
+          python3 zbuild.py configure --config debug
+          --extra-args
+          -DPAPI_TYPE=quickjs
+          -DZENGINE_BUILD_PPTR_SMOKE_TEST=ON
+          -DZENGINE_BUILD_SCHEMA_EVOLUTION_SMOKE_TEST=ON
+          -DZENGINE_BUILD_YAML_ROUND_TRIP_SMOKE_TEST=ON
+          -DZENGINE_BUILD_REFLECTION_CODEGEN_SMOKE_TEST=ON
+          -DZENGINE_BUILD_ASSET_BUNDLE_SMOKE_TEST=ON
+          -DZENGINE_BUILD_PLAYER_SETTINGS_SMOKE_TEST=ON
+          -DZENGINE_BUILD_ADDRESSABLES_SMOKE_TEST=ON
+          -DZENGINE_BUILD_DDC_SMOKE_TEST=ON
+          -DZENGINE_BUILD_AI_SMOKE_TEST=ON
+          -DZENGINE_BUILD_AUDIO_SMOKE_TEST=ON
+          -DZENGINE_BUILD_ANIMATION_SMOKE_TEST=ON
+          -DZENGINE_BUILD_ANIMATOR_SMOKE_TEST=ON
+          -DZENGINE_BUILD_ANIMATION_PIPELINE_SMOKE_TEST=ON
+          -DZENGINE_BUILD_TEXTURE_COMPRESSOR_SMOKE_TEST=ON
+          -DZENGINE_BUILD_RENDERGRAPH_SMOKE_TEST=ON
+          -DZENGINE_BUILD_RENDERGRAPH_EXECUTE_SMOKE_TEST=ON
+          -DZENGINE_BUILD_UNDO_SMOKE_TEST=ON
+          -DZENGINE_BUILD_BUILD_CACHE_SMOKE_TEST=ON
+          -DZENGINE_BUILD_RHI_INDIRECT_DRAW_SMOKE_TEST=ON
+          -DZENGINE_BUILD_NANITE_CLUSTER_SMOKE_TEST=ON
+          -DZENGINE_BUILD_NANITE_CULLING_SMOKE_TEST=ON
+          -DZENGINE_BUILD_NANITE_SCENE_WIRING_SMOKE_TEST=ON
+          -DZENGINE_BUILD_NANITE_GPU_CULLING_SMOKE_TEST=ON
+          -DZENGINE_BUILD_SHADER_REGISTRY_SMOKE_TEST=ON
+          -DZENGINE_BUILD_FIXED_TIME_STEP_SMOKE_TEST=ON
+          -DZENGINE_BUILD_SCRIPT_TIME_SMOKE_TEST=ON
+          -DZENGINE_BUILD_ASSET_PATH_PORTABILITY_SMOKE_TEST=ON
+          -DZENGINE_BUILD_GLTF_MESH_IMPORT_SMOKE_TEST=ON
+          -DZENGINE_BUILD_WWISE_SMOKE_TEST=ON
+          -DZENGINE_BUILD_CI_COVERAGE_SMOKE_TEST=ON
+          -DZENGINE_BUILD_LUMEN_SCENE_GEOMETRY_SMOKE_TEST=ON
+          -DZENGINE_BUILD_LUMEN_RAY_TRACING_SMOKE_TEST=ON
+          -DZENGINE_BUILD_LUMEN_SURFACE_CACHE_SMOKE_TEST=ON
+          -DZENGINE_BUILD_LUMEN_GLOBAL_ILLUMINATION_SMOKE_TEST=ON
+          -DZENGINE_BUILD_LUMEN_RENDER_PASS_WIRING_SMOKE_TEST=ON
+          -DZENGINE_BUILD_LUMEN_REFLECTIONS_SMOKE_TEST=ON
+          -DZENGINE_BUILD_LUMEN_PER_FRAME_BRIDGE_SMOKE_TEST=ON
+
+      # 第 1.5 层：**硬**。ZRuntime 本身在 Linux 上编不过的话，后面所有测试
+      # 都是陪跑 —— 那是头条结论，必须红，不要被 continue-on-error 淹掉。
+      - name: Build ZRuntime
+        run: cmake --build build --target ZRuntime
+
+      # 第 2 层：单个目标编译失败不阻断，目的是一次拿到**全部**失败清单，
+      # 而不是"第一个挂掉就收工"。
+      - name: Build smoke tests
+        id: build
+        continue-on-error: true
+        run: python3 zbuild.py build --config debug
+
+      # 第 3 层：同理。日志留全，后面 summarize 摘出来。
+      - name: Run ctest
+        id: ctest
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          mkdir -p .ci
+          ctest --test-dir build --output-on-failure 2>&1 | tee .ci/ctest-linux.log
+
+      # 第 1 层：真红。0 个测试 = job 因为"没跑"而绿，必须炸。
+      - name: Assert the suite is not empty
+        run: |
+          total=$(ctest --test-dir build -N | grep -oE 'Total Tests: [0-9]+' | grep -oE '[0-9]+' || true)
+          echo "registered tests on Linux: ${total:-0}"
+          if [ -z "${total}" ] || [ "${total}" -lt 1 ]; then
+            echo "::error::ctest registered 0 tests on Linux. A green run with no tests is worse than a red one."
+            exit 1
+          fi
+
+      - name: Summarise
+        if: always()
+        run: |
+          echo "=== failed targets / tests ==="
+          grep -E "^\s*[0-9]+/[0-9]+ Test.*(Failed|Not Run)|tests failed" .ci/ctest-linux.log || echo "(none)"
+          echo
+          echo "=== tail ==="
+          tail -6 .ci/ctest-linux.log || true
+
+      - name: Upload ctest log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ctest-linux-debug
+          path: .ci/ctest-linux.log
+          if-no-files-found: warn

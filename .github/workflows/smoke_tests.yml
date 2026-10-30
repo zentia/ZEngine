@@ -116,6 +116,7 @@ jobs:
           # that honestly instead of pretending. Groups A/B are source-level and
           # need no audio device; group C is skipped unless --with-device.
           -DZENGINE_BUILD_WWISE_SMOKE_TEST=ON
+          -DZENGINE_BUILD_CI_COVERAGE_SMOKE_TEST=ON
           -DZENGINE_BUILD_ENVIRONMENT_CHECK_TESTS=ON
 
       - name: Build smoke tests
@@ -154,6 +155,7 @@ jobs:
           ScriptTimeSmokeTest
           AssetPathPortabilitySmokeTest
           WwiseIntegrationSmokeTest
+          CiSmokeTestCoverageSmokeTest
           GltfMeshImportSmokeTest
           DX12BindlessSmokeTest
           EnvironmentCollectorTests
