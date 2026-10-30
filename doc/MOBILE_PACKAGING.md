@@ -254,6 +254,35 @@ runner 分钟数翻倍，却不会多覆盖任何一类"编译错误"。
 target 名是 `ZGameIOS` 但 `OUTPUT_NAME` 是 `ZEngine`，谁改了 OUTPUT_NAME 就让这个 job 红，
 而不是静默跳过（同 `smoke_tests.yml` 的哲学：没跑起来的测试等于没测试）。
 
+### 3.7 真机验证 fixture：`projects/DeviceSmoke`
+
+真机验证需要一个能装到设备上、又能跑满帧循环的项目。仓库里原本没有候选：
+`engine/` 没有 `Build/iOS`，`zbuild_ios.py` 第一步就断言 `project/Build/iOS` 存在。
+
+所以加了 `projects/DeviceSmoke/`，它**故意不写 `startup_level`**：
+
+* `PlayerShell::OpenStartupLevel()` 在 `startup_level` 为空时返回 `true` 并记
+  `launching with an empty world` —— 引擎照样完整 boot：所有系统起来、RHI(Metal)
+  初始化、CADisplayLink 驱动真实帧循环，只是没有关卡内容要加载。
+* 真机要验的是 Metal swapchain、帧率与热节流、多指触摸 id 分配、bundle 资源完整性，
+  **空世界里全能测**。带上内容反而引入"这份内容有没有为 iOS 打好包"这个无关的失败源。
+
+⚠️ **不要给它补 `startup_level`**，也不要拿它去替掉 `engine/ZGameSmoke.zproject`：
+
+| | `projects/DeviceSmoke` | `engine/ZGameSmoke.zproject` |
+| --- | --- | --- |
+| startup_level | **无**（空世界） | `asset/level/1-1.scene` |
+| 用途 | iOS 真机：Metal / 帧率 / 触摸 / bundle | 编辑器与桌面端验收：关卡、内容、Spine 等 |
+| 被谁依赖 | `zbuild_ios.py --project projects/DeviceSmoke` | `scripts/run_editor_macos.sh`（`cp -f` 硬依赖，删了脚本直接挂）；大量 doc 里的验收步骤 |
+
+两者**互补不重复**。ZGameSmoke 是仓库里唯一带真关卡的工程，删了 macOS 编辑器就起不来。
+（`ProjectInfoPathsSmokeTest` 不读它 —— 那个测试内嵌自己的 `.zproject` 文本，所以不会因为删除而红。）
+
+⚠️ **`build/ios` 与 `build/ios-xcode` 不能合并**：CMake 缓存里写着 `CMAKE_GENERATOR`，
+Ninja 与 Xcode 不一致时 cmake 直接报 *generator does not match the generator used
+previously*。`build/ios` 是 CI 编译闸门（Ninja）用的，`zbuild_ios.py` 走 Xcode
+（要签名 / Archive），两者各用一棵树。
+
 ---
 
 ## 4. 仍然只能真机验的

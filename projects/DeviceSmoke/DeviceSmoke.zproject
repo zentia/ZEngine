@@ -1,0 +1,28 @@
+# =============================================================================
+# ZEngine 真机（iOS）验证 fixture —— 2026-10-30 起长期保留
+#
+# 与 engine/ZGameSmoke.zproject 的差异是**故意的**，不是图省事：
+#
+#   * 这里**不写 startup_level**。PlayerShell::OpenStartupLevel() 在
+#     startup_level 为空时返回 true，并记 "launching with an empty world" ——
+#     引擎照样完整 boot：所有系统起来、RHI(Metal) 初始化、CADisplayLink 驱动
+#     真实帧循环，只是没有关卡内容要加载。
+#   * 真机要验的是 Metal swapchain、帧率与热节流、多指触摸 id 分配、bundle
+#     资源完整性 —— 这些在空世界里全能测。带上内容反而会引入"这份内容有没有为
+#     iOS 打好包"这个无关的失败源（仓库里目前没有任何 Build/iOS 产物）。
+#
+# 所以**不要**给它补 startup_level：那会把它变成第二个 ZGameSmoke，而
+# ZGameSmoke 的价值恰恰是"有真关卡"（编辑器 / 桌面端验收用）。两者互补，不重复。
+#
+# 用法：
+#   python3 zbuild_ios.py --project projects/DeviceSmoke --team <TEAMID>
+#
+# ⚠️ 下面那个空的 Build/iOS/ 必须留着：zbuild_ios.py 第一步就断言
+#    (project/Build/iOS).is_dir()，不存在直接退出；它同时是 .app 里
+#    Resources/zengine 的内容来源。MountPackagedContent() 对空 Bundles 是
+#    宽容的（没有 AssetBundleManager 或 build_root 为空就直接 return）。
+# =============================================================================
+name: DeviceSmoke
+description: Empty-world fixture for on-device iOS verification (no startup level by design).
+version: 1.0.0
+engine_version: 0.1.0

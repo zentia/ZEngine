@@ -34,7 +34,13 @@ IOS_PROJECT_DIR = ENGINE_DIR / "Source" / "Player" / "IOS"
 STAGING_DIR = IOS_PROJECT_DIR / "staging"
 STAGING_PROJECT = STAGING_DIR / "zengine"
 TOOLCHAIN_FILE = ENGINE_DIR / "toolchain" / "ios.cmake"
-BUILD_DIR = REPO_ROOT / "build" / "ios"
+# Xcode 生成器**不能**与 Ninja 共用同一个构建树：CMake 缓存里写着
+# CMAKE_GENERATOR，两者不一致时 cmake 直接报
+#   "generator : Xcode does not match the generator used previously: Ninja"
+# 而 build/ios 现在是 CI 编译闸门（.github/workflows/build_ios.yml，Ninja）用的
+# 目录 —— 在本机跑一次 CI 那条命令之后，zbuild_ios.py 就会卡在这一句上，看着像
+# "工程坏了"。所以出包（Xcode，要签名/Archive）单独用一棵树。
+BUILD_DIR = REPO_ROOT / "build" / "ios-xcode"
 
 EXCLUDED_DIR_NAMES = {".git", ".svn", ".vs", ".idea", "Intermediate", "Saved", "Logs"}
 KEEP_BUILD_SUBDIRS = {"iOS"}

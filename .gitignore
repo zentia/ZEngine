@@ -517,3 +517,7 @@ build_ctest_check/
 !engine/Libraries/ZSlate/include/ZSlate/Testing/
 !engine/Libraries/ZSlate/include/ZSlate/Platform/Win32/
 !engine/Libraries/ZSlate/src/Platform/Win32/
+
+# zbuild_ios.py 把 --project 的内容拷进这里，CMake 再把它整棵声明成 .app 的
+# bundle resource。它是**构建产物**（每次出包重写），不是源。
+engine/Source/Player/IOS/staging/zengine/
