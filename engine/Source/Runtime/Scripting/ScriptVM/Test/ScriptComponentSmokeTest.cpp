@@ -136,6 +136,19 @@ namespace
         return true;
     }
 
+    /// ScriptRegistry 在 Windows 上把相对路径整体小写化（ScriptRegistry.cpp 的
+    /// normaliseInternal：`#if defined(_WIN32)` 分支），分隔符统一成 '/'。所以凡是
+    /// 拿 m_SourceRelPath / m_CompiledRelPath 做比较的地方都必须先折叠大小写，
+    /// 否则这份测试在 Windows 上一条都过不去、在 macOS/Linux 上又全过 —— 典型的
+    /// "只在一个平台跑过"的断言。折叠后比的是规范化形式，不是放宽断言。
+    std::string NormalisedPath(const std::string& in)
+    {
+        std::string s = in;
+        std::transform(s.begin(), s.end(), s.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        return s;
+    }
+
     /// 读回 globalThis.__zResult（字符串）。pesapi_eval 不返回表达式结果。
     std::string ReadResult(ScriptEnv& env)
     {
@@ -356,12 +369,12 @@ int main(int argc, char** argv)
     ScriptAsset* exported_by_list = nullptr;
     for (auto* asset : all_scripts)
     {
-        const std::string rel(asset->m_SourceRelPath.c_str());
-        if (rel.find("HostedMover.ts") != std::string::npos)
+        const std::string rel = NormalisedPath(asset->m_SourceRelPath.c_str());
+        if (rel.find("hostedmover.ts") != std::string::npos)
         {
             hosted = asset;
         }
-        if (rel.find("Mover.ts") != std::string::npos && rel.find("Hosted") == std::string::npos)
+        if (rel.find("mover.ts") != std::string::npos && rel.find("hosted") == std::string::npos)
         {
             exported_by_list = asset;
         }
@@ -371,13 +384,14 @@ int main(int argc, char** argv)
     {
         return 1;
     }
-    CheckEq("A2c", "源路径是相对工程根的（Scripts/ 前缀）",
-            std::string(hosted->m_SourceRelPath.c_str()), "Scripts/HostedMover.ts");
+    CheckEq("A2c", "源路径是相对工程根的（Scripts/ 前缀），且已规范化成小写 + '/'",
+            NormalisedPath(hosted->m_SourceRelPath.c_str()), "scripts/hostedmover.ts");
     CheckEq("A3", "guid 是 32 位小写 hex", std::to_string(hosted->m_Guid.size()), "32");
     CheckEq("A4", "`export class X extends` 能解出默认类名",
             std::string(hosted->m_DefaultClassName.c_str()), "HostedMover");
-    CheckEq("A5", "编译产物路径被配对上", std::string(hosted->m_CompiledRelPath.c_str()),
-            "Intermediate/Scripts/HostedMover.js");
+    CheckEq("A5", "编译产物路径被配对上（同样已规范化）",
+            NormalisedPath(hosted->m_CompiledRelPath.c_str()),
+            "intermediate/scripts/hostedmover.js");
 
     CheckTrue("A6", "Mover.ts 被扫进注册表", exported_by_list != nullptr);
     if (exported_by_list == nullptr)

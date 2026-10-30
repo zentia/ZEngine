@@ -59,18 +59,48 @@ Mover.prototype.OnUpdate = function (dt) {
 `ApplyInstanceField(speed, "10")` 改成 10，再跑一帧必须是 7。这条链路正是
 `TypeScriptComponent` 每帧走的路：**JS 实例 -> C++ 绑定 -> JS**。
 
-## 3. 一个必须知道的坑：静态注册器不会被拉进链接
+## 3. 注册器是怎么进到映像里的（以及为什么不能自己再编一遍）
 
 `ZClassScriptBindingRegistrar` 住在
 `build/Generated/ZHT/ZRuntime/Src/<Name>.gen.cpp`，靠静态初始化把自己挂进
-`ScriptBindingRegistry` 的侵入式链表。
+`ScriptBindingRegistry` 的侵入式链表。它没有任何外部引用，所以**按默认规则
+链接器会把整个 `.obj` 丢掉** —— `InstallAll` 看到一张空表，`InstallGlobals`
+于是一个 global 都发不出来（`ReferenceError: VectorMath is not defined`）。
 
-链接器从 `libZRuntime.a` 里**只拉被引用的成员**。这些注册器没有任何外部引用，
-所以静态链接时它们根本不会被拉进来 —— `InstallAll` 看到一张空表，
-`InstallGlobals` 于是一个 global 都发不出来。
+这件事现在由 `Runtime/CMakeLists.txt` 统一解决：`ZRuntime` 把
 
-所以这个测试必须把用到的 `.gen.cpp` 显式编进来（CMake 里用 `target_sources`
-加 4 个；本机脚本用 `--extra-source` 传同样的 4 个）。
+| 平台 | 选项 |
+|------|------|
+| MSVC | `/WHOLEARCHIVE:ZRuntime.lib` |
+| Apple | `-force_load <ZRuntime.a>` |
+| GNU/Clang | `--whole-archive … --no-whole-archive` |
+
+挂成 **INTERFACE** 链接选项，于是**每一个**消费静态运行时的目标（本测试也在内）
+都会把 58 个生成的 `.obj` 全部强制送进最终映像，所有注册器都跑。
+`target_link_libraries(… ZRuntime)` 就够了，绑定表自己就是满的。
+
+### 因此：任何测试目标都不要再编译 `.gen.cpp`
+
+曾经的做法是"把用到的 4 个 `.gen.cpp` 用 `target_sources` 编进 exe"。在
+whole-archive 生效之后这是**硬错误**，不是冗余：一份 `.gen.cpp` 同时带两类符号
+
+* 匿名命名空间里的脚本注册器（内部链接，确实无害）
+* `IMPLEMENT_REGISTER_CLASS` / `IMPLEMENT_OBJECT_SERIALIZE` / 各
+  `VirtualRedirectTransfer` 重写 —— 全是**强外部定义**
+
+archive 里那份必然在场，于是强符号正面撞上：
+
+```
+ZRuntime.lib(ScriptTime.gen.obj): error LNK2005:
+  "void __cdecl RegisterKlass<class Time>(void)" already defined in ScriptTime.gen.obj
+```
+
+`ScriptVMSmokeTest` / `ScriptTsChainSmokeTest` / `ScriptComponentSmokeTest` /
+`ScriptComponentPrefabTest` 因此在本机**一直链不过**（有 `.pdb` 没有 `.exe`），
+P6 热重载的 E 段从未实跑过。删掉那几行 `target_sources` 即可。
+
+也不要改用 `ZRuntimeShared` 来"绕开"：那会让测试拿到一份自己的反射类副本和
+第二个 `TypeContainer<T>::m_Type` —— 链接干净，运行期各说各话。
 
 ## 4. 怎么跑
 
@@ -98,6 +128,11 @@ python3 scripts/run_smoke_test.py \
 
 （`BackendQuickJS.cpp` 是因为它只有 `GetModuleExecutor` / `OnEnter` 两个非 inline
 成员；`TimeState.cpp` 是新文件，旧的 `libZRuntime.a` 里没有。）
+
+> ⚠️ 这条**不带 cmake**的路子是例外，不是榜样：`run_smoke_test.py` 直接链
+> `bin/libZRuntime.a`、不带 whole-archive，所以它确实得靠 `--extra-source` 把
+> `.gen.cpp` 喂进去。别把这个清单照抄进 CMake —— 那边 whole-archive 已经在了，
+> 抄过去就是第 3 节那张 LNK2005。
 
 不需要起引擎、不需要窗口、不需要 GPU：`ScriptEnv` 的构造只用到 `LOG_*`，
 `LoadModule` 里那次 `GET_SYSTEM(AssetBundleManager)` 是 nullptr 容忍的。

@@ -23,22 +23,42 @@
 # This test really boots a QuickJS VM, evals real JS into it, and reads the
 # result back.
 #
-# Why the .gen.cpp files are listed as sources
-# --------------------------------------------
+# Why the .gen.cpp files are NOT listed as sources
+# ------------------------------------------------
+# (This section used to say the opposite. It was right before whole-archive
+# linkage existed and is now actively wrong -- see below.)
+#
 # The static registrars (ZClassScriptBindingRegistrar) live in
 # <build>/Generated/ZHT/ZRuntime/Src/<Name>.gen.cpp and hook themselves into
-# ScriptBindingRegistry's intrusive list during static init. A linker only pulls
-# an archive member in to satisfy an undefined symbol, and nothing references
-# these registrars, so linking ZRuntime alone yields an EMPTY class table --
-# InstallGlobals then publishes nothing and every global is `undefined`.
-# The fix is to compile the handful of .gen.cpp files this test cares about
-# directly into the executable.
+# ScriptBindingRegistry's intrusive list during static init. Nothing references
+# them, so a plain archive link would drop the whole object and the class table
+# would come out empty.
 #
-# They live in ZRuntime too. That is normally fine: the archive member is only
-# pulled when something still needs a symbol from it, and what these files
-# contribute to the outside world is an anonymous-namespace registrar (internal
-# linkage). If your linker nevertheless reports duplicate definitions, link
-# ZRuntimeShared instead of ZRuntime for this target.
+# That is exactly what Runtime/CMakeLists.txt solves: ZRuntime carries
+#     /WHOLEARCHIVE:ZRuntime.lib       (MSVC)
+#     -force_load <ZRuntime.a>         (Apple)
+#     --whole-archive ... ZRuntime.a   (GNU/Clang)
+# as an INTERFACE link option, so EVERY consumer of the static runtime -- this
+# test included -- gets all 58 generated objects forced into the image and all
+# the registrars run. `target_link_libraries(... ZRuntime)` is therefore
+# sufficient; the binding table is full on its own.
+#
+# Compiling the same .gen.cpp into the executable on top of that is a hard
+# error, not a redundancy: a .gen.cpp carries TWO kinds of symbol --
+#
+#   * the anonymous-namespace script registrar (internal linkage, harmless), and
+#   * IMPLEMENT_REGISTER_CLASS / IMPLEMENT_OBJECT_SERIALIZE / the
+#     VirtualRedirectTransfer overrides -- all STRONG external definitions.
+#
+# Under whole-archive the archive's copy is always present, so the strong
+# symbols collide:
+#   ZRuntime.lib(ScriptTime.gen.obj): error LNK2005:
+#     "void __cdecl RegisterKlass<class Time>(void)" already defined in
+#     ScriptTime.gen.obj
+# So these targets must NOT compile any .gen.cpp themselves. Do not "solve" a
+# duplicate-definition report by switching to ZRuntimeShared either: that gives
+# the test its own copy of every reflected class and a second, divergent
+# TypeContainer<T>::m_Type, which links cleanly and then disagrees at runtime.
 #
 # Backend
 # -------
@@ -60,17 +80,8 @@ if(PAPI_TYPE STREQUAL "quickjs")
             FOLDER "Engine/Tests"
         )
 
-        # 被测的四个类。加进来的是"要在脚本里用到的类"，不是全部 58 个 —— 全加
-        # 只会把链接面拉大，而这里要证明的是链路通不通，不是覆盖面。
-        set(ZHT_GEN_SRC "${CMAKE_BINARY_DIR}/Generated/ZHT/ZRuntime/Src")
-        set(_zht_bind_sources
-            "${ZHT_GEN_SRC}/ScriptMath.gen.cpp"
-            "${ZHT_GEN_SRC}/ScriptTime.gen.cpp"
-            "${ZHT_GEN_SRC}/ScriptInput.gen.cpp"
-            "${ZHT_GEN_SRC}/KeyCodes.gen.cpp"
-        )
-        set_source_files_properties(${_zht_bind_sources} PROPERTIES GENERATED TRUE)
-        target_sources(ScriptVMSmokeTest PRIVATE ${_zht_bind_sources})
+        # 被测的四个类（VectorMath/QuaternionMath/Mathf、Time、Input、KeyCodes）
+        # 的绑定注册器由 ZRuntime 的 /WHOLEARCHIVE 带进来（见文件头），这里不重复编译。
         if(TARGET ZRuntime_ZHeaderTool)
             add_dependencies(ScriptVMSmokeTest ZRuntime_ZHeaderTool)
         endif()
@@ -166,8 +177,6 @@ if(PAPI_TYPE STREQUAL "quickjs")
             FOLDER "Engine/Tests"
         )
 
-        set_source_files_properties(${_zht_bind_sources} PROPERTIES GENERATED TRUE)
-        target_sources(ScriptTsChainSmokeTest PRIVATE ${_zht_bind_sources})
         if(TARGET ZRuntime_ZHeaderTool)
             add_dependencies(ScriptTsChainSmokeTest ZRuntime_ZHeaderTool)
         endif()
@@ -210,12 +219,12 @@ if(PAPI_TYPE STREQUAL "quickjs")
         # OnAwake / OnStart -> 每帧 Tick 转发 OnUpdate -> 热重载重建 -> 析构
         # OnDestroy。
         #
-        # 除了脚本绑定用的 4 个 .gen.cpp，这里还要把 GameObject / Transform /
-        # Behaviour / TypeScriptComponent 的 .gen.cpp 编进来：AddComponentBy
-        # TypeName 和 Cast<Component> 都走 TypeManager 的类型表，而类型表正是
-        # IMPLEMENT_REGISTER_CLASS 的静态注册器填的。Behaviour 必须带（TypeScript
-        # Component 的直接基类），否则 Builder 走不到 Component，Cast<Component>
-        # 的范围测试落空。
+        # AddComponentByTypeName 和 Cast<Component> 都走 TypeManager 的类型表，
+        # 而类型表正是 IMPLEMENT_REGISTER_CLASS 的静态注册器填的
+        # （GameObject / Transform / Behaviour / TypeScriptComponent）。Behaviour
+        # 必须在其列（TypeScriptComponent 的直接基类），否则 Builder 走不到
+        # Component，Cast<Component> 的范围测试落空。这四张表连同脚本绑定表一起
+        # 由 ZRuntime 的 /WHOLEARCHIVE 带进来（见文件头），这里不重复编译。
         # ---------------------------------------------------------------------
         add_executable(ScriptComponentSmokeTest ScriptComponentSmokeTest.cpp)
 
@@ -224,16 +233,6 @@ if(PAPI_TYPE STREQUAL "quickjs")
             FOLDER "Engine/Tests"
         )
 
-        set(_zht_component_gen_sources
-            "${ZHT_GEN_SRC}/GameObject.gen.cpp"
-            "${ZHT_GEN_SRC}/Transform.gen.cpp"
-            "${ZHT_GEN_SRC}/Behaviour.gen.cpp"
-            "${ZHT_GEN_SRC}/TypeScriptComponent.gen.cpp"
-        )
-        set_source_files_properties(${_zht_bind_sources} ${_zht_component_gen_sources}
-                                    PROPERTIES GENERATED TRUE)
-        target_sources(ScriptComponentSmokeTest PRIVATE
-            ${_zht_bind_sources} ${_zht_component_gen_sources})
         if(TARGET ZRuntime_ZHeaderTool)
             add_dependencies(ScriptComponentSmokeTest ZRuntime_ZHeaderTool)
         endif()
@@ -284,10 +283,10 @@ if(PAPI_TYPE STREQUAL "quickjs")
         # legacy 的 `.zasset`（二进制 SerializedFile）。分流点是
         # AssetManager::IsYamlAuthoringAssetPath()。两轨各测一遍 + 一致性。
         #
-        # 额外要编进来的 .gen.cpp：PrefabAsset / PrefabRefComponent /
+        # 额外要用到的类型：PrefabAsset / PrefabRefComponent /
         # RigidbodyComponent —— PrefabUtility.cpp 里的 TypeOf<PrefabAsset> /
         # Cast<PrefabRefComponent> / Cast<RigidBodyComponent> 要它们的
-        # TypeContainer<T>::m_Type。
+        # TypeContainer<T>::m_Type。同样由 /WHOLEARCHIVE 带进来。
         # ---------------------------------------------------------------------
         add_executable(ScriptComponentPrefabTest ScriptComponentPrefabTest.cpp)
 
@@ -296,19 +295,6 @@ if(PAPI_TYPE STREQUAL "quickjs")
             FOLDER "Engine/Tests"
         )
 
-        set(_zht_prefab_gen_sources
-            "${ZHT_GEN_SRC}/GameObject.gen.cpp"
-            "${ZHT_GEN_SRC}/Transform.gen.cpp"
-            "${ZHT_GEN_SRC}/Behaviour.gen.cpp"
-            "${ZHT_GEN_SRC}/TypeScriptComponent.gen.cpp"
-            "${ZHT_GEN_SRC}/PrefabAsset.gen.cpp"
-            "${ZHT_GEN_SRC}/PrefabRefComponent.gen.cpp"
-            "${ZHT_GEN_SRC}/RigidbodyComponent.gen.cpp"
-        )
-        set_source_files_properties(${_zht_bind_sources} ${_zht_prefab_gen_sources}
-                                    PROPERTIES GENERATED TRUE)
-        target_sources(ScriptComponentPrefabTest PRIVATE
-            ${_zht_bind_sources} ${_zht_prefab_gen_sources})
         if(TARGET ZRuntime_ZHeaderTool)
             add_dependencies(ScriptComponentPrefabTest ZRuntime_ZHeaderTool)
         endif()
