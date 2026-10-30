@@ -893,6 +893,14 @@ list(REMOVE_ITEM SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Test/SpotShadowSmokeTest.cpp")
 list(REMOVE_ITEM REGULAR_SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Test/SpotShadowSmokeTest.cpp")
+# ShaderRegistry 路径大小写冒烟测试的 main carve-out（同理由）。它是 ShaderRegistry
+# 唯一的守卫，钉的是"m_SourceRelPath / m_ZassetRelPath 保留磁盘原大小写"与"m_Guid
+# 仍以查找 key 为种子、与改动前逐字节一致"（见 Function/Render/Test/CMakeLists.txt）。
+# Only built when ZENGINE_BUILD_SHADER_REGISTRY_SMOKE_TEST=ON.
+list(REMOVE_ITEM SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Test/ShaderRegistrySmokeTest.cpp")
+list(REMOVE_ITEM REGULAR_SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Test/ShaderRegistrySmokeTest.cpp")
 # UMG 命名事件注册表冒烟测试的 main carve-out（同理由）。它验证 header-only 纯核心
 # UMGDelegates.h（P0 数据绑定：Designer 资产存事件名，游戏按名 Bind，widget 点击 Invoke）。
 # Only built when ZENGINE_BUILD_UMG_DELEGATES_SMOKE_TEST=ON (see UMG/Test/CMakeLists.txt).

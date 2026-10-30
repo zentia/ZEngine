@@ -105,6 +105,50 @@ namespace
         std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
         return ext == ".shader";
     }
+
+    // -------------------------------------------------------------------------
+    // Two spellings of a relative shader path -- same split as ScriptRegistry
+    // (see that file for the full rationale; summarised here because the two
+    // must stay in sync).
+    //
+    //   STORED -- forward slashes, ORIGINAL case. Goes into
+    //     ShaderRegistryEntry::m_SourceRelPath / m_ZassetRelPath and into
+    //     shader_registry.json. Both are joined onto the project root to open
+    //     a file (Material.cpp, InspectorShaderInspector.cpp), so on a
+    //     case-sensitive filesystem the case is load-bearing.
+    //
+    //   KEY -- the STORED form folded to lower case, on Windows only. Used
+    //     exclusively for m_GuidByPath lookups. Never persisted.
+    //
+    // Before the split, NormaliseRelPath() served both roles and every path a
+    // Windows session wrote into the registry came out lower-cased. Moving
+    // that project to Linux/macOS then made both the .shader source and its
+    // cooked .zasset unreachable.
+    // -------------------------------------------------------------------------
+    eastl::string toStoredRelPath(const std::filesystem::path& rel_path)
+    {
+        const std::string s = rel_path.generic_string();
+        return eastl::string(s.c_str(), s.size());
+    }
+
+    eastl::string toPathKey(const eastl::string& stored_rel)
+    {
+#if !defined(_WIN32)
+        return stored_rel;  // case-sensitive filesystem: key == stored form
+#else
+        eastl::string key(stored_rel);
+        for (char& c : key)
+        {
+            c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        }
+        return key;
+#endif
+    }
+
+    eastl::string toPathKey(const std::filesystem::path& rel_path)
+    {
+        return toPathKey(toStoredRelPath(rel_path));
+    }
 }  // namespace
 
 std::vector<std::type_index> ShaderRegistry::GetDependencies() const
@@ -211,7 +255,7 @@ const ShaderRegistryEntry* ShaderRegistry::FindByGuid(const eastl::string& guid)
 
 ShaderRegistryEntry* ShaderRegistry::FindByPath(const eastl::string& source_rel_path)
 {
-    const eastl::string key = NormaliseRelPath(std::filesystem::path(source_rel_path.c_str()));
+    const eastl::string key = toPathKey(source_rel_path);
     std::lock_guard lk(m_Mutex);
     auto git = m_GuidByPath.find(key);
     if (git == m_GuidByPath.end())
@@ -313,7 +357,7 @@ void ShaderRegistry::rescan()
         on_disk_set.reserve(on_disk.size());
         for (const auto& rel : on_disk)
         {
-            on_disk_set[rel] = true;
+            on_disk_set[toPathKey(rel)] = true;
         }
 
         eastl::vector<eastl::string> new_paths;
@@ -321,11 +365,43 @@ void ShaderRegistry::rescan()
 
         for (const auto& rel : on_disk)
         {
-            auto pit = m_GuidByPath.find(rel);
+            auto pit = m_GuidByPath.find(toPathKey(rel));
             if (pit != m_GuidByPath.end())
             {
                 ShaderRegistryEntry& entry = m_ByGuid[pit->second];
                 const std::filesystem::path abs = m_ProjectRoot / std::filesystem::path(toStd(rel));
+
+                // Self-heal the spelling: a registry written before the
+                // stored/key split holds case-folded paths. Adopting the
+                // on-disk spelling cannot change the GUID -- that is derived
+                // from the KEY form, which is unchanged.
+                if (entry.m_SourceRelPath != rel)
+                {
+                    entry.m_SourceRelPath = rel;
+                    changed = true;
+                }
+
+                // Same for the cooked asset path, and this one also backfills:
+                // an entry written before the field existed (or picked up in
+                // the rename branch, which does fill it) used to stay empty
+                // forever, and Material.cpp bails on m_ZassetRelPath.empty()
+                // -- a shader that never resolves, with no error anywhere.
+                // This is the path that actually gets opened, so healing only
+                // m_SourceRelPath would not be enough.
+                std::error_code zec;
+                const std::filesystem::path rel_under_shaders =
+                    std::filesystem::relative(abs, m_ShadersRoot, zec);
+                if (!zec && !rel_under_shaders.empty())
+                {
+                    const eastl::string want_zasset =
+                        ComputeZassetRelPath(toStoredRelPath(rel_under_shaders).c_str());
+                    if (entry.m_ZassetRelPath != want_zasset)
+                    {
+                        entry.m_ZassetRelPath = want_zasset;
+                        changed = true;
+                    }
+                }
+
                 const int64_t new_mtime = FileMTimeNs(abs);
                 if (new_mtime != entry.m_SourceMtimeNs)
                 {
@@ -349,7 +425,7 @@ void ShaderRegistry::rescan()
 
         for (auto& kv : m_ByGuid)
         {
-            if (on_disk_set.find(kv.second.m_SourceRelPath) == on_disk_set.end())
+            if (on_disk_set.find(toPathKey(kv.second.m_SourceRelPath)) == on_disk_set.end())
             {
                 orphan_guids.push_back(kv.first);
             }
@@ -382,7 +458,7 @@ void ShaderRegistry::rescan()
                     {
                         ShaderRegistryEntry& entry = git->second;
                         RemoveNameIndexForEntry(entry);
-                        m_GuidByPath.erase(entry.m_SourceRelPath);
+                        m_GuidByPath.erase(toPathKey(entry.m_SourceRelPath));
                         entry.m_SourceRelPath = rel;
                         entry.m_SourceMtimeNs = mtime;
                         entry.m_ShaderName = ParseShaderNameFromSource(abs);
@@ -393,9 +469,9 @@ void ShaderRegistry::rescan()
                         if (!rel_ec && !rel_under_shaders.empty())
                         {
                             entry.m_ZassetRelPath = ComputeZassetRelPath(
-                                NormaliseRelPath(rel_under_shaders).c_str());
+                                toStoredRelPath(rel_under_shaders).c_str());
                         }
-                        m_GuidByPath.emplace(rel, entry.m_Guid);
+                        m_GuidByPath.emplace(toPathKey(rel), entry.m_Guid);
                         RebuildNameIndexForEntry(entry);
                         orphan_by_hash.erase(hit);
                         for (auto oit = orphan_guids.begin(); oit != orphan_guids.end(); ++oit)
@@ -412,11 +488,15 @@ void ShaderRegistry::rescan()
                 }
             }
 
-            eastl::string guid = DeterministicGuidFromPath(rel);
+            // Seeded with the KEY form, NOT the stored form: that is what
+            // keeps every GUID in every existing project byte-identical
+            // (today's Windows seed already is the case-folded path).
+            const eastl::string rel_key = toPathKey(rel);
+            eastl::string guid = DeterministicGuidFromPath(rel_key);
             int bump = 0;
             while (m_ByGuid.count(guid) != 0 && bump < 256)
             {
-                eastl::string salted = rel + eastl::string(":");
+                eastl::string salted = rel_key + eastl::string(":");
                 salted += eastl::string(std::to_string(bump).c_str());
                 guid = DeterministicGuidFromPath(salted);
                 ++bump;
@@ -434,10 +514,10 @@ void ShaderRegistry::rescan()
             if (!rel_ec && !rel_under_shaders.empty())
             {
                 entry.m_ZassetRelPath =
-                    ComputeZassetRelPath(NormaliseRelPath(rel_under_shaders).c_str());
+                    ComputeZassetRelPath(toStoredRelPath(rel_under_shaders).c_str());
             }
 
-            m_GuidByPath.emplace(rel, guid);
+            m_GuidByPath.emplace(rel_key, guid);
             RebuildNameIndexForEntry(entry);
             m_ByGuid.emplace(guid, std::move(entry));
             changed = true;
@@ -451,7 +531,7 @@ void ShaderRegistry::rescan()
                 continue;
             }
             RemoveNameIndexForEntry(git->second);
-            m_GuidByPath.erase(git->second.m_SourceRelPath);
+            m_GuidByPath.erase(toPathKey(git->second.m_SourceRelPath));
             m_ByGuid.erase(git);
             changed = true;
         }
@@ -554,7 +634,7 @@ bool ShaderRegistry::LoadFromDisk()
 
         ShaderRegistryEntry entry {};
         entry.m_Guid = toEastl(guid_it->value.GetString());
-        entry.m_SourceRelPath = NormaliseRelPath(std::filesystem::path(path_it->value.GetString()));
+        entry.m_SourceRelPath = toStoredRelPath(std::filesystem::path(path_it->value.GetString()));
 
         auto name_it = e.FindMember("name");
         if (name_it != e.MemberEnd() && name_it->value.IsString())
@@ -565,7 +645,7 @@ bool ShaderRegistry::LoadFromDisk()
         auto zasset_it = e.FindMember("zasset");
         if (zasset_it != e.MemberEnd() && zasset_it->value.IsString())
         {
-            entry.m_ZassetRelPath = NormaliseRelPath(std::filesystem::path(zasset_it->value.GetString()));
+            entry.m_ZassetRelPath = toStoredRelPath(std::filesystem::path(zasset_it->value.GetString()));
         }
 
         auto mtime_it = e.FindMember("mtime");
@@ -580,7 +660,7 @@ bool ShaderRegistry::LoadFromDisk()
             entry.m_SourceContentHash = toEastl(hash_it->value.GetString());
         }
 
-        m_GuidByPath.emplace(entry.m_SourceRelPath, entry.m_Guid);
+        m_GuidByPath.emplace(toPathKey(entry.m_SourceRelPath), entry.m_Guid);
         if (!entry.m_ShaderName.empty())
         {
             m_GuidByName.emplace(NormaliseShaderNameKey(entry.m_ShaderName), entry.m_Guid);
@@ -734,7 +814,7 @@ std::vector<eastl::string> ShaderRegistry::EnumerateShaderFiles(const std::files
             ec.clear();
             continue;
         }
-        out.push_back(NormaliseRelPath(rel));
+        out.push_back(toStoredRelPath(rel));
     }
     return out;
 }
@@ -767,11 +847,10 @@ int64_t ShaderRegistry::FileMTimeNs(const std::filesystem::path& abs_path)
 
 eastl::string ShaderRegistry::NormaliseRelPath(const std::filesystem::path& rel_path)
 {
-    std::string s = rel_path.generic_string();
-#if defined(_WIN32)
-    std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-#endif
-    return eastl::string(s.c_str(), s.size());
+    // The LOOKUP KEY, not a storable path -- see the stored/key split at the
+    // top of this file. On Windows it is case-folded; do NOT assign it to
+    // m_SourceRelPath / m_ZassetRelPath.
+    return toPathKey(rel_path);
 }
 
 eastl::string ShaderRegistry::NormaliseShaderNameKey(const eastl::string& name)
@@ -826,7 +905,8 @@ void ShaderRegistry::UpsertEntryForAbsPath(const std::filesystem::path& abs_shad
         return;
     }
 
-    const eastl::string rel_key = NormaliseRelPath(rel_from_project);
+    const eastl::string rel_key = toPathKey(rel_from_project);
+    const eastl::string rel_stored = toStoredRelPath(rel_from_project);
     const std::string content = readWholeFile(abs_shader_path);
     const eastl::string hash = contentHashHex(content);
     const int64_t mtime = FileMTimeNs(abs_shader_path);
@@ -838,6 +918,11 @@ void ShaderRegistry::UpsertEntryForAbsPath(const std::filesystem::path& abs_shad
     {
         ShaderRegistryEntry& entry = m_ByGuid[pit->second];
         bool entry_changed = false;
+        if (entry.m_SourceRelPath != rel_stored)
+        {
+            entry.m_SourceRelPath = rel_stored;
+            entry_changed = true;
+        }
         if (mtime != entry.m_SourceMtimeNs)
         {
             entry.m_SourceMtimeNs = mtime;
@@ -857,7 +942,7 @@ void ShaderRegistry::UpsertEntryForAbsPath(const std::filesystem::path& abs_shad
             entry_changed = true;
         }
         const eastl::string new_zasset =
-            ComputeZassetRelPath(NormaliseRelPath(rel_under_shaders).c_str());
+            ComputeZassetRelPath(toStoredRelPath(rel_under_shaders).c_str());
         if (new_zasset != entry.m_ZassetRelPath)
         {
             entry.m_ZassetRelPath = new_zasset;
@@ -882,11 +967,11 @@ void ShaderRegistry::UpsertEntryForAbsPath(const std::filesystem::path& abs_shad
 
     ShaderRegistryEntry entry {};
     entry.m_Guid = guid;
-    entry.m_SourceRelPath = rel_key;
+    entry.m_SourceRelPath = rel_stored;
     entry.m_SourceMtimeNs = mtime;
     entry.m_ShaderName = ParseShaderNameFromSource(abs_shader_path);
     entry.m_SourceContentHash = hash;
-    entry.m_ZassetRelPath = ComputeZassetRelPath(NormaliseRelPath(rel_under_shaders).c_str());
+    entry.m_ZassetRelPath = ComputeZassetRelPath(toStoredRelPath(rel_under_shaders).c_str());
 
     m_GuidByPath.emplace(rel_key, guid);
     RebuildNameIndexForEntry(entry);
@@ -913,7 +998,7 @@ void ShaderRegistry::RemoveEntryForAbsPath(const std::filesystem::path& abs_shad
         return;
     }
 
-    const eastl::string rel_key = NormaliseRelPath(rel_from_project);
+    const eastl::string rel_key = toPathKey(rel_from_project);
 
     std::lock_guard lk(m_Mutex);
     auto pit = m_GuidByPath.find(rel_key);

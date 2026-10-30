@@ -151,11 +151,16 @@ public:
     void UpdateMtime(const std::filesystem::path& zasset_abs_path, int64_t new_mtime_ns);
 
 private:
-    // Path normalisation: forward-slash, lower-cased on Windows only
-    // (the only platform whose filesystem is case-insensitive in
-    // practice). Mirrors ScriptRegistry::NormaliseRelPath, which is
-    // private. We can't share the helper across modules (Editor cannot
-    // depend on Runtime internals) so we re-implement it.
+    // Path normalisation for the m_Entries KEY: forward-slash, lower-cased on
+    // Windows only (the only platform whose filesystem is case-insensitive in
+    // practice). Mirrors the KEY half of ScriptRegistry / ShaderRegistry's
+    // stored-vs-key split (see ShaderRegistry::NormaliseRelPath) -- both of
+    // those keep the ORIGINAL case in the stored path and fold only here. We
+    // can't share the helper across modules (Editor cannot depend on Runtime
+    // internals) so we re-implement it.
+    //
+    // ⚠️ Use this for lookups only. Never assign it to a stored path field:
+    // it is case-folded on Windows.
     static std::string NormaliseKey(const std::filesystem::path& zasset_abs_path);
 
     static int64_t MtimeNs(const std::filesystem::path& abs_path);

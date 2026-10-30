@@ -363,6 +363,69 @@ add_test(NAME SpotLightSmokeTest COMMAND SpotLightSmokeTest)
 message(STATUS "Configured SpotLight smoke-test target: SpotLightSmokeTest")
 
 # =====================================================================
+# ShaderRegistry path-case smoke test.
+#
+#   cmake -B build -DZENGINE_BUILD_SHADER_REGISTRY_SMOKE_TEST=ON
+#   cmake --build build --target ShaderRegistrySmokeTest
+#   ctest --test-dir build -C Debug -R ShaderRegistrySmokeTest
+#
+# This is the ONLY guard on ShaderRegistry's path handling, which decides
+# shader identity: m_Guid is what a Material stores to get back to
+# `Shaders/*.shader` and its cooked `Assets/_Generated/Shaders/*.zasset`
+# (Material.cpp). So the failure mode is never a crash -- it is a silently
+# dangling reference, and a pink material.
+#
+# What it pins:
+#   1. m_SourceRelPath / m_ZassetRelPath keep the on-disk case (they get
+#      joined onto the project root to open files, so folding the case makes
+#      them unreachable on a case-sensitive filesystem).
+#   2. m_Guid is still seeded with the LOOKUP KEY, byte-identical to before --
+#      asserted against an independently recomputed literal, not against a
+#      second call to the function under test.
+#   3. A legacy registry (case-folded path) self-heals on rescan and is
+#      rewritten to disk, without the GUID moving.
+#
+# ⚠️ Must stay ABOVE the SpotShadow block below: that one ends this file with a
+# file-scope return(), and anything after it is dead code.
+# =====================================================================
+
+option(ZENGINE_BUILD_SHADER_REGISTRY_SMOKE_TEST
+       "Build the ShaderRegistry path-case smoke-test executable"
+       OFF)
+
+if(ZENGINE_BUILD_SHADER_REGISTRY_SMOKE_TEST)
+    add_executable(ShaderRegistrySmokeTest ShaderRegistrySmokeTest.cpp)
+
+    set_target_properties(ShaderRegistrySmokeTest PROPERTIES
+        CXX_STANDARD 23
+        FOLDER "Engine/Tests"
+    )
+
+    # No .gen.cpp here: ZRuntime's /WHOLEARCHIVE already forces every generated
+    # object into this image (see ScriptVM/Test/CMakeLists.txt).
+    target_link_libraries(ShaderRegistrySmokeTest PRIVATE ZRuntime)
+
+    if(TARGET ZEnginePCH)
+        target_link_libraries(ShaderRegistrySmokeTest PRIVATE ZEnginePCH)
+        target_include_directories(ShaderRegistrySmokeTest PRIVATE ${ENGINE_ROOT_DIR}/Source/CommonPCH)
+        add_dependencies(ShaderRegistrySmokeTest ZEnginePCH)
+        target_precompile_headers(ShaderRegistrySmokeTest REUSE_FROM ZEnginePCH)
+    endif()
+
+    if(APPLE)
+        target_sources(ShaderRegistrySmokeTest PRIVATE
+            ${ENGINE_ROOT_DIR}/Source/Runtime/Core/Serialize/Test/SmokeTestAppleLinkStubs.cpp)
+    endif()
+
+    if(MSVC)
+        target_compile_options(ShaderRegistrySmokeTest PRIVATE /W4)
+    endif()
+
+    add_test(NAME ShaderRegistrySmokeTest COMMAND ShaderRegistrySmokeTest)
+    message(STATUS "Configured ShaderRegistry smoke-test target: ShaderRegistrySmokeTest")
+endif()
+
+# =====================================================================
 # SpotLight shadow projection smoke test (phase 2 scalars).
 # ---------------------------------------------------------------------
 # Verifies the header-only pure core in Function/Render/SpotShadow.h

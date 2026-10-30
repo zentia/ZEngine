@@ -17,10 +17,19 @@
  */
 struct ShaderRegistryEntry
 {
-    // 32-char lowercase hex (deterministic from project-relative source path).
+    // 32-char lowercase hex. Deterministic from the project-relative source
+    // path's LOOKUP KEY (lower-cased on Windows) -- see NormaliseRelPath.
     eastl::string m_Guid;
 
-    // e.g. "Shaders/PBR/Standard.shader" (forward slashes, lower on Windows).
+    // e.g. "Shaders/PBR/Standard.shader". Forward slashes and the ORIGINAL
+    // on-disk case.
+    //
+    // ⚠️ The case must survive: this is serialised into shader_registry.json
+    // and joined onto the project root to open the file, so on Linux/macOS (or
+    // a case-sensitive NTFS directory) folding it makes the source unreachable
+    // -- rescan() then reads that as delete+add, derives a new GUID and
+    // silently breaks every reference. Case-insensitive matching happens on a
+    // separate lower-cased key (Windows only), never on this field.
     eastl::string m_SourceRelPath;
 
     // ShaderLab `Shader "Name"` or filename stem. Used to resolve materials
@@ -28,6 +37,9 @@ struct ShaderRegistryEntry
     eastl::string m_ShaderName;
 
     // e.g. "Assets/_Generated/Shaders/PBR/Standard.shader.zasset".
+    // Same case rules as m_SourceRelPath: it is joined onto the project root
+    // (Material.cpp) / project content dir (InspectorShaderInspector.cpp) to
+    // open the cooked asset.
     eastl::string m_ZassetRelPath;
 
     int64_t m_SourceMtimeNs = 0;
@@ -69,7 +81,9 @@ public:
     /// Editor tick: Flush debounced JSON when the quiet window elapsed.
     void TickDeferredSave();
 
-    /// Deterministic GUID from normalised project-relative path (public for tests).
+    /// Deterministic GUID from a project-relative path's LOOKUP KEY. Callers
+    /// must pass the key form (see NormaliseRelPath), not the stored spelling
+    /// -- passing the stored form changes every GUID on Windows.
     static eastl::string DeterministicGuidFromPath(const eastl::string& rel_path);
 
     /// Project-relative path of the generated ShaderRes .zasset for a source
@@ -86,7 +100,18 @@ private:
                                                            const std::filesystem::path& shaders_root);
     static eastl::string ParseShaderNameFromSource(const std::filesystem::path& abs_path);
     static int64_t FileMTimeNs(const std::filesystem::path& abs_path);
+
+    /// The internal LOOKUP KEY for a project-relative path: forward-slash,
+    /// lower-cased on Windows.
+    ///
+    /// ⚠️ This is NOT a storable path. m_SourceRelPath / m_ZassetRelPath hold
+    /// the ORIGINAL on-disk case, because those get written into
+    /// shader_registry.json and joined onto the project root to open files.
+    /// Assigning this to either field is the bug the stored/key split exists
+    /// to prevent. (Same contract as ScriptRegistry::NormaliseRelPath.)
     static eastl::string NormaliseRelPath(const std::filesystem::path& rel_path);
+
+    /// Lookup key for a ShaderLab `Shader "Name"` -- same folding policy.
     static eastl::string NormaliseShaderNameKey(const eastl::string& name);
 
     void UpsertEntryForAbsPath(const std::filesystem::path& abs_shader_path, bool* out_changed);
@@ -95,6 +120,7 @@ private:
     void RemoveNameIndexForEntry(const ShaderRegistryEntry& entry);
 
     eastl::unordered_map<eastl::string, ShaderRegistryEntry> m_ByGuid;
+    // Keyed by the LOOKUP KEY of m_SourceRelPath, never by the stored spelling.
     eastl::unordered_map<eastl::string, eastl::string> m_GuidByPath;
     eastl::unordered_map<eastl::string, eastl::string> m_GuidByName;
     mutable std::mutex m_Mutex;
