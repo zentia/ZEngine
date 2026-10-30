@@ -205,7 +205,24 @@ namespace
         "\n"
         "// Internal helper - keep declared so user code that accidentally references\n"
         "// it doesn't get a fresh `any` (which would mask typos).\n"
-        "declare function __zNewInstance<T>(ctor: { new(): T }): T;\n";
+        "declare function __zNewInstance<T>(ctor: { new(): T }): T;\n"
+        "\n"
+        "// ---- P8 HMR ----\n"
+        "// 运行时由 ScriptEnv 的 IIFE 包装注入（`module.hot` 只在这层里存在）。\n"
+        "// 不声明的话用户写 `if (module.hot) module.hot.accept()` 会直接 TS2304，\n"
+        "// HMR 在 .ts 侧等于不可用 —— 而 .ts 才是用户真正写的东西。\n"
+        "// `hot` 声明成可选：非模块上下文（比如被 eval 的裸片段）里它可能不在。\n"
+        "declare var module: {\n"
+        "    exports: any;\n"
+        "    hot?: {\n"
+        "        /** 声明本模块可以热替换。给了 cb 就在换完 exports 之后以新 exports 调它。 */\n"
+        "        accept(callback?: (newExports: any) => void): void;\n"
+        "        /** 旧 exports 被丢弃之前调用（清定时器 / 事件监听）。 */\n"
+        "        dispose(callback: () => void): void;\n"
+        "        /** 永不热替换，一律走 P6 全量重建。 */\n"
+        "        decline(): void;\n"
+        "    };\n"
+        "};\n";
 
 }  // namespace
 
@@ -475,6 +492,12 @@ namespace ScriptBindingRegistry
                 const ZScriptPropertyEntry& prop = cls->properties[i];
                 if (prop.name == nullptr || prop.tsType == nullptr)
                     continue;
+                if (prop.docComment != nullptr && prop.docComment[0] != '\0')
+                {
+                    out += "    /** ";
+                    out += prop.docComment;
+                    out += " */\n";
+                }
                 out += "    ";
                 out += prop.readonly ? "readonly " : "";
                 out += prop.name;
@@ -487,6 +510,12 @@ namespace ScriptBindingRegistry
                 const ZScriptMethodEntry& method = cls->methods[i];
                 if (method.tsSignature == nullptr || method.tsSignature[0] == '\0')
                     continue;
+                if (method.docComment != nullptr && method.docComment[0] != '\0')
+                {
+                    out += "    /** ";
+                    out += method.docComment;
+                    out += " */\n";
+                }
                 out += method.isStatic ? "    static " : "    ";
                 out += method.tsSignature;
                 out += ";\n";

@@ -53,6 +53,11 @@ struct ZScriptMethodEntry
 {
     const char* name = nullptr;         // name exposed to TypeScript
     const char* tsSignature = nullptr;  // d.ts member line, e.g. "GetName(): string"
+    // JSDoc 注释行（ZHeaderTool 从 C++ 侧注释提取，null = 没有）。在生成的
+    // zengine.d.ts 里作为 `/** ... */` 打在成员前面 —— 编辑器里的 TS 悬停提示
+    // 全靠它。⚠️ 这个字段是 ZHeaderTool 的 codegen.py **已经在产出**的，删掉
+    // 会让所有 .gen.cpp 编译失败（C7559 designator 不匹配）。
+    const char* docComment = nullptr;
     bool isStatic = false;
     pesapi_callback callback = nullptr;
 };
@@ -71,6 +76,7 @@ struct ZScriptPropertyEntry
 {
     const char* name = nullptr;  // name exposed to TypeScript
     const char* tsType = nullptr;  // d.ts type, e.g. "Vector3" / "number"
+    const char* docComment = nullptr;  // JSDoc 注释行（见 ZScriptMethodEntry 的同名字段）
     bool readonly = false;
     pesapi_callback getter = nullptr;
     pesapi_callback setter = nullptr;  // null -> read-only

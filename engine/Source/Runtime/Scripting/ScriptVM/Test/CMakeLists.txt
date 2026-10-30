@@ -103,6 +103,46 @@ if(PAPI_TYPE STREQUAL "quickjs")
         message(STATUS "Configured script VM end-to-end smoke test: ScriptVMSmokeTest")
 
         # ---------------------------------------------------------------------
+        # P8 HMR（Hot Module Replacement）。
+        #
+        # 判定表本身是纯 ScriptEnv 的（accept / decline / dispose / cascade），
+        # 不需要绑定表也不需要 GameObject，所以不喂 .gen.cpp —— 只链 ZRuntime。
+        #
+        # 它钉的是"接上了、不报错、只是没生效"这一整类：accept 有没有真的从 JS
+        # 走到 C++、热路径有没有真的换掉 exports、decline 有没有真的回落全量
+        # 重建、依赖方有没有跟着重载（只重载被改的那个会留下半新半旧的闭包）。
+        # ---------------------------------------------------------------------
+        add_executable(ScriptHmrSmokeTest ScriptHmrSmokeTest.cpp)
+
+        set_target_properties(ScriptHmrSmokeTest PROPERTIES
+            CXX_STANDARD 23
+            FOLDER "Engine/Tests"
+        )
+
+        target_compile_definitions(ScriptHmrSmokeTest PRIVATE PAPI_QUICKJS=1)
+
+        target_link_libraries(ScriptHmrSmokeTest PRIVATE ZRuntime)
+
+        if(TARGET ZEnginePCH)
+            target_link_libraries(ScriptHmrSmokeTest PRIVATE ZEnginePCH)
+            target_include_directories(ScriptHmrSmokeTest PRIVATE ${ENGINE_ROOT_DIR}/Source/CommonPCH)
+            add_dependencies(ScriptHmrSmokeTest ZEnginePCH)
+            target_precompile_headers(ScriptHmrSmokeTest REUSE_FROM ZEnginePCH)
+        endif()
+
+        if(APPLE)
+            target_sources(ScriptHmrSmokeTest PRIVATE
+                ${ENGINE_ROOT_DIR}/Source/Runtime/Core/Serialize/Test/SmokeTestAppleLinkStubs.cpp)
+        endif()
+
+        if(MSVC)
+            target_compile_options(ScriptHmrSmokeTest PRIVATE /W4)
+        endif()
+
+        add_test(NAME ScriptHmrSmokeTest COMMAND ScriptHmrSmokeTest)
+        message(STATUS "Configured P8 HMR smoke test: ScriptHmrSmokeTest")
+
+        # ---------------------------------------------------------------------
         # TS -> tsc -> .js -> ScriptEnv -> C++ 全链路。
         #
         # 与上面那个测试的区别：它喂给 ScriptEnv 的不是手写 CommonJS，而是 **tsc

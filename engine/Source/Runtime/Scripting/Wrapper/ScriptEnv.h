@@ -1,6 +1,7 @@
 #pragma once
 #include "pesapi.h"
 
+#include <functional>
 #include <mutex>
 #include <string>
 #include <tuple>
@@ -82,6 +83,16 @@ public:
 
     const std::string& GetJsRoot() const { return m_JsRoot; }
 
+    /// ReloadModule 的结果（P8 HMR）。`reloaded` 是实际重载过的模块（含
+    /// cascade），拓扑序；`hot_replaced` 为 true 表示走了热路径 —— 实例未重建，
+    /// 运行时状态保留。定义在类前部：ReloadModule 的返回类型要在它之后可见。
+    struct HmrReloadResult
+    {
+        bool                     ok           = false;
+        bool                     hot_replaced = false;
+        std::vector<std::string> reloaded;
+    };
+
     /// Load a module if it's not yet cached, or return the cached exports
     /// object. Returns true if the module's exports are now in the cache.
     /// Compile / runtime errors are logged via LOG_ERROR(ZScripting,...).
@@ -90,7 +101,7 @@ public:
     /// Re-read the .js file from disk, drop the previous cache entry, and
     /// re-evaluate. If the module wasn't loaded yet this just calls
     /// LoadModule. Returns true on success.
-    bool ReloadModule(const std::string& module_id);
+    HmrReloadResult ReloadModule(const std::string& module_id);
 
     /// Drop the cached exports for the module id (does not affect any
     /// JS-side state; once nobody else references the old exports it
@@ -175,6 +186,69 @@ public:
     // -----------------------------------------------------------------------
     bool SetInstanceNativeObject(pesapi_value_ref instance, const char* name, const void* type_id, void* object);
 
+    // -----------------------------------------------------------------------
+    // P8 HMR (Hot Module Replacement) API.
+    //
+    // 语义（与 webpack 的"冒泡"模型相比刻意简化，见 TYPESCRIPT_SCRIPTING_DESIGN.md
+    // Phase 8）：每个模块在顶层通过 IIFE 注入的 `module.hot` 自选：
+    //   module.hot.accept()        —— 声明"我可以热替换"（最常见）
+    //   module.hot.accept(cb)      —— 同上，热替换后以新 exports 为实参调 cb
+    //   module.hot.dispose(cb)     —— 旧 exports 被丢弃之前调 cb（清定时器 / 监听）
+    //   module.hot.decline()       —— 永不热替换，一律走 P6 全量重建
+    //
+    // ReloadModule 的判定：
+    //   1. cascade = {被改的模块} ∪ 所有传递依赖它的模块，按 BFS 序（被改者在前）。
+    //      依赖边由模块作用域里的 `require()` 采集。
+    //   2. cascade 里**每一个**都 accept 了、且没有一个 decline ⇒ 走热路径；
+    //      否则整个 cascade 回落 P6 全量重建（unload + load + 通知观察者）。
+    //      不做"部分热替换"：一半热一半重建的状态最难推理，也最难复现。
+    //   3. 热路径每个模块依次：重新求值（旧 exports 仍活着）→ 调旧的 accept(newExports)
+    //      → 调旧的 dispose → 换掉缓存里的 exports。
+    //      **不通知 P6 观察者** ⇒ TypeScriptComponent 不重建 ⇒ 运行时状态保留。
+    //      这是 HMR 与 P6 唯一的、也是全部的用户可见差别。
+    // -----------------------------------------------------------------------
+
+    /// Returns true if the module opted in to HMR (i.e. accept() was called,
+    /// with or without a callback).
+    bool HasHmrAcceptCallback(const std::string& module_id) const;
+
+    /// Returns true if the module has explicitly declined HMR (i.e. even
+    /// if it called accept(), it should be treated as non-accepting).
+    bool HasHmrDeclined(const std::string& module_id) const;
+
+    /// Invoke the dispose callbacks for the given module (if any), then
+    /// release them. Called BEFORE the old module cache is dropped.
+    void InvokeHmrDisposeCallback(const std::string& module_id);
+
+    /// Invoke the accept callback for the given module, passing the module's
+    /// (already swapped-in) exports as the argument.
+    ///
+    /// 注意：为了"依赖方重新求值时能看到新的被依赖方"，缓存是在 cascade 顺序里
+    /// **边求值边换**的，所以 accept 被调用时旧 exports 可能已经被换掉了。回调
+    /// 拿到的是显式传进去的新 exports，不需要旧缓存还活着 —— 别按"回调里还能
+    /// require 到旧的"来写代码。
+    void InvokeHmrAcceptCallback(const std::string& module_id, pesapi_value_ref new_exports);
+
+    /// Clear all HMR state for a module (called on unload / full reload).
+    void ClearHmrState(const std::string& module_id);
+
+    /// After a hot-replace (accept path), swap the old module cache entry
+    /// for the new one and release the old ref. Returns true on success.
+    bool SwapModuleExports(const std::string& module_id, pesapi_value_ref new_exports);
+
+    /// Get the exports object for a loaded module. Returns nullptr if not
+    /// loaded. The returned ref is NOT owned by the caller; it is the
+    /// cached ref in m_Modules.
+    pesapi_value_ref GetModuleExports(const std::string& module_id) const;
+
+    /// Record a dependency edge parent -> child (dedup). Called by the
+    /// injected `require` shim.
+    void AddModuleDependency(const std::string& parent_module_id, const std::string& child_module_id);
+
+    /// Modules that must be reloaded when `changed_module` changes: itself
+    /// plus every transitive dependent, in BFS order (changed module first).
+    std::vector<std::string> GetCascadeReloadOrder(const std::string& changed_module);
+
 protected:
     int32_t m_DebugPort;
 
@@ -182,7 +256,12 @@ private:
     void InitApi(int apiVersionExpect);
     void InstallConsoleAndDebugGlobals();
     void ClearModuleCache();
-    bool LoadModuleInternal(const std::string& module_id);  // assumes scope already open
+    // assumes scope already open. `cache=false` 时求值结果不进 m_Modules，改由
+    // out_ref 交出所有权 —— 热替换需要"旧 exports 还活着的时候先拿到新的"。
+    bool LoadModuleInternal(const std::string& module_id, bool cache = true, pesapi_value_ref* out_ref = nullptr);
+
+    // P8：重新求值但不进缓存。out_ref 由调用方负责释放。
+    bool EvaluateModuleFresh(const std::string& module_id, pesapi_value_ref& out_ref);
 
     Backend* m_Backend;
     pesapi_env_ref m_EnvRef;
@@ -199,6 +278,49 @@ private:
     // module_id -> strong reference to the exports object. Released in
     // ReloadModule / UnloadModule / dtor.
     std::unordered_map<std::string, pesapi_value_ref> m_Modules;
+
+    // -------------------------------------------------------------------
+    // P8 HMR state.
+    // -------------------------------------------------------------------
+    struct HmrState
+    {
+        bool                             accepted = false;   // accept() 调过（带不带 cb 都算）
+        pesapi_value_ref                 accept_callback = nullptr;  // fn(newExports)，可为 null
+        std::vector<pesapi_value_ref>    dispose_callbacks;          // fn()，可多个
+        bool                             declined = false;
+    };
+    std::unordered_map<std::string, HmrState> m_HmrStates;
+
+    // Module dependency graph: module_id -> modules it directly requires.
+    // Populated by the injected `require` shim (which forwards to
+    // ZHmrRequireSink). Used for cascade detection.
+    std::unordered_map<std::string, std::vector<std::string>> m_ModuleDeps;
+
+    // Reverse edges: module_id -> modules that directly require it. Rebuilt
+    // lazily whenever m_ModuleDeps changes.
+    std::unordered_map<std::string, std::vector<std::string>> m_ModuleReverseDeps;
+    bool                                                     m_ReverseDepsDirty = false;
+
+    void RebuildReverseDeps();
+
+    // 把某个模块当前登记的回调**摘出来**（从 state 里移走，所有权交给返回的
+    // 结构）。重新求值会以新代码重新登记 accept/dispose，那时槽位必须是空的，
+    // 否则 Register 会去释放一份我们还持着的 ref ⇒ 双释放。
+    struct HmrCallbacks
+    {
+        pesapi_value_ref              accept = nullptr;
+        std::vector<pesapi_value_ref> dispose;
+    };
+    HmrCallbacks TakeHmrCallbacks(const std::string& module_id);
+    void         ReleaseHmrCallbacks(HmrCallbacks& cb) const;
+    void         InvokeAcceptRef(pesapi_value_ref cb, pesapi_value_ref new_exports);
+    void         InvokeDisposeRefs(const std::vector<pesapi_value_ref>& refs);
+
+    // `module.hot.*` 与 `require` 的 native sink。userdata 带 ScriptEnv*。
+    static void ZHmrAcceptSink(struct pesapi_ffi* apis, pesapi_callback_info info);
+    static void ZHmrDisposeSink(struct pesapi_ffi* apis, pesapi_callback_info info);
+    static void ZHmrDeclineSink(struct pesapi_ffi* apis, pesapi_callback_info info);
+    static void ZHmrRequireSink(struct pesapi_ffi* apis, pesapi_callback_info info);
 
     static std::vector<ScriptEnv*> scriptEnvs;
     static bool isInitialized;

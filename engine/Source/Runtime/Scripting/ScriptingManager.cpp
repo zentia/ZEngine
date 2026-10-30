@@ -157,14 +157,24 @@ bool ScriptingManager::ReloadModule(const std::string& module_id)
 {
     if (!m_ScriptEnv)
         return false;
-    if (!m_ScriptEnv->ReloadModule(module_id))
+
+    const ScriptEnv::HmrReloadResult result = m_ScriptEnv->ReloadModule(module_id);
+    if (!result.ok)
         return false;
 
+    // P8: 热路径刻意**不**通知观察者 —— 不通知 ⇒ TypeScriptComponent 不重建
+    // ⇒ 运行时状态保留。这是 HMR 与 P6 唯一的用户可见差别；一旦在这里手滑
+    // 也通知一下，HMR 就退化成一次更贵的全量重建，而且不会报错。
+    if (result.hot_replaced)
+        return true;
+
     // Phase-6: tell every subscribed TypeScriptComponent (and anyone else
-    // who cares) that this module just got fresh code. Fire AFTER the
+    // who cares) that these modules just got fresh code. Fire AFTER the
     // re-eval so observers can immediately CreateInstance against the new
-    // module exports.
-    NotifyModuleReloaded(module_id);
+    // module exports. Cascade 里每个被重载的模块都要通知：依赖方抓的是旧
+    // exports，只通知被改的那个会留下半新半旧的实例。
+    for (const std::string& m : result.reloaded)
+        NotifyModuleReloaded(m);
     return true;
 }
 

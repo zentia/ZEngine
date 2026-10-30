@@ -8,9 +8,13 @@
 #include "Runtime/Scripting/Wrapper/ObjectPool.h"
 #include "Runtime/Scripting/Wrapper/Puerts.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
+#include <deque>
 #include <string>
+#include <unordered_set>
+#include <vector>
 
 std::vector<ScriptEnv*> ScriptEnv::scriptEnvs;
 bool ScriptEnv::isInitialized = false;
@@ -357,6 +361,10 @@ void ScriptEnv::InstallConsoleAndDebugGlobals()
         "  g.Behaviour.prototype.OnStart = function() {};"
         "  g.Behaviour.prototype.OnUpdate = function(dt) {};"
         "  g.Behaviour.prototype.OnDestroy = function() {};"
+        // （P8 的 __zhmr_native_* / require 入口不在这里 —— 它们是真正的 native
+        //   函数，见下面 InstallConsoleAndDebugGlobals 尾部。早先这里写成了纯 JS
+        //   存根，只往 JS 侧的普通对象里塞回调，从不回调 C++ ⇒ m_HmrStates 恒空，
+        //   HMR 全程"接上了但什么都没发生"。）
         "})(globalThis);";
     pesapi_eval(m_Papis, env, reinterpret_cast<const uint8_t*>(kShim), sizeof(kShim) - 1, "<console_shim>");
     if (pesapi_has_caught(m_Papis, scope))
@@ -364,6 +372,18 @@ void ScriptEnv::InstallConsoleAndDebugGlobals()
         const char* msg = pesapi_get_exception_as_string(m_Papis, scope, 1);
         LOG_ERROR(ZScripting, "console shim install failed: {}", msg ? msg : "<no message>");
     }
+
+    // 3) P8 HMR: real native sinks on globalThis. Must be native (not JS stubs)
+    //    because the whole point is to move the callback / dependency edge into
+    //    C++ state (m_HmrStates / m_ModuleDeps).
+    auto installHmrSink = [&](const char* name, void (*cb)(struct pesapi_ffi*, pesapi_callback_info)) {
+        pesapi_value f = pesapi_create_function(m_Papis, env, cb, this, /*finalize=*/nullptr);
+        pesapi_set_property(m_Papis, env, global, name, f);
+    };
+    installHmrSink("__zhmr_native_accept", &ScriptEnv::ZHmrAcceptSink);
+    installHmrSink("__zhmr_native_dispose", &ScriptEnv::ZHmrDisposeSink);
+    installHmrSink("__zhmr_native_decline", &ScriptEnv::ZHmrDeclineSink);
+    installHmrSink("__zhmr_require", &ScriptEnv::ZHmrRequireSink);
 
     pesapi_close_scope(m_Papis, scope);
 }
@@ -382,14 +402,29 @@ void ScriptEnv::SetJsRoot(const std::string& js_root_utf8)
 
 void ScriptEnv::ClearModuleCache()
 {
-    if (m_Modules.empty())
-        return;
     for (auto& kv : m_Modules)
     {
         if (kv.second)
             pesapi_release_value_ref(m_Papis, kv.second);
     }
     m_Modules.clear();
+
+    // P8：模块缓存没了，热替换回调与依赖图也一并作废 —— 留着的话，下一次
+    // ReloadModule 会拿一张指向已释放模块的图去算 cascade。
+    for (auto& kv : m_HmrStates)
+    {
+        for (pesapi_value_ref r : kv.second.dispose_callbacks)
+        {
+            if (r)
+                pesapi_release_value_ref(m_Papis, r);
+        }
+        if (kv.second.accept_callback)
+            pesapi_release_value_ref(m_Papis, kv.second.accept_callback);
+    }
+    m_HmrStates.clear();
+    m_ModuleDeps.clear();
+    m_ModuleReverseDeps.clear();
+    m_ReverseDepsDirty = false;
 }
 
 bool ScriptEnv::IsModuleLoaded(const std::string& module_id) const
@@ -405,13 +440,459 @@ void ScriptEnv::UnloadModule(const std::string& module_id)
     if (it->second)
         pesapi_release_value_ref(m_Papis, it->second);
     m_Modules.erase(it);
+    ClearHmrState(module_id);
     LOG_INFO(ZScripting, "module unloaded: {}", module_id);
 }
 
-bool ScriptEnv::ReloadModule(const std::string& module_id)
+// ---------------------------------------------------------------------------
+// P8 HMR
+// ---------------------------------------------------------------------------
+
+namespace
 {
-    UnloadModule(module_id);
-    return LoadModule(module_id);
+    // 读一个 utf-8 字符串实参。与 zNativeLogCallback 同一套写法（先栈缓冲）。
+    bool ReadUtf8Arg(struct pesapi_ffi* apis, pesapi_env env, pesapi_value v, std::string& out)
+    {
+        if (!v || !pesapi_is_string(apis, env, v))
+            return false;
+        char         stack_buf[512];
+        size_t       len = sizeof(stack_buf) - 1;
+        const char*  s = pesapi_get_value_string_utf8(apis, env, v, stack_buf, &len);
+        if (!s)
+            return false;
+        out.assign(s, len);
+        return true;
+    }
+
+    // 把 require 的相对说明符按当前模块目录解析成 module id。
+    // module id 是"相对 js root、无扩展名、正斜杠"的形式（与 LoadModuleInternal
+    // 拼路径的方式一致），所以这里只需要处理 ./ ../ 与目录归一。
+    std::string ResolveModuleSpecifier(const std::string& parent_module_id, const std::string& spec)
+    {
+        std::string base_dir;
+        const size_t slash = parent_module_id.find_last_of('/');
+        if (slash != std::string::npos)
+            base_dir = parent_module_id.substr(0, slash + 1);
+
+        const bool is_relative = spec == "." || spec == ".." ||
+                                 spec.rfind("./", 0) == 0 || spec.rfind("../", 0) == 0;
+        const std::string& combined_src = is_relative ? (base_dir + spec) : spec;
+
+        std::vector<std::string> parts;
+        size_t                   i = 0;
+        while (i < combined_src.size())
+        {
+            size_t j = combined_src.find('/', i);
+            if (j == std::string::npos)
+                j = combined_src.size();
+            const std::string seg = combined_src.substr(i, j - i);
+            i = j + 1;
+            if (seg.empty() || seg == ".")
+                continue;
+            if (seg == "..")
+            {
+                if (!parts.empty())
+                    parts.pop_back();
+                continue;
+            }
+            parts.push_back(seg);
+        }
+        std::string out;
+        for (const std::string& p : parts)
+        {
+            if (!out.empty())
+                out.push_back('/');
+            out += p;
+        }
+        return out;
+    }
+}  // namespace
+
+void ScriptEnv::ZHmrAcceptSink(struct pesapi_ffi* apis, pesapi_callback_info info)
+{
+    auto* self = static_cast<ScriptEnv*>(pesapi_get_userdata(apis, info));
+    if (!self || pesapi_get_args_len(apis, info) < 2)
+        return;
+    auto        env = pesapi_get_env(apis, info);
+    std::string module_id;
+    if (!ReadUtf8Arg(apis, env, pesapi_get_arg(apis, info, 0), module_id))
+        return;
+
+    pesapi_value cb = pesapi_get_arg(apis, info, 1);
+    auto&        st = self->m_HmrStates[module_id];
+    st.accepted = true;
+    if (st.accept_callback)
+    {
+        pesapi_release_value_ref(self->m_Papis, st.accept_callback);
+        st.accept_callback = nullptr;
+    }
+    if (cb && pesapi_is_function(apis, env, cb))
+        st.accept_callback = pesapi_create_value_ref(self->m_Papis, env, cb, 0);
+
+    LOG_INFO(ZScripting, "hmr: {} accepted (callback={})", module_id, st.accept_callback != nullptr);
+}
+
+void ScriptEnv::ZHmrDisposeSink(struct pesapi_ffi* apis, pesapi_callback_info info)
+{
+    auto* self = static_cast<ScriptEnv*>(pesapi_get_userdata(apis, info));
+    if (!self || pesapi_get_args_len(apis, info) < 2)
+        return;
+    auto        env = pesapi_get_env(apis, info);
+    std::string module_id;
+    if (!ReadUtf8Arg(apis, env, pesapi_get_arg(apis, info, 0), module_id))
+        return;
+
+    pesapi_value cb = pesapi_get_arg(apis, info, 1);
+    if (cb && pesapi_is_function(apis, env, cb))
+        self->m_HmrStates[module_id].dispose_callbacks.push_back(
+            pesapi_create_value_ref(self->m_Papis, env, cb, 0));
+}
+
+void ScriptEnv::ZHmrDeclineSink(struct pesapi_ffi* apis, pesapi_callback_info info)
+{
+    auto* self = static_cast<ScriptEnv*>(pesapi_get_userdata(apis, info));
+    if (!self || pesapi_get_args_len(apis, info) < 1)
+        return;
+    auto        env = pesapi_get_env(apis, info);
+    std::string module_id;
+    if (!ReadUtf8Arg(apis, env, pesapi_get_arg(apis, info, 0), module_id))
+        return;
+
+    self->m_HmrStates[module_id].declined = true;
+    LOG_INFO(ZScripting, "hmr: {} declined (will always full-rebuild)", module_id);
+}
+
+void ScriptEnv::ZHmrRequireSink(struct pesapi_ffi* apis, pesapi_callback_info info)
+{
+    auto* self = static_cast<ScriptEnv*>(pesapi_get_userdata(apis, info));
+    if (!self || pesapi_get_args_len(apis, info) < 2)
+        return;
+    auto        env = pesapi_get_env(apis, info);
+    std::string spec;
+    std::string parent;
+    if (!ReadUtf8Arg(apis, env, pesapi_get_arg(apis, info, 0), spec))
+        return;
+    if (!ReadUtf8Arg(apis, env, pesapi_get_arg(apis, info, 1), parent))
+        return;
+
+    const std::string dep = ResolveModuleSpecifier(parent, spec);
+    if (dep.empty())
+    {
+        LOG_WARNING(ZScripting, "hmr: require('{}') from '{}' resolved to nothing", spec, parent);
+        return;
+    }
+
+    self->AddModuleDependency(parent, dep);
+    self->LoadModule(dep);
+
+    if (pesapi_value_ref exports = self->GetModuleExports(dep))
+    {
+        if (pesapi_value v = pesapi_get_value_from_ref(self->m_Papis, env, exports))
+            pesapi_add_return(apis, info, v);
+    }
+}
+
+bool ScriptEnv::HasHmrAcceptCallback(const std::string& module_id) const
+{
+    const auto it = m_HmrStates.find(module_id);
+    return it != m_HmrStates.end() && it->second.accepted;
+}
+
+bool ScriptEnv::HasHmrDeclined(const std::string& module_id) const
+{
+    const auto it = m_HmrStates.find(module_id);
+    return it != m_HmrStates.end() && it->second.declined;
+}
+
+ScriptEnv::HmrCallbacks ScriptEnv::TakeHmrCallbacks(const std::string& module_id)
+{
+    HmrCallbacks taken;
+    const auto   it = m_HmrStates.find(module_id);
+    if (it == m_HmrStates.end())
+        return taken;
+    taken.accept = it->second.accept_callback;
+    taken.dispose.swap(it->second.dispose_callbacks);
+    it->second.accept_callback = nullptr;
+    return taken;
+}
+
+void ScriptEnv::ReleaseHmrCallbacks(HmrCallbacks& cb) const
+{
+    if (cb.accept)
+    {
+        pesapi_release_value_ref(m_Papis, cb.accept);
+        cb.accept = nullptr;
+    }
+    for (pesapi_value_ref r : cb.dispose)
+    {
+        if (r)
+            pesapi_release_value_ref(m_Papis, r);
+    }
+    cb.dispose.clear();
+}
+
+void ScriptEnv::InvokeAcceptRef(pesapi_value_ref cb, pesapi_value_ref new_exports)
+{
+    if (!cb)
+        return;
+    auto        scope = pesapi_open_scope(m_Papis, m_EnvRef);
+    auto        env = pesapi_get_env_from_ref(m_Papis, m_EnvRef);
+    pesapi_value fn = pesapi_get_value_from_ref(m_Papis, env, cb);
+    if (fn)
+    {
+        pesapi_value arg = new_exports ? pesapi_get_value_from_ref(m_Papis, env, new_exports) : nullptr;
+        if (arg)
+            pesapi_call_function(m_Papis, env, fn, /*this=*/nullptr, 1, &arg);
+        else
+            pesapi_call_function(m_Papis, env, fn, /*this=*/nullptr, 0, nullptr);
+    }
+    pesapi_close_scope(m_Papis, scope);
+}
+
+void ScriptEnv::InvokeDisposeRefs(const std::vector<pesapi_value_ref>& refs)
+{
+    if (refs.empty())
+        return;
+    auto scope = pesapi_open_scope(m_Papis, m_EnvRef);
+    auto env = pesapi_get_env_from_ref(m_Papis, m_EnvRef);
+    for (pesapi_value_ref r : refs)
+    {
+        if (!r)
+            continue;
+        if (pesapi_value fn = pesapi_get_value_from_ref(m_Papis, env, r))
+            pesapi_call_function(m_Papis, env, fn, /*this=*/nullptr, 0, nullptr);
+    }
+    pesapi_close_scope(m_Papis, scope);
+}
+
+void ScriptEnv::InvokeHmrDisposeCallback(const std::string& module_id)
+{
+    HmrCallbacks cb = TakeHmrCallbacks(module_id);
+    InvokeDisposeRefs(cb.dispose);
+    ReleaseHmrCallbacks(cb);
+}
+
+void ScriptEnv::InvokeHmrAcceptCallback(const std::string& module_id, pesapi_value_ref new_exports)
+{
+    const auto it = m_HmrStates.find(module_id);
+    if (it == m_HmrStates.end())
+        return;
+    InvokeAcceptRef(it->second.accept_callback, new_exports);
+}
+
+void ScriptEnv::ClearHmrState(const std::string& module_id)
+{
+    const auto it = m_HmrStates.find(module_id);
+    if (it == m_HmrStates.end())
+        return;
+    for (pesapi_value_ref r : it->second.dispose_callbacks)
+    {
+        if (r)
+            pesapi_release_value_ref(m_Papis, r);
+    }
+    if (it->second.accept_callback)
+        pesapi_release_value_ref(m_Papis, it->second.accept_callback);
+    m_HmrStates.erase(it);
+}
+
+bool ScriptEnv::SwapModuleExports(const std::string& module_id, pesapi_value_ref new_exports)
+{
+    if (!new_exports)
+        return false;
+    const auto it = m_Modules.find(module_id);
+    if (it != m_Modules.end() && it->second)
+        pesapi_release_value_ref(m_Papis, it->second);
+    m_Modules[module_id] = new_exports;
+    return true;
+}
+
+pesapi_value_ref ScriptEnv::GetModuleExports(const std::string& module_id) const
+{
+    const auto it = m_Modules.find(module_id);
+    return it == m_Modules.end() ? nullptr : it->second;
+}
+
+void ScriptEnv::AddModuleDependency(const std::string& parent_module_id, const std::string& child_module_id)
+{
+    if (parent_module_id.empty() || child_module_id.empty() || parent_module_id == child_module_id)
+        return;
+    auto& list = m_ModuleDeps[parent_module_id];
+    if (std::find(list.begin(), list.end(), child_module_id) == list.end())
+    {
+        list.push_back(child_module_id);
+        m_ReverseDepsDirty = true;
+    }
+}
+
+void ScriptEnv::RebuildReverseDeps()
+{
+    m_ModuleReverseDeps.clear();
+    for (const auto& kv : m_ModuleDeps)
+    {
+        for (const std::string& child : kv.second)
+            m_ModuleReverseDeps[child].push_back(kv.first);
+    }
+    m_ReverseDepsDirty = false;
+}
+
+std::vector<std::string> ScriptEnv::GetCascadeReloadOrder(const std::string& changed_module)
+{
+    if (m_ReverseDepsDirty)
+        RebuildReverseDeps();
+
+    // 被改者在前，依赖它的依次在后 —— BFS 天然满足"一个模块出现在依赖它的人之前"。
+    std::vector<std::string>              order;
+    std::unordered_set<std::string>       visited;
+    std::deque<std::string>               queue;
+    visited.insert(changed_module);
+    queue.push_back(changed_module);
+    while (!queue.empty())
+    {
+        const std::string cur = queue.front();
+        queue.pop_front();
+        order.push_back(cur);
+
+        const auto it = m_ModuleReverseDeps.find(cur);
+        if (it == m_ModuleReverseDeps.end())
+            continue;
+        for (const std::string& parent : it->second)
+        {
+            if (visited.insert(parent).second)
+                queue.push_back(parent);
+        }
+    }
+    return order;
+}
+
+bool ScriptEnv::EvaluateModuleFresh(const std::string& module_id, pesapi_value_ref& out_ref)
+{
+    out_ref = nullptr;
+    if (m_JsRoot.empty())
+    {
+        LOG_ERROR(ZScripting, "EvaluateModuleFresh('{}'): js root not set", module_id);
+        return false;
+    }
+    auto scope = pesapi_open_scope(m_Papis, m_EnvRef);
+    bool ok = LoadModuleInternal(module_id, /*cache=*/false, &out_ref);
+    if (pesapi_has_caught(m_Papis, scope))
+    {
+        const char* msg = pesapi_get_exception_as_string(m_Papis, scope, 1);
+        LOG_ERROR(ZScripting, "EvaluateModuleFresh('{}') threw: {}", module_id, msg ? msg : "<no message>");
+        if (out_ref)
+        {
+            pesapi_release_value_ref(m_Papis, out_ref);
+            out_ref = nullptr;
+        }
+        ok = false;
+    }
+    pesapi_close_scope(m_Papis, scope);
+    return ok;
+}
+
+ScriptEnv::HmrReloadResult ScriptEnv::ReloadModule(const std::string& module_id)
+{
+    HmrReloadResult result;
+
+    const std::vector<std::string> cascade = GetCascadeReloadOrder(module_id);
+
+    // 两趟。第一趟"摘旧回调 + 重新求值"，第二趟才决定热不热 —— 因为新代码
+    // **有没有 accept / decline 只有求值之后才知道**。按内存里的旧状态判定的
+    // 话：一个上一版 accept 过、这一版改成 decline 的模块会被判成可热替换，
+    // 于是 decline 静默失效（G3 就是这么红的）。
+    struct Pending
+    {
+        std::string       id;
+        HmrCallbacks      old_cb;
+        pesapi_value_ref  fresh = nullptr;
+        bool              evaluated = false;
+        bool              accepted = false;
+        bool              declined = false;
+    };
+    std::vector<Pending> pendings;
+    pendings.reserve(cascade.size());
+
+    for (const std::string& m : cascade)
+    {
+        Pending p;
+        p.id = m;
+
+        // 先摘走旧回调：重新求值会用新代码重新登记 accept/dispose，槽位必须是
+        // 空的，否则 Register 会释放一份我们还持着的 ref（双释放）。
+        p.old_cb = TakeHmrCallbacks(m);
+        // 把"这一版有没有 opt-in"的标记清掉，让新代码的声明成为唯一依据。
+        HmrState& st = m_HmrStates[m];
+        st.accepted = false;
+        st.declined = false;
+
+        p.evaluated = EvaluateModuleFresh(m, p.fresh);
+        p.accepted = HasHmrAcceptCallback(m);
+        p.declined = HasHmrDeclined(m);
+
+        // **必须边求值边换缓存**，不能等判定完再一起换：cascade 是按"被依赖者
+        // 在前"排序的，parent 重新求值时 `require('./child')` 走的还是 m_Modules
+        // 缓存 —— 不先换掉 child，parent 抓到的就是**旧** child，于是换完之后
+        // 整条链处于"parent 是新的、它闭包里的 child 是旧的"这种半新半旧状态
+        // （E12 就是这么红的）。换成"先换再判"之后，最坏情况只是多求值一次。
+        if (p.evaluated && SwapModuleExports(m, p.fresh))
+        {
+            p.fresh = nullptr;   // 所有权已交给 m_Modules
+        }
+
+        pendings.push_back(p);
+    }
+
+    // 全 accept、无 decline、且都求值成功 ⇒ 热路径。不做"部分热替换"：一半热
+    // 一半重建的中间状态最难推理，也最难复现。
+    bool hot = !pendings.empty();
+    for (const Pending& p : pendings)
+    {
+        if (!p.evaluated || !p.accepted || p.declined)
+        {
+            hot = false;
+            break;
+        }
+    }
+
+    if (hot)
+    {
+        for (Pending& p : pendings)
+        {
+            // 缓存已经在第一趟换过了（为了让依赖方看到新的）；accept 拿到的是
+            // 显式传进去的新 exports，所以不需要旧缓存还活着。
+            InvokeAcceptRef(p.old_cb.accept, GetModuleExports(p.id));
+            InvokeDisposeRefs(p.old_cb.dispose);
+            ReleaseHmrCallbacks(p.old_cb);
+            result.reloaded.push_back(p.id);
+        }
+        result.ok = true;
+        result.hot_replaced = true;
+        LOG_INFO(ZScripting, "hmr: hot-replaced {} module(s) for '{}' (instances kept)",
+                 result.reloaded.size(), module_id);
+        return result;
+    }
+
+    // 回落：P6 全量重建。cascade 里每个都重来 —— 依赖方抓的是旧 exports，只重载
+    // 被改的那个会留下不一致（这也是 P6 老行为里漏掉的一环）。
+    for (Pending& p : pendings)
+    {
+        InvokeDisposeRefs(p.old_cb.dispose);
+        ReleaseHmrCallbacks(p.old_cb);
+        if (p.fresh)   // 求值成功但换缓存失败的漏网（正常路径下已经是 nullptr）
+        {
+            pesapi_release_value_ref(m_Papis, p.fresh);
+            p.fresh = nullptr;
+        }
+    }
+    result.reloaded.clear();
+    for (const std::string& m : cascade)
+    {
+        UnloadModule(m);
+        if (LoadModule(m))
+            result.reloaded.push_back(m);
+    }
+    result.ok = IsModuleLoaded(module_id);
+    result.hot_replaced = false;
+    return result;
 }
 
 bool ScriptEnv::LoadModule(const std::string& module_id)
@@ -443,7 +924,7 @@ bool ScriptEnv::LoadModule(const std::string& module_id)
     return ok;
 }
 
-bool ScriptEnv::LoadModuleInternal(const std::string& module_id)
+bool ScriptEnv::LoadModuleInternal(const std::string& module_id, bool cache, pesapi_value_ref* out_ref)
 {
     // 1. Resolve module_id -> on-disk .js path.
     std::string js_path = m_JsRoot;
@@ -496,9 +977,38 @@ bool ScriptEnv::LoadModuleInternal(const std::string& module_id)
     //    and `exports.Foo = ...` calls into the body, which is exactly what
     //    this wrapper supports. ESM-style `export class Foo {}` would NOT
     //    work here, but tsconfig is pinned to "module": "commonjs".
+    //
+    //    P8 HMR: the IIFE injects (a) a `require` binding -- the name user code
+    //    actually writes, which forwards to the native sink together with this
+    //    module's id so the dependency edge can be recorded -- and (b)
+    //    `module.hot` with accept/dispose/decline that forward to native sinks.
+    //    Both MUST be native: an all-JS version cannot move anything into C++.
     std::string wrapped;
-    wrapped.reserve(raw.size() + 64);
-    wrapped.append("(function(module, exports){\n");
+    wrapped.reserve(raw.size() + 512);
+    wrapped.append("(function(module, exports, __zhmr_module_id){\n");
+    wrapped.append(
+        "var require = function(spec) {\n"
+        "  return globalThis.__zhmr_require(spec, __zhmr_module_id);\n"
+        "};\n");
+    // Inject module.hot BEFORE user code runs, so top-level accept() calls work.
+    wrapped.append(
+        "var __zhmr_hot = {\n"
+        "  _moduleId: __zhmr_module_id,\n"
+        "  accept: function(cb) {\n"
+        "    globalThis.__zhmr_native_accept(__zhmr_module_id,\n"
+        "      (typeof cb === 'function') ? cb : null);\n"
+        "  },\n"
+        "  dispose: function(cb) {\n"
+        "    if (typeof cb === 'function') {\n"
+        "      globalThis.__zhmr_native_dispose(__zhmr_module_id, cb);\n"
+        "    }\n"
+        "  },\n"
+        "  decline: function() {\n"
+        "    globalThis.__zhmr_native_decline(__zhmr_module_id);\n"
+        "  }\n"
+        "};\n"
+        "module.hot = __zhmr_hot;\n"
+    );
     wrapped.append(raw);
     wrapped.append("\n;return module.exports;})");
 
@@ -513,17 +1023,19 @@ bool ScriptEnv::LoadModuleInternal(const std::string& module_id)
         return false;
     }
 
-    // 4. Build module = { exports: {} }
+    // 4. Build module = { exports: {} } and inject module.hot
     pesapi_value module_obj = pesapi_create_object(m_Papis, env);
     pesapi_value exports_obj = pesapi_create_object(m_Papis, env);
     pesapi_set_property(m_Papis, env, module_obj, "exports", exports_obj);
 
-    // 5. Call factory(module, exports). The factory's `return module.exports`
-    //    gives us the live exports object even if user code reassigned
-    //    `module.exports = ...`.
-    const pesapi_value args[2] = {module_obj, exports_obj};
+    pesapi_value module_id_val = pesapi_create_string_utf8(m_Papis, env, module_id.data(), module_id.size());
+
+    // 5. Call factory(module, exports, module_id). `require` is not a parameter:
+    //    the wrapper body declares it as a local so the name user code writes
+    //    resolves without depending on a global.
+    const pesapi_value args[3] = {module_obj, exports_obj, module_id_val};
     pesapi_value resolved_exports = pesapi_call_function(
-        m_Papis, env, factory, /*this=*/nullptr, 2, args);
+        m_Papis, env, factory, /*this=*/nullptr, 3, args);
 
     if (!resolved_exports)
     {
@@ -545,7 +1057,22 @@ bool ScriptEnv::LoadModuleInternal(const std::string& module_id)
         LOG_ERROR(ZScripting, "LoadModule('{}'): create_value_ref failed", module_id);
         return false;
     }
-    m_Modules[module_id] = ref;
+    if (cache)
+    {
+        m_Modules[module_id] = ref;
+    }
+    else
+    {
+        // 热替换：调用方要在旧 exports 还活着的时候拿到新的，事毕自己释放。
+        if (out_ref)
+        {
+            *out_ref = ref;
+        }
+        else
+        {
+            pesapi_release_value_ref(m_Papis, ref);
+        }
+    }
 
     LOG_INFO(ZScripting, "module loaded: {} (from {})", module_id, js_path);
     return true;

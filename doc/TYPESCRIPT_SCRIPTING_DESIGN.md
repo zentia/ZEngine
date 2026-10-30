@@ -568,6 +568,71 @@ UI 接入：
 
 ---
 
+### Phase 8 — HMR（Hot Module Replacement） ✅
+
+P6 的热重载是**无状态全量重建**：模块重新求值，`TypeScriptComponent` 走
+`OnDestroy → DestroyInstance → CreateInstance → OnAwake → OnStart`，`updateCount`
+这类运行时状态归零。对工具模块（纯函数、常量表）来说这既浪费又打断调试。
+P8 给模块一条**自选**的热替换通道。
+
+**用户侧 API**（IIFE 注入的 `module.hot`，顶层调用）：
+
+```ts
+if (module.hot) {
+  module.hot.accept();                    // 声明"我可以热替换"（最常见）
+  module.hot.accept((newExports) => {…}); // 同上，热替换后以新 exports 为实参回调
+  module.hot.dispose(() => {…});          // 旧 exports 被丢弃前调用（清定时器 / 监听）
+  module.hot.decline();                   // 永不热替换，一律走 P6 全量重建
+}
+```
+
+**判定规则**（`ScriptEnv::ReloadModule`，刻意不做 webpack 那套依赖冒泡）：
+
+1. **cascade** = {被改的模块} ∪ 所有传递依赖它的模块，BFS 序（被改者在前）。
+   依赖边由模块作用域里的 `require()` 采集 —— 这也是 `require` 第一次真正可用
+   （IIFE 把它声明成局部 `var`，并转发到 native sink，顺带记下 parent→child 边）。
+2. cascade 里**每一个**都 accept 了、没有一个 decline、且都求值成功 ⇒ 热路径；
+   否则整个 cascade 回落 P6 全量重建。**不做部分热替换**：一半热一半重建的中间
+   状态最难推理，也最难复现。
+3. 热路径 = 重新求值 + 换掉缓存里的 exports + **不通知 P6 观察者** ⇒
+   `TypeScriptComponent` 不重建 ⇒ 运行时状态保留。这是与 P6 唯一的、也是全部的
+   用户可见差别。`m_serialized_fields`（P7）两边都保留，语义不变。
+
+**三个踩过的坑**（都是"接上了、不报错、只是没生效"）：
+
+| 坑 | 表现 | 判据 |
+|---|---|---|
+| JS 侧 `module.hot.*` 写成纯 JS 存根 | 只往普通 JS 对象里塞回调，从不回调 C++ ⇒ `m_HmrStates` 恒空，`HasHmrAcceptCallback` 永远 false | `__zhmr_native_accept/dispose/decline`、`__zhmr_require` 必须是 `pesapi_create_function` 注册的 **native** 函数 |
+| 用内存里的旧状态判定 | 上一版 accept、这一版改成 decline（或直接删掉 accept）的模块仍被判成可热替换 ⇒ decline 静默失效 | 判定必须在**重新求值之后**按新代码的声明做；求值前先把 `accepted/declined` 清零 |
+| 等判定完再统一换缓存 | cascade 里 parent 重新求值时 `require('./child')` 命中的还是**旧** child ⇒ 整条链半新半旧 | 缓存要在 cascade 顺序里**边求值边换** |
+
+**typings**：`zengine.d.ts`（`ScriptBinding.cpp` 的模板）里必须声明 `module` 与
+`module.hot`，否则用户写 `if (module.hot) module.hot.accept()` 直接 TS2304 ——
+HMR 在 **.ts 侧**等于不可用，而 .ts 才是用户真正写的东西（运行时的 IIFE 包装
+只在乎 emit 出来的 `.js`）。已加：
+
+```ts
+declare var module: {
+    exports: any;
+    hot?: {
+        accept(callback?: (newExports: any) => void): void;
+        dispose(callback: () => void): void;
+        decline(): void;
+    };
+};
+```
+
+⚠️ 项目脚手架的 tsconfig 里没有 `lib`，默认带 DOM，于是模板里的
+`declare const console` 会和 `lib.dom.d.ts` 撞（TS2451）—— 靠 `"skipLibCheck": true`
+压住。`module` 这条也在 d.ts 里，同样被 skipLibCheck 覆盖。**别把 skipLibCheck 关掉。**
+
+**验证**：`ScriptHmrSmokeTest`（`-DZENGINE_BUILD_SCRIPT_VM_SMOKE_TEST=ON`，
+57 checks / 0 failures）覆盖 A 注册链路、B 换 exports、C accept/dispose 回调、
+D decline 与未 accept 回落、E cascade 顺序与"不是半新半旧"、F 子目录相对解析、
+G cascade 里有一个 decline 就整条回落、H 新代码不再 accept 就回落。
+
+---
+
 ## 5. 跨边界调用规范（puerts 绑定）
 
 为了让 TS 能调引擎 API（`new GameObject`、`transform.position` 等），需要把 ZEngine 的反射表注入 v8/QuickJS。

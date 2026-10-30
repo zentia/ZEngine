@@ -1044,6 +1044,11 @@ list(REMOVE_ITEM SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Scripting/ScriptVM/Test/ScriptVMSmokeTest.cpp")
 list(REMOVE_ITEM REGULAR_SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Scripting/ScriptVM/Test/ScriptVMSmokeTest.cpp")
+# 同上：P8 HMR 冒烟测试的 main carve-out（同一开关、同一 quickjs 前提）。
+list(REMOVE_ITEM SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Scripting/ScriptVM/Test/ScriptHmrSmokeTest.cpp")
+list(REMOVE_ITEM REGULAR_SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Scripting/ScriptVM/Test/ScriptHmrSmokeTest.cpp")
 list(REMOVE_ITEM SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Scripting/ScriptVM/Test/ScriptTsChainSmokeTest.cpp")
 list(REMOVE_ITEM REGULAR_SOURCE_FILES
