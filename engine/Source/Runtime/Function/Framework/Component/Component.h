@@ -53,7 +53,25 @@ public:
         }
     }
 
+    /// 每帧一次，`delta_time` 是**帧间隔**（受 timeScale，但随帧率浮动）。
     virtual void Tick(float delta_time) {};
+
+    /// 每个固定步一次，`fixed_delta_time` 恒为 `TimeState::GetFixedDeltaTime()`。
+    ///
+    /// 与 Tick 的分工
+    /// --------------
+    /// 一帧内 FixedTick 可能跑 **0 次**（帧率高于固定步率）也可能跑多次
+    /// （掉帧补步），且**一定在 Tick 之前**（见 Application::LogicalTick）。
+    /// 所以：
+    ///   - 需要确定性/可复现的东西放这里 —— 物理积分、角色移动、状态机计时、
+    ///     联网需要对齐的状态推进。
+    ///   - 只影响表现的东西放 Tick —— 输入采样后的一次性响应、UI 动画、相机
+    ///     跟随（除非你要它跟物理同步）。
+    /// 两边都写同一个状态是典型 bug：帧率一变，结果就在"跑几次"之间横跳。
+    ///
+    /// 默认空实现，与 Tick 一致：绝大多数组件不需要固定步。
+    virtual void FixedTick(float fixed_delta_time) { (void)fixed_delta_time; }
+
     virtual void OnSerializedFieldsUpdated() {}
 
     /// 宿主 GameObject 的**层级激活状态**（activeInHierarchy）刚发生变化时的通知。

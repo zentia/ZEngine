@@ -73,6 +73,15 @@ public:
     void PostLoadResource(GameObject* parent_object) override;
     void Tick(float delta_time) override;
 
+    /// 转发到 JS 侧的 `OnFixedUpdate(fixedDeltaTime)`。
+    ///
+    /// 与 OnUpdate 的分工同 Component::FixedTick：物理、移动、任何需要跨机器
+    /// 复现的推进都该写在 OnFixedUpdate 里。
+    ///
+    /// ⚠️ 一帧内可能调用 0 次或多次。写"收到一次输入就做一次事"的逻辑会
+    /// 在掉帧时重复触发、高帧率时漏触发 —— 那种逻辑属于 OnUpdate。
+    void FixedTick(float fixed_delta_time) override;
+
     // Authoring hooks --------------------------------------------------
     /// 32-char lowercase hex GUID of the source ScriptAsset. Empty until
     /// the component is bound (e.g. by Inspector drag-drop in P5+).

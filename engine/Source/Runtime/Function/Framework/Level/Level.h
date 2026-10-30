@@ -70,7 +70,15 @@ public:
     void MarkDirty() { m_IsDirty = true; }
     void ClearDirty() { m_IsDirty = false; }
 
+    /// 每帧一次：跑组件 Update（帧间隔），再清销毁队列、派发变换变更。
     void Tick(float delta_time);
+
+    /// 每个固定步一次：跑组件 FixedUpdate，**并推进物理**。
+    ///
+    /// 物理放在这里而不是 Tick 里是这次改动的核心：物理是"每步积分"的东西，
+    /// 吃帧间隔就意味着模拟结果跟帧率绑死（换机器复现不了、联网对不上）。
+    /// 固定步之后物理以恒定步长推进，与渲染帧率无关。
+    void FixedTick(float fixed_delta_time);
 
     const eastl::string& getLevelResUrl() const { return m_LevelResUrl; }
     void setLevelResUrl(const eastl::string& level_res_url) { m_LevelResUrl = level_res_url; }

@@ -187,6 +187,29 @@ int main()
     Time::ResetTimeScale();
     Check(Nearly(ts.GetTimeScale(), 1.0f), "T14b Time.ResetTimeScale writes through to TimeState");
 
+    // ---- T15: 固定步进 API 与内部状态一致 ----
+    //
+    // 脚本读到的必须是**同一个**累加器。两套时间各自维护一份是最难查的一类
+    // bug：脚本里"第 64 步"和引擎里"第 64 步"对不上，而两边都不报错。
+    ts.Reset();
+    ts.SetFixedDeltaTime(1.0f / 64.0f);
+    RunFrames(64, 1.0f / 64.0f, 1.0f / 64.0f, true);
+    Check(Nearly(Time::GetFixedDeltaTime(), ts.GetFixedDeltaTime()), "T15 Time.GetFixedDeltaTime matches TimeState");
+    Check(Time::GetFixedStepTotal() == ts.GetFixedStepTotal(), "T15b Time.GetFixedStepTotal matches");
+    Check(Nearly(Time::GetFixedTime(), ts.GetFixedTime()), "T15c Time.GetFixedTime matches");
+    Check(Time::GetFixedStepTotal() == 64, "T15d 1s wall clock / (1/64) == 64 steps");
+
+    // 经脚本 API 设步长真的作用到状态上（不是只改了脚本侧的一份拷贝）。
+    ts.Reset();
+    Time::SetFixedDeltaTime(0.01f);
+    Check(Nearly(ts.GetFixedDeltaTime(), 0.01f), "T15e Time.SetFixedDeltaTime writes through");
+
+    // 0 步长必须被夹住：不夹的话引擎的固定步循环是**死循环**（挂起，不是
+    // 报错），比返回错误糟糕得多。
+    Time::SetFixedDeltaTime(0.0f);
+    Check(Nearly(ts.GetFixedDeltaTime(), TimeState::kMinFixedDeltaTime),
+          "T15f Time.SetFixedDeltaTime(0) is clamped, not silently accepted");
+
     // 收尾：把全局单例留在干净状态（这测试自己就是唯一会动它的东西）
     ts.Reset();
 

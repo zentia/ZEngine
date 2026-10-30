@@ -28,7 +28,20 @@
 //   * `GetFrameCount()` / `GetFps()` —— 帧数与帧率
 //   * `GetTimeScale()` / `SetTimeScale()` —— 全局慢放 / 冻结，脚本唯一能
 //     影响世界推进速度的手段
+//   * `GetFixedDeltaTime()` / `GetFixedStepTotal()` —— 固定步进那一半的时间
+//     （见下面"两套时间"）
 //   * 非 Tick 上下文（OnAwake / OnStart / 事件回调）里读当前 delta
+//
+// 两套时间：Update 与 FixedUpdate
+// -------------------------------
+// `GetDeltaTime()` 系列吃帧间隔，`GetFixedDeltaTime()` 系列吃固定步长。脚本
+// 侧同样是两套回调：`OnUpdate(dt)` 每帧一次、`OnFixedUpdate(dt)` 每个固定步
+// 一次（一帧内可能 0 次或多次）。
+//
+// 判断该用哪套的标准很简单：**结果需要跨机器复现吗？** 物理、角色移动、状态
+// 机计时、任何要联网对齐的状态推进 => OnFixedUpdate。其余表现层（输入响应、
+// UI、相机）=> OnUpdate。两边都写同一个状态是典型 bug：帧率一变，结果就在
+// "一帧跑几步"之间横跳。
 //
 // 关于 timeScale 的作用范围
 // --------------------------
@@ -103,6 +116,45 @@ public:
     /// 把 timeScale 恢复成 1（不动累计时间与帧数）。
     ZFUNCTION()
     static void ResetTimeScale() { TimeState::Get().ResetTimeScale(); }
+
+    // ---- 固定步进（FixedUpdate）----
+
+    /// 固定步长（秒）。Unity 的 `Time.fixedDeltaTime`。
+    ///
+    /// 这是 `OnFixedUpdate(dt)` 收到的那个 dt —— 恒定值，与帧率无关。
+    /// 与之相对，`GetDeltaTime()` 是帧间隔，一帧一个样。
+    ZFUNCTION()
+    static float GetFixedDeltaTime() { return TimeState::Get().GetFixedDeltaTime(); }
+
+    /// 设置固定步长。<= 1ms 的值被夹到 1ms（0 会让引擎的固定步循环变成
+    /// 死循环）。见 TimeState::SetFixedDeltaTime。
+    ZFUNCTION()
+    static void SetFixedDeltaTime(float fixed_delta_time)
+    {
+        TimeState::Get().SetFixedDeltaTime(fixed_delta_time);
+    }
+
+    /// 累计跑过的固定步数。**与帧率无关** —— 这是"模拟现在是第几 tick"。
+    ///
+    /// 做回放 / 联网同步 / 确定性自检时以它为准，不要用 `GetFrameCount()`：
+    /// 后者帧率一变就变。
+    ///
+    /// 名字与 TimeState 对齐（那边 `GetFixedStepCount()` 是**本帧**步数，是
+    /// 另一回事，不导出给脚本 —— 脚本不该关心引擎内部一帧跑了几步）。
+    ZFUNCTION()
+    static int GetFixedStepTotal() { return TimeState::Get().GetFixedStepTotal(); }
+
+    /// 固定步推进的逻辑时间累计（秒）。Unity 的 `Time.fixedTime`。
+    ZFUNCTION()
+    static float GetFixedTime() { return TimeState::Get().GetFixedTime(); }
+
+    /// 固定步之间的插值系数 [0,1)。
+    ///
+    /// ⚠️ 引擎目前**没有**用它做渲染插值（50Hz 模拟 + 144Hz 渲染仍会抖），
+    /// 它只给脚本自己做平滑用。渲染插值是独立的一件事，见
+    /// TimeState::GetFixedStepAlpha 的注释。
+    ZFUNCTION()
+    static float GetFixedStepAlpha() { return TimeState::Get().GetFixedStepAlpha(); }
 
     // ---- 状态 ----
 

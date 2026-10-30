@@ -65,6 +65,10 @@ public:
 
     virtual void Tick(float delta_time);
 
+    /// 每个固定步一次，分发给 m_Components（见 Component::FixedTick 的分工
+    /// 说明）。与 Tick 走同一套激活 / enabled / 白名单判据。
+    virtual void FixedTick(float fixed_delta_time);
+
     bool load(const GameObject& object_instance_res);
     void save(GameObject& out_object_instance_res);
 

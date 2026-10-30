@@ -74,6 +74,19 @@ void TypeScriptComponent::Tick(float delta_time)
     sm->InvokeInstanceMethodNumber(ref, "OnUpdate", static_cast<double>(delta_time));
 }
 
+void TypeScriptComponent::FixedTick(float fixed_delta_time)
+{
+    if (m_JsInstance == nullptr)
+        return;
+
+    auto* sm = GET_SYSTEM(ScriptingManager);
+    if (sm == nullptr)
+        return;
+
+    auto ref = static_cast<pesapi_value_ref>(m_JsInstance);
+    sm->InvokeInstanceMethodNumber(ref, "OnFixedUpdate", static_cast<double>(fixed_delta_time));
+}
+
 // -----------------------------------------------------------------------------
 // Authoring hooks
 // -----------------------------------------------------------------------------

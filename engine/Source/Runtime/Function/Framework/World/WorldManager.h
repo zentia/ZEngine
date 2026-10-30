@@ -37,6 +37,12 @@ public:
     bool OpenScene(const eastl::string& level_url);
 
     void Tick(float delta_time);
+
+    /// 每个固定步一次。只做"模拟推进"那一半（组件 FixedUpdate + 物理），
+    /// 不做流式加载、不做 GPU-Spine 世界 tick 存活标记 —— 那些是**每帧**的
+    /// 事情，跟帧率走是对的。
+    void FixedTick(float fixed_delta_time);
+
     Level* getCurrentActiveLevel() const { return m_CurrentActiveLevel; }
 
     bool IsWorldLoaded() const { return m_IsWorldLoaded; }

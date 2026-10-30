@@ -70,6 +70,32 @@ void GameObject::Tick(float delta_time)
     }
 }
 
+void GameObject::FixedTick(float fixed_delta_time)
+{
+    // 与 Tick 完全同构：同样的层级激活判定、同样的 enabled 判定、同样的
+    // g_editorTickComponentTypes 白名单。两边判定必须一致 —— 出现"FixedUpdate
+    // 跑了但 Update 没跑"（或反之）时，组件状态会静默地在两套节奏之间错位。
+    if (!IsActiveInHierarchy())
+    {
+        return;
+    }
+
+    for (auto& component : m_Components)
+    {
+        if (component == nullptr || !component->isEnabled())
+        {
+            continue;
+        }
+
+        if (!shouldComponentTick(component->GetTypeName()))
+        {
+            continue;
+        }
+
+        component->FixedTick(fixed_delta_time);
+    }
+}
+
 // Both lookups go through TypeManager::ClassNameToType + Type::IsBaseOf rather
 // than `GetTypeName() == name`: the latter reads Object::GetType(), i.e.
 // m_CachedTypeIndex, which is only meaningful after InitializeRuntimeTypeInfo()

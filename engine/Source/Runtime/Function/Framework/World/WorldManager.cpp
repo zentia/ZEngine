@@ -84,6 +84,33 @@ void WorldManager::Tick(float delta_time)
     }
 }
 
+void WorldManager::FixedTick(float fixed_delta_time)
+{
+    if (!m_IsWorldLoaded)
+    {
+        // 世界还没加载完时不补步：加载期攒下的墙钟时间不该变成一批物理步
+        // 在加载完成那一帧突然倾泻下去。
+        return;
+    }
+
+    if (m_WorldPartition.IsEnabled())
+    {
+        for (auto& level_pair : m_LoadedLevels)
+        {
+            Level* level = level_pair.second;
+            if (level == nullptr)
+            {
+                continue;
+            }
+            level->FixedTick(fixed_delta_time);
+        }
+    }
+    else if (m_CurrentActiveLevel != nullptr)
+    {
+        m_CurrentActiveLevel->FixedTick(fixed_delta_time);
+    }
+}
+
 eastl::vector<eastl::string> WorldManager::GetLoadedLevelUrls() const
 {
     eastl::vector<eastl::string> urls;

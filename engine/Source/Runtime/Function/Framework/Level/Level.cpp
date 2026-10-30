@@ -490,10 +490,48 @@ void Level::Tick(float delta_time)
     // 上面的遍历手里正好拿着那张表的迭代器 —— 立即销毁会让它们当场失效。
     FlushPendingDestroys();
 
+    // 物理不在这里 —— 见 FixedTick。
+
+    GetTransformChangeDispatch().DispatchChanges();
+}
+
+void Level::FixedTick(float fixed_delta_time)
+{
+    if (!m_IsLoaded)
+    {
+        return;
+    }
+
+    for (const auto& id_object_pair : m_Gobjects)
+    {
+        assert(id_object_pair.second);
+        if (id_object_pair.second)
+        {
+            id_object_pair.second->FixedTick(fixed_delta_time);
+        }
+    }
+
+    for (const auto& id_object_pair : m_RuntimeGObjects)
+    {
+        if (id_object_pair.second != nullptr)
+        {
+            id_object_pair.second->FixedTick(fixed_delta_time);
+        }
+    }
+
+    // 这里**不**调 Character::Tick 的对应物。Character 那一层做的是跟随
+    // m_CharacterObject 的相机位姿与自由相机开关（Character.cpp:42），是纯
+    // 表现 + 输入快照，就该跟帧走；它的 GameObject 本来就在 m_Gobjects 里，
+    // 上面的循环已经把 FixedTick 分发到它的组件上了。
+
+    // 每个固定步都要清一次。一帧跑 3 步时，第 1 步里 Destroy 的对象不该
+    // 再被第 2 步 tick 到 —— 与 Tick 里同样的理由。
+    FlushPendingDestroys();
+
     std::shared_ptr<PhysicsScene> physics_scene = m_PhysicsScene.lock();
     if (physics_scene)
     {
-        physics_scene->Tick(delta_time);
+        physics_scene->Tick(fixed_delta_time);
     }
 
     GetTransformChangeDispatch().DispatchChanges();

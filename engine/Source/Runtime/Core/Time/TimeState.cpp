@@ -46,6 +46,64 @@ void TimeState::BeginFrame(float simulation_delta_time, float frame_delta_time, 
     }
 
     m_Fps = m_AverageFrameDuration > 0.0f ? static_cast<int>(1.0f / m_AverageFrameDuration) : 0;
+
+    AdvanceFixedSteps(should_update_logic);
+}
+
+void TimeState::AdvanceFixedSteps(bool should_update_logic)
+{
+    m_FixedStepCount = 0;
+
+    if (!should_update_logic)
+    {
+        // 暂停：累加器冻结，零头留着。恢复之后接着走，不会"补帧"。
+        m_FixedAlpha = 0.0f;
+        return;
+    }
+
+    m_FixedAccumulator += m_DeltaTime;
+
+    // 吃掉所有能吃的整步，但不超过 m_MaxSubsteps。
+    //
+    // 注意这里用的是累加器而不是帧 delta：帧率比固定步率高时（144Hz vs
+    // 50Hz）多数帧的 result 是 0 步，零头跨帧攒着 —— 这正是"模拟量与帧率
+    // 解耦"的实现方式。
+    int steps = 0;
+    while (m_FixedAccumulator >= m_FixedDeltaTime && steps < m_MaxSubsteps)
+    {
+        m_FixedAccumulator -= m_FixedDeltaTime;
+        ++steps;
+    }
+
+    if (steps == m_MaxSubsteps && m_FixedAccumulator >= m_FixedDeltaTime)
+    {
+        // 追不上：本帧已经跑满上限，后面还压着一堆步。
+        //
+        // 只能丢弃。继续攒着的后果是下一帧又要补，越补越慢 —— 经典的死亡
+        // 螺旋，表现是卡一次之后帧率永久下降。丢弃确实丢掉了这段模拟时间
+        // （内容表现为"卡的时候慢放了一下"），但那是唯一能收敛的选择。
+        //
+        // ⚠️ 这一步让"总步数"在极端卡顿时依赖帧率。所有依赖步数做确定性
+        // 的东西（回放/同步）都要保证不触发这个分支 —— 正常帧率下不会。
+        m_FixedAccumulator = 0.0f;
+    }
+
+    m_FixedStepCount = steps;
+    m_FixedStepTotal += steps;
+    m_FixedTime += static_cast<float>(steps) * m_FixedDeltaTime;
+    m_FixedAlpha = m_FixedAccumulator / m_FixedDeltaTime;
+}
+
+void TimeState::SetFixedDeltaTime(float fixed_delta_time)
+{
+    // 夹而不是拒：<= 0 会让 AdvanceFixedSteps 的 while 变成死循环，那是
+    // 挂起不是错误，比夹住糟糕得多。
+    m_FixedDeltaTime = std::max(fixed_delta_time, kMinFixedDeltaTime);
+}
+
+void TimeState::SetMaxSubsteps(int max_substeps)
+{
+    m_MaxSubsteps = std::clamp(max_substeps, kMinSubstepsCap, kMaxSubstepsCap);
 }
 
 void TimeState::SetTimeScale(float scale)
@@ -65,4 +123,13 @@ void TimeState::Reset()
     m_AverageFrameDuration = 0.0f;
     m_Fps                  = 0;
     m_LogicUpdating        = false;
+
+    // 固定步进：步长与上限是**配置**，不随 Reset 回默认（Reset 的语义是
+    // "时间归零"，不是"设置归零" —— 否则测试里设好的参数会被冲掉）。
+    // 累加器与计数属于时间状态，归零。
+    m_FixedAccumulator = 0.0f;
+    m_FixedStepCount   = 0;
+    m_FixedStepTotal   = 0;
+    m_FixedTime        = 0.0f;
+    m_FixedAlpha       = 0.0f;
 }

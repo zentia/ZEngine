@@ -893,6 +893,14 @@ list(REMOVE_ITEM SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Test/SpotShadowSmokeTest.cpp")
 list(REMOVE_ITEM REGULAR_SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Test/SpotShadowSmokeTest.cpp")
+# 固定时间步进冒烟测试的 main carve-out（同理由）。它是 FixedUpdate 唯一的守卫，
+# 钉的是"模拟推进多少与帧率无关"、死亡螺旋闸门，以及"物理确实移进了固定步"
+# 这条接线（见 Core/Time/Test/CMakeLists.txt）。
+# Only built when ZENGINE_BUILD_FIXED_TIME_STEP_SMOKE_TEST=ON.
+list(REMOVE_ITEM SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Core/Time/Test/FixedTimeStepSmokeTest.cpp")
+list(REMOVE_ITEM REGULAR_SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Core/Time/Test/FixedTimeStepSmokeTest.cpp")
 # ShaderRegistry 路径大小写冒烟测试的 main carve-out（同理由）。它是 ShaderRegistry
 # 唯一的守卫，钉的是"m_SourceRelPath / m_ZassetRelPath 保留磁盘原大小写"与"m_Guid
 # 仍以查找 key 为种子、与改动前逐字节一致"（见 Function/Render/Test/CMakeLists.txt）。
@@ -2030,6 +2038,12 @@ add_subdirectory(Core/Serialize/Test)
 # ZENGINE_BUILD_MEMORY_PAIRING_SMOKE_TEST=ON 时构建。盯的是"Produce（new）出来的
 # 对象被 mimalloc 释放"这类只在 Apple 上致命、其余平台全程隐形的错配。
 add_subdirectory(Core/Memory/Test)
+
+# 固定时间步进冒烟测试。Own main()；只在
+# ZENGINE_BUILD_FIXED_TIME_STEP_SMOKE_TEST=ON 时构建。这是 FixedUpdate 唯一的
+# 守卫：钉"模拟量与帧率解耦"、死亡螺旋闸门、timeScale/暂停语义，以及源码级
+# 接线门（LogicalTick 按步数循环、物理已移进 Level::FixedTick）。
+add_subdirectory(Core/Time/Test)
 
 # 崩溃安全日志环形缓冲冒烟测试（§3.9，#11）。Own main()；只在
 # ZENGINE_BUILD_CRASH_LOG_TAIL_SMOKE_TEST=ON 时构建。验证 CrashLogTail 环形缓冲

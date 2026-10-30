@@ -53,8 +53,11 @@ ZSCRIPTPROPERTY '%s': getter '%s' must not be static
 | `Time.unscaledTime` | `Time.GetUnscaledTime()` |
 | `Time.frameCount` | `Time.GetFrameCount()` |
 | `Time.timeScale` | `Time.GetTimeScale()` / `Time.SetTimeScale(v)` |
+| `Time.fixedDeltaTime` | `Time.GetFixedDeltaTime()` / `Time.SetFixedDeltaTime(v)` |
+| `Time.fixedTime` | `Time.GetFixedTime()` |
+| — | `Time.GetFixedStepTotal()`（Unity 无直接对应） |
 
-## 3. 导出的 API（11 个）
+## 3. 导出的 API（16 个）
 
 ```
 GetDeltaTime(): number            本帧逻辑步长（秒），受 timeScale；暂停时为 0
@@ -68,10 +71,49 @@ GetTimeScale(): number            1 = 正常，0 = 冻结
 SetTimeScale(scale: number): void 负数被夹到 0
 ResetTimeScale(): void           还回 1（不动累计时间与帧数）
 IsLogicUpdating(): boolean        本帧是否推进逻辑（编辑器暂停时为 false）
+
+GetFixedDeltaTime(): number      固定步长（秒），OnFixedUpdate 收到的那个 dt
+SetFixedDeltaTime(v): void       <= 1ms 被夹到 1ms（0 会让固定步循环死循环）
+GetFixedStepTotal(): number      累计固定步数，**与帧率无关**
+GetFixedTime(): number           固定步推进的逻辑时间累计（秒）
+GetFixedStepAlpha(): number      固定步之间的插值系数 [0,1)
 ```
 
 量化（`ZHeaderTool generate --dump-ir`）：类 70 → 71，方法 265 → 276，静态方法
 52 → 63，缺 Converter 0。
+
+## 3.1 两套时间：Update 与 FixedUpdate
+
+`GetDeltaTime()` 系列吃**帧间隔**，`GetFixedDeltaTime()` 系列吃**固定步长**。
+脚本侧对应两个回调：
+
+| | 频率 | dt | 用在哪 |
+| --- | --- | --- | --- |
+| `OnUpdate(dt)` | 每帧一次 | 帧间隔，一帧一个样 | 输入响应、UI、相机跟随 |
+| `OnFixedUpdate(dt)` | 每个固定步一次，**一帧内可能 0 次或多次** | 恒为固定步长 | 物理、角色移动、状态机计时、任何要联网对齐的状态 |
+
+判断标准只有一条：**结果需要跨机器复现吗？** 需要 ⇒ `OnFixedUpdate`。
+
+```typescript
+class Mover extends Behaviour {
+    speed: number = 3;
+
+    // 对：位移在固定步里推进，60Hz 和 144Hz 的机器上结果一致。
+    OnFixedUpdate(dt: number) {
+        const step = VectorMath.Scale(VectorMath.UnitX(), this.speed * dt);
+        this.transform.position = VectorMath.Add(this.transform.position, step);
+    }
+}
+```
+
+⚠️ **两边都写同一个状态是典型 bug**：一帧跑几步随帧率变，结果就在几个值之间
+横跳，而在开发机（帧率稳定）上完全看不出来。
+
+⚠️ **"收到一次输入就做一次事"的逻辑不能放 `OnFixedUpdate`**：掉帧时一帧跑多
+步会重复触发，高帧率时一帧 0 步会漏触发。那种逻辑属于 `OnUpdate`。
+
+完整设计（累加器、死亡螺旋闸门、物理为什么挪进固定步）见
+`doc/FIXED_TIME_STEP.md`。
 
 ## 4. timeScale 的语义 —— 引擎真的按它走
 
@@ -117,9 +159,10 @@ IsLogicUpdating(): boolean        本帧是否推进逻辑（编辑器暂停时�
 ## 6. 冒烟测试
 
 `engine/Source/Runtime/Scripting/ScriptTime/Test/ScriptTimeSmokeTest.cpp`，
-57 项检查，覆盖 timeScale 缩放（T4/T5/T10）、暂停帧 delta 必须为零但帧数照涨
+63 项检查，覆盖 timeScale 缩放（T4/T5/T10）、暂停帧 delta 必须为零但帧数照涨
 （T7）、负 delta 与负 timeScale 夹零（T6/T8）、`Reset` 与 `ResetTimeScale`
-的区别（T11/T12）、脚本 API 与内部状态一致（T13/T14）。
+的区别（T11/T12）、脚本 API 与内部状态一致（T13/T14）、固定步进 API 与内部
+累加器一致且写穿（T15）。
 
 有 cmake 的机器：
 
@@ -146,6 +189,11 @@ T10 / T13i），之后已还原。
 
 | Unity API | 为什么不做 |
 | --- | --- |
-| `Time.fixedDeltaTime` / `FixedUpdate` | 引擎**没有**固定步长循环（全仓无 `FixedUpdate` / `fixed_delta`）。导出一个没人消费的常量就是假 API |
 | `Time.realtimeSinceStartup` | 与 `GetUnscaledTime()` 是同一个量，重复 |
-| `Time.captureFramerate` / `Time.maximumDeltaTime` | 前者是录屏用的（引擎没有），后者是防螺旋死亡的钳制 —— 现在调用方只有 `Application`，加钳制是多一个没人验证的分支 |
+| `Time.captureFramerate` | 录屏用的，引擎没有对应机制 |
+| 渲染侧固定步插值 | `GetFixedStepAlpha()` 已经导出，但引擎**还没**用它在本步与上一步的位姿之间插值。所以 50Hz 模拟 + 144Hz 渲染目前仍会抖。脚本可以先拿它自己做平滑；渲染插值是独立一件事，见 `doc/FIXED_TIME_STEP.md` §6 |
+
+> 变更记录：`Time.fixedDeltaTime` / `FixedUpdate` 此前在这一节里，理由是"引擎
+> 没有固定步长循环，导出一个没人消费的常量就是假 API"。固定步长循环已在
+> `doc/FIXED_TIME_STEP.md` 落地（物理同步挪进固定步），这条理由不再成立，故
+> 移出本节。

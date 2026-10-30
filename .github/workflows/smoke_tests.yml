@@ -107,6 +107,8 @@ jobs:
           -DZENGINE_BUILD_NANITE_SCENE_WIRING_SMOKE_TEST=ON
           -DZENGINE_BUILD_NANITE_GPU_CULLING_SMOKE_TEST=ON
           -DZENGINE_BUILD_SHADER_REGISTRY_SMOKE_TEST=ON
+          -DZENGINE_BUILD_FIXED_TIME_STEP_SMOKE_TEST=ON
+          -DZENGINE_BUILD_SCRIPT_TIME_SMOKE_TEST=ON
           -DZENGINE_BUILD_ENVIRONMENT_CHECK_TESTS=ON
 
       - name: Build smoke tests
@@ -141,6 +143,8 @@ jobs:
           NaniteSceneWiringSmokeTest
           NaniteGPUCullingSmokeTest
           ShaderRegistrySmokeTest
+          FixedTimeStepSmokeTest
+          ScriptTimeSmokeTest
           DX12BindlessSmokeTest
           EnvironmentCollectorTests
           EnvironmentPreflightTests

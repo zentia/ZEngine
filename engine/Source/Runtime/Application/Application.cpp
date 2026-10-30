@@ -198,6 +198,29 @@ void Application::LogicalTick(float delta_time)
     // 命令（首帧更是恒为 0），表现就是注入了输入、配置也正确，角色却不动。
     // InputSystem::Tick() 不依赖世界状态，提前没有副作用。
     GET_SYSTEM(InputSystem)->Tick();
+
+    // 固定步在 Update 之前。
+    //
+    // 顺序不能反：物理（在 Level::FixedTick 里）跑完之后，本帧的 Update 才能
+    // 读到这一步之后的位姿 —— 否则角色控制器读到的永远是上一步的位置，
+    // 表现为输入到位移多延迟一帧，且帧率越高延迟越明显。
+    //
+    // 步数由 TimeState 在 BeginFrame 里算好（累加器 + 死亡螺旋闸门），这里
+    // 只是照着循环分发。步长恒为固定步长，绝不传 delta_time。
+    //
+    // 输入是**每帧**采样一次（InputSystem::Tick 在上面），所有固定步共用
+    // 同一份输入快照。这是有意的：把输入也按步切分需要事件带时间戳，属于
+    // 确定性回放的下一档，现在不做。
+    {
+        Z_PROFILE_SCOPE("Engine::fixedTick");
+        TimeState& ts = TimeState::Get();
+        const float fixed_delta = ts.GetFixedDeltaTime();
+        for (int step = 0; step < ts.GetFixedStepCount(); ++step)
+        {
+            GET_SYSTEM(WorldManager)->FixedTick(fixed_delta);
+        }
+    }
+
     GET_SYSTEM(WorldManager)->Tick(delta_time);
     // The runtime UI (UMG on ZSlate) is event-driven (input via GLFW callbacks)
     // and painted inside the UI render pass via UISystem::PreRender(); no
