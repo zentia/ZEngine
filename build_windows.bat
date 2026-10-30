@@ -17,7 +17,9 @@ for %%i in ("%GIT_EXE%") do set "GIT_SHORT=%%~si"
 if exist "%GIT_EXE%" (
     echo [INFO] Using standard Git: %GIT_EXE%
     echo [INFO] Short path: %GIT_SHORT%
-    set "GIT_EXTRA=--extra-args -DCMAKE_GIT_EXECUTABLE=%GIT_SHORT%"
+    REM Only the -D here. The literal "--extra-args" belongs to the configure
+    REM line below and must appear exactly once -- see the note at :build.
+    set "GIT_EXTRA=-DCMAKE_GIT_EXECUTABLE=%GIT_SHORT%"
 ) else (
     echo [WARNING] Standard Git not found at %GIT_EXE%
     echo [INFO] Please install Git for Windows from https://git-scm.com/
@@ -70,16 +72,21 @@ echo [INFO] Configuring build...
 set CONFIGURE_EXTRA=
 if defined GITHUB_ACTIONS (
     REM CI: editor smoke build uses DX12 only; runners do not ship VULKAN_SDK.
-    set "CONFIGURE_EXTRA=%GIT_EXTRA% --extra-args -DZENGINE_USE_VULKAN=OFF"
+    set "CONFIGURE_EXTRA=--extra-args %GIT_EXTRA% -DZENGINE_USE_VULKAN=OFF"
 ) else (
-    set "CONFIGURE_EXTRA=%GIT_EXTRA%"
+    set "CONFIGURE_EXTRA=--extra-args %GIT_EXTRA%"
 )
 REM A release build is what gets packaged, so its editor defaults to a full
 REM rebuild (ZENGINE_PACKAGING_FORCE_REBUILD): an incremental package is only
 REM reproducible by whoever owns the cache. Still just a default -- the console
 REM command `bundle.build --incremental` opts back in at run time.
-REM --extra-args is a REMAINDER, so a -D has to join the one already present
-REM (CI) rather than start a second one.
+REM --extra-args is argparse REMAINDER: it swallows *everything* after it, so
+REM it may appear exactly ONCE and every -D has to be appended to that one
+REM group. A second "--extra-args" is not a second group -- it is passed to
+REM CMake verbatim, and CMake rejects it outright:
+REM     CMake Error: Unknown argument --extra-args
+REM which failed the configure step of every Windows CI run from b135346c on
+REM (the flag was appended after the git one instead of joining it).
 REM Passed explicitly both ways rather than only for release: CMake options are
 REM sticky and the Windows presets are multi-config (one build dir for both),
 REM so leaving it unset would let a previous release configure keep forcing
@@ -89,11 +96,8 @@ if "%CONFIG%"=="release" (
 ) else (
     set "FORCE_REBUILD_ARG=-DZENGINE_PACKAGING_FORCE_REBUILD=OFF"
 )
-if defined GITHUB_ACTIONS (
-    set "CONFIGURE_EXTRA=%CONFIGURE_EXTRA% %FORCE_REBUILD_ARG%"
-) else (
-    set "CONFIGURE_EXTRA=%CONFIGURE_EXTRA% --extra-args %FORCE_REBUILD_ARG%"
-)
+REM Same single --extra-args group: append, never start another one.
+set "CONFIGURE_EXTRA=%CONFIGURE_EXTRA% %FORCE_REBUILD_ARG%"
 python zbuild.py configure --config %CONFIG% %CONFIGURE_EXTRA%
 if errorlevel 1 (
     echo [ERROR] Configuration failed

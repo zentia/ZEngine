@@ -325,6 +325,15 @@ elseif(WIN32 AND NOT ZENGINE_USE_VULKAN)
 
     # Exclude all pass source files first, then restore the DX12-only passes.
     # CMake's regex engine does not support look-ahead, so we do this in two steps.
+    #
+    # ParticlePass is in the restore list on purpose. It used to be backend-coupled
+    # and therefore correctly swept up by the blanket Passes/ exclusion, but it has
+    # been decoupled (no backend-private symbol at all -- see the note at the top of
+    # ParticlePass.cpp) and MainCameraRp1Pass.cpp / RenderPipelineBase.cpp /
+    # DesktopRenderPipelineModule.cpp call into it unconditionally. Those three are
+    # compiled here, so leaving ParticlePass.cpp out is a link error rather than a
+    # missing feature: 12 LNK2001 for ParticlePass::* and then LNK1120, which is
+    # exactly how the Smoke Tests job (ZENGINE_USE_VULKAN=OFF) was failing.
     set(_WIN_DX12_PASS_FILES)
     foreach(_src IN LISTS SOURCE_FILES)
         if(_src MATCHES "(^|.*/)Function/Render/Passes/DX12.*\\.cpp$" OR
@@ -336,7 +345,8 @@ elseif(WIN32 AND NOT ZENGINE_USE_VULKAN)
            _src MATCHES "(^|.*/)Function/Render/Passes/DirectionalLightPass\\.cpp$" OR
            _src MATCHES "(^|.*/)Function/Render/Passes/PointLightPass\\.cpp$" OR
            _src MATCHES "(^|.*/)Function/Render/Passes/ShadowPassShared\\.cpp$" OR
-           _src MATCHES "(^|.*/)Function/Render/Passes/UIPass\\.cpp$")
+           _src MATCHES "(^|.*/)Function/Render/Passes/UIPass\\.cpp$" OR
+           _src MATCHES "(^|.*/)Function/Render/Passes/ParticlePass\\.cpp$")
             list(APPEND _WIN_DX12_PASS_FILES "${_src}")
         endif()
     endforeach()
@@ -355,7 +365,8 @@ elseif(WIN32 AND NOT ZENGINE_USE_VULKAN)
            _src MATCHES "(^|.*/)Function/Render/Passes/DirectionalLightPass\\.cpp$" OR
            _src MATCHES "(^|.*/)Function/Render/Passes/PointLightPass\\.cpp$" OR
            _src MATCHES "(^|.*/)Function/Render/Passes/ShadowPassShared\\.cpp$" OR
-           _src MATCHES "(^|.*/)Function/Render/Passes/UIPass\\.cpp$")
+           _src MATCHES "(^|.*/)Function/Render/Passes/UIPass\\.cpp$" OR
+           _src MATCHES "(^|.*/)Function/Render/Passes/ParticlePass\\.cpp$")
             list(APPEND _WIN_DX12_PASS_FILES_REG "${_src}")
         endif()
     endforeach()
