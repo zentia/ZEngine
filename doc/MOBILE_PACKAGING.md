@@ -296,6 +296,143 @@ Ninja 与 Xcode 不一致时 cmake 直接报 *generator does not match the gener
 previously*。`build/ios` 是 CI 编译闸门（Ninja）用的，`zbuild_ios.py` 走 Xcode
 （要签名 / Archive），两者各用一棵树。
 
+### 3.8 iOS 模拟器：没有证书 / 没有设备时唯一能真跑的路径（2026-10-30 首次跑通）
+
+真机验证卡在"没有 Team ID / 没有 Apple ID / 设备不被识别"时，**模拟器是唯一能把
+iOS 代码真正跑起来的地方**：它不需要签名，也不需要设备。
+
+```bash
+cmake -S . -B build/iossim -G Ninja -DCMAKE_BUILD_TYPE=Debug \
+  -DCMAKE_TOOLCHAIN_FILE=$PWD/engine/toolchain/ios-simulator.cmake
+ninja -C build/iossim ZGameIOS
+
+UDID=$(xcrun simctl list devices booted | grep -m1 -oE '[0-9A-F-]{36}')
+xcrun simctl install "$UDID" build/iossim/engine/Source/Player/IOS/ZEngine.app
+xcrun simctl launch  "$UDID" com.zengine.player
+```
+
+* `ios-simulator.cmake` 先 `include(ios.cmake)` 再把 `CMAKE_OSX_SYSROOT` 换成
+  `iphonesimulator`。**必须走这个文件**而不能 `-DCMAKE_OSX_SYSROOT=...` 覆盖：
+  `ios.cmake` 里是普通 `set()`，`-D` 传进去的值会被它自己覆盖掉。
+* 引擎日志在
+  `~/Library/Developer/CoreSimulator/Devices/<UDID>/data/Containers/Data/Application/<容器>/Library/Logs/ZEngine/engine_*.log`。
+  ⚠️ **容器 UUID 每次 `install` 都可能变**，用
+  `ls -td .../Application/*/Library/Logs/ZEngine/*.log | head -1` 定位最新那份。
+* ⚠️ 沙箱里 **`ps` 不可用**（`operation not permitted`）。判断进程还活着改用
+  **有没有新的崩溃报告**：跑之前记下 `ls -t ~/Library/Logs/DiagnosticReports/ | head -1`，
+  跑完再比一次 —— 没变就是没崩。
+
+模拟器能验 / 不能验：
+
+| | 模拟器 | 真机 |
+| --- | --- | --- |
+| boot 全链路、工程与资源加载 | ✅ | ✅ |
+| Metal swapchain 建立、CADisplayLink 帧循环 | ✅ | ✅ |
+| 帧率与热节流 | ❌（跑在宿主机 GPU 上，数字没意义） | ✅ |
+| 多指触摸 / 手势 | ❌（鼠标只能单点） | ✅ |
+| 签名、包体、启动耗时 | ❌ | ✅ |
+
+### 3.9 本轮在 iOS 上修掉的四个运行时阻塞（2026-10-30）
+
+四个都是"编译期零报错、链接期零报错，装上才炸"，且**都不会出现在 iOS CI 的编译闸门里**
+—— 这正是 §3.6 那句"没有 job 去编的配置 = 根本没编译过"的运行时版本：
+**编译得过 ≠ 起得来**。
+
+**1) UIScene 生命周期（iOS 26+ SDK）—— 启动即退**
+
+```
+UIKitCore: Application failed to launch: 'UIScene life cycle is required for apps
+built with this SDK'
+```
+老式的 `UIApplicationDelegate` + 自己持有 `window` 在新 SDK 上直接被拒。已把
+`ZEngineAppDelegate` 拆成 AppDelegate（进程级）+ `ZEngineSceneDelegate`（窗口级，
+持有 window / renderView / displayLink），并在 `Info.plist` 补
+`UIApplicationSceneManifest`。**只在运行时发作，编译期完全看不出来。**
+
+**2) 缺 `ZEditor.ini` → `ConfigManager` 失败 → 整个引擎 rollback**
+
+移动端 `.app` bundle 里从来没有这个文件。`ConfigManager::Initialize()` 原来把它当
+致命错误，于是 39 个系统全部回滚。已改成"文件**不存在**时用默认值继续"（打 WARNING），
+只有"存在但打不开/解析不了"才算失败。
+
+**3) `ProjectInfo` 拿不到工程路径 —— 两个独立原因叠在一起**
+
+```
+[I] Initializing system: 11ProjectInfo
+[F] Failed to initialize system 'ProjectInfo', rolling back      ← 前面一行解释都没有
+```
+
+* 桌面端工程路径由命令行 `-p` 进 `CommandSystem`，**移动端没有命令行**。所以
+  `PlayerShell.cpp` 必须自己把工程路径写回 `CommandSystem`。
+* 坑 a：那段 write-back 一开始放在 `RegisterGameRuntime()` **之前** —— 而
+  `CommandSystem` 本身就是 Runtime 系统，`RegisterRuntime()` 才注册它，所以
+  `GET_SYSTEM(CommandSystem)` 返回 `nullptr`，**整个块被静默跳过**。
+* 坑 b：`CommandSystem::Initialize()` 里是**无条件** `project_path = project_path_str`，
+  没有 `-p` 时 `project_path_str` 是空串，把刚写进来的值又冲掉了。已改成
+  "命令行 > 宿主预设 > 空"。
+
+> 教训：两处都是**静默失败**（一个 nullptr 分支没日志，一个无条件覆盖没日志）。
+> 症状和"根本没写这段代码"一模一样，白等了一轮。现在 nullptr 分支会打 ERROR。
+
+**4) 粒子纹理没打进包 → 首帧空指针崩溃**
+
+```
+EXC_BAD_ACCESS / SIGSEGV, KERN_INVALID_ADDRESS at 0x0000000000000000
+ParticlePass::EnsureAttachmentsInitialized()  ← 每帧第一件事，首帧就崩
+```
+`RenderResourceBase::LoadTextureHDR()` 在 `stbi_loadf` 读不到文件时**返回 `nullptr`**，
+原代码照常 `->m_Width`。空工程（如 `DeviceSmoke`）里 `GlobalParticleRes` 两张图的路径
+是空的，于是必然崩。已改成取不到就早退并**只打一次** ERROR
+（`m_AttachmentLoadFailedLogged`，照 `m_DrawSkippedLogged` 的先例），粒子不显示但不崩。
+
+**修复后的 iOS boot 证据**（`DeviceSmoke`，模拟器 iPhone 18 Pro）：
+
+```
+[W] ZPlayer: no startup_level configured in .zproject; launching with an empty world
+[I] ZPlayer: booted (project = .../ZEngine.app/zengine_project)
+[I] MetalRHI: swapchain ready 874x402
+[E] ParticlePass: attachments not initialized (particle billboard texture could not be
+    loaded) -- particles stay invisible
+```
+跑 14 秒无新崩溃报告（修复前同一位置必崩，见 `ZEngine-2026-10-30-183037.ips`）。
+
+### 3.10 BqLog：交叉编译会污染宿主的验证入口（2026-10-30）
+
+`bqlog` 的 CMakeLists 把产物**硬编码写进源码树**：
+
+```cmake
+# engine/3rdparty/bqlog/src/CMakeLists.txt:135
+set(ARTIFACTS_OUTPUT_BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../artifacts/${BUILD_LIB_TYPE}")
+```
+
+那是它"分发产物"的设计，一台机器只编一个平台时没问题。但单机交叉编译时，
+宿主(macOS) 与 iOS 的 `ARTIFACTS_SUB_DIR` **都是** `lib/$<CONFIG>`（android/ohos 反倒
+没事，它们的子目录带 ABI），先编的会被后编的静默覆盖。
+
+后果很难懂 —— 跑完 `ninja -C build/iossim` 之后，`verify_prefab_native.sh` 三个用例
+**全部变红**，而输出只有一句：
+
+```
+clang++: error: linker command failed with exit code 1
+```
+
+看着像 prefab 测试坏了，其实跟 prefab 毫无关系。真错误被脚本的 grep 过滤掉了，得手动
+跑 `run_smoke_test.py` 才看得到：
+
+```
+ld: building for 'macOS', but linking in object file
+(engine/3rdparty/bqlog/artifacts/static_lib/lib/Debug/BqLog.framework/BqLog[2](aes.cpp.o))
+built for 'iOS-simulator'
+```
+
+已在 `engine/3rdparty/CMakeLists.txt` 里让交叉编译（`IOS/ANDROID/OHOS`）的 BqLog 产物
+落进 build tree（`build/iossim/3rdparty/bqlog/`），源码树那份只由宿主写。
+判别平台：`otool -l <BqLog> | grep -A3 LC_BUILD_VERSION`（`1`=macOS，`7`=iOS-simulator）。
+被污染后要**删掉那个二进制**再让 ninja 重建（产物时间戳比源新，ninja 不会自己重编）。
+
+> 这是记忆里"宿主与 iOS 共用输出目录"那条坑的新变体：上一轮只把 `bin/` 隔离了，
+> 漏了第三方库自己写源码树的那一半。
+
 ---
 
 ## 4. 仍然只能真机验的
@@ -334,3 +471,9 @@ previously*。`build/ios` 是 CI 编译闸门（Ninja）用的，`zbuild_ios.py`
 | iOS CI 报 `platform is '1'` | 宿主 SDK 漏进来了（toolchain 没生效，`CMAKE_SYSTEM_NAME` 不是 iOS） | §3.6 断言表；`otool -l <bin> \| grep -A3 LC_BUILD_VERSION` |
 | 带项目内容构建报 `mkdir(.../ZEngine.app/zengine/Build): Not a directory` | bundle 内的项目目录原本叫 `zengine`，而可执行文件 `OUTPUT_NAME` 是 `ZEngine` —— macOS 默认卷宗**大小写不敏感**，两者被当成同一条路径 | 已改名 `zengine_project`（`IOSMain.mm` 的 `k_bundled_project_dir` / `Player/IOS/CMakeLists.txt` 的 glob / `zbuild_ios.py` 的 `STAGING_PROJECT` 三处必须同步）。**设备上是大小写敏感的，所以只在构建宿主机发作，真机永不复现** |
 | 链接期 undefined symbol | 宿主用了没有 `ZPLAYER_API` 的符号 | 自检"宿主符号"两项 |
+| iOS 模拟器启动即退：*UIScene life cycle is required for apps built with this SDK* | iOS 26+ SDK 不再接受纯 `UIApplicationDelegate` + 自建 window | §3.9 第 1 条 |
+| iOS 上 `[F] Failed to initialize system 'ConfigManager'` | `.app` 里没有 `ZEditor.ini`（已改成非致命） | §3.9 第 2 条 |
+| iOS 上 `[F] Failed to initialize system 'ProjectInfo'`，前面一行解释都没有 | 工程路径没写回 `CommandSystem`（时序 + 无条件覆盖两个原因） | §3.9 第 3 条 |
+| iOS 首帧 `EXC_BAD_ACCESS at 0x0`，栈在 `ParticlePass::EnsureAttachmentsInitialized` | 纹理没读到，`LoadTextureHDR` 返回 `nullptr` 却照样解引用 | §3.9 第 4 条 |
+| `verify_prefab_native.sh` 三个用例全红，只有一句 `linker command failed` | 刚跑过 iOS 构建，源码树里的 `BqLog.framework` 被覆盖成 iOS-simulator 版 | §3.10 |
+| 沙箱里 `ps` 报 *operation not permitted* | 正常限制；判断进程存活改用崩溃报告比对 | §3.8 |

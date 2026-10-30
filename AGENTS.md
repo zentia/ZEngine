@@ -4002,4 +4002,36 @@ on, and the script installs via `adb push` + `pm install --force-queryable`.
   是 `ZGameIOS` 而 `OUTPUT_NAME` 是 `ZEngine`，谁改了它就让 job 红，而不是静默跳过 ——
   同 `smoke_tests.yml` 的哲学（没跑起来的测试等于没测试）。
 
+### 2.46 静默的失败分支：症状和"根本没写这段代码"一模一样
+
+2026-10-30 修 iOS 上的 `ProjectInfo` 启动失败，前后花的时间几乎全耗在两个**什么都不说**的
+分支上：
+
+1. `if (auto* cs = GET_SYSTEM(CommandSystem); cs != nullptr) { /* 写回工程路径 */ }`
+   —— 这段代码放在 `RegisterGameRuntime()` **之前**，而 `CommandSystem` 本身就是 Runtime
+   系统（`RegisterRuntime()` 才 `REGISTER_SYSTEM`），所以 `cs` 恒为 `nullptr`，
+   **整个块被静默跳过**。日志里只剩一行没头没尾的
+   `[F] Failed to initialize system 'ProjectInfo', rolling back`。
+2. `CommandSystem::Initialize()` 里无条件 `project_path = project_path_str;`，没有 `-p` 时
+   `project_path_str` 是空串，把宿主（`ZPlayer_Boot`）刚写进来的值又冲掉。同样不打日志。
+
+两条叠加的表现，和"这段代码压根没写"完全一致 —— 看日志分不出"没生效"和"没写"。
+
+规则：
+
+- **取不到东西的分支要打日志**（至少 WARNING，起不来的打 ERROR）。`nullptr` / 空串 / 早退
+  不是"正常无事发生"，它们是诊断信息。
+- 同理，**无条件覆盖**一个可能已被别人设过的字段，要想清楚并写进注释（这里是"命令行 >
+  宿主预设 > 空"，见 `CommandSystem.cpp`）。
+- 排查这类问题时，先**证明代码执行到了**：在分支里加一行带实际值的日志，比反复读代码快。
+
+配套教训：**编译得过 ≠ 起得来。** iOS 那四个运行时阻塞（UIScene 生命周期、缺 `ZEditor.ini`、
+`ProjectInfo` 工程路径、粒子纹理缺失空指针）全是编译期零报错、链接期零报错，装上才炸，
+而 CI 的编译闸门一个都发现不了（见 §2.45）。所以能真跑的地方（模拟器 / 真机）要真跑，
+别用"它编过了"代替。
+
+判别"代码到底跑没跑"在移动端尤其麻烦：沙箱里 `ps` 会报 `operation not permitted`，
+改用**崩溃报告比对**（跑前跑后各取一次 `ls -t ~/Library/Logs/DiagnosticReports/ | head -1`），
+详见 `doc/MOBILE_PACKAGING.md` §3.8。
+
 Android / OHOS 是同一个洞，目前仍然没有 job。
