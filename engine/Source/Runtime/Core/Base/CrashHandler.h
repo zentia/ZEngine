@@ -673,6 +673,17 @@ inline LONG WINAPI ZEngineCrashHandler(EXCEPTION_POINTERS* ep)
     #include <emscripten/stack.h>    // 栈边界内建（backtrace 兜底预留）
 #endif
 
+// 这两个自由函数定义在 LogSystem.cpp 的**全局**作用域（声明见 LogSystem.h）。
+//
+// 必须在全局作用域声明，不能像原来那样写在 WriteSnapshot() 的函数体里：块作用域
+// 的函数声名会把名字放进**最近的 enclosing namespace**（这里是 zcrash_posix），
+// 于是链接找的是 zcrash_posix::ZEngineForceFlushLogs —— 它没有任何定义，而全局
+// 那个 ::ZEngineForceFlushLogs 明明就在旁边。Windows 分支不受影响（它的 handler
+// 在全局作用域，块作用域声明正好落到全局），只有 POSIX 分支会中招；iOS 是第一个
+// 真正把这条路径链起来的平台（2026-10-29 交叉编译时暴露）。
+void          ZEngineForceFlushLogs();
+std::uint32_t ZEngineDumpCrashLogTail(const std::string& dir);
+
 namespace zcrash_posix
 {
 
@@ -945,9 +956,9 @@ inline void WriteSnapshot(int sig, const siginfo_t* info)
     // 内部会构造一个 std::string（= 一次 malloc）——它不是 async-signal-safe，
     // 若放在栈之前，一旦在堆已损坏时死锁/二次踩内存，我们就连栈都丢了。把
     // 必达的栈写在前面，即使日志尾这一步炸了，crash_stack.txt 也已经落地。
-    // 自由函数声明在 LogSystem.h / 定义在 LogSystem.cpp；这里内联声明以保持本头自足。
-    void ZEngineForceFlushLogs();
-    uint32_t ZEngineDumpCrashLogTail(const std::string& dir);
+    // 两个自由函数（ZEngineForceFlushLogs / ZEngineDumpCrashLogTail）定义在
+    // LogSystem.cpp 的全局作用域，声明见本文件上方 zcrash_posix 之前 —— 刻意不在这里
+    // 重复声明：块作用域声明会把名字挂到 zcrash_posix 上，链接就对不上了。
 
     // 拼产物路径到栈缓冲（信号安全：不调用 std::string / 不分配）。dir 为空
     // 时退化成裸文件名，写到进程当前工作目录。

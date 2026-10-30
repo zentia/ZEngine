@@ -539,7 +539,15 @@ namespace
             case RHI_FORMAT_R8G8B8A8_UINT:       return MTLPixelFormatRGBA8Uint;
             case RHI_FORMAT_D16_UNORM:           return MTLPixelFormatDepth16Unorm;
             case RHI_FORMAT_D32_SFLOAT:          return MTLPixelFormatDepth32Float;
-            case RHI_FORMAT_D24_UNORM_S8_UINT:   return MTLPixelFormatDepth24Unorm_Stencil8;
+            case RHI_FORMAT_D24_UNORM_S8_UINT:
+// Apple GPUs (A/M series) have no 24-bit depth + stencil: the iPhoneOS SDK does
+// not even declare MTLPixelFormatDepth24Unorm_Stencil8. 32-bit float depth is the
+// closest depth+stencil that exists on iOS.
+#if ZENGINE_METAL_IOS
+                return MTLPixelFormatDepth32Float_Stencil8;
+#else
+                return MTLPixelFormatDepth24Unorm_Stencil8;
+#endif
             case RHI_FORMAT_D32_SFLOAT_S8_UINT:  return MTLPixelFormatDepth32Float_Stencil8;
             default:                             return MTLPixelFormatRGBA8Unorm;
         }
@@ -1365,7 +1373,15 @@ void MetalRHI::CreateGlobalImage(RHIImage*&      image,
     descriptor.height           = static_cast<NSUInteger>(texture_image_height);
     descriptor.mipmapLevelCount = static_cast<NSUInteger>(miplevels > 0 ? miplevels : 1);
     descriptor.usage            = MTLTextureUsageShaderRead;
+// MTLStorageModeManaged is macOS-only (discrete VRAM needing explicit
+// synchronisation). iOS has unified memory, so Shared is the only mode that both
+// CPU and GPU can see. Nothing here calls synchronizeResource / didModifyRange,
+// so the switch needs no extra sync on the iOS side.
+#if ZENGINE_METAL_IOS
+    descriptor.storageMode      = MTLStorageModeShared;
+#else
     descriptor.storageMode      = MTLStorageModeManaged;
+#endif
 
     id<MTLTexture> texture = [m_Device newTextureWithDescriptor:descriptor];
     [descriptor release];
@@ -1453,7 +1469,15 @@ void MetalRHI::CreateCubeMap(RHIImage*&           image,
     descriptor.mipmapLevelCount = generate_mips ? requested_mips : 1u;
     descriptor.usage = generate_mips ? (MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite)
                                      : MTLTextureUsageShaderRead;
+// MTLStorageModeManaged is macOS-only (discrete VRAM needing explicit
+// synchronisation). iOS has unified memory, so Shared is the only mode that both
+// CPU and GPU can see. Nothing here calls synchronizeResource / didModifyRange,
+// so the switch needs no extra sync on the iOS side.
+#if ZENGINE_METAL_IOS
+    descriptor.storageMode      = MTLStorageModeShared;
+#else
     descriptor.storageMode      = MTLStorageModeManaged;
+#endif
 
     id<MTLTexture> texture = [m_Device newTextureWithDescriptor:descriptor];
     [descriptor release];
@@ -2042,7 +2066,10 @@ void MetalRHI::CmdBeginRenderPassPFN(RHICommandBuffer*              commandBuffe
         const bool is_depth = render_pass != nullptr && i < render_pass->attachments.size()
                                   ? render_pass->attachments[i].isDepthStencil
                                   : (texture.pixelFormat == MTLPixelFormatDepth32Float ||
+// The 24-bit depth+stencil enum does not exist on iOS (see ToMetalFormat).
+#if !ZENGINE_METAL_IOS
                                      texture.pixelFormat == MTLPixelFormatDepth24Unorm_Stencil8 ||
+#endif
                                      texture.pixelFormat == MTLPixelFormatDepth32Float_Stencil8);
 
         RHIAttachmentLoadOp  load_op  = RHI_ATTACHMENT_LOAD_OP_LOAD;
@@ -3058,7 +3085,23 @@ bool MetalRHI::PrepareBeforePass(std::function<void()> passUpdateAfterRecreateSw
     HostView* view = m_SwapchainView != nullptr ? (__bridge HostView*)m_SwapchainView : nil;
     if (view != nil)
     {
+// UIView has no -convertRectToBacking: (that is AppKit/NSView). The scale source
+// MUST be the same one SyncLayerMetrics uses -- it is what actually writes
+// m_SwapchainExtent -- otherwise `resized` stays true every frame and the
+// swapchain is recreated forever.
+#if ZENGINE_METAL_IOS
+        CGFloat backing_scale = m_MetalLayer.contentsScale > 0.0 ? m_MetalLayer.contentsScale
+                                                                : [UIScreen mainScreen].nativeScale;
+        if (backing_scale <= 0.0)
+        {
+            backing_scale = 1.0;
+        }
+        const CGRect backing = CGRectMake(0.0, 0.0,
+                                          view.bounds.size.width  * backing_scale,
+                                          view.bounds.size.height * backing_scale);
+#else
         const NSRect backing = [view convertRectToBacking:view.bounds];
+#endif
         const bool resized = backing.size.width <= 0.0 || backing.size.height <= 0.0 ||
                              std::fabs(backing.size.width - static_cast<double>(m_SwapchainExtent.width)) > 0.5 ||
                              std::fabs(backing.size.height - static_cast<double>(m_SwapchainExtent.height)) > 0.5;
@@ -3220,10 +3263,15 @@ void MetalRHI::ClearSwapchain()
         m_CurrentDrawable = nil;
     }
     HostView* view = m_SwapchainView != nullptr ? (__bridge HostView*)m_SwapchainView : nil;
+// UIView.layer is readonly (the view owns its layer and you cannot replace it),
+// so unlike NSView there is nothing to detach here: releasing m_MetalLayer below
+// is the whole cleanup. Assigning would not compile on iOS.
+#if !ZENGINE_METAL_IOS
     if (view != nil && view.layer == m_MetalLayer)
     {
         view.layer = nil;
     }
+#endif
     if (m_MetalLayer != nil)
     {
         [m_MetalLayer release];

@@ -327,6 +327,28 @@ add_subdirectory(3rdparty)
 # install(EXPORT ...) errors when a runtime target requires a module target
 # that wasn't yet defined.
 add_subdirectory(Source/Modules)
+
+# ---------------------------------------------------------------------------
+# iOS: no stack probing anywhere (ZEngine targets, 3rdparty and the PCH alike).
+#
+# On arm64 iOS, Clang inserts ___chkstk_darwin calls for frames >4KB. That symbol
+# lives in macOS libSystem but is NOT exported by the iOS SDK stubs, so dyld
+# rejects the binary ("Symbol not found: ___chkstk_darwin"). We ship a no-op in
+# Platform/IOS/ZChkstkDarwin.c and disable the probing instead (iOS uses kernel
+# guard pages for stack overflow detection).
+#
+# This MUST be directory-global, not per-target: ZEnginePCH is a shared
+# precompiled header, and AppleClang refuses a PCH whose stack-check setting
+# differs from the translation unit consuming it --
+#   "stack checking was enabled in precompiled file ... but is currently disabled"
+# (and the mirror error the other way round). Adding the flag to ZRuntime alone
+# broke ZPlayer; adding it to the PCH alone broke ZPlayer the other way. One
+# global switch is the only arrangement where every consumer agrees.
+# ---------------------------------------------------------------------------
+if(IOS)
+  add_compile_options(-fno-stack-check)
+endif()
+
 add_subdirectory(Source/CommonPCH)
 
 add_subdirectory(Source/Runtime)

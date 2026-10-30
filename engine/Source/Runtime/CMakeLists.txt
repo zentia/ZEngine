@@ -109,6 +109,30 @@ file(GLOB_RECURSE REGULAR_SOURCE_FILES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE
 
 if(APPLE)
     file(GLOB_RECURSE OBJC_SOURCE_FILES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/*.m" "${CMAKE_CURRENT_SOURCE_DIR}/*.mm")
+
+    # APPLE is true for iOS as well as macOS, so the glob above also picks up the
+    # macOS (AppKit) sources. On iOS the HOST owns the drawable -- UIKit UIView,
+    # see WindowSystem.cpp: CreatePlatformApplication() returns nullptr for
+    # Z_PLATFORM_IOS -- so Render/Platform/MacOS/*.mm must not be compiled here:
+    # they #include <Cocoa/Cocoa.h>, which does not exist in the iPhoneOS SDK.
+    # Nothing in ZRuntime includes them either (only Editor/Main/Main.cpp does,
+    # and the Editor is skipped on iOS), so dropping them cannot break the link.
+    if(IOS)
+        set(_zengine_objc_kept "")
+        set(_zengine_objc_dropped 0)
+        foreach(_src IN LISTS OBJC_SOURCE_FILES)
+            if(_src MATCHES "/Platform/MacOS/")
+                math(EXPR _zengine_objc_dropped "${_zengine_objc_dropped} + 1")
+            else()
+                list(APPEND _zengine_objc_kept "${_src}")
+            endif()
+        endforeach()
+        set(OBJC_SOURCE_FILES "${_zengine_objc_kept}")
+        message(STATUS "Runtime: iOS build -- dropped ${_zengine_objc_dropped} macOS-only ObjC++ source(s) from ZRuntime")
+        unset(_zengine_objc_kept)
+        unset(_zengine_objc_dropped)
+    endif()
+
     list(APPEND SOURCE_FILES ${OBJC_SOURCE_FILES})
 endif()
 
@@ -1295,8 +1319,11 @@ if(IOS)
     # We provide our own no-op implementation in Platform/IOS/ZChkstkDarwin.c
     # (iOS uses kernel guard pages for stack overflow detection, so explicit
     # probing is unnecessary).
-    target_compile_options(${SHARED_TARGET_NAME} PRIVATE -fno-stack-check)
-    target_compile_options(${TARGET_NAME} PRIVATE -fno-stack-check)
+    #
+    # The flag itself is applied directory-globally in engine/CMakeLists.txt, not
+    # per target: ZEnginePCH is a shared precompiled header and AppleClang rejects
+    # a PCH whose stack-check setting differs from the TU that consumes it. Per
+    # target it broke ZPlayer in one direction and the PCH in the other.
 
     # --- Link options ---
     target_link_options(${SHARED_TARGET_NAME} PRIVATE
