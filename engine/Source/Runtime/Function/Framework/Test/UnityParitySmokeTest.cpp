@@ -24,9 +24,11 @@
 //      that catches that.
 // =============================================================================
 
+#include "Runtime/Core/Math/UnityRandom.h"
 #include "Runtime/Function/Framework/Coroutine/Coroutine.h"
 #include "Runtime/Function/Framework/TagLayer/TagLayerManager.h"
 
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
@@ -474,6 +476,206 @@ namespace
               "D7", "CoroutineScheduler is registered as a system");
     }
 
+    // ---------------------------------------------------------------- E ----
+    // Random. The determinism and the int/float Range asymmetry are the two
+    // things a reimplementation gets wrong, so they get the most checks.
+    void TestRandom()
+    {
+        // -- determinism ------------------------------------------------------
+        float first_run[8];
+        float second_run[8];
+        Random::InitState(12345);
+        for (float& v : first_run)
+        {
+            v = Random::value();
+        }
+        Random::InitState(12345);
+        for (float& v : second_run)
+        {
+            v = Random::value();
+        }
+        bool identical = true;
+        for (int i = 0; i < 8; ++i)
+        {
+            if (first_run[i] != second_run[i])
+            {
+                identical = false;
+            }
+        }
+        Check(identical, "E1", "the same seed reproduces the same sequence exactly");
+
+        Random::InitState(12346);
+        const float other_seed = Random::value();
+        Check(other_seed != first_run[0], "E2", "a different seed produces a different sequence");
+
+        // Adjacent seeds must not produce correlated openings -- the classic
+        // "seed from a frame counter" trap.
+        Random::InitState(0);
+        const float seed0 = Random::value();
+        Random::InitState(1);
+        const float seed1 = Random::value();
+        Check(std::fabs(seed0 - seed1) > 0.01f, "E3", "adjacent seeds are not correlated");
+
+        // -- value() range ----------------------------------------------------
+        Random::InitState(7);
+        bool in_range = true;
+        for (int i = 0; i < 10000; ++i)
+        {
+            const float v = Random::value();
+            if (v < 0.0f || v >= 1.0f)
+            {
+                in_range = false;
+            }
+        }
+        Check(in_range, "E4", "value() stays in [0, 1) over 10000 draws");
+
+        // -- the Unity asymmetry: int excludes max, float includes it ---------
+        Random::InitState(99);
+        int int_min = 1000;
+        int int_max = -1000;
+        for (int i = 0; i < 20000; ++i)
+        {
+            const int v = Random::Range(0, 10);
+            int_min = (v < int_min) ? v : int_min;
+            int_max = (v > int_max) ? v : int_max;
+        }
+        Check(int_min == 0, "E5", "Range(0, 10) as ints reaches 0");
+        Check(int_max == 9, "E6",
+              "Range(0, 10) as ints NEVER reaches 10 -- Unity excludes the int max");
+        Check(Random::Range(5, 5) == 5, "E7", "an empty int range returns min");
+        Check(Random::Range(7, 2) == 7, "E8", "an inverted int range returns min");
+
+        Random::InitState(100);
+        bool float_in_range = true;
+        float float_max = -1000.0f;
+        for (int i = 0; i < 20000; ++i)
+        {
+            const float v = Random::Range(2.0f, 3.0f);
+            float_max = (v > float_max) ? v : float_max;
+            if (v < 2.0f || v > 3.0f)
+            {
+                float_in_range = false;
+            }
+        }
+        Check(float_in_range, "E9", "Range(2.0f, 3.0f) stays inside both bounds");
+        Check(float_max > 2.99f, "E10",
+              "Range(2.0f, 3.0f) can get arbitrarily close to 3 -- Unity INCLUDES the float max");
+        Check(std::fabs(Random::Range(4.0f, 2.0f) - 3.0f) < 10.0f, "E11",
+              "an inverted float range is swapped, not nonsense");
+
+        // -- save / restore ---------------------------------------------------
+        Random::InitState(2024);
+        for (int i = 0; i < 5; ++i)
+        {
+            Random::value();
+        }
+        const Random::State saved = Random::GetState();
+        float after_save[4];
+        for (float& v : after_save)
+        {
+            v = Random::value();
+        }
+        Random::SetState(saved);
+        bool restored = true;
+        for (float v : after_save)
+        {
+            if (Random::value() != v)
+            {
+                restored = false;
+            }
+        }
+        Check(restored, "E12", "SetState() resumes the stream exactly (one uint64 of state)");
+
+        // -- shapes -----------------------------------------------------------
+        Random::InitState(555);
+        bool sphere_inside = true;
+        for (int i = 0; i < 2000; ++i)
+        {
+            if (Random::insideUnitSphere().squaredLength() > 1.0f)
+            {
+                sphere_inside = false;
+            }
+        }
+        Check(sphere_inside, "E13", "insideUnitSphere() never leaves the unit ball");
+
+        bool circle_inside = true;
+        for (int i = 0; i < 2000; ++i)
+        {
+            if (Random::insideUnitCircle().squaredLength() > 1.0f)
+            {
+                circle_inside = false;
+            }
+        }
+        Check(circle_inside, "E14", "insideUnitCircle() never leaves the unit disc");
+
+        bool on_sphere = true;
+        for (int i = 0; i < 2000; ++i)
+        {
+            const float length = Random::onUnitSphere().length();
+            if (std::fabs(length - 1.0f) > 0.01f)
+            {
+                on_sphere = false;
+            }
+        }
+        Check(on_sphere, "E15", "onUnitSphere() is on the surface (length 1)");
+
+        bool on_circle = true;
+        for (int i = 0; i < 2000; ++i)
+        {
+            const float length = Random::onUnitCircle().length();
+            if (std::fabs(length - 1.0f) > 0.01f)
+            {
+                on_circle = false;
+            }
+        }
+        Check(on_circle, "E16", "onUnitCircle() is on the circle (length 1)");
+
+        bool unit_rotation = true;
+        for (int i = 0; i < 2000; ++i)
+        {
+            const Quaternion q = Random::rotation();
+            const float sq = q.w * q.w + q.x * q.x + q.y * q.y + q.z * q.z;
+            if (std::fabs(sq - 1.0f) > 0.01f)
+            {
+                unit_rotation = false;
+            }
+        }
+        Check(unit_rotation, "E17", "rotation() returns a unit quaternion");
+
+        // -- Chance -----------------------------------------------------------
+        Random::InitState(3);
+        Check(!Random::Chance(0.0f), "E18", "Chance(0) is never true");
+        Check(Random::Chance(1.0f), "E19", "Chance(1) is always true");
+        Check(!Random::Chance(-0.5f), "E20", "a negative probability is never true");
+        Check(Random::Chance(2.0f), "E21", "a probability above 1 is always true");
+        int trues = 0;
+        for (int i = 0; i < 20000; ++i)
+        {
+            if (Random::Chance(0.25f))
+            {
+                ++trues;
+            }
+        }
+        Check(trues > 4400 && trues < 5600, "E22",
+              "Chance(0.25) fires about a quarter of the time (measured)");
+
+        // -- no modulo bias on the low end ------------------------------------
+        // Range(0, 3) over a big sample: a `% span` implementation skews the
+        // first buckets whenever span does not divide 2^32.
+        Random::InitState(4242);
+        int buckets[3] = {0, 0, 0};
+        for (int i = 0; i < 30000; ++i)
+        {
+            ++buckets[Random::Range(0, 3)];
+        }
+        const int lowest = (buckets[0] < buckets[1]) ? buckets[0] : buckets[1];
+        const int min_bucket = (lowest < buckets[2]) ? lowest : buckets[2];
+        const int highest = (buckets[0] > buckets[1]) ? buckets[0] : buckets[1];
+        const int max_bucket = (highest > buckets[2]) ? highest : buckets[2];
+        Check(min_bucket > 9000 && max_bucket < 11000, "E23",
+              "Range(0, 3) is flat across buckets (no modulo bias)");
+    }
+
     // ---------------------------------------------------------------- B ----
     void TestWiringGate()
     {
@@ -526,6 +728,7 @@ int main()
     TestCollisionMatrix(manager);
     TestCoroutines();
     TestCoroutineWiring();
+    TestRandom();
     TestWiringGate();
 
     std::printf("\n=== %d checks, %d failures ===\n", g_Checks, g_Failures);
