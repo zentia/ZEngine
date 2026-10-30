@@ -70,6 +70,7 @@
 #include "Runtime/Function/Audio/AudioSystem.h"
 #include "Runtime/Function/Audio/Wwise/WwiseAudioSystem.h"
 #include "Runtime/Function/Network/NetworkSystem.h"
+#include "Runtime/Function/Framework/TagLayer/TagLayerManager.h"
 
 namespace
 {
@@ -203,6 +204,13 @@ void RegisterCore()
     REGISTER_SYSTEM(FileSystem);
     REGISTER_SYSTEM(AsyncReadManagerThreaded);
     REGISTER_SYSTEM(ObjectManager);
+    // Core phase, before gameplay: physics queries read the layer collision
+    // matrix and components read `layer` in their own Initialize(). Registered
+    // in RegisterCore() (not the platform pass) so RegisterRuntimeLight() --
+    // the standalone tools -- gets it too: a tool that deserialises a scene
+    // must resolve tags and layers exactly the way the editor does, or it will
+    // silently rewrite them.
+    REGISTER_SYSTEM(TagLayerManager);
 }
 
 void RegisterRuntime(PreferredRHI preferred_rhi)

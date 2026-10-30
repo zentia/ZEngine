@@ -412,6 +412,124 @@ GameObject* GameObject::FindByName(const eastl::string& name)
     return level->FindGObjectByName(name);
 }
 
+bool GameObject::SetTagByName(const eastl::string& tag)
+{
+    // 空串 = 恢复默认。Unity 的 Inspector 不允许空标签，这里同理：空标签在
+    // `CompareTag` 上是"永远不匹配"，看着像 bug。
+    if (tag.empty())
+    {
+        m_Tag = TagLayerManager::kUntagged;
+        return true;
+    }
+
+    // 未知标签要拒绝并说清楚。静默接受的话，脚本里的一个拼写错误会一直等到
+    // `CompareTag` 返回 false 才暴露，而那个现象与"对象没被找到"一模一样。
+    TagLayerManager* tags = GET_SYSTEM(TagLayerManager);
+    if (tags != nullptr && !tags->HasTag(tag))
+    {
+        LOG_WARNING(ZObject,
+                 "GameObject '{}': tag '{}' is not registered in TagLayerManager; "
+                 "keeping '{}'. Add it first or fix the spelling -- an unregistered "
+                 "tag makes every CompareTag silently false.",
+                 name.c_str(), tag.c_str(), m_Tag.c_str());
+        return false;
+    }
+
+    m_Tag = tag;
+    return true;
+}
+
+void GameObject::SetLayerIndex(int32_t layer)
+{
+    // 夹回合法范围而不是拒绝：层号是物理查询里的位下标，`1 << 47` 是 UB，
+    // 而一个"没生效"的 SetLayer 比一个"变成 Default"的 SetLayer 更难查。
+    if (layer < 0 || layer >= TagLayerManager::kLayerCount)
+    {
+        LOG_WARNING(ZObject,
+                 "GameObject '{}': layer {} out of range 0..{}; clamped to 0 (Default).",
+                 name.c_str(), layer, TagLayerManager::kLayerCount - 1);
+        m_Layer = 0;
+        return;
+    }
+    m_Layer = layer;
+}
+
+namespace
+{
+    /// 标签查询的遍历体。两张表都要看：关卡对象表 + Instantiate 出来的运行时对象
+    /// 表（Level::FindGObjectByName 同一套顺序）。
+    ///
+    /// `active_only` 对齐 Unity：`FindWithTag` / `FindGameObjectsWithTag` 只返回
+    /// **激活**对象。不过滤的话，一个"已经关掉的敌人"会被逻辑继续当成活的 ——
+    /// 而它看起来就待在场景里，因为停用的对象仍然在关卡表里。
+    template<typename Fn>
+    void ForEachGameObjectInActiveLevel(Fn&& fn)
+    {
+        Level* level = GetActiveLevel("GameObject.FindByTag");
+        if (level == nullptr)
+        {
+            return;
+        }
+
+        for (const auto& id_object_pair : level->getAllGObjects())
+        {
+            if (id_object_pair.second != nullptr)
+            {
+                fn(id_object_pair.second.get());
+            }
+        }
+        for (const auto& id_object_pair : level->GetRuntimeGObjects())
+        {
+            if (id_object_pair.second != nullptr)
+            {
+                fn(id_object_pair.second);
+            }
+        }
+    }
+}  // namespace
+
+GameObject* GameObject::FindWithTagName(const eastl::string& tag)
+{
+    if (tag.empty())
+    {
+        return nullptr;
+    }
+
+    GameObject* found = nullptr;
+    ForEachGameObjectInActiveLevel([&](GameObject* gobject) {
+        if (found != nullptr)
+        {
+            return;
+        }
+        if (gobject->IsActiveInHierarchy() && gobject->CompareTagName(tag))
+        {
+            found = gobject;
+        }
+    });
+    return found;
+}
+
+std::vector<GameObject*> GameObject::FindAllWithTagName(const eastl::string& tag)
+{
+    // std::vector 而不是 eastl::vector：ZScript::Converter 只特化了 std::vector
+    // （ScriptBinding.h），eastl 那个会撞主模板的 static_assert，编译期就红。
+    std::vector<GameObject*> out;
+    if (tag.empty())
+    {
+        // 空查询返回空，不是"全部"。返回全部会把 `if (results.length === 0)`
+        // 这条最常见的判空路径变成永远走不到 —— 而它看起来只是"这次真的没找到"。
+        return out;
+    }
+
+    ForEachGameObjectInActiveLevel([&](GameObject* gobject) {
+        if (gobject->IsActiveInHierarchy() && gobject->CompareTagName(tag))
+        {
+            out.push_back(gobject);
+        }
+    });
+    return out;
+}
+
 void GameObject::DestroyObject(GameObject* gobject)
 {
     if (gobject == nullptr)
@@ -509,6 +627,14 @@ bool GameObject::load(const GameObject& object_instance_res)
     // so components that come from the prefab are already attached and see the
     // full component set. See ExpandDefinition for the merge rules.
     m_DefinitionUrl = object_instance_res.m_DefinitionUrl;
+    m_Tag = object_instance_res.m_Tag;
+    m_Layer = object_instance_res.m_Layer;
+    if (m_Tag.empty())
+    {
+        // 老 prefab / 老场景没有这个字段。这里补默认而不是留空：空标签会让
+        // CompareTag("") 在"没设"和"设为空"之间分不出。
+        m_Tag = TagLayerManager::kUntagged;
+    }
     ExpandDefinition();
 
     // ExpandDefinition 是往末尾追加的，源文件里的顺序也未必是 Transform 打头
@@ -606,6 +732,8 @@ void GameObject::save(GameObject& out_object_instance_res)
 {
     out_object_instance_res.name = name;
     out_object_instance_res.m_DefinitionUrl = m_DefinitionUrl;
+    out_object_instance_res.m_Tag = m_Tag;
+    out_object_instance_res.m_Layer = m_Layer;
     out_object_instance_res.m_Components = m_Components;
     out_object_instance_res.m_Component.clear();
 
@@ -626,6 +754,11 @@ void GameObject::Transfer(TransferFunction& transfer)
     // predate them read back as defaults (SafeBinaryRead skips missing fields).
     transfer.Transfer(name, "m_Name");
     transfer.Transfer(m_DefinitionUrl, "m_DefinitionUrl");
+    // tag / layer。与 m_Name 同一条规则：早于这两个字段的存档读不回来，
+    // SafeBinaryRead 会保持默认值（"Untagged" / 0），所以老关卡读进来仍然是
+    // 行为正常的对象，而不是"标签为空于是每条 CompareTag 都匹配"。
+    transfer.Transfer(m_Tag, "m_Tag");
+    transfer.Transfer(m_Layer, "m_Layer");
     TransferComponents(transfer);
 }
 

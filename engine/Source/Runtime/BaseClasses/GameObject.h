@@ -5,8 +5,12 @@
 #include "Runtime/Core/Serialize/TransferFunctions/SerializeTransfer.h"
 #include "Runtime/Function/Framework/Component/Component.h"
 #include "Runtime/Function/Framework/Object/ObjectIdAllocator.h"
+#include "Runtime/Function/Framework/TagLayer/TagLayerManager.h"
+
+#include <EASTL/vector.h>
 
 #include <filesystem>
+#include <vector>
 #include <memory>
 #include <string>
 #include <unordered_set>
@@ -97,6 +101,57 @@ public:
 
     ZFUNCTION()
     const eastl::string& GetName() const { return name; }
+
+    // ---- tag / layer -------------------------------------------------------
+    //
+    // Unity 的两个"给对象分类"的维度，用途不同、不可互换：
+    //   tag  —— 一个字符串，**身份**（"Player"、"Enemy"）。查得到对象、比得出相等，
+    //           不参与物理。
+    //   layer—— 一个 0..31 的下标，**分组**（"UI"、"Water"）。不可读但极快，
+    //           物理查询和摄像机 culling 靠它做位掩码过滤。
+    //
+    // 名字表本身在 TagLayerManager（Function/Framework/TagLayer），不在对象上：
+    // 32 个层名和一份碰撞矩阵是**全项目一份**，挂在对象上会变成 N 份且会互相矛盾。
+
+    /// TS 入口 `go.tag`。默认 `"Untagged"` —— 不存空串：空串会让
+    /// `CompareTag("")` 在"没设标签"和"设了个空标签"之间分不出，于是
+    /// `FindGameObjectsWithTag("")` 会把全场对象都捞出来。
+    ZFUNCTION()
+    const eastl::string& GetTag() const { return m_Tag; }
+
+    /// 设置一个**已经存在**的标签。返回 false 表示这个标签没在 TagLayerManager
+    /// 里登记过 —— 不静默接受未知标签，否则 Inspector 的拼写错误要到
+    /// `CompareTag` 永远为 false 时才被发现，而那看起来就像"这个对象没被找到"。
+    ///
+    /// 传空串等于恢复 `"Untagged"`。
+    ZFUNCTION(Name="SetTag")
+    bool SetTagByName(const eastl::string& tag);
+
+    /// Unity 的 `CompareTag`：比名字相等，且**比 GetTag() == x 更快更安全** ——
+    /// 后者在标签不存在时静默 false，前者会（经 SetTag 的契约）保证标签存在。
+    ZFUNCTION(Name="CompareTag")
+    bool CompareTagName(const eastl::string& tag) const { return m_Tag == tag; }
+
+    /// TS 入口 `go.layer`。0 = Default。越界写会被夹回 0..31：层号是物理查询
+    /// 里的位下标，一个 47 会让后面的 `1 << layer` 变成 UB。
+    ZFUNCTION()
+    int32_t GetLayer() const { return m_Layer; }
+
+    ZFUNCTION(Name="SetLayer")
+    void SetLayerIndex(int32_t layer);
+
+    ZSCRIPTPROPERTY(Name="tag", Getter="GetTag", Setter="SetTagByName")
+    ZSCRIPTPROPERTY(Name="layer", Getter="GetLayer", Setter="SetLayerIndex")
+
+    /// TS 入口 `GameObject.FindWithTag(tag)`：第一个带这个标签的**激活**对象。
+    /// 找不到返回 nullptr。O(n)，同 `Find` —— 别放进 Update。
+    ZFUNCTION(Name="FindWithTag")
+    static GameObject* FindWithTagName(const eastl::string& tag);
+
+    /// TS 入口 `GameObject.FindGameObjectsWithTag(tag)`：全部带这个标签的对象。
+    /// 顺序不保证（底层是哈希表），需要稳定顺序自己排。
+    ZFUNCTION(Name="FindGameObjectsWithTag")
+    static std::vector<GameObject*> FindAllWithTagName(const eastl::string& tag);
 
     const eastl::string& getDefinitionUrl() const { return m_DefinitionUrl; }
 
@@ -291,6 +346,14 @@ public:
 protected:
     GObjectID m_Id {k_invalid_gobject_id};
     eastl::string m_DefinitionUrl;
+
+    // Tag / layer. Serialized in Transfer() next to m_Name.
+    //
+    // 默认 "Untagged" / 0（Default），不是空串 / -1：老存档没有这两个字段，
+    // SafeBinaryRead 会保持默认，一个 2019 年的关卡读进来必须仍然是个
+    // 行为正常的对象，而不是"标签为空所以每条 CompareTag 都匹配"。
+    eastl::string m_Tag {TagLayerManager::kUntagged};
+    int32_t m_Layer {0};
 
     // we have to use the ReflectionPtr due to that the components need to be reflected
     // in editor, and it's polymorphism

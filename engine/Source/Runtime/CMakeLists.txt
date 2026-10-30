@@ -780,6 +780,13 @@ list(REMOVE_ITEM SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/AI/Test/AISmokeTest.cpp")
 list(REMOVE_ITEM REGULAR_SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/AI/Test/AISmokeTest.cpp")
+# Unity-parity smoke-test main carve-out. Both lists, for the same reason:
+# /WHOLEARCHIVE is on for reflection auto-registration, so a main() left inside
+# ZRuntime becomes LNK2005 in every consumer executable.
+list(REMOVE_ITEM SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Framework/Test/UnityParitySmokeTest.cpp")
+list(REMOVE_ITEM REGULAR_SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Framework/Test/UnityParitySmokeTest.cpp")
 # RenderGraph compiler smoke-test main carve-out. The graph compiler itself
 # (Function/Render/Graph/*.cpp) IS part of ZRuntime -- only the test's main()
 # has to stay out of the whole-archive.
@@ -2266,6 +2273,12 @@ add_subdirectory(Core/Base/Test)
 # Derived Data Cache smoke test (texture cook P3). Own main(); carved out of
 # the ZRuntime glob above and built only when ZENGINE_BUILD_DDC_SMOKE_TEST=ON.
 add_subdirectory(Resource/Cache/Test)
+
+# Unity API parity smoke test (tags / layers / collision matrix / ...). Own
+# main(); carved out of the ZRuntime glob above and built only when
+# ZENGINE_BUILD_UNITY_PARITY_SMOKE_TEST=ON. Pure C++ plus a source-level wiring
+# gate -- headless on every host.
+add_subdirectory(Function/Framework/Test)
 
 # AI layer smoke test. Own main(); carved out of the ZRuntime glob above and
 # built only when ZENGINE_BUILD_AI_SMOKE_TEST=ON. Runs headless -- no world,
