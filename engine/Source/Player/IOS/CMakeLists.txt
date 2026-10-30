@@ -5,12 +5,18 @@
 # -G Xcode 时还能拿到可以 Archive / 上传的 Xcode 工程。这正是"iOS 出包链"要的
 # 产物，比手写 .xcodeproj 可靠得多（手写工程在 CMake 之外还要再维护一份源列表）。
 #
-# 手动跑：
-#   cmake -S engine -B build/ios -G Xcode \
-#         -DCMAKE_TOOLCHAIN_FILE=engine/toolchain/ios.cmake \
-#         -DZENGINE_IOS_DEVELOPMENT_TEAM=XXXXXXXXXX
-#   cmake --build build/ios --config Release
+# 手动跑（2026-10-30 从零实跑通过，CI 里 .github/workflows/build_ios.yml 用的就是这两条）：
+#   cmake -S . -B build/ios -G Ninja \
+#         -DCMAKE_BUILD_TYPE=Release \
+#         -DCMAKE_TOOLCHAIN_FILE=$PWD/engine/toolchain/ios.cmake
+#   ninja -C build/ios ZGameIOS
 #
+# ⚠️ -S 是**仓库根**（"."），不是 engine/。子模块只在工程根的 CMakeLists.txt 里登记，
+#    传 -S engine 会以 "GPUSpine submodule missing" 失败，并建议你跑一条对未登记路径
+#    必然失败的 git submodule update --init，极易误判成"仓库坏了"。
+# ⚠️ Ninja 生成器不做 codesign，所以没有签名证书也能编出 .app（只是装不上设备）。
+#    要 Archive 上架就换成 -G Xcode 并给 -DZENGINE_IOS_DEVELOPMENT_TEAM=...。
+
 # zbuild_ios.py 封装了上面两步 + 项目内容 staging + xcodebuild archive。
 # =============================================================================
 
