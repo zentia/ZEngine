@@ -576,3 +576,36 @@ TypeScriptComponent::EnumerateLiveFields() const
 
     return sm->EnumerateInstanceFields(static_cast<pesapi_value_ref>(m_JsInstance));
 }
+
+// --- Unity's Invoke family --------------------------------------------------
+//
+// Pure forwarding: `Behaviour` owns the state and the delivery hook, and is
+// also the base of AIControllerComponent / RenderCamera. The ZFUNCTIONs live
+// here because `Behaviour` cannot be published as a script class -- see the
+// note in Behaviour.h. ScriptEnv's `Behaviour.prototype` shim routes
+// `this.Invoke(...)` back to these.
+
+void TypeScriptComponent::Invoke(const eastl::string& methodName, float time)
+{
+    Behaviour::Invoke(methodName, time);
+}
+
+void TypeScriptComponent::InvokeRepeating(const eastl::string& methodName, float time, float repeatRate)
+{
+    Behaviour::InvokeRepeating(methodName, time, repeatRate);
+}
+
+void TypeScriptComponent::CancelInvoke(const eastl::string& methodName)
+{
+    Behaviour::CancelInvoke(methodName);
+}
+
+void TypeScriptComponent::CancelAllInvokes()
+{
+    Behaviour::CancelAllInvokes();
+}
+
+bool TypeScriptComponent::IsInvoking(const eastl::string& methodName)
+{
+    return Behaviour::IsInvoking(methodName);
+}

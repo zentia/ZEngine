@@ -91,6 +91,13 @@ namespace
         "    OnStart(): void;",
         "    OnUpdate(delta_time: number): void;",
         "    OnDestroy(): void;",
+        // Unity 的 Invoke 家族。签名必须与 ScriptEnv 里
+        // `g.Behaviour.prototype.*` 的转发一致；实现在 TypeScriptComponent 上
+        // （Behaviour 不能作为绑定类发布，否则与合成类重名）。
+        "    Invoke(methodName: string, time: number): void;",
+        "    InvokeRepeating(methodName: string, time: number, repeatRate: number): void;",
+        "    CancelInvoke(methodName: string): void;",
+        "    IsInvoking(methodName: string): boolean;",
     };
 
     ZSyntheticScriptClass g_BehaviourClass {

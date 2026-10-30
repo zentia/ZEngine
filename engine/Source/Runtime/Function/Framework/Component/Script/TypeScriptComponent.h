@@ -263,4 +263,41 @@ public:
     /// object is NOT reported as a failure: that matches Unity's SendMessage,
     /// which only complains under SendMessageOptions.RequireReceiver.
     bool InvokeMethod(const char* method_name);
+
+    // --- Unity's Invoke family ---------------------------------------------
+    //
+    // Forwarding to `Behaviour`, not declarations of their own: the timer, the
+    // cancellation bookkeeping and the delivery hook all live on the base so
+    // that AIControllerComponent / RenderCamera get them too.
+    //
+    // Why they are bound HERE and not on Behaviour: `Behaviour` is the name of
+    // the synthetic script class TS behaviours extend, so publishing the C++
+    // class would emit a duplicate `declare class Behaviour`. ScriptEnv's
+    // `Behaviour.prototype` shim turns these into `this.Invoke(...)`.
+
+    /// Call `methodName` once, `time` seconds from now. @see Behaviour::Invoke
+    ZFUNCTION()
+    void Invoke(const eastl::string& methodName, float time);
+
+    /// Call `methodName` after `time`, then every `repeatRate` seconds.
+    ZFUNCTION()
+    void InvokeRepeating(const eastl::string& methodName, float time, float repeatRate);
+
+    /// Cancel pending invocations of `methodName`; an empty name cancels all.
+    ZFUNCTION()
+    void CancelInvoke(const eastl::string& methodName);
+
+    /// Cancel everything this behaviour has scheduled.
+    ZFUNCTION()
+    void CancelAllInvokes();
+
+    /// Is there a pending invocation of `methodName`?
+    ZFUNCTION()
+    bool IsInvoking(const eastl::string& methodName);
+
+protected:
+    /// `Behaviour.Invoke` delivery: a delayed call reaches THIS instance rather
+    /// than being broadcast to every script on the GameObject, which is what
+    /// Unity's `Invoke` does (it is a MonoBehaviour method, not SendMessage).
+    bool InvokeBehaviourMethod(const char* method_name) override { return InvokeMethod(method_name); }
 };

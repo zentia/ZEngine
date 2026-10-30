@@ -27,6 +27,7 @@
 #include "Runtime/BaseClasses/GameObject.h"
 #include "Runtime/Core/Base/SystemRegistry.h"
 #include "Runtime/Core/Math/UnityRandom.h"
+#include "Runtime/Function/Framework/Component/Behaviour.h"
 #include "Runtime/Function/Framework/Coroutine/Coroutine.h"
 #include "Runtime/Function/Framework/TagLayer/TagLayerManager.h"
 #include "Runtime/Function/Physics/Jolt/Utils.h"
@@ -1024,6 +1025,197 @@ namespace
               "I17", "the .d.ts declares RaycastHit");
     }
 
+    // ---------------------------------------------------------------- J ----
+    // Invoke / InvokeRepeating / CancelInvoke.
+
+    /// A Behaviour that records what was invoked on it. Behaviours are
+    /// ZCLASS-registered objects, so the probe needs REGISTER_CLASS too -- the
+    /// same spelling ObjectLifetimeSmokeTest uses for its probes.
+    class InvokeProbe : public Behaviour
+    {
+        REGISTER_CLASS(InvokeProbe)
+
+    public:
+        eastl::vector<eastl::string> calls;
+
+    protected:
+        bool InvokeBehaviourMethod(const char* method_name) override
+        {
+            calls.emplace_back(method_name);
+            return true;
+        }
+    };
+
+    /// Drive the scheduler for `seconds` in `step` chunks, the way a real frame
+    /// would. Both arguments go in as the scaled delta so WaitForSeconds (which
+    /// is scaled, like Unity's Invoke) is what is being measured.
+    void Advance(float seconds, float step)
+    {
+        CoroutineScheduler* scheduler = GET_SYSTEM(CoroutineScheduler);
+        const int steps = static_cast<int>(seconds / step + 0.5f);
+        for (int i = 0; i < steps && scheduler != nullptr; ++i)
+        {
+            scheduler->TickUpdate(step, step);
+        }
+    }
+
+    void TestInvokes()
+    {
+        CoroutineScheduler* scheduler = GET_SYSTEM(CoroutineScheduler);
+        Check(scheduler != nullptr, "J0", "CoroutineScheduler is reachable");
+        if (scheduler == nullptr)
+        {
+            return;
+        }
+        scheduler->StopAll();
+
+        InvokeProbe probe;
+        Check(!probe.IsInvoking("Later"), "J1", "a fresh Behaviour is invoking nothing");
+
+        // Rejected input must not queue anything: a queued "invoke" with a
+        // nonsense delay is worse than a refused one, because it fires later
+        // from a call site the author has already forgotten.
+        probe.Invoke("Later", 0.f);
+        probe.Invoke("Later", -1.f);
+        probe.Invoke("", 1.f);
+        probe.InvokeRepeating("Later", 0.1f, 0.f);
+        Check(scheduler->GetRunningCount() == 0, "J2", "a bad delay / rate queues nothing");
+        Check(!probe.IsInvoking("Later"), "J3", "and IsInvoking stays false");
+
+        probe.Invoke("Later", 0.25f);
+        Check(probe.IsInvoking("Later"), "J4", "Invoke queues the call");
+        Check(!probe.IsInvoking("Other"), "J5", "under its own name only");
+
+        Advance(0.2f, 0.1f);
+        Check(probe.calls.empty(), "J6", "nothing fires before the delay");
+        Check(probe.IsInvoking("Later"), "J7", "and it is still pending");
+
+        Advance(0.1f, 0.1f);
+        Check(probe.calls.size() == 1 && probe.calls[0] == "Later", "J8", "it fires once, on time");
+        Check(!probe.IsInvoking("Later"), "J9", "and is no longer pending afterwards");
+
+        // --- repeating ------------------------------------------------------
+        probe.calls.clear();
+        scheduler->StopAll();
+        probe.InvokeRepeating("Tick", 0.1f, 0.1f);
+        Check(probe.IsInvoking("Tick"), "J10", "InvokeRepeating is pending");
+        Advance(1.0f, 0.1f);
+        Check(probe.calls.size() == 10, "J11", "1.0s at 0.1s intervals fires 10 times");
+
+        const std::size_t after_second = probe.calls.size();
+        probe.CancelInvoke("Tick");
+        Check(!probe.IsInvoking("Tick"), "J12", "CancelInvoke clears it");
+        Advance(1.0f, 0.1f);
+        Check(probe.calls.size() == after_second, "J13", "and it stops firing");
+
+        // --- cancel one of two ---------------------------------------------
+        probe.calls.clear();
+        scheduler->StopAll();
+        probe.InvokeRepeating("A", 0.1f, 0.2f);
+        probe.InvokeRepeating("B", 0.1f, 0.2f);
+        probe.CancelInvoke("A");
+        Check(!probe.IsInvoking("A"), "J14", "cancelling by name drops only that name");
+        Check(probe.IsInvoking("B"), "J15", "and leaves the other running");
+        Advance(1.0f, 0.1f);
+        Check(probe.calls.size() >= 4, "J16", "the survivor keeps firing");
+        for (const eastl::string& call : probe.calls)
+        {
+            Check(call == "B", "J17", "and only the survivor's method is delivered");
+        }
+
+        // --- cancel everything ---------------------------------------------
+        probe.calls.clear();
+        scheduler->StopAll();
+        probe.InvokeRepeating("A", 0.1f, 0.2f);
+        probe.InvokeRepeating("B", 0.1f, 0.2f);
+        // Unity: CancelInvoke() with no argument cancels all. pesapi cannot
+        // express "no argument", so the empty string is that spelling.
+        probe.CancelInvoke("");
+        Check(!probe.IsInvoking("A") && !probe.IsInvoking("B"), "J18", "CancelInvoke(\"\") cancels all");
+        Check(scheduler->GetRunningCount() == 0, "J19", "and the scheduler is empty");
+        Advance(1.0f, 0.1f);
+        Check(probe.calls.empty(), "J20", "so nothing is delivered");
+
+        // --- a destroyed Behaviour cancels ----------------------------------
+        scheduler->StopAll();
+        {
+            InvokeProbe temp;
+            temp.InvokeRepeating("Later", 0.1f, 0.1f);
+            Check(scheduler->GetRunningCount() == 1, "J21", "a pending invoke is running");
+        }
+        // The destructor must cancel: a routine that outlives its Behaviour
+        // would call into freed memory on the very next frame.
+        Check(scheduler->GetRunningCount() == 0, "J22", "destroying the Behaviour cancels it");
+    }
+
+    void TestInvokeWiring()
+    {
+        const std::string behaviour_header =
+            ReadFile("Source/Runtime/Function/Framework/Component/Behaviour.h");
+        Check(!behaviour_header.empty(), "K0", "Behaviour.h is readable");
+        Check(CountOccurrences(behaviour_header, "void Invoke(") >= 1, "K1", "Invoke is declared");
+        Check(CountOccurrences(behaviour_header, "InvokeRepeating") >= 1, "K2", "InvokeRepeating is declared");
+        Check(CountOccurrences(behaviour_header, "CancelInvoke") >= 1, "K3", "CancelInvoke is declared");
+        Check(CountOccurrences(behaviour_header, "IsInvoking") >= 1, "K4", "IsInvoking is declared");
+        // The trap: `Behaviour` is ALSO the name of the synthetic script class
+        // TS behaviours extend. Publishing the C++ class emits a second
+        // `declare class Behaviour` and tsc fails on the duplicate identifier,
+        // which is a user-project compile error with nothing pointing at the
+        // cause. The ZFUNCTIONs must live on TypeScriptComponent instead.
+        // "ZFUNCTION()" with the parens: the word also appears in the comment
+        // that explains why it must not, and a grep that cannot tell the two
+        // apart reports a violation that does not exist.
+        Check(CountOccurrences(behaviour_header, "ZFUNCTION()") == 0,
+              "K4b", "Behaviour itself is NOT published as a script class");
+
+        const std::string ts_header_check =
+            ReadFile("Source/Runtime/Function/Framework/Component/Script/TypeScriptComponent.h");
+        Check(CountOccurrences(ts_header_check, "ZFUNCTION") >= 5,
+              "K4c", "the Invoke family is published on TypeScriptComponent");
+        Check(CountOccurrences(ts_header_check, "void Invoke(const eastl::string& methodName, float time)") >= 1,
+              "K4d", "with Unity's argument order");
+
+        const std::string binding_source_check =
+            ReadFile("Source/Runtime/Scripting/Binding/ScriptBinding.cpp");
+        Check(CountOccurrences(binding_source_check, "Invoke(methodName: string, time: number)") >= 1,
+              "K4e", "the .d.ts Behaviour block declares Invoke");
+        Check(CountOccurrences(binding_source_check, "CancelInvoke(methodName: string)") >= 1,
+              "K4f", "and CancelInvoke");
+
+        const std::string env_source = ReadFile("Source/Runtime/Scripting/Wrapper/ScriptEnv.cpp");
+        Check(!env_source.empty(), "K4g", "ScriptEnv.cpp is readable");
+        // The declaration alone is a lie: without the prototype forwarding,
+        // `this.Invoke(...)` type-checks and then throws at runtime.
+        Check(CountOccurrences(env_source, "Behaviour.prototype.Invoke") >= 1,
+              "K4h", "the JS Behaviour prototype forwards Invoke to the component");
+        Check(CountOccurrences(env_source, "Behaviour.prototype.CancelInvoke") >= 1,
+              "K4i", "and CancelInvoke");
+
+        const std::string behaviour_source =
+            ReadFile("Source/Runtime/Function/Framework/Component/Behaviour.cpp");
+        Check(!behaviour_source.empty(), "K5", "Behaviour.cpp is readable");
+        // The point of the design: the timer is a COROUTINE, so it is driven by
+        // Application's scheduler and not by Behaviour::Tick -- which two of the
+        // three Behaviour subclasses override and would silently break.
+        Check(CountOccurrences(behaviour_source, "CoroutineScheduler") >= 4,
+              "K6", "invokes are scheduled, not ticked by the component");
+        Check(CountOccurrences(behaviour_source, "scheduler->Start(") >= 2,
+              "K7", "both the one-shot and the repeating path start a routine");
+        Check(CountOccurrences(behaviour_source, "FireInvoke") >= 3,
+              "K8", "both routines actually deliver");
+        Check(CountOccurrences(behaviour_source, "SendMessageByName") >= 1,
+              "K9", "delivery falls back to SendMessage for non-script Behaviours");
+
+        const std::string ts_header2 =
+            ReadFile("Source/Runtime/Function/Framework/Component/Script/TypeScriptComponent.h");
+        Check(CountOccurrences(ts_header2, "InvokeBehaviourMethod") >= 1,
+              "K10", "a script component delivers to its own JS instance");
+
+        const std::string reg = ReadFile("Source/Runtime/RegisterRuntime.cpp");
+        Check(CountOccurrences(reg, "REGISTER_SYSTEM(CoroutineScheduler)") >= 1,
+              "K11", "the scheduler is registered, so GET_SYSTEM finds it");
+    }
+
     // ---------------------------------------------------------------- B ----
     void TestWiringGate()
     {
@@ -1089,6 +1281,13 @@ int main()
     // the debug renderer, and TagLayerManager::Initialize just seeds built-ins.
     SystemRegistry::GetInstance().RegisterSystem(new PhysicsManager());
 
+    // Behaviour.Invoke resolves its timer through GET_SYSTEM(CoroutineScheduler),
+    // so the registry has to hold one -- the coroutine group ticks a local
+    // instance and never publishes it.
+    CoroutineScheduler* invoke_scheduler = new CoroutineScheduler();
+    SystemRegistry::GetInstance().RegisterSystem(invoke_scheduler);
+    Check(invoke_scheduler->Initialize(), "A0d", "the registered coroutine scheduler is initialized");
+
 #if defined(_MSC_VER) && defined(_DEBUG)
     _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE | _CRTDBG_MODE_DEBUG);
     _CrtSetReportFile(_CRT_ASSERT, _CRTDBG_FILE_STDERR);
@@ -1118,6 +1317,8 @@ int main()
     TestHierarchyWiring();
     TestPhysicsQueries();
     TestPhysicsWiring();
+    TestInvokes();
+    TestInvokeWiring();
     TestWiringGate();
 
     std::printf("\n=== %d checks, %d failures ===\n", g_Checks, g_Failures);

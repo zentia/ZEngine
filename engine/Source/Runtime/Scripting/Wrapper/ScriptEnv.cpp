@@ -361,6 +361,29 @@ void ScriptEnv::InstallConsoleAndDebugGlobals()
         "  g.Behaviour.prototype.OnStart = function() {};"
         "  g.Behaviour.prototype.OnUpdate = function(dt) {};"
         "  g.Behaviour.prototype.OnDestroy = function() {};"
+        // Unity 的 `Invoke` 家族：TS 侧写 `this.Invoke(...)`，这里转发到
+        // `component`（TypeScriptComponent 上绑定的原生方法）。
+        //
+        // 为什么不直接把 ZFUNCTION 打在 C++ 的 Behaviour 上：那个名字已经属于
+        // 合成脚本类 g_BehaviourClass（提供 gameObject / transform / component），
+        // 再发布一次会生成第二个 `declare class Behaviour`，tsc 报重复标识符
+        // （ReflectionCodegenSmokeTest 的 BEHAVIOUR 门就是抓这个的）。
+        //
+        // `component` 由 TypeScriptComponent::BindAndAwake 在 OnAwake 之前挂上，
+        // 所以用户代码跑到这里时它一定在；仍做一次判空，免得构造期误用变成
+        // "undefined is not an object" 这种没有任何上下文的报错。
+        "  g.Behaviour.prototype.Invoke = function(name, t) {"
+        "    if (this.component) this.component.Invoke(name, t);"
+        "  };"
+        "  g.Behaviour.prototype.InvokeRepeating = function(name, t, r) {"
+        "    if (this.component) this.component.InvokeRepeating(name, t, r);"
+        "  };"
+        "  g.Behaviour.prototype.CancelInvoke = function(name) {"
+        "    if (this.component) this.component.CancelInvoke(name === undefined ? '' : name);"
+        "  };"
+        "  g.Behaviour.prototype.IsInvoking = function(name) {"
+        "    return this.component ? this.component.IsInvoking(name) : false;"
+        "  };"
         // （P8 的 __zhmr_native_* / require 入口不在这里 —— 它们是真正的 native
         //   函数，见下面 InstallConsoleAndDebugGlobals 尾部。早先这里写成了纯 JS
         //   存根，只往 JS 侧的普通对象里塞回调，从不回调 C++ ⇒ m_HmrStates 恒空，
