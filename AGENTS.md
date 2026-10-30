@@ -2978,9 +2978,14 @@ ZEngine 的 `ParticlePass` 与 Unity 侧共用同一份发射 / 曲线 / 拼包�
 - **它已经是真正的子模块**（`https://github.com/zentia/GPUParticle.git`），不是
   in-tree 目录：改核心要**先**在 `engine/Libraries/GPUParticle` 里提交推送，再回
   ZEngine 更新 submodule 指针，否则 ZEngine 侧永远拉不到你的改动。
-- C# 镜像在 `Runtime/CSharp/`（netstandard2.1，整目录可拷进 Unity Assets），
-  跨语言对拍 `ctest -R ParticleGpuCSharpParityTest`（C++ 落盘 → C# 重算 →
-  逐字段比，当前 4622 项一致）。改任何核心公式/布局都要跑它。
+- ~~C# 镜像在 `Runtime/CSharp/`~~ **2026-10-30 已删**（GPUParticle 与 GPUSpine 都删了）。
+  原因：Unity 侧的导入器/运行时改成引擎内 C++，C# 镜像不在任何 ship 路径上。
+  跨端一致性现在靠**同一个子模块 = 同一份代码**结构性保证，不靠对拍。
+  公式层（`shader/particle_sim.h` / `shader/spine_skinning.h`）也在子模块里，
+  `engine/shader/include/` 下那两个只是**转发头**，别往里加公式。
+  改核心公式后要跑的是 core 自己的测试（`ctest -R ParticleGpu`）。
+  （老教训仍然有效：出生位置不能逐位比，单精度 sqrt 允许 1 ulp；uint 运算必须
+  unchecked，随机器依赖溢出 wrap。）
 - 本仓库根 `.gitignore:312` 的 `*~` 会静默吞掉任何 `Tests~` 目录 —— GPUParticle
   的测试就这么丢过一次（`git add -f` 才进来）。新库的 `Tests~` 要留意。
 
@@ -3049,11 +3054,11 @@ ZEngine 的 `ParticlePass` 与 Unity 侧共用同一份发射 / 曲线 / 拼包�
 | P6 | done   | Hot reload of live `TypeScriptComponent` instances + Project-window double-click -> VSCode. `ScriptingManager` got a generic observer hook (`AddModuleReloadObserver`/`RemoveModuleReloadObserver`/`NotifyModuleReloaded`); `ReloadModule` fires it on success after `ScriptEnv::ReloadModule` finishes. Each `TypeScriptComponent` subscribes once at the end of `BindAndAwake` (so unbound components don't pay) and unsubscribes in `TearDown`/dtor; the callback filters by `m_module_id` and on a match just calls `BindAndAwake()` again -- which itself starts with `if (m_js_instance) TearDown();`, so OnDestroy(old) -> DestroyInstance -> CreateInstance(new) -> OnAwake -> OnStart all happen in one place. State is intentionally NOT preserved across reload (matches Unity MonoBehaviour); per-instance `m_serialized_fields` overrides deferred to P7. `NotifyModuleReloaded` snapshots the observer list under a mutex before iterating, so re-entrant subscribe/unsubscribe from inside a callback is safe. Cold-start batch `LoadModule` does NOT fire the observer (no components have bound yet). Added `EditorUtility::openInExternalEditor(path)` with Win/macOS impls: tries `ZENGINE_EXTERNAL_EDITOR` env override first, then `code` (Windows: `ShellExecuteW(L"open", L"code", ...)` resolves via PATH+PATHEXT to `code.cmd`; macOS: `open -a "Visual Studio Code"`), falling back to OS file association. `project_window.cpp` double-click on `.ts/.tsx/.js/.json` now routes here instead of `revealInFinder`. Smoke test on `I:\ZEngineDemo`: editing `Hello.ts` while editor runs produces `[ZTSC] Compiled module updated` -> `[ZScripting] hot-reloading module: Hello` -> `module unloaded: Hello` -> `module loaded: Hello` in BqLog within ~600ms, editor stays at 60 FPS. |
 | P7 | done   | Per-instance script field overrides (`[SerializeField]` analogue). Storage: `std::vector<eastl::string> m_serialized_fields` flat alternating `[k0,v0,...]` (the only `SerializeTraits`-supported shape - no `pair<eastl::string,eastl::string>` path). `TypeScriptComponent` got `Get/Set/Remove/CountSerializedField`, `ApplySerializedFields` (called between `CreateInstance` and `OnAwake` in `BindAndAwake`, so values are reapplied on every cold-load AND every hot-reload), `LiveSetField` (Inspector edits write both to `m_serialized_fields` and live JS), and `EnumerateLiveFields` -> Inspector. Type coercion lives JS-side: `__zApplyField(instance, key, valueStr)` reads `typeof instance[key]` set by the field-initialiser and routes to `parseFloat`/`==='true'`/`String()` accordingly. `__zEnumerateFields` returns own-enumerable, non-function, non-`_`/`$`-prefixed properties packed as `name\u0001type\u0001value` records joined by `\u0002` (control chars never collide with JS identifiers, simpler than array marshalling). Inspector renders `InputDouble`/`Checkbox`/`InputText` per field with `EnterReturnsTrue` (no every-frame writeback); unbound components show stored overrides read-only. Hot-reload preservation (key user-visible difference vs P6 stateless rebuild): authoring data persists, runtime state still drops -- matches Unity Editor. Smoke: `I:\ZEngineDemo\Scripts\P7Smoke.ts` (`speed:number`, `enabled:boolean`, `label:string`, `_ticks:number`-private). Inspector lists 3 rows (filtered `_ticks`); edits round-trip through scene save/load AND through .ts hot-reload. Object/array fields out of scope (return false, log WARN). |
 
-(P8 is intentionally absent from this table -- the
-`TYPESCRIPT_SCRIPTING_DESIGN.md` plan ends at P7. The historical
-"P5..P8" wording in `inspector_window.cpp:5404` is pre-merge and
-predates the AssetRegistry-persistence work being split out into
-its own track below.)
+(The historical "P5..P8" wording in `inspector_window.cpp:5404` is pre-merge and
+predates the AssetRegistry-persistence work being split out into its own track
+below -- it does not refer to the P8 below.)
+
+| P8 | done   | HMR（Hot Module Replacement）：模块顶层用 IIFE 注入的 `module.hot` 自选 `accept()` / `accept(cb)` / `dispose(cb)` / `decline()`。⚠️ 这四个入口必须是 **native** 函数（`pesapi_create_function` 注册到 globalThis 的 `__zhmr_native_accept/dispose/decline` + `__zhmr_require`）—— 早先写成纯 JS 存根，只往 JS 对象里塞，从不回调 C++，`m_HmrStates` 恒空，全程"接上了但没生效"。`require` 同时第一次真正可用（IIFE 把它声明成局部 `var`，相对说明符按当前模块目录解析，并把 parent→child 边记进 `m_ModuleDeps`）。`ScriptEnv::ReloadModule` 返回 `HmrReloadResult{ok, hot_replaced, reloaded}`：cascade = 被改模块 ∪ 传递依赖它的模块（BFS 序）；**全 accept 且无 decline** 才走热路径，否则整条回落 P6 全量重建（不做部分热替换）。热路径**不通知** P6 观察者 ⇒ `TypeScriptComponent` 不重建 ⇒ 运行时状态保留 —— 这是与 P6 唯一的用户可见差别。三个坑：①判定必须在**重新求值之后**按新代码的声明做（求值前清零 `accepted/declined`），否则"改成 decline"静默失效；②缓存要在 cascade 顺序里**边求值边换**，否则 parent 重新求值时 `require` 命中的还是旧 child ⇒ 半新半旧；③`TakeHmrCallbacks` 必须先把旧回调摘走再求值，否则新代码重新登记时会释放一份我们还持着的 ref（双释放）。验证 `ScriptHmrSmokeTest` 57 checks / 0 failures。 |
 
 ### TypeScript editor layer (`doc/editor/EDITOR_TYPESCRIPT_LAYER.md`)
 
@@ -3966,114 +3971,3 @@ CMake 4.x. MIUI/HyperOS rejects `adb install -g`
 (`INSTALL_GRANT_RUNTIME_PERMISSIONS`) and, once the package is gone, plain
 `adb install` (`INSTALL_FAILED_USER_RESTRICTED`) — 开发者选项 → USB 安装 must be
 on, and the script installs via `adb push` + `pm install --force-queryable`.
-
-### 2.45 CI：每个交叉编译平台都要有自己的 job
-
-`.github/workflows/` 里 `build_linux` / `build_macos` / `build_windows` 全是**宿主**平台，
-`smoke_tests.yml` 是 Windows-only。也就是说 **iOS / Android / OHOS 的源码从来没被 CI 编译过**，
-唯一会去编它们的人，是机器上恰好装了对应 SDK 的开发者 —— 实际上就是没有。
-
-2026-10-29 第一次把 iOS arm64 交叉编译跑通，一次就炸出 4 个真实缺陷（PCH 栈检查标志的
-作用域、`if(APPLE)` 的 `.mm` glob 拉进 macOS AppKit 源、MetalRHI 6 处 macOS 专属 API、
-`CrashHandler.h` 的块作用域函数声明落进 `zcrash_posix`）。它们没有任何机会被别的方式发现。
-**没有 job 去编的配置，等于根本没编译过。**
-
-2026-10-30 补了 `.github/workflows/build_ios.yml`（`macos-latest` + Ninja + Release），
-细节与四条产物断言见 `doc/MOBILE_PACKAGING.md` §3.6。要点：
-
-- 定位是**编译闸门**，不是出包：不签名、不打包、不运行。Ninja 生成器不做 codesign，所以
-  公开 runner 没有证书也能编（产物装不上设备，无所谓），因此也不传
-  `-DZENGINE_IOS_DEVELOPMENT_TEAM`。
-- `cmake -S .` 必须是**仓库根**，不是 `engine/`：只有根 CMakeLists 登记了 GPUSpine /
-  GPUParticle 子模块，`-S engine` 会报 *GPUSpine submodule missing* 并建议你跑一条对未登记
-  路径必然失败的 `git submodule update --init`，看上去极像"仓库坏了"。
-- **必须装** `glslang` / `spirv-tools`：iOS 走 Metal，但内置 shader 是"宿主上编成
-  SPIR-V → SPIRV-Cross 转 MSL"。没有 glslangValidator 时 configure 只打一行
-  `skipping SPIR-V generation` 然后**静默跳过**，构建照样绿。准确的后果不是"没 shader"：
-  那批 `generated/cpp/*.h` 只是**不再重新生成**，磁盘上残留的那份继续被用（它是
-  gitignore 的构建产物，`engine/shader/CMakeLists.txt` 的 else 分支没有任何生成规则）——
-  也就是说改了 shader 源码而构建悄悄用旧的，比直接报错更难发现。
-  所以 job 里还加了一步断言：configure 日志出现该字符串就判红。
-  ⚠️ 这一条最初写反成"只装 ninja，0 次提及 glslang"——那是**假阴性**：本机 bash 的
-  `grep` 在这个环境里会静默返回空。**"grep 没匹配到"不等于"不存在"。**
-- **"编译成功"本身不是证据**，最后一步断言四件事（每条都做过正向 + 负向实跑）：`file` 是
-  `Mach-O 64-bit executable arm64`；`LC_BUILD_VERSION platform == 2`（1 表示 macOS SDK
-  漏进来了）；`nm -m | grep -c "dynamically looked up" == 0`
-  （`-Wl,-undefined,dynamic_lookup` 会把缺的符号**绑成 0**，链接期零报错、首调崩在 `0x0`；
-  该 flag 在 iOS 上是 *deprecated* 而非禁止，所以这条不是多余的）；`Info.plist` 存在。
-- 产物路径 `build/ios/engine/Source/Player/IOS/ZEngine.app/ZEngine` **故意写死**：target 名
-  是 `ZGameIOS` 而 `OUTPUT_NAME` 是 `ZEngine`，谁改了它就让 job 红，而不是静默跳过 ——
-  同 `smoke_tests.yml` 的哲学（没跑起来的测试等于没测试）。
-
-### 2.46 静默的失败分支：症状和"根本没写这段代码"一模一样
-
-2026-10-30 修 iOS 上的 `ProjectInfo` 启动失败，前后花的时间几乎全耗在两个**什么都不说**的
-分支上：
-
-1. `if (auto* cs = GET_SYSTEM(CommandSystem); cs != nullptr) { /* 写回工程路径 */ }`
-   —— 这段代码放在 `RegisterGameRuntime()` **之前**，而 `CommandSystem` 本身就是 Runtime
-   系统（`RegisterRuntime()` 才 `REGISTER_SYSTEM`），所以 `cs` 恒为 `nullptr`，
-   **整个块被静默跳过**。日志里只剩一行没头没尾的
-   `[F] Failed to initialize system 'ProjectInfo', rolling back`。
-2. `CommandSystem::Initialize()` 里无条件 `project_path = project_path_str;`，没有 `-p` 时
-   `project_path_str` 是空串，把宿主（`ZPlayer_Boot`）刚写进来的值又冲掉。同样不打日志。
-
-两条叠加的表现，和"这段代码压根没写"完全一致 —— 看日志分不出"没生效"和"没写"。
-
-规则：
-
-- **取不到东西的分支要打日志**（至少 WARNING，起不来的打 ERROR）。`nullptr` / 空串 / 早退
-  不是"正常无事发生"，它们是诊断信息。
-- 同理，**无条件覆盖**一个可能已被别人设过的字段，要想清楚并写进注释（这里是"命令行 >
-  宿主预设 > 空"，见 `CommandSystem.cpp`）。
-- 排查这类问题时，先**证明代码执行到了**：在分支里加一行带实际值的日志，比反复读代码快。
-
-配套教训：**编译得过 ≠ 起得来。** iOS 那四个运行时阻塞（UIScene 生命周期、缺 `ZEditor.ini`、
-`ProjectInfo` 工程路径、粒子纹理缺失空指针）全是编译期零报错、链接期零报错，装上才炸，
-而 CI 的编译闸门一个都发现不了（见 §2.45）。所以能真跑的地方（模拟器 / 真机）要真跑，
-别用"它编过了"代替。
-
-判别"代码到底跑没跑"在移动端尤其麻烦：沙箱里 `ps` 会报 `operation not permitted`，
-改用**崩溃报告比对**（跑前跑后各取一次 `ls -t ~/Library/Logs/DiagnosticReports/ | head -1`），
-详见 `doc/MOBILE_PACKAGING.md` §3.8。
-
-Android / OHOS 是同一个洞，目前仍然没有 job。
-
-### 2.47 体积：先拿 map，再谈裁谁
-
-2026-10-30 `ZRuntimeShared` 从 2.6 MB 涨到 8.1 MB，第一反应（包括我自己的）是"裁掉静态合入
-的模块，比如 PuertsCore"。**按链接 map 一量，PuertsCore 只有 0.01 MB** —— 猜测和真相差两个
-数量级。真实构成：
-
-| 项 | 修之前 |
-| --- | --- |
-| 引擎自身对象 | 2.31 MB |
-| spirv-cross（msl+glsl+core） | 1.90 MB |
-| PapiQuickjs | 0.76 MB |
-| GPUSpine | 0.35 MB |
-| Jolt | 0.21 MB |
-| **PuertsCore** | **0.01 MB** |
-
-而 5.5 MB 里真正能安全拿回的 3.69 MB 全在构建配置，一行业务代码都没动：
-
-- `ZENGINE_MOBILE_SIZE_OPTIMIZE` 对 iOS **默认就是 ON**，但那段 flag 判的是
-  `ANDROID OR OHOS` —— iOS 一直停在 CMake 默认的 `-O3`。补上 `-Oz` 拿回 2.0 MB `__TEXT`。
-- `-exported_symbols_list` 之后剩下的约 2 万个 LOCAL 符号吃掉 1.9 MB `__LINKEDIT`，
-  链接期 `-x` 拿回 1.7 MB。
-
-规则：
-
-- **别猜体积，生成链接 map**（`-DZENGINE_IOS_LINK_MAP_FILE=<path>`，见
-  `scripts/build_lib/ios/README.md`）。`-dead_strip` + 导出列表之下，"把 .a 大小加起来"
-  恒为高估，只有链接器保留下来的字节才算。
-- **`option(...) 默认 ON` 不等于它生效了**。判默认值的条件和判 flag 的条件是两份代码，
-  可以各说各话（这里就差了一个 `OR IOS`）。查这类问题看 flag 落在哪，不看 option 声明。
-- **符号表是体积的一部分**，别只盯 `__TEXT`。`size -m` 先看 `__LINKEDIT`。
-- **`-x`（链接期）≠ `strip -S`（post-build）**。后者重写已链接的 Mach-O，可能破坏 iOS 16+
-  dyld 要的 `LC_DYLD_INFO`；前者让链接器一次生成对。要裁符号就在链接期裁。
-- **裁模块前先确认它是不是在公开 ABI 里**：PapiQuickjs 之所以不能动，是因为
-  `CreateQjsPapiEnvRef` / `GetQjsFFIApi` 在 104 个导出符号中。导出表是判断依据，不是依赖图。
-- **只摘库不摘引用它的 TU = 制造 0 地址调用**。`MetalRHI.mm` 引用 `CompilerMSL`，摘掉
-  spirv-cross 后这些符号在 `-undefined dynamic_lookup` 下被绑成 0，调用即
-  `EXC_BAD_ACCESS at 0x0`。这条正好被 `nm -m | grep -c "dynamically looked up"` 抓到 ——
-  **那条断言不只是防漏链库，也是防"裁过头"**。
