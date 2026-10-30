@@ -41,13 +41,21 @@ public:
     eastl::string m_Guid;
 
     // Project-relative path to the user-authored source, e.g.
-    // "Scripts/Player/PlayerController.ts". Forward slashes, lower-cased on
-    // case-insensitive platforms.
+    // "Scripts/Player/PlayerController.ts". Forward slashes, ORIGINAL on-disk
+    // case.
+    //
+    // ⚠️ The case must survive: this value is serialised into
+    // script_registry.json and joined onto the project root to open the file,
+    // so on Linux/macOS (or a case-sensitive NTFS directory) folding it makes
+    // the file unreachable -- rescan() then reads that as delete+add, derives
+    // a new GUID and silently breaks every reference. Lookups go through
+    // ScriptRegistry's separate lower-cased KEY (Windows only), never through
+    // this field.
     eastl::string m_SourceRelPath;
 
     // Project-relative path to the tsc compile output, e.g.
     // "Intermediate/Scripts/Player/PlayerController.js". Empty until Phase 3
-    // wires up the TypeScriptCompiler.
+    // wires up the TypeScriptCompiler. Same case rules as m_SourceRelPath.
     eastl::string m_CompiledRelPath;
 
     // Parsed from the first `export (default )?class X extends (Behaviour|

@@ -77,8 +77,9 @@ public:
     /// Find by 32-char lowercase hex GUID. Returns nullptr if no entry exists.
     ScriptAsset* FindByGuid(const eastl::string& guid) const;
 
-    /// Find by project-relative source path (forward-slash, lower-cased on
-    /// case-insensitive platforms). Returns nullptr if no entry exists.
+    /// Find by project-relative source path. The spelling is not significant:
+    /// the argument is folded to the internal lookup key, which on Windows is
+    /// lower-cased. Returns nullptr if no entry exists.
     ScriptAsset* FindByPath(const eastl::string& source_rel_path) const;
 
     /// Snapshot of all currently-known scripts. Returned by value; cheap
@@ -145,12 +146,19 @@ private:
     /// File mtime as nanoseconds since epoch, or 0 on failure.
     static int64_t FileMTimeNs(const std::filesystem::path& abs_path);
 
-    /// Normalise a project-relative path to forward-slash, lower-cased on
-    /// Windows (which is the only platform that matters for case stability
-    /// today; the macOS/Linux build keeps original case).
+    /// The internal LOOKUP KEY for a project-relative path: forward-slash,
+    /// lower-cased on Windows.
+    ///
+    /// ⚠️ This is NOT a storable path. `ScriptAsset::m_SourceRelPath` /
+    /// `m_CompiledRelPath` hold the ORIGINAL on-disk case, because those
+    /// values get written into the registry JSON and joined onto the project
+    /// root to open the file -- on Linux/macOS the case is load-bearing.
+    /// Assigning this to either field is the bug this split exists to prevent.
     static eastl::string NormaliseRelPath(const std::filesystem::path& rel_path);
 
-    // Owning storage. Keys in m_ByPath mirror m_ByGuid->m_SourceRelPath.
+    // Owning storage. m_ByPath is keyed by the LOOKUP KEY of
+    // m_ByGuid->m_SourceRelPath (see NormaliseRelPath), not by the stored
+    // spelling.
     // We use eastl::unordered_map (not std::unordered_map) because
     // std::hash<eastl::string> is not specialised in this codebase; every
     // existing hash-keyed-by-eastl::string container uses EASTL throughout

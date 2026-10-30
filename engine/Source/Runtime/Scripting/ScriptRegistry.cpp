@@ -101,15 +101,52 @@ namespace
         return toHex64(h);
     }
 
-    // Forward-slash, plus on Windows lower-case (NTFS is case-insensitive in
-    // practice; a stable lookup key avoids "Player.ts" vs "player.ts" surprises).
-    eastl::string normaliseInternal(const std::filesystem::path& rel_path)
+    // -------------------------------------------------------------------------
+    // Two spellings of a relative script path. Keeping them apart is the whole
+    // point of the path handling in this file.
+    //
+    //   STORED -- forward slashes, ORIGINAL case. This is what lands in
+    //     ScriptAsset::m_SourceRelPath / m_CompiledRelPath, what is written
+    //     into the registry JSON, and what TypeScriptComponent joins onto the
+    //     project root in order to open the file. On a case-sensitive
+    //     filesystem (Linux / macOS, or a case-sensitive NTFS directory) the
+    //     case is load-bearing, so it must never be folded here.
+    //
+    //   KEY -- the STORED form folded to lower case, on Windows only (NTFS is
+    //     case-insensitive in practice). Used *exclusively* for m_ByPath
+    //     lookups, so "Player.ts" and "player.ts" cannot both occupy the map.
+    //     Never persisted.
+    //
+    // Before the split a single normaliseInternal() served both roles, so
+    // every path a Windows session wrote into the registry file came out
+    // lower-cased. Taking such a project to a case-sensitive filesystem then
+    // failed to open "Scripts/HostedMover.ts"; rescan() read that as
+    // delete+add, re-derived the GUID and silently broke every m_script_guid
+    // reference in the project -- no error anywhere.
+    // -------------------------------------------------------------------------
+    eastl::string toStoredRelPath(const std::filesystem::path& rel_path)
     {
-        std::string s = rel_path.generic_string();
-#if defined(_WIN32)
-        std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-#endif
+        const std::string s = rel_path.generic_string();
         return eastl::string(s.c_str(), s.size());
+    }
+
+    eastl::string toPathKey(const eastl::string& stored_rel)
+    {
+#if !defined(_WIN32)
+        return stored_rel;  // case-sensitive filesystem: key == stored form
+#else
+        eastl::string key(stored_rel);
+        for (char& c : key)
+        {
+            c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        }
+        return key;
+#endif
+    }
+
+    eastl::string toPathKey(const std::filesystem::path& rel_path)
+    {
+        return toPathKey(toStoredRelPath(rel_path));
     }
 
     bool hasSupportedScriptExtension(const std::filesystem::path& p)
@@ -245,7 +282,7 @@ ScriptAsset* ScriptRegistry::FindByPath(const eastl::string& source_rel_path) co
     // Normalise on the caller side too: callers pass paths fresh from the
     // user (drag&drop, OpenFileDialog, etc.) and shouldn't have to know
     // about our case-folding policy.
-    eastl::string key = normaliseInternal(std::filesystem::path(source_rel_path.c_str()));
+    eastl::string key = toPathKey(source_rel_path);
 
     std::lock_guard lk(m_Mutex);
     auto it = m_ByPath.find(key);
@@ -306,11 +343,14 @@ void ScriptRegistry::rescan()
         //   - new path: stash for pass 2 (we may match it to a vanished
         //     entry by content hash; only forge a new GUID if not).
         //   - old entry whose path is no longer on disk: stash as orphan.
+        // Keyed by KEY form: the same file can be spelled "Foo.ts" here and
+        // "foo.ts" in a registry written by an older (case-folding) build, and
+        // they must still compare equal on Windows.
         eastl::unordered_map<eastl::string, bool> on_disk_set;
         on_disk_set.reserve(on_disk.size());
         for (const auto& rel : on_disk)
         {
-            on_disk_set[rel] = true;
+            on_disk_set[toPathKey(rel)] = true;
         }
 
         std::vector<eastl::string> new_paths;     // on-disk, no existing entry
@@ -318,11 +358,23 @@ void ScriptRegistry::rescan()
 
         for (const auto& rel : on_disk)
         {
-            auto pit = m_ByPath.find(rel);
+            auto pit = m_ByPath.find(toPathKey(rel));
             if (pit != m_ByPath.end())
             {
                 ScriptAsset* asset = pit->second;
                 std::filesystem::path abs = m_ProjectRoot / std::filesystem::path(toStd(rel));
+
+                // Self-heal the spelling. A registry file written before the
+                // stored/key split holds lower-cased paths; adopting the
+                // on-disk spelling here is what makes such a project
+                // case-sensitive-safe again -- and it cannot change the GUID,
+                // because the GUID is derived from the KEY form (unchanged).
+                if (asset->m_SourceRelPath != rel)
+                {
+                    asset->m_SourceRelPath = rel;
+                    changed = true;
+                }
+
                 int64_t new_mtime = FileMTimeNs(abs);
                 if (new_mtime != asset->m_SourceMtimeNs)
                 {
@@ -349,7 +401,7 @@ void ScriptRegistry::rescan()
 
         for (auto& kv : m_ByGuid)
         {
-            if (on_disk_set.find(kv.second->m_SourceRelPath) == on_disk_set.end())
+            if (on_disk_set.find(toPathKey(kv.second->m_SourceRelPath)) == on_disk_set.end())
             {
                 orphan_guids.push_back(kv.first);
             }
@@ -398,12 +450,12 @@ void ScriptRegistry::rescan()
 
                         // Move the path key in m_ByPath: drop the old
                         // (now-stale) entry, insert under the new rel.
-                        m_ByPath.erase(asset->m_SourceRelPath);
+                        m_ByPath.erase(toPathKey(asset->m_SourceRelPath));
                         asset->m_SourceRelPath = rel;
                         asset->m_SourceMtimeNs = new_mtime;
                         asset->m_DefaultClassName = ParseDefaultClassName(abs);
                         asset->m_SourceContentHash = hash;
-                        m_ByPath.insert({rel, asset});
+                        m_ByPath.insert({toPathKey(rel), asset});
 
                         orphan_by_hash.erase(hit);
                         // Mark the orphan as consumed so the cleanup pass
@@ -423,11 +475,19 @@ void ScriptRegistry::rescan()
             }
 
             // Genuinely new file: derive a deterministic GUID.
-            eastl::string guid = DeterministicGuidFromPath(rel);
+            //
+            // Seeded with the KEY form, NOT the stored form. That is what
+            // makes this change non-breaking: before the stored/key split the
+            // seed was the case-folded path on Windows, so keeping the key as
+            // the seed leaves every GUID in every existing project untouched
+            // (and unchanged on Linux/macOS too, where key == stored). It also
+            // matches AssetManager's documented policy (AssetManager.cpp:45).
+            const eastl::string rel_key = toPathKey(rel);
+            eastl::string guid = DeterministicGuidFromPath(rel_key);
             int bump = 0;
             while (m_ByGuid.count(guid) != 0 && bump < 256)
             {
-                eastl::string salted = rel + eastl::string(":");
+                eastl::string salted = rel_key + eastl::string(":");
                 salted += eastl::string(std::to_string(bump).c_str());
                 guid = DeterministicGuidFromPath(salted);
                 ++bump;
@@ -441,7 +501,7 @@ void ScriptRegistry::rescan()
             owned->m_SourceContentHash = hash;
             ScriptAsset* raw = owned.get();
             m_ByGuid.emplace(guid, std::move(owned));
-            m_ByPath.emplace(rel, raw);
+            m_ByPath.emplace(rel_key, raw);
             changed = true;
         }
 
@@ -454,7 +514,7 @@ void ScriptRegistry::rescan()
             {
                 continue;
             }
-            m_ByPath.erase(git->second->m_SourceRelPath);
+            m_ByPath.erase(toPathKey(git->second->m_SourceRelPath));
             m_ByGuid.erase(git);
             changed = true;
         }
@@ -481,10 +541,12 @@ void ScriptRegistry::rescan()
 
                 // Strip "Scripts/" prefix from source rel-path; whatever
                 // remains is the path beneath both Scripts/ and
-                // Intermediate/Scripts/. enumerateScriptFiles is rooted at
-                // m_ScriptsRoot which lives at <project>/Scripts (per
-                // ProjectInfo), so all entries start with "scripts/" on
-                // case-insensitive platforms.
+                // Intermediate/Scripts/. m_ScriptsRoot lives at
+                // <project>/Scripts (per ProjectInfo), so entries start with
+                // "Scripts/" -- but the comparison stays case-insensitive
+                // because the directory itself may be spelled differently, and
+                // because a registry written by an older build still holds the
+                // case-folded spelling until rescan() pass 1 heals it.
                 const eastl::string& src_rel = asset->m_SourceRelPath;
                 std::string src_std = toStd(src_rel);
                 static constexpr const char kScriptsPrefix[] = "scripts/";
@@ -526,7 +588,7 @@ void ScriptRegistry::rescan()
                     std::filesystem::path js_rel = std::filesystem::relative(js_abs, m_ProjectRoot, fs_ec);
                     if (!fs_ec && !js_rel.empty())
                     {
-                        desired = normaliseInternal(js_rel);
+                        desired = toStoredRelPath(js_rel);
                     }
                 }
                 if (desired != asset->m_CompiledRelPath)
@@ -566,18 +628,18 @@ void ScriptRegistry::OnCompiledJsChanged(const std::filesystem::path& abs_js_pat
 
     // Map back to the source rel-path: "Scripts/<rel_to_interm>" with .js
     // swapped to .ts (preferring .ts over .tsx; if .ts doesn't exist we
-    // still try .tsx). enumerateScriptFiles already lower-cases on Windows,
-    // so the lookup keys agree.
+    // still try .tsx). Lookups go through the KEY form; the compiled path we
+    // store keeps the on-disk case.
     std::filesystem::path src_rel_ts = std::filesystem::path("Scripts") / rel_to_interm;
     src_rel_ts.replace_extension(".ts");
-    eastl::string key_ts = normaliseInternal(src_rel_ts);
+    eastl::string key_ts = toPathKey(src_rel_ts);
 
-    eastl::string compiled_rel_normalised;
+    eastl::string compiled_rel;
     {
         std::filesystem::path js_rel = std::filesystem::relative(abs_js_path, m_ProjectRoot, ec);
         if (ec || js_rel.empty())
             return;
-        compiled_rel_normalised = normaliseInternal(js_rel);
+        compiled_rel = toStoredRelPath(js_rel);
     }
 
     bool changed = false;
@@ -593,7 +655,7 @@ void ScriptRegistry::OnCompiledJsChanged(const std::filesystem::path& abs_js_pat
         {
             std::filesystem::path src_rel_tsx = std::filesystem::path("Scripts") / rel_to_interm;
             src_rel_tsx.replace_extension(".tsx");
-            it = m_ByPath.find(normaliseInternal(src_rel_tsx));
+            it = m_ByPath.find(toPathKey(src_rel_tsx));
             if (it != m_ByPath.end())
             {
                 asset = it->second;
@@ -604,15 +666,15 @@ void ScriptRegistry::OnCompiledJsChanged(const std::filesystem::path& abs_js_pat
                 // enumerateScriptFiles).
                 std::filesystem::path src_rel_js = std::filesystem::path("Scripts") / rel_to_interm;
                 src_rel_js.replace_extension(".js");
-                it = m_ByPath.find(normaliseInternal(src_rel_js));
+                it = m_ByPath.find(toPathKey(src_rel_js));
                 if (it != m_ByPath.end())
                     asset = it->second;
             }
         }
 
-        if (asset != nullptr && asset->m_CompiledRelPath != compiled_rel_normalised)
+        if (asset != nullptr && asset->m_CompiledRelPath != compiled_rel)
         {
-            asset->m_CompiledRelPath = compiled_rel_normalised;
+            asset->m_CompiledRelPath = compiled_rel;
             changed = true;
         }
     }
@@ -637,7 +699,7 @@ void ScriptRegistry::OnCompiledJsDeleted(const std::filesystem::path& abs_js_pat
     // Same source-path search as onCompiledJsChanged.
     std::filesystem::path src_rel_ts = std::filesystem::path("Scripts") / rel_to_interm;
     src_rel_ts.replace_extension(".ts");
-    eastl::string key_ts = normaliseInternal(src_rel_ts);
+    eastl::string key_ts = toPathKey(src_rel_ts);
 
     bool changed = false;
     {
@@ -650,7 +712,7 @@ void ScriptRegistry::OnCompiledJsDeleted(const std::filesystem::path& abs_js_pat
         {
             std::filesystem::path src_rel_tsx = std::filesystem::path("Scripts") / rel_to_interm;
             src_rel_tsx.replace_extension(".tsx");
-            it = m_ByPath.find(normaliseInternal(src_rel_tsx));
+            it = m_ByPath.find(toPathKey(src_rel_tsx));
             if (it != m_ByPath.end())
                 asset = it->second;
         }
@@ -724,7 +786,7 @@ bool ScriptRegistry::LoadFromDisk()
 
         auto owned = std::make_unique<ScriptAsset>();
         owned->m_Guid = toEastl(guid_it->value.GetString());
-        owned->m_SourceRelPath = normaliseInternal(std::filesystem::path(path_it->value.GetString()));
+        owned->m_SourceRelPath = toStoredRelPath(std::filesystem::path(path_it->value.GetString()));
 
         auto class_it = e.FindMember("class");
         if (class_it != e.MemberEnd() && class_it->value.IsString())
@@ -754,7 +816,7 @@ bool ScriptRegistry::LoadFromDisk()
         }
 
         ScriptAsset* raw = owned.get();
-        m_ByPath.emplace(owned->m_SourceRelPath, raw);
+        m_ByPath.emplace(toPathKey(owned->m_SourceRelPath), raw);
         m_ByGuid.emplace(owned->m_Guid, std::move(owned));
     }
 
@@ -909,7 +971,7 @@ ScriptRegistry::EnumerateScriptFiles(const std::filesystem::path& project_root,
             ec.clear();
             continue;
         }
-        out.push_back(normaliseInternal(rel));
+        out.push_back(toStoredRelPath(rel));
     }
     return out;
 }
@@ -969,5 +1031,8 @@ int64_t ScriptRegistry::FileMTimeNs(const std::filesystem::path& abs_path)
 
 eastl::string ScriptRegistry::NormaliseRelPath(const std::filesystem::path& rel_path)
 {
-    return normaliseInternal(rel_path);
+    // The LOOKUP KEY, not a storable path -- see the stored/key split at the
+    // top of this file. Do not assign the result to m_SourceRelPath or write
+    // it into the registry file; on Windows it is case-folded.
+    return toPathKey(rel_path);
 }

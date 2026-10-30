@@ -382,12 +382,10 @@ int main(int argc, char** argv)
     ScriptAsset* hosted = nullptr;
     for (auto* asset : registry->GetAll())
     {
-        // 同 ScriptComponentSmokeTest：Windows 上 m_SourceRelPath 被
-        // normaliseInternal 整体小写化，比较前必须先折叠大小写。
-        std::string rel(asset->m_SourceRelPath.c_str());
-        std::transform(rel.begin(), rel.end(), rel.begin(),
-                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-        if (rel.find("hostedmover.ts") != std::string::npos)
+        // m_SourceRelPath 保留磁盘上的原大小写（小写化只用于 ScriptRegistry
+        // 内部的查找 key），所以这里直接按原大小写匹配。
+        const std::string rel(asset->m_SourceRelPath.c_str());
+        if (rel.find("HostedMover.ts") != std::string::npos)
         {
             hosted = asset;
         }

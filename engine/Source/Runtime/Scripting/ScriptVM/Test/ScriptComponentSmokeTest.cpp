@@ -136,11 +136,9 @@ namespace
         return true;
     }
 
-    /// ScriptRegistry 在 Windows 上把相对路径整体小写化（ScriptRegistry.cpp 的
-    /// normaliseInternal：`#if defined(_WIN32)` 分支），分隔符统一成 '/'。所以凡是
-    /// 拿 m_SourceRelPath / m_CompiledRelPath 做比较的地方都必须先折叠大小写，
-    /// 否则这份测试在 Windows 上一条都过不去、在 macOS/Linux 上又全过 —— 典型的
-    /// "只在一个平台跑过"的断言。折叠后比的是规范化形式，不是放宽断言。
+    /// m_SourceRelPath / m_CompiledRelPath 保留**磁盘上的原大小写**（小写化只发生
+    /// 在 ScriptRegistry 内部的查找 key 上、且只在 Windows）。这两条断言是按原大小写
+    /// 比的 —— 折叠成小写再比会把"大小写被吃掉"这个回归放过去。
     std::string NormalisedPath(const std::string& in)
     {
         std::string s = in;
@@ -313,6 +311,22 @@ int main(int argc, char** argv)
         return 77;
     }
 
+    // 一份**旧版**注册表：path 是小写、guid 由小写 key 派生 —— 正是本改动之前
+    // Windows 上写出来的样子。把它先铺下去，是为了让 A2c / A3b / A3d 顺带验证
+    // 升级路径：rescan 必须把路径改回磁盘真实大小写，而 guid 一个字节都不能变
+    // （变了 = 工程里所有 m_script_guid 引用断链，且全程不报错）。
+    const std::filesystem::path registry_file = scratch / "AssetRegistry" / "script_registry.json";
+    std::filesystem::create_directories(registry_file.parent_path(), ec);
+    WriteTextFile(registry_file,
+                  "{\n"
+                  "  \"version\": 1,\n"
+                  "  \"entries\": [\n"
+                  "    { \"guid\": \"bc8cd2d47011b24f68b540318442ecc8\",\n"
+                  "      \"path\": \"scripts/hostedmover.ts\",\n"
+                  "      \"class\": \"HostedMover\" }\n"
+                  "  ]\n"
+                  "}\n");
+
     // ---- 2. 起系统 --------------------------------------------------------
     RegisterCore();
     REGISTER_SYSTEM(CommandSystem);
@@ -384,14 +398,36 @@ int main(int argc, char** argv)
     {
         return 1;
     }
-    CheckEq("A2c", "源路径是相对工程根的（Scripts/ 前缀），且已规范化成小写 + '/'",
-            NormalisedPath(hosted->m_SourceRelPath.c_str()), "scripts/hostedmover.ts");
+    // 原大小写必须保住（'/' 分隔 + 磁盘上的大小写），否则工程搬到区分大小写的
+    // 文件系统后会打不开、被判成删除+新增、guid 重算、所有引用静默断链。
+    CheckEq("A2c", "源路径是相对工程根的，且保留磁盘上的原大小写",
+            std::string(hosted->m_SourceRelPath.c_str()), "Scripts/HostedMover.ts");
+    CheckTrue("A2c2", "源路径没有被折叠成小写",
+              std::string(hosted->m_SourceRelPath.c_str()) !=
+                  NormalisedPath(hosted->m_SourceRelPath.c_str()));
     CheckEq("A3", "guid 是 32 位小写 hex", std::to_string(hosted->m_Guid.size()), "32");
+    // 迁移关键：guid 必须用**查找 key**（Windows 上小写）做种子，不能用保留大小写的
+    // m_SourceRelPath。用后者会让所有现存工程的 m_script_guid 全部失效。
+    // 这个字面量是 FNV-1a 双种子("scripts/hostedmover.ts")，独立复算过。
+    CheckEq("A3b", "guid 仍以小写化的 key 为种子（换成就地大小写即断链）",
+            std::string(hosted->m_Guid.c_str()), "bc8cd2d47011b24f68b540318442ecc8");
+
+    // 自愈必须落盘，否则只是内存里好看，下一次启动又回到小写。
+    std::string registry_text;
+    ReadTextFile(registry_file, registry_text);
+    CheckTrue("A3d", "自愈结果已写回注册表文件",
+              registry_text.find("Scripts/HostedMover.ts") != std::string::npos);
+    CheckTrue("A3e", "注册表文件里不再残留小写路径",
+              registry_text.find("scripts/hostedmover.ts") == std::string::npos);
     CheckEq("A4", "`export class X extends` 能解出默认类名",
             std::string(hosted->m_DefaultClassName.c_str()), "HostedMover");
-    CheckEq("A5", "编译产物路径被配对上（同样已规范化）",
-            NormalisedPath(hosted->m_CompiledRelPath.c_str()),
-            "intermediate/scripts/hostedmover.js");
+    // ⚠️ A5 在 Windows 上是**弱**断言：`std::filesystem::relative()` 定义为
+    // weakly_canonical(p).lexically_relative(weakly_canonical(base))，会把真实磁盘
+    // 大小写还原回来，所以即使 m_SourceRelPath 被折叠成小写，这条照样是绿的。
+    // 真正守住"大小写没被吃掉"的是上面的 A2c / A2c2。
+    CheckEq("A5", "编译产物路径被配对上",
+            std::string(hosted->m_CompiledRelPath.c_str()),
+            "Intermediate/Scripts/HostedMover.js");
 
     CheckTrue("A6", "Mover.ts 被扫进注册表", exported_by_list != nullptr);
     if (exported_by_list == nullptr)

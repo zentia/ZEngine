@@ -141,8 +141,11 @@ public:
     // path on first discovery. Survives renames via ScriptRegistry remap.
     Guid          m_guid;
 
-    // Path is relative to <Project>/. Always forward-slash, lower-cased on
-    // case-insensitive platforms (Windows) for stable comparison.
+    // Path is relative to <Project>/. Always forward-slash, and it KEEPS the
+    // on-disk case -- this value is serialised into script_registry.json and
+    // joined onto the project root to open the file, so folding it makes the
+    // file unreachable on Linux/macOS. Case-insensitive comparison happens on
+    // a separate lookup key (Windows only), never on this field.
     eastl::string m_source_rel_path;     // "Scripts/PlayerController.ts"
     eastl::string m_compiled_rel_path;   // "Intermediate/Scripts/PlayerController.js"
 
