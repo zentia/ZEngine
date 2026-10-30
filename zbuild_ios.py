@@ -98,7 +98,12 @@ def configure(config: str, team: str | None, generator_args: str) -> None:
     BUILD_DIR.mkdir(parents=True, exist_ok=True)
     cmd = [
         "cmake",
-        "-S", str(ENGINE_DIR),
+        # 工程根是**仓库根**，不是 engine/：只有仓库根的 CMakeLists.txt 登记了
+        # engine/Libraries/GPUSpine 与 GPUParticle 两个子模块。传 -S engine 会在
+        # configure 时报 "GPUSpine submodule missing"，并建议你跑一条对**未登记**
+        # 路径必然失败的 git submodule update --init —— 看上去像仓库坏了，实际只是
+        # 根目录传错。（2026-10-30 修；同 AGENTS.md §2.45）
+        "-S", str(REPO_ROOT),
         "-B", str(BUILD_DIR),
         "-G", "Xcode",
         f"-DCMAKE_TOOLCHAIN_FILE={TOOLCHAIN_FILE}",
