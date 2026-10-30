@@ -6,6 +6,7 @@
 #include "Runtime/Core/Time/TimeState.h"
 #include "Runtime/Function/Console/RuntimeConsoleCommands.h"
 #include "Runtime/Function/Framework/World/WorldManager.h"
+#include "Runtime/Function/Framework/Coroutine/Coroutine.h"
 #include "Runtime/Function/Input/InputSystem.h"
 #include "Runtime/Function/Particle/ParticleManager.h"
 #include "Runtime/Function/Physics/PhysicsManager.h"
@@ -142,6 +143,14 @@ bool Application::TickOneFrame(float simulation_delta_time, float frame_delta_ti
 
     RendererTick(logic_delta_time);
 
+    // End-of-frame coroutines: after the frame has been rendered, before the
+    // next one's input is polled. This is where camera-follow belongs -- in the
+    // Update phase it would chase a position that later Updates then move.
+    if (auto* coroutines = GET_SYSTEM(CoroutineScheduler))
+    {
+        coroutines->TickEndOfFrame();
+    }
+
 #ifdef ENABLE_PHYSICS_DEBUG_RENDERER
     g_runtime_global_context.m_PhysicsManager->RenderPhysicsWorld(logic_delta_time);
 #endif
@@ -218,10 +227,26 @@ void Application::LogicalTick(float delta_time)
         for (int step = 0; step < ts.GetFixedStepCount(); ++step)
         {
             GET_SYSTEM(WorldManager)->FixedTick(fixed_delta);
+            // Coroutines waiting on WaitForFixedUpdate resume once per *step*,
+            // not once per frame -- that is the whole point of the instruction.
+            if (auto* coroutines = GET_SYSTEM(CoroutineScheduler))
+            {
+                coroutines->TickFixedUpdate();
+            }
         }
     }
 
     GET_SYSTEM(WorldManager)->Tick(delta_time);
+
+    // Coroutines: Update phase. `GetDeltaTime()` is the scaled step (a
+    // timeScale of 0 must freeze WaitForSeconds) and `GetUnscaledDeltaTime()`
+    // is wall clock, which is what WaitForSecondsRealtime asked for.
+    if (auto* coroutines = GET_SYSTEM(CoroutineScheduler))
+    {
+        TimeState& ts = TimeState::Get();
+        coroutines->TickUpdate(ts.GetDeltaTime(), ts.GetUnscaledDeltaTime());
+        coroutines->TickLateUpdate();
+    }
     // The runtime UI (UMG on ZSlate) is event-driven (input via GLFW callbacks)
     // and painted inside the UI render pass via UISystem::PreRender(); no
     // per-frame logic tick is required here.

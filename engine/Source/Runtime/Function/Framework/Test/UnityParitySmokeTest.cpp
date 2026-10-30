@@ -24,6 +24,7 @@
 //      that catches that.
 // =============================================================================
 
+#include "Runtime/Function/Framework/Coroutine/Coroutine.h"
 #include "Runtime/Function/Framework/TagLayer/TagLayerManager.h"
 
 #include <cstdio>
@@ -177,6 +178,302 @@ namespace
         Check(m.GetCollisionMask(99) == 0u, "A52", "an out-of-range layer collides with nothing");
     }
 
+    // ---------------------------------------------------------------- C ----
+    // Coroutines. Every case ticks the scheduler by hand with an explicit
+    // delta, so the expected frame counts are exact integers rather than "after
+    // a while".
+    int g_Log = 0;
+
+    /// Increments a counter before and after one yield. Used to prove the first
+    /// segment ran synchronously inside Start().
+    Coroutine CountTwoFrames()
+    {
+        g_Log = 1;
+        co_yield WaitForNextFrame {};
+        g_Log = 2;
+    }
+
+    /// Two yields -> needs two Update ticks after the initial segment.
+    Coroutine CountThree()
+    {
+        g_Log = 10;
+        co_yield WaitForNextFrame {};
+        g_Log = 11;
+        co_yield WaitForNextFrame {};
+        g_Log = 12;
+    }
+
+    Coroutine WaitHalfSecond()
+    {
+        g_Log = 20;
+        co_yield WaitForSeconds {0.5f};
+        g_Log = 21;
+    }
+
+    Coroutine WaitRealtime()
+    {
+        g_Log = 30;
+        co_yield WaitForSecondsRealtime {0.3f};
+        g_Log = 31;
+    }
+
+    Coroutine WaitFixed()
+    {
+        g_Log = 40;
+        co_yield WaitForFixedUpdate {};
+        g_Log = 41;
+    }
+
+    Coroutine WaitLate()
+    {
+        g_Log = 50;
+        co_yield WaitForLateUpdate {};
+        g_Log = 51;
+    }
+
+    Coroutine WaitEndOfFrame()
+    {
+        g_Log = 60;
+        co_yield WaitForEndOfFrame {};
+        g_Log = 61;
+    }
+
+    bool g_Gate = false;
+
+    Coroutine WaitForGate()
+    {
+        g_Log = 70;
+        co_yield WaitUntil {[]() { return g_Gate; }};
+        g_Log = 71;
+    }
+
+    Coroutine WaitWhileGate()
+    {
+        g_Log = 80;
+        co_yield WaitWhile {[]() { return g_Gate; }};
+        g_Log = 81;
+    }
+
+    Coroutine WaitForNested(CoroutineScheduler& scheduler, uint64_t nested_id)
+    {
+        g_Log = 90;
+        co_yield WaitForCoroutine {nested_id};
+        g_Log = 91;
+    }
+
+    /// No yield at all: runs straight through inside Start().
+    Coroutine RunsToCompletion()
+    {
+        g_Log = 100;
+        co_return;
+    }
+
+    /// Starts another coroutine from inside its own body -- the re-entrancy
+    /// case that would invalidate any iterator held across a resume.
+    Coroutine StartsAnother(CoroutineScheduler& scheduler)
+    {
+        g_Log = 110;
+        co_yield WaitForNextFrame {};
+        scheduler.Start(CountTwoFrames(), 999);
+        g_Log = 111;
+    }
+
+    void TestCoroutines()
+    {
+        CoroutineScheduler scheduler;
+        Check(scheduler.Initialize(), "C0", "CoroutineScheduler initializes");
+
+        // -- first segment is synchronous (Unity semantics) -----------------
+        scheduler.StopAll();   // isolate: a leftover coroutine writing g_Log looks like this case failing
+        g_Log = 0;
+        const uint64_t id1 = scheduler.Start(CountTwoFrames(), 1);
+        Check(id1 != CoroutineScheduler::kInvalidId, "C1", "Start() returns a usable id");
+        Check(g_Log == 1, "C2", "the first segment runs inside Start(), before any tick");
+        Check(scheduler.GetRunningCount() == 1, "C3", "and the coroutine is parked on a yield");
+
+        scheduler.TickUpdate(0.016f, 0.016f);
+        Check(g_Log == 2, "C4", "yield null resumes on the next Update");
+        Check(scheduler.GetRunningCount() == 0, "C5", "and a finished coroutine is dropped");
+        Check(!scheduler.IsRunning(id1), "C6", "IsRunning() is false afterwards");
+
+        // -- multi-step -----------------------------------------------------
+        scheduler.StopAll();   // isolate: a leftover coroutine writing g_Log looks like this case failing
+        g_Log = 0;
+        scheduler.Start(CountThree(), 1);
+        Check(g_Log == 10, "C7", "first segment of a two-yield body ran");
+        scheduler.TickUpdate(0.016f, 0.016f);
+        Check(g_Log == 11, "C8", "second segment");
+        scheduler.TickUpdate(0.016f, 0.016f);
+        Check(g_Log == 12, "C9", "third segment");
+        Check(scheduler.GetRunningCount() == 0, "C10", "then it is gone");
+
+        // -- WaitForSeconds is scaled, and lands on the exact frame ----------
+        scheduler.StopAll();   // isolate: a leftover coroutine writing g_Log looks like this case failing
+        g_Log = 0;
+        scheduler.Start(WaitHalfSecond(), 1);
+        for (int i = 0; i < 4; ++i)
+        {
+            scheduler.TickUpdate(0.1f, 0.1f);
+        }
+        Check(g_Log == 20, "C11", "0.5s is not done after 4 x 0.1s");
+        scheduler.TickUpdate(0.1f, 0.1f);
+        Check(g_Log == 21, "C12", "and is done on the 5th -- not one frame late");
+
+        // A timeScale of 0 freezes it: scaled dt is 0, realtime dt is not.
+        scheduler.StopAll();   // isolate: a leftover coroutine writing g_Log looks like this case failing
+        g_Log = 0;
+        scheduler.Start(WaitHalfSecond(), 1);
+        for (int i = 0; i < 50; ++i)
+        {
+            scheduler.TickUpdate(0.0f, 0.1f);
+        }
+        Check(g_Log == 20, "C13", "WaitForSeconds honours timeScale = 0");
+
+        // -- WaitForSecondsRealtime ignores timeScale -----------------------
+        scheduler.StopAll();   // isolate: a leftover coroutine writing g_Log looks like this case failing
+        g_Log = 0;
+        scheduler.Start(WaitRealtime(), 1);
+        for (int i = 0; i < 2; ++i)
+        {
+            scheduler.TickUpdate(0.0f, 0.1f);
+        }
+        Check(g_Log == 30, "C14", "0.3s realtime is not done after 2 x 0.1s");
+        scheduler.TickUpdate(0.0f, 0.1f);
+        Check(g_Log == 31, "C15", "and is done on the 3rd even at timeScale = 0");
+
+        // -- phase separation: the whole reason the phase is stored ---------
+        scheduler.StopAll();   // isolate: a leftover coroutine writing g_Log looks like this case failing
+        g_Log = 0;
+        scheduler.Start(WaitFixed(), 1);
+        scheduler.TickUpdate(0.016f, 0.016f);
+        Check(g_Log == 40, "C16", "WaitForFixedUpdate does NOT resume in the Update phase");
+        scheduler.TickLateUpdate();
+        Check(g_Log == 40, "C17", "nor in LateUpdate");
+        scheduler.TickEndOfFrame();
+        Check(g_Log == 40, "C18", "nor at EndOfFrame");
+        scheduler.TickFixedUpdate();
+        Check(g_Log == 41, "C19", "only in the FixedUpdate phase");
+
+        scheduler.StopAll();   // isolate: a leftover coroutine writing g_Log looks like this case failing
+        g_Log = 0;
+        scheduler.Start(WaitLate(), 1);
+        scheduler.TickUpdate(0.016f, 0.016f);
+        Check(g_Log == 50, "C20", "WaitForLateUpdate does not resume in Update");
+        scheduler.TickLateUpdate();
+        Check(g_Log == 51, "C21", "it resumes in LateUpdate");
+
+        scheduler.StopAll();   // isolate: a leftover coroutine writing g_Log looks like this case failing
+        g_Log = 0;
+        scheduler.Start(WaitEndOfFrame(), 1);
+        scheduler.TickUpdate(0.016f, 0.016f);
+        scheduler.TickLateUpdate();
+        Check(g_Log == 60, "C22", "WaitForEndOfFrame does not resume in Update/LateUpdate");
+        scheduler.TickEndOfFrame();
+        Check(g_Log == 61, "C23", "it resumes at EndOfFrame");
+
+        // -- predicates ------------------------------------------------------
+        g_Gate = false;
+        scheduler.StopAll();   // isolate: a leftover coroutine writing g_Log looks like this case failing
+        g_Log = 0;
+        scheduler.Start(WaitForGate(), 1);
+        scheduler.TickUpdate(0.016f, 0.016f);
+        Check(g_Log == 70, "C24", "WaitUntil stays parked while the predicate is false");
+        g_Gate = true;
+        scheduler.TickUpdate(0.016f, 0.016f);
+        Check(g_Log == 71, "C25", "and resumes the first frame it is true");
+
+        g_Gate = true;
+        scheduler.StopAll();   // isolate: a leftover coroutine writing g_Log looks like this case failing
+        g_Log = 0;
+        scheduler.Start(WaitWhileGate(), 1);
+        scheduler.TickUpdate(0.016f, 0.016f);
+        Check(g_Log == 80, "C26", "WaitWhile stays parked while the predicate is true");
+        g_Gate = false;
+        scheduler.TickUpdate(0.016f, 0.016f);
+        Check(g_Log == 81, "C27", "and resumes the first frame it is false");
+
+        // -- nested ----------------------------------------------------------
+        scheduler.StopAll();   // isolate: a leftover coroutine writing g_Log looks like this case failing
+        g_Log = 0;
+        const uint64_t inner = scheduler.Start(WaitHalfSecond(), 1);
+        Check(inner != CoroutineScheduler::kInvalidId, "C28", "the inner coroutine is running");
+        scheduler.Start(WaitForNested(scheduler, inner), 1);
+        scheduler.TickUpdate(0.1f, 0.1f);
+        Check(g_Log == 90, "C29", "the waiter is parked while the inner one runs");
+        for (int i = 0; i < 4; ++i)
+        {
+            scheduler.TickUpdate(0.1f, 0.1f);
+        }
+        Check(g_Log == 21, "C30", "the inner coroutine finished on its 5th tick");
+        // The waiter needs one MORE Update: readiness is evaluated at the top of
+        // a tick, so it cannot notice the inner one disappearing in the same
+        // tick that removed it.
+        scheduler.TickUpdate(0.1f, 0.1f);
+        Check(g_Log == 91, "C31", "and the waiter resumes on the next Update");
+        Check(scheduler.GetRunningCount() == 0, "C32", "and both are cleaned up");
+
+        // -- no yield at all -------------------------------------------------
+        scheduler.StopAll();   // isolate: a leftover coroutine writing g_Log looks like this case failing
+        g_Log = 0;
+        const uint64_t instant = scheduler.Start(RunsToCompletion(), 1);
+        Check(g_Log == 100, "C33", "a body with no yield runs to completion in Start()");
+        Check(instant == CoroutineScheduler::kInvalidId,
+              "C34", "and gets no id -- an id for a finished coroutine would be waited on forever");
+        Check(scheduler.GetRunningCount() == 0, "C35", "nothing is scheduled");
+
+        // -- Stop / StopAll / StopAllForOwner --------------------------------
+        scheduler.StopAll();   // isolate: a leftover coroutine writing g_Log looks like this case failing
+        g_Log = 0;
+        const uint64_t stop_id = scheduler.Start(WaitHalfSecond(), 1);
+        scheduler.Stop(stop_id);
+        Check(!scheduler.IsRunning(stop_id), "C36", "Stop() removes it");
+        scheduler.TickUpdate(0.5f, 0.5f);
+        Check(g_Log == 20, "C37", "and a stopped coroutine never runs again");
+
+        scheduler.Start(WaitHalfSecond(), 7);
+        scheduler.Start(WaitHalfSecond(), 7);
+        scheduler.Start(WaitHalfSecond(), 8);
+        Check(scheduler.GetRunningCount() == 3, "C38", "three coroutines across two owners");
+        scheduler.StopAllForOwner(7);
+        Check(scheduler.GetRunningCount() == 1, "C39", "StopAllForOwner() keeps the other owner's");
+        scheduler.StopAll();
+        Check(scheduler.GetRunningCount() == 0, "C40", "StopAll() clears everything");
+
+        // -- re-entrancy -----------------------------------------------------
+        scheduler.StopAll();   // isolate: a leftover coroutine writing g_Log looks like this case failing
+        g_Log = 0;
+        scheduler.Start(StartsAnother(scheduler), 1);
+        scheduler.TickUpdate(0.016f, 0.016f);
+        Check(g_Log == 111, "C41", "a body can start another coroutine from inside itself");
+        Check(scheduler.GetRunningCount() == 1, "C42", "the new one is scheduled, not lost");
+        // The newly started one must NOT run in the same phase it was started in,
+        // otherwise a body that spawns a waiter each resume would spin forever.
+        scheduler.TickUpdate(0.016f, 0.016f);
+        Check(scheduler.GetRunningCount() == 0, "C43", "and it runs in a later phase");
+    }
+
+    // ---------------------------------------------------------------- D ----
+    void TestCoroutineWiring()
+    {
+        const std::string app = ReadFile("Source/Runtime/Application/Application.cpp");
+        Check(!app.empty(), "D1", "Application.cpp is readable");
+        // All four phases, or a whole class of wait silently never resumes.
+        Check(CountOccurrences(app, "TickFixedUpdate") >= 1,
+              "D2", "the frame loop drives the FixedUpdate coroutine phase");
+        Check(CountOccurrences(app, "TickUpdate") >= 1,
+              "D3", "the frame loop drives the Update coroutine phase");
+        Check(CountOccurrences(app, "TickLateUpdate") >= 1,
+              "D4", "the frame loop drives the LateUpdate coroutine phase");
+        Check(CountOccurrences(app, "TickEndOfFrame") >= 1,
+              "D5", "the frame loop drives the EndOfFrame coroutine phase");
+        Check(CountOccurrences(app, "GetUnscaledDeltaTime") >= 1,
+              "D6", "Update gets the unscaled delta too (WaitForSecondsRealtime needs it)");
+
+        const std::string reg = ReadFile("Source/Runtime/RegisterRuntime.cpp");
+        Check(CountOccurrences(reg, "REGISTER_SYSTEM(CoroutineScheduler)") >= 1,
+              "D7", "CoroutineScheduler is registered as a system");
+    }
+
     // ---------------------------------------------------------------- B ----
     void TestWiringGate()
     {
@@ -227,6 +524,8 @@ int main()
     TestLayers(manager);
     TestMasks();
     TestCollisionMatrix(manager);
+    TestCoroutines();
+    TestCoroutineWiring();
     TestWiringGate();
 
     std::printf("\n=== %d checks, %d failures ===\n", g_Checks, g_Failures);

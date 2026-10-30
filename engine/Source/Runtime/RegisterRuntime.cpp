@@ -71,6 +71,7 @@
 #include "Runtime/Function/Audio/Wwise/WwiseAudioSystem.h"
 #include "Runtime/Function/Network/NetworkSystem.h"
 #include "Runtime/Function/Framework/TagLayer/TagLayerManager.h"
+#include "Runtime/Function/Framework/Coroutine/Coroutine.h"
 
 namespace
 {
@@ -116,6 +117,9 @@ namespace
         REGISTER_SYSTEM(PhysicsManager);
         REGISTER_SYSTEM(WorldManager);
         REGISTER_SYSTEM(AISystem);
+        // Gameplay phase: coroutines are driven from LogicalTick, which is
+        // also where WorldManager ticks.
+        REGISTER_SYSTEM(CoroutineScheduler);
         REGISTER_SYSTEM(NavigationSystem);
         REGISTER_SYSTEM(InputSystem);
         REGISTER_SYSTEM(ParticleManager);
@@ -240,6 +244,9 @@ void RegisterRuntimeLight(PreferredRHI preferred_rhi)
         REGISTER_SYSTEM(PhysicsManager);
         REGISTER_SYSTEM(WorldManager);
         REGISTER_SYSTEM(AISystem);
+        // Gameplay phase: coroutines are driven from LogicalTick, which is
+        // also where WorldManager ticks.
+        REGISTER_SYSTEM(CoroutineScheduler);
         REGISTER_SYSTEM(NavigationSystem);
         REGISTER_SYSTEM(InputSystem);
 
