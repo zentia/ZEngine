@@ -9,6 +9,16 @@
 - 可用的 `VULKAN_SDK`，至少需要 `bin/glslangValidator`
   - 脚本会优先使用环境变量 `VULKAN_SDK`
   - 若未设置，会尝试 `$HOME/VulkanSDK/local` 和 `build/vulkan-sdk`
+  - **不必装完整 Vulkan SDK**：iOS 走 Metal，`find_package(Vulkan REQUIRED)` 在
+    `engine/CMakeLists.txt` 的 `if(ZENGINE_USE_VULKAN)` 里，iOS 不会走到。所以只需要
+    `bin/glslangValidator` 可用即可（2026-10-30 实测）。最小做法：
+
+    ```bash
+    mkdir -p build/vulkan-sdk/bin
+    ln -s "$(command -v glslangValidator)" build/vulkan-sdk/bin/glslangValidator
+    ```
+
+    脚本的第二个候选路径正好是 `build/vulkan-sdk`，放好就不用传 `--vulkan-sdk`。
 - iOS toolchain 默认使用：
   - `engine/3rdparty/bqlog/build/lib/ios/ios.toolchain.cmake`
 
@@ -108,12 +118,20 @@ bin/ios/OS64/Release/libZRuntimeShared.dylib.dSYM
    - 验证：`xcrun otool -l ZRuntimeShared.framework/ZRuntimeShared | grep LC_DYLD_INFO`
      应输出 `LC_DYLD_INFO_ONLY`
 
-在当前本机测试中，`Release` 产物约为：
+## 实测（2026-10-30，`--config Release`，arm64）
 
-- 初始未 strip：约 `6.7 MB`
-- 仅 strip 后：约 `5.6 MB`
-- 导出列表 + dead strip + strip 后：约 `1.0 MB`
-- 导出符号数量：约从 `8322` 降到 `104`
+- 产物：`bin/ios/OS64/Release/libZRuntimeShared.dylib` 约 **8.1 MB**
+- 导出符号：**104** 个（导出列表生效）
+- `otool -l`：有 `LC_DYLD_INFO_ONLY`、无 `LC_DYLD_CHAINED_FIXUPS` → `-no_fixup_chains` 生效
+- 同时产出 `ZRuntimeShared.framework`（Headers / Modules / Info.plist / ad-hoc 签名）
+
+⚠️ **脚本不再做 post-build strip**：iOS 16+ 的 dyld 要求 `LC_DYLD_INFO_ONLY`，
+`strip -S` 可能破坏它，导致加载时报 `missing LC_DYLD_INFO load command`。死代码裁剪
+已由链接期 `-dead_strip` 处理，所以 post-build strip 既多余又有害。
+因此下面这些"strip 后"的数字是**历史值**，当前 Release 产物是未 strip 的 8.1 MB：
+
+- 历史：初始未 strip 约 `6.7 MB` / 仅 strip 约 `5.6 MB` / 导出列表 + dead strip + strip 约 `1.0 MB`
+- 导出符号数量：约从 `8322` 降到 `104`（这条仍然成立，实测 104）
 
 后续仍有进一步优化空间，主要方向：
 

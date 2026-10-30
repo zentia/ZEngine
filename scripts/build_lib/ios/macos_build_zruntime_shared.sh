@@ -314,8 +314,29 @@ cmake -S "$ROOT_DIR" -B "$BUILD_DIR" -G Xcode \
 # Strip it from the generated pbxproj post-configure.
 _pbxproj="${BUILD_DIR}/ZEngine.xcodeproj/project.pbxproj"
 if [[ -f "$_pbxproj" ]]; then
-  sed -i '' 's| /Y- ||g' "$_pbxproj"
-  echo "[PATCH] Stripped /Y- from ${_pbxproj}"
+  # `sed -i ''` is the BSD spelling. On a machine whose sed is GNU or toybox it
+  # means something else entirely: the '' is taken as the script and the real
+  # script as a filename, so the whole call dies with
+  #     sed: s| /Y- ||g: No such file or directory
+  # and (under `set -e`) takes the build down with it -- which is exactly what
+  # happened on 2026-10-30, where `sed` is toybox 0.8.13. Write to a temp file
+  # and move it over instead; that works under every sed.
+  #
+  # Also: only patch when the flag is actually there. CMake 4.4.5 no longer
+  # injects /Y- into the pbxproj, and patching unconditionally is how a no-op
+  # step turns into a hard failure.
+  if grep -q ' /Y- ' "$_pbxproj"; then
+    _pbxproj_tmp="${_pbxproj}.tmp"
+    if sed 's| /Y- ||g' "$_pbxproj" > "$_pbxproj_tmp" && mv "$_pbxproj_tmp" "$_pbxproj"; then
+      echo "[PATCH] Stripped /Y- from ${_pbxproj}"
+    else
+      rm -f "$_pbxproj_tmp"
+      echo "[ERROR] Failed to strip /Y- from ${_pbxproj}"
+      exit 1
+    fi
+  else
+    echo "[PATCH] No /Y- in ${_pbxproj} -- nothing to strip"
+  fi
 fi
 
 for build_config in "${CONFIGS[@]}"; do
