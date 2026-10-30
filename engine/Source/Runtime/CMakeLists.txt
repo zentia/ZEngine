@@ -1150,6 +1150,36 @@ endforeach()
 # - Static library (ZRuntime): for internal use by Editor, Profiler, Launcher (enables serialization)
 # - Shared library (ZRuntimeShared): for external use (solves Singleton cross-DLL issues)
 
+# ---- Slim shared source set (ZENGINE_IOS_SHARED_SLIM_MODULES) --------------
+# ZRuntime and ZRuntimeShared compile the same source list, so dropping a
+# subsystem from the dylib needs its own list -- the static archive (iOS player,
+# Editor, host tools) must keep everything.
+#
+# A TU may only be dropped together with everything that references it; see the
+# comment on ZENGINE_SHARED_NO_SPIRV_CROSS above for why.
+set(SHARED_SOURCE_FILES ${SOURCE_FILES})
+if(IOS AND ZENGINE_IOS_SHARED_SLIM_MODULES)
+    set(_slim_before ${SHARED_SOURCE_FILES})
+    # NOTE: one argument -- list(FILTER ... REGEX) takes exactly one regex, and
+    # splitting the string across two quoted arguments silently turns the second
+    # half into a stray argument and the whole call into a configure error.
+    list(FILTER SHARED_SOURCE_FILES EXCLUDE REGEX
+         "(Spine/SpineRenderer\\.cpp|Spine/SpineGpuRenderer\\.cpp|Console/RuntimeConsoleCommands\\.cpp|Physics/PhysicsScene\\.cpp|Physics/PhysicsCharacter\\.cpp|Physics/Jolt/Utils\\.cpp)$")
+    list(LENGTH _slim_before _slim_count_before)
+    list(LENGTH SHARED_SOURCE_FILES _slim_count_after)
+    math(EXPR _slim_excluded "${_slim_count_before} - ${_slim_count_after}")
+    # PhysicsSceneNull.cpp replaces the three Physics TUs above: it defines the
+    # ~20 PhysicsScene methods the rest of the engine still calls.
+    list(APPEND SHARED_SOURCE_FILES
+         "${CMAKE_CURRENT_SOURCE_DIR}/Function/Physics/PhysicsSceneNull.cpp")
+    message(STATUS "Runtime: ZRuntimeShared slim -- ${_slim_excluded} TUs excluded "
+                   "(Spine + Physics), PhysicsSceneNull.cpp added")
+    unset(_slim_before)
+    unset(_slim_count_before)
+    unset(_slim_count_after)
+    unset(_slim_excluded)
+endif()
+
 # Static library target (for internal use)
 add_library(${TARGET_NAME} STATIC ${HEADER_FILES} ${SOURCE_FILES})
 
@@ -1161,7 +1191,7 @@ z_set_config_archive_dirs(${TARGET_NAME} "${CMAKE_CURRENT_BINARY_DIR}")
 
 # Shared library target (for external use)
 set(SHARED_TARGET_NAME "${TARGET_NAME}Shared")
-add_library(${SHARED_TARGET_NAME} SHARED ${HEADER_FILES} ${SOURCE_FILES})
+add_library(${SHARED_TARGET_NAME} SHARED ${HEADER_FILES} ${SHARED_SOURCE_FILES})
 
 set_target_properties(${SHARED_TARGET_NAME} PROPERTIES CXX_STANDARD 23)
 set_target_properties(${SHARED_TARGET_NAME} PROPERTIES FOLDER "Engine")
@@ -1189,6 +1219,16 @@ z_set_config_output_dirs(${SHARED_TARGET_NAME} "${BINARY_ROOT_DIR}" LIBRARY)
 # Headers annotated with ZCLASS / ZPROPERTY get <Name>.generated.h and
 # <Name>.gen.cpp (type registration + Transfer()). See cmake/ZHeaderTool.cmake.
 include(${Z_ROOT_DIR}/cmake/ZHeaderTool.cmake)
+
+# Slim shared runtime: SpineRenderer.cpp is gone from the shared source set, so
+# its generated reflection TU has to go too -- that .gen.cpp is the one calling
+# SpineRenderer's members, and leaving it in is exactly how a "removed"
+# subsystem comes back as undefined symbols. Read by cmake/ZHeaderTool.cmake,
+# so it must be set before the call below.
+if(IOS AND ZENGINE_IOS_SHARED_SLIM_MODULES)
+    set(${SHARED_TARGET_NAME}_ZHT_EXCLUDE_BASENAMES SpineRenderer)
+endif()
+
 zengine_header_tool(
     MODULE       ZRuntime
     TARGETS      ${TARGET_NAME} ${SHARED_TARGET_NAME}
@@ -1381,6 +1421,29 @@ if(IOS)
     if(ZENGINE_IOS_LINK_MAP_FILE)
         target_link_options(${SHARED_TARGET_NAME} PRIVATE "LINKER:-map,${ZENGINE_IOS_LINK_MAP_FILE}")
     endif()
+
+    # ---- Slim module set (ZENGINE_IOS_SHARED_SLIM_MODULES) -----------------
+    # Drop subsystems the exported ABI never reaches. The 104 exported symbols
+    # are the MemoryProfiler C API + pesapi; there is no rendering, physics or
+    # Spine entry point, so the code that only those subsystems need is dead
+    # weight in this dylib.
+    #
+    # The rule that makes this safe: NEVER remove a library without removing /
+    # guarding every TU that references it. -undefined dynamic_lookup would
+    # otherwise bind the missing symbols to 0 and the first call would be
+    # EXC_BAD_ACCESS at 0x0. `nm -m | grep -c "dynamically looked up"` == 0 is
+    # the assertion that catches it -- it must stay 0 after every cut.
+    if(ZENGINE_IOS_SHARED_SLIM_MODULES)
+        target_compile_definitions(${SHARED_TARGET_NAME} PRIVATE
+            ZENGINE_SHARED_NO_SPIRV_CROSS=1
+            ZENGINE_SHARED_NO_SPINE=1
+            ZENGINE_SHARED_NO_PHYSICS=1)
+        # Read by configure_runtime_library() below, which links the same source
+        # set into both targets and therefore has to skip the per-subsystem
+        # archives for the shared one only.
+        set(_ZENGINE_SHARED_SLIM TRUE)
+        message(STATUS "Runtime: ZRuntimeShared slim -- SPIRV-Cross + GPUSpine + Jolt dropped")
+    endif()
 endif()
 
 if(ZENGINE_MOBILE_HIDE_INTERNAL_SYMBOLS AND (ANDROID OR Z_PLATFORM_OHOS OR OHOS OR CMAKE_SYSTEM_NAME STREQUAL "OHOS"))
@@ -1413,7 +1476,12 @@ function(configure_runtime_library target)
     
     # Link dependencies
     target_link_libraries(${target} PUBLIC BqLog)
-    target_link_libraries(${target} PUBLIC GPUSpine::Core)
+    # Slim shared runtime: SpineRenderer.cpp / SpineGpuRenderer.cpp /
+    # RuntimeConsoleCommands.cpp are out of the shared source set, so nothing
+    # calls the GPUSpine API any more.
+    if(NOT (target STREQUAL ${SHARED_TARGET_NAME} AND _ZENGINE_SHARED_SLIM))
+        target_link_libraries(${target} PUBLIC GPUSpine::Core)
+    endif()
     # ZSlate: standalone UI framework (when available)
     if(TARGET ZSlate)
         target_link_libraries(${target} PRIVATE ZSlate)
@@ -1441,6 +1509,13 @@ function(configure_runtime_library target)
        AND NOT EMSCRIPTEN AND NOT CMAKE_SYSTEM_NAME STREQUAL "Emscripten")
         target_link_libraries(${target} PRIVATE render_doc)
     endif()
+    # Jolt stays on the link line even in the slim build: it is PUBLIC, so it is
+    # also what supplies the Jolt *include* directories, and PhysicsManager.cpp
+    # (which is not excluded) still uses the inline toVec3/toQuat helpers from
+    # Physics/Jolt/Utils.h. Nothing references a JPH:: symbol any more though, so
+    # ld64 pulls zero members out of the archive -- confirmed in the link map
+    # (libJolt.a contributes 0 bytes). Dropping the link would be the louder
+    # guarantee, but it would also take the include dirs with it.
     target_link_libraries(${target} PUBLIC Jolt)
     if(APPLE)
         target_link_libraries(${target} PUBLIC "-framework Metal" "-framework MetalKit" "-framework QuartzCore" "-framework Foundation")
@@ -1451,7 +1526,12 @@ function(configure_runtime_library target)
         # 归属写歪了（endif 的层级看起来像在 if(IOS) 里），实际语义就是
         # "只有 macOS 才链"。
         if(TARGET spirv-cross-msl)
-            target_link_libraries(${target} PRIVATE spirv-cross-msl)
+            # Slim shared runtime: MetalRHI.mm's CreateShaderModule is compiled
+            # out (ZENGINE_SHARED_NO_SPIRV_CROSS), so nothing references
+            # CompilerMSL any more and the archive can stay out of the link.
+            if(NOT (target STREQUAL ${SHARED_TARGET_NAME} AND _ZENGINE_SHARED_SLIM))
+                target_link_libraries(${target} PRIVATE spirv-cross-msl)
+            endif()
         endif()
         if(IOS)
             target_link_libraries(${target} PUBLIC "-framework UIKit")

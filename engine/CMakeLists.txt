@@ -80,6 +80,13 @@ option(ZENGINE_MOBILE_HIDE_INTERNAL_SYMBOLS "Hide non-exported mobile runtime sy
 # (Deliberately a link-time flag, not a post-build `strip -S`, which can
 # damage LC_DYLD_INFO and make iOS 16+ dyld reject the image.)
 option(ZENGINE_IOS_SHARED_STRIP_LOCAL_SYMBOLS "Strip local symbols from the iOS shared runtime at link time (-x)" ${_ZENGINE_MOBILE_PLATFORM})
+# Drop whole subsystems from the iOS ZRuntimeShared dylib. Default OFF: this
+# changes what the dylib *is*, not just how it is built. Safe only because the
+# exported ABI is 104 C symbols that contain no rendering / physics / Spine
+# entry point -- see the "what is left to cut" table in
+# scripts/build_lib/ios/README.md. The static ZRuntime (iOS player, Editor,
+# host tools) is untouched.
+option(ZENGINE_IOS_SHARED_SLIM_MODULES "Drop SPIRV-Cross / GPUSpine / Jolt from the iOS shared runtime" OFF)
 unset(_ZENGINE_MOBILE_PLATFORM)
 option(ZENGINE_WINDOWS_SIZE_OPTIMIZE "Optimize Windows shared runtime for smaller package size" OFF)
 

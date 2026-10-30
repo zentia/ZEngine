@@ -106,7 +106,23 @@ function(zengine_header_tool)
 
     foreach(target IN LISTS ZHT_TARGETS)
         add_dependencies(${target} ${zht_target})
-        target_sources(${target} PRIVATE ${gen_sources})
+        # Per-target opt-out: a target may skip individual <Name>.gen.cpp files
+        # by listing their base names in <Target>_ZHT_EXCLUDE_BASENAMES. Used by
+        # the slim iOS shared runtime, which drops a subsystem's .cpp but must
+        # also drop the generated Transfer()/registrar TU that calls into it --
+        # otherwise that TU is the one holding the now-missing symbols.
+        set(_zht_target_sources ${gen_sources})
+        if(${target}_ZHT_EXCLUDE_BASENAMES)
+            set(_zht_target_sources)
+            foreach(src IN LISTS gen_sources)
+                get_filename_component(_zht_base "${src}" NAME_WE)
+                if(NOT _zht_base IN_LIST ${target}_ZHT_EXCLUDE_BASENAMES)
+                    list(APPEND _zht_target_sources "${src}")
+                endif()
+            endforeach()
+            unset(_zht_base)
+        endif()
+        target_sources(${target} PRIVATE ${_zht_target_sources})
         target_include_directories(${target} PUBLIC "$<BUILD_INTERFACE:${inc_dir}>")
     endforeach()
 

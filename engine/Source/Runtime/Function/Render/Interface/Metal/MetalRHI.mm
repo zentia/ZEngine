@@ -11,7 +11,12 @@
 #include <cstring>
 #include <exception>
 
-#ifdef __APPLE__
+// ZENGINE_SHARED_NO_SPIRV_CROSS (slim iOS shared runtime -- see
+// ZENGINE_IOS_SHARED_SLIM_MODULES): SPIRV-Cross is NOT linked, so its headers
+// must not be included either. They are what drags spirv_cross::CompilerMSL --
+// and through it the whole spirv-cross msl+glsl+core archive (~1.2 MB) -- into
+// the dylib. spirv.hpp (the spv:: enums) comes from the same vendored tree.
+#if defined(__APPLE__) && !defined(ZENGINE_SHARED_NO_SPIRV_CROSS)
     // SPIR-V -> MSL (the engine's shaders are SPIR-V; Metal only accepts MSL).
     #include <spirv_cross.hpp>
     #include <spirv_msl.hpp>
@@ -755,6 +760,7 @@ namespace
         return metal_buffer->computeEncoder;
     }
 
+#if !defined(ZENGINE_SHARED_NO_SPIRV_CROSS)
     // SPIR-V: 扫 OpExecutionMode（opcode 16）找 LocalSize（17）或 LocalSizeId（38）。
     //
     // 为什么不问 SPIRV-Cross：它把 workgroup 尺寸藏在 EntryPoint 结构里，而这个仓库
@@ -796,11 +802,12 @@ namespace
                     return;
                 }
             }
-            i += count;
-        }
+        i += count;
     }
+}
+#endif  // !ZENGINE_SHARED_NO_SPIRV_CROSS
 
-    // MSL: `[[threads_per_threadgroup(256, 1, 1)]]`。MSL 源串是引擎自己拼的（Nanite
+// MSL: `[[threads_per_threadgroup(256, 1, 1)]]`。MSL 源串是引擎自己拼的（Nanite
     // 的剔除 kernel 走 CreateShaderModuleFromSource），所以手写解析就够了。
     void ReadWorkgroupSizeFromMsl(const std::string& source, uint32_t out_size[3])
     {
@@ -908,6 +915,7 @@ namespace
     }
 
 
+#if !defined(ZENGINE_SHARED_NO_SPIRV_CROSS)
     ShaderStage ToShaderStage(uint32_t execution_model)
     {
         switch (execution_model)
@@ -921,6 +929,7 @@ namespace
             default:                                   return ShaderStage::Vertex;
         }
     }
+#endif  // !ZENGINE_SHARED_NO_SPIRV_CROSS
 }  // namespace
 #endif
 
@@ -928,6 +937,15 @@ namespace
 // accepts MSL, so the SPIR-V goes through SPIRV-Cross' MSL backend here.
 RHIShader* MetalRHI::CreateShaderModule(const std::vector<unsigned char>& shader_code)
 {
+#ifdef ZENGINE_SHARED_NO_SPIRV_CROSS
+    // Slim shared runtime: SPIRV-Cross is not linked, so SPIR-V cannot be
+    // translated to MSL. Say so instead of calling a symbol that would have
+    // been bound to 0 by -undefined dynamic_lookup (EXC_BAD_ACCESS at 0x0).
+    (void)shader_code;
+    LOG_WARNING(ZRender, "MetalRHI: SPIR-V shader modules are unavailable in this build "
+                         "(ZENGINE_SHARED_NO_SPIRV_CROSS)");
+    return nullptr;
+#else
 #ifdef __APPLE__
     const bool is_spirv = shader_code.size() >= 4 && (shader_code.size() % 4) == 0 &&
                           shader_code[0] == 0x03 && shader_code[1] == 0x02 &&
@@ -1095,6 +1113,7 @@ RHIShader* MetalRHI::CreateShaderModule(const std::vector<unsigned char>& shader
     (void)shader_code;
     return nullptr;
 #endif
+#endif  // ZENGINE_SHARED_NO_SPIRV_CROSS
 }
 
 RHIShader* MetalRHI::CreateShaderModuleFromFile(const std::string& file_path,

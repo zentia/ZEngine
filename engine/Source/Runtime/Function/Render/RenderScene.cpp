@@ -513,9 +513,11 @@ void RenderScene::UpsertGameObject(RHI* rhi, RenderResourceBase& render_resource
 
 void RenderScene::DeleteEntityByGObjectID(GObjectID go_id)
 {
+#if !defined(ZENGINE_SHARED_NO_SPINE)
     // GPU-Spine 的世界实例（SpineRenderer 组件）不在实体表里，但删除语义相同：对象删了 / 关卡卸载了
     // 就别再画。组件若随撤销复活，下一次 tick 会发现 id 不认识而重建（SpineGpuRenderer.h）。
     SpineGpuRenderer::Get().RemoveWorldInstancesOfOwner(static_cast<uint64_t>(go_id));
+#endif
 
     const std::vector<size_t> allocated_guids = m_InstanceIdAllocator.getAllocatedGuids();
     for (size_t guid : allocated_guids)

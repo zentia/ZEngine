@@ -56,15 +56,19 @@ void WorldManager::Shutdown()
 
 void WorldManager::Tick(float delta_time)
 {
+#if !defined(ZENGINE_SHARED_NO_SPINE)
     // GPU-Spine 世界实例的存活判据：本逻辑帧里没被 SpineRenderer 推过变换的就不画（SpineGpuRenderer.h）
     SpineGpuRenderer::Get().AdvanceWorldTick();
+#endif
 
     if (!m_IsWorldLoaded)
     {
         LoadWorld(m_CurrentWorldUrl);
     }
+#if !defined(ZENGINE_SHARED_NO_SPINE)
     // 控制台 spine.spawn 排队的对象（启动参数里执行时关卡还没加载）
     SpineRenderer::FlushPendingSpawns(m_CurrentActiveLevel);
+#endif
 
     if (m_WorldPartition.IsEnabled())
     {

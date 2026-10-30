@@ -19,9 +19,13 @@ IOS_TOOLCHAIN="$ROOT_DIR/engine/3rdparty/bqlog/build/lib/ios/ios.toolchain.cmake
 # is also what the engine ships on Web/wasm. v8 is selectable for dev-only
 # iOS builds (must run in jitless mode under Apple's policy).
 PAPI_TYPE="quickjs"
+# Drop SPIRV-Cross / GPUSpine / Jolt from the dylib. Opt-in: it changes what the
+# dylib *is*, not just how it is built. See "--slim" in the usage text and the
+# "what gets dropped" section of README.md.
+SLIM_MODULES=0
 
 usage() {
-  echo "Usage: $(basename "$0") [--config Release|Debug|MinSizeRel|RelWithDebInfo] [--all-configs] [--platform OS64] [--deployment-target 16.0] [--jobs N] [--vulkan-sdk PATH] [--toolchain PATH] [--papi quickjs|v8] [--clean] [--strip] [--no-strip] [--no-export-list] [--framework] [--no-framework] [--framework-name NAME] [--bundle-id ID]"
+  echo "Usage: $(basename "$0") [--config Release|Debug|MinSizeRel|RelWithDebInfo] [--all-configs] [--platform OS64] [--deployment-target 16.0] [--jobs N] [--vulkan-sdk PATH] [--toolchain PATH] [--papi quickjs|v8] [--slim] [--no-slim] [--clean] [--strip] [--no-strip] [--no-export-list] [--framework] [--no-framework] [--framework-name NAME] [--bundle-id ID]"
   echo "Output:    bin/ios/PLATFORM/CONFIG/libZRuntimeShared.dylib"
   echo "Framework: bin/ios/PLATFORM/CONFIG/ZRuntimeShared.framework"
   echo "Symbols:   bin/ios/PLATFORM/CONFIG/libZRuntimeShared.dylib.dSYM"
@@ -45,6 +49,8 @@ while [[ $# -gt 0 ]]; do
     --framework-name) FRAMEWORK_NAME="$2"; shift 2 ;;
     --bundle-id) FRAMEWORK_BUNDLE_ID="$2"; shift 2 ;;
     --papi) PAPI_TYPE="$2"; shift 2 ;;
+    --slim) SLIM_MODULES=1; shift ;;
+    --no-slim) SLIM_MODULES=0; shift ;;
     --help|-h) usage; exit 0 ;;
     *) echo "Unknown option: $1"; usage; exit 1 ;;
   esac
@@ -140,6 +146,7 @@ Vulkan SDK: $VULKAN_SDK
 Platform:   $PLATFORM
 Deploy:     $DEPLOYMENT_TARGET
 PAPI:       $PAPI_TYPE
+Slim:       $SLIM_MODULES (drop SPIRV-Cross / GPUSpine / Jolt)
 Configs:    ${CONFIGS[*]}
 Strip:      $STRIP_OUTPUT (auto strips Release/MinSizeRel)
 Output:     $ROOT_DIR/bin/$OUTPUT_SUBDIR/<CONFIG>/libZRuntimeShared.dylib
@@ -187,6 +194,9 @@ fi
 CMAKE_EXPORT_ARGS=()
 if [[ "$LIMIT_EXPORTS" == "1" ]]; then
   CMAKE_EXPORT_ARGS=(-DZENGINE_IOS_EXPORT_SYMBOLS_FILE="$EXPORTS_FILE")
+fi
+if [[ "$SLIM_MODULES" == "1" ]]; then
+  CMAKE_EXPORT_ARGS+=(-DZENGINE_IOS_SHARED_SLIM_MODULES=ON)
 fi
 
 create_framework() {

@@ -2479,6 +2479,7 @@ void MainCameraRp1Pass::DrawForwardLightingPass(const std::array<bool, 2>& skybo
     {
         m_ParticlePass->Draw();
     }
+#if !defined(ZENGINE_SHARED_NO_SPINE)
     // GPU-Spine 世界实例（SpineRenderer 组件）：透明物体同一站 —— 测深度、不写深度。只画一个视口
     // （Scene 开着画 Scene，否则 Game）；视口取法与 SetViewportScissor 完全一致（Scene 走 render rect），
     // 否则深度和网格对不上。DX12 / Apple 都走这里（Vulkan 编辑器走 MainCameraPass::DrawRp1）。
@@ -2505,6 +2506,7 @@ void MainCameraRp1Pass::DrawForwardLightingPass(const std::array<bool, 2>& skybo
                                               spine_viewport);
         }
     }
+#endif  // !ZENGINE_SHARED_NO_SPINE
     m_Rhi->PopEvent(m_Rhi->GetCurrentCommandBuffer());
 
     m_Rhi->CmdEndRenderPassPFN(m_Rhi->GetCurrentCommandBuffer());
