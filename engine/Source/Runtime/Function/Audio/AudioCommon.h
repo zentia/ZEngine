@@ -157,3 +157,52 @@ inline float ClampAudioFloat(float in_value, float in_min, float in_max)
 {
     return in_value < in_min ? in_min : (in_value > in_max ? in_max : in_value);
 }
+
+// =============================================================================
+// Which backend a single Play() actually goes through.
+//
+// The two backends address content differently and the difference is not a
+// detail: the internal one plays a *decoded clip file*, Wwise plays a *named
+// event* out of a loaded sound bank. There is no way to spell one in terms of
+// the other, so a component that only knows about clip paths is silent the
+// moment Wwise owns the output.
+//
+// That makes "which route" a real decision with three outcomes, and it is worth
+// pulling out as a pure function: it is the part that can be wrong without any
+// compiler or runtime complaining (the wrong branch is simply silent), and a
+// pure function is the only shape in which it can be tested without a sound
+// card, a bank or an initialised sound engine.
+//
+// `kNone` is deliberately not "try the other one": falling back to a clip when
+// the event name is missing would play nothing through the null device and
+// report success, which is exactly the silent failure this replaces.
+// =============================================================================
+enum class AudioPlayRoute : uint8_t
+{
+    /// Nothing can play: no route is configured for the active backend.
+    kNone = 0,
+    /// Internal backend: decode m_ClipPath into a mixer voice.
+    kClipFile = 1,
+    /// Wwise backend: post the named event on a registered game object.
+    kWwiseEvent = 2
+};
+
+/// Picks the route for one Play() call. Pure -- same inputs, same answer.
+///
+/// `in_wwise_owns_output` is AudioSystem::IsWwiseActive(), passed in rather than
+/// queried here so this stays dependency-free.
+inline AudioPlayRoute ResolveAudioPlayRoute(bool in_wwise_owns_output,
+                                            const char* in_clip_path,
+                                            const char* in_wwise_event)
+{
+    const bool has_clip = (in_clip_path != nullptr) && (in_clip_path[0] != '\0');
+    const bool has_event = (in_wwise_event != nullptr) && (in_wwise_event[0] != '\0');
+
+    if (in_wwise_owns_output)
+    {
+        // A clip path is meaningless to Wwise: banks hold events, not files.
+        return has_event ? AudioPlayRoute::kWwiseEvent : AudioPlayRoute::kNone;
+    }
+    // The internal backend never sees Wwise events.
+    return has_clip ? AudioPlayRoute::kClipFile : AudioPlayRoute::kNone;
+}

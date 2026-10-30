@@ -21,9 +21,12 @@
 
 #if defined(ZENGINE_HAS_WWISE)
 #include <AK/MusicEngine/Common/AkMusicEngine.h>
+#include <AK/SoundEngine/Common/AkCallback.h>
 #include <AK/SoundEngine/Common/AkModule.h>
 #include <AK/SoundEngine/Common/AkSoundEngine.h>
 #include <AK/SoundEngine/Common/AkStreamMgrModule.h>
+
+#include <atomic>
 #endif
 
 namespace
@@ -288,6 +291,73 @@ struct WwiseAudioSystem::Impl
 #if defined(ZENGINE_HAS_WWISE)
     WwiseBlockingFileHook io;
     std::vector<std::pair<std::string, AkBankID>> loaded_banks;
+
+    // ---- end-of-event tracking -------------------------------------------
+    // Written from the Wwise audio thread (the PostEvent callback), read from
+    // the main thread. It must not take a lock: a mutex on the audio thread can
+    // stall the whole mix, and the symptom would be a glitch in every sound in
+    // the game, not just the one that finished.
+    //
+    // A ring of atomics is therefore lossy on purpose: after kFinishedCapacity
+    // events finish between two reads, the oldest ids are forgotten again and
+    // IsPlayingId() can answer true for a sound that already ended. That is the
+    // trade worth making -- the alternative is unbounded memory, and the only
+    // caller re-checks its own id every frame, so a stale entry self-heals on
+    // the next PostEvent (which overwrites the id it is asked about).
+    static constexpr size_t kFinishedCapacity = 256u;
+    std::atomic<uint64_t> finished_ring[kFinishedCapacity] {};
+    std::atomic<size_t> finished_next {0u};
+
+    void MarkFinished(uint64_t in_playing_id)
+    {
+        if (in_playing_id == WwiseAudioSystem::kInvalidPlayingId)
+        {
+            return;
+        }
+        const size_t slot = finished_next.fetch_add(1u, std::memory_order_relaxed) % kFinishedCapacity;
+        finished_ring[slot].store(in_playing_id, std::memory_order_release);
+    }
+
+    bool HasFinished(uint64_t in_playing_id) const
+    {
+        for (size_t i = 0; i < kFinishedCapacity; ++i)
+        {
+            if (finished_ring[i].load(std::memory_order_acquire) == in_playing_id)
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// Runs on the Wwise audio thread. Keep it trivially small and allocation-free.
+    ///
+    /// It has to be a member rather than a file-scope function: Impl is private
+    /// to WwiseAudioSystem, so only a member can name the type it casts the
+    /// cookie to.
+    ///
+    /// AK_CALLBACK() only declares the *typedef* form, so a definition uses the
+    /// underlying calling-convention macro directly: handing Wwise a cdecl
+    /// function where it expects AKSOUNDENGINE_CALL corrupts the stack on 32-bit
+    /// builds and looks fine on 64-bit, which is exactly the kind of bug that
+    /// ships.
+    static void AKSOUNDENGINE_CALL EndOfEventCallback(AkCallbackType in_type, AkCallbackInfo* in_info)
+    {
+        if (in_type != AK_EndOfEvent || in_info == nullptr)
+        {
+            return;
+        }
+        auto* impl = static_cast<Impl*>(in_info->pCookie);
+        if (impl == nullptr)
+        {
+            return;
+        }
+        // AK_EndOfEvent means in_info is really an AkEventCallbackInfo, and
+        // playingID lives on that derived struct -- the base carries only the
+        // cookie and the game object id.
+        const auto* event_info = static_cast<const AkEventCallbackInfo*>(in_info);
+        impl->MarkFinished(static_cast<uint64_t>(event_info->playingID));
+    }
 #else
     int unused {0};
 #endif
@@ -596,7 +666,14 @@ uint64_t WwiseAudioSystem::PostEvent(const char* in_event_name, uint64_t in_game
     }
 
 #if defined(ZENGINE_HAS_WWISE)
-    const AkPlayingID playing_id = AK::SoundEngine::PostEvent(in_event_name, static_cast<AkGameObjectID>(in_game_object));
+    // Always ask for AK_EndOfEvent: IsPlayingId() has no other way to be honest,
+    // and the notification costs one callback per finished event. The cookie is
+    // the Impl, which is where the finished-id ring lives.
+    const AkPlayingID playing_id = AK::SoundEngine::PostEvent(in_event_name,
+                                                              static_cast<AkGameObjectID>(in_game_object),
+                                                              AK_EndOfEvent,
+                                                              &Impl::EndOfEventCallback,
+                                                              m_Impl.get());
     if (playing_id == AK_INVALID_PLAYING_ID)
     {
         // Almost always one of: the event is not in any loaded bank, or the game
@@ -628,6 +705,57 @@ void WwiseAudioSystem::StopAll(uint64_t in_game_object)
         return;
     }
     AK::SoundEngine::StopAll(static_cast<AkGameObjectID>(in_game_object));
+#endif
+}
+
+void WwiseAudioSystem::StopPlayingId(uint64_t in_playing_id, float in_fade_out_seconds)
+{
+    if (!m_Active || in_playing_id == kInvalidPlayingId)
+    {
+        return;
+    }
+
+#if defined(ZENGINE_HAS_WWISE)
+    const AkTimeMs fade_ms = static_cast<AkTimeMs>(in_fade_out_seconds > 0.0f ? in_fade_out_seconds * 1000.0f : 0.0f);
+    // AkActionOnEventType lives inside AK::SoundEngine, unlike AkPlayingID /
+    // AkTimeMs which are at the AK root -- the SDK is not consistent about it.
+    AK::SoundEngine::ExecuteActionOnPlayingID(AK::SoundEngine::AkActionOnEventType_Stop,
+                                              static_cast<AkPlayingID>(in_playing_id),
+                                              fade_ms);
+#endif
+}
+
+bool WwiseAudioSystem::SetPlayingPaused(uint64_t in_playing_id, bool in_paused)
+{
+    if (!m_Active || in_playing_id == kInvalidPlayingId)
+    {
+        return false;
+    }
+
+#if defined(ZENGINE_HAS_WWISE)
+    AK::SoundEngine::ExecuteActionOnPlayingID(
+        in_paused ? AK::SoundEngine::AkActionOnEventType_Pause : AK::SoundEngine::AkActionOnEventType_Resume,
+        static_cast<AkPlayingID>(in_playing_id));
+    return true;
+#else
+    return false;
+#endif
+}
+
+bool WwiseAudioSystem::IsPlayingId(uint64_t in_playing_id) const
+{
+    // Only meaningful for an id that came from PostEvent(). Reporting "playing"
+    // for an id we never handed out would be a lie, and returning false for one
+    // is the safe direction: the caller drops a handle it cannot verify.
+    if (in_playing_id == kInvalidPlayingId)
+    {
+        return false;
+    }
+
+#if defined(ZENGINE_HAS_WWISE)
+    return (m_Impl != nullptr) && !m_Impl->HasFinished(in_playing_id);
+#else
+    return false;
 #endif
 }
 

@@ -9,7 +9,7 @@
 //   WwiseIntegrationSmokeTest --with-device \
 //       --bank-dir E:/Agent2/SVN/Wwise/.../GeneratedSoundBanks/Windows
 //
-// Three groups, in order of how much they can prove:
+// Four groups, in order of how much they can prove:
 //
 //   A. No fake support. WwiseAudioSystem is compiled unconditionally, so the
 //      dangerous state is "the API exists but does nothing". A组 pins
@@ -27,9 +27,16 @@
 //      event -> pump -> term. Needs a Wwise-linked build, a bank directory and
 //      an audio output device, so it only runs under --with-device. Skipping is
 //      printed with the number of checks skipped; it is never silent.
+//
+//   D. AudioSourceComponent routing. The backend can be perfectly wired (B) and
+//      still leave every emitter silent, because the two backends address
+//      content differently: files vs. named events. D1..D7 test that decision
+//      as a pure function (runs anywhere), D8..D16 pin that the component
+//      really routes through it.
 // =============================================================================
 
 #include "Runtime/Core/Base/SystemRegistry.h"
+#include "Runtime/Function/Audio/AudioCommon.h"
 #include "Runtime/Function/Audio/Wwise/WwiseAudioSystem.h"
 
 #include <cctype>
@@ -232,6 +239,70 @@ int main(int argc, char** argv)
     const std::string runtime_cmake = ReadFileText(engine_root / "Source" / "Runtime" / "CMakeLists.txt");
     Check(runtime_cmake.find("if(TARGET WwiseSDK)") != std::string::npos,
           "B11", "Runtime links Wwise only when the SDK target exists");
+
+    // -------------------------------------------------------------------------
+    // D. AudioSourceComponent can actually reach Wwise.
+    //
+    // B组 can be fully green and every emitter in the game still silent. The two
+    // backends address content in incompatible ways -- the internal one decodes
+    // a *file*, Wwise plays a *named event* out of a loaded bank -- so a component
+    // that only knows about clip paths has nothing to play the moment Wwise owns
+    // the output. Nothing throws: Play() returns "no route" and the game simply
+    // has no sound.
+    //
+    // Two halves, because either can be true on its own:
+    //   D1..D7  the route decision itself, as a pure function -- no engine, no
+    //           device, no bank, and no Wwise-linked build needed.
+    //   D8..    the component really routes through it and really has a Wwise
+    //           branch, rather than a helper nobody calls.
+    // -------------------------------------------------------------------------
+    std::printf("\n-- D. AudioSourceComponent routing --\n");
+
+    Check(ResolveAudioPlayRoute(false, "asset/audio/foo.wav", "") == AudioPlayRoute::kClipFile,
+          "D1", "internal backend + clip path -> clip route");
+    Check(ResolveAudioPlayRoute(false, "", "Play_Foo") == AudioPlayRoute::kNone,
+          "D2", "internal backend ignores a Wwise event (there is no clip to decode)");
+    Check(ResolveAudioPlayRoute(false, "", "") == AudioPlayRoute::kNone,
+          "D3", "internal backend + nothing configured -> no route");
+    Check(ResolveAudioPlayRoute(true, "asset/audio/foo.wav", "Play_Foo") == AudioPlayRoute::kWwiseEvent,
+          "D4", "Wwise backend prefers the event even when a clip path is also filled in");
+    Check(ResolveAudioPlayRoute(true, "asset/audio/foo.wav", "") == AudioPlayRoute::kNone,
+          "D5", "Wwise backend + no event -> no route; a clip path is NOT a fallback");
+    Check(ResolveAudioPlayRoute(true, "", "Play_Foo") == AudioPlayRoute::kWwiseEvent,
+          "D6", "Wwise backend + event only -> event route");
+    Check(ResolveAudioPlayRoute(false, "asset/audio/foo.wav", "Play_Foo") == AudioPlayRoute::kClipFile &&
+              ResolveAudioPlayRoute(true, "asset/audio/foo.wav", "Play_Foo") == AudioPlayRoute::kWwiseEvent,
+          "D7", "which backend is active decides the route -- not which field happens to be filled");
+
+    const std::string asc_text =
+        ReadFileText(source_root / "Runtime" / "Function" / "Framework" / "Component" / "Audio" / "AudioSourceComponent.cpp");
+    Check(!asc_text.empty(), "D8", "AudioSourceComponent.cpp is readable");
+    // A helper nobody calls is the exact shape of "implemented but not wired".
+    Check(CountOccurrencesInCode(asc_text, "ResolveAudioPlayRoute") >= 1,
+          "D9", "AudioSourceComponent picks its route through ResolveAudioPlayRoute()");
+    Check(CountOccurrencesInCode(asc_text, "PostEvent") >= 1,
+          "D10", "the Wwise route really posts an event");
+    // Definition + the post-time push + the per-frame refresh. Fewer than three
+    // means a moving emitter keeps the position it was posted from, which sounds
+    // like the sound is welded to a wall.
+    Check(CountOccurrencesInCode(asc_text, "PushWwiseEmitterTransform") >= 3,
+          "D11", "the emitter transform is pushed at post time and refreshed while playing");
+    Check(CountOccurrencesInCode(asc_text, "StopPlayingId") >= 1,
+          "D12", "Stop() releases the Wwise playing id, not only the mixer voice");
+    Check(CountOccurrencesInCode(asc_text, "IsPlayingId") >= 2,
+          "D13", "IsPlaying()/Tick() ask Wwise whether the event is really still going");
+
+    const std::string asc_header =
+        ReadFileText(source_root / "Runtime" / "Function" / "Framework" / "Component" / "Audio" / "AudioSourceComponent.h");
+    Check(!asc_header.empty(), "D14", "AudioSourceComponent.h is readable");
+    Check(asc_header.find("m_WwiseEvent") != std::string::npos,
+          "D15", "the Wwise event is its own serialized field, not derived from the clip path");
+
+    // IsPlayingId() has no Wwise query to answer from in 2019.2 -- without the
+    // end-of-event notification it could only ever report "posted once", which
+    // keeps a finished one-shot "playing" forever.
+    Check(CountOccurrencesInCode(wwise_text, "AK_EndOfEvent") >= 1,
+          "D16", "PostEvent asks for end-of-event so IsPlayingId() can be honest");
 
     // -------------------------------------------------------------------------
     // C. Real sound-engine run.

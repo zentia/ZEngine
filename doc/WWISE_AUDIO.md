@@ -79,10 +79,22 @@ wwise->SetRTPC("PlayerHealth", 0.5f);
 wwise->SetSwitch("Surface", "Stone", 100);
 wwise->SetState("GameState", "Combat");
 wwise->RenderAudio();                          // 每帧
+
+// 按 playing id 操作单条发声（Stop / 暂停 / 恢复）
+wwise->StopPlayingId(playing, 0.1f);           // 0.1s 淡出
+wwise->SetPlayingPaused(playing, true);
+wwise->SetPlayingPaused(playing, false);
+wwise->IsPlayingId(playing);                   // "这个 id 还活着吗"
 ```
 
 事件**按名字投递**（`PostEvent(const char*, ...)` 走 Wwise 的字符串哈希），
 **不需要从 Wwise 工程生成任何 ID 头文件**。
+
+`IsPlayingId()` 不是查询 Wwise —— 2019.2 没有 "这个 playing id 还活着吗" 的查询接口。
+它是**簿记**：`PostEvent` 每次都挂 `AK_EndOfEvent` 回调，回调在音频线程里把结束的 id
+写进一个无锁环形缓冲（`std::atomic<uint64_t>`，容量 256），主线程读这个环判断。
+音频线程里**不能加锁**（一加每声都爆音），所以这个环是**故意有损**的：环满了就丢最老的，
+丢失的后果是 `IsPlayingId()` 对一个已结束的 id 多返回一次 true，不会误报 false。
 
 ## 5. 几个"错了不报错"的坑（都已由测试钉住）
 
@@ -98,6 +110,16 @@ wwise->RenderAudio();                          // 每帧
 5. **Wwise 模式下文件播放**。Wwise 放的是 event 不是文件。
    `AudioSystem::Play()/PlayOneShot()` 在 Wwise 接管时**直接报错返回 invalid**——
    否则它们会乖乖渲染进 null device，返回一个完全合法的 voice id，然后一点声音都没有。
+6. **播放路由必须显式裁决**。上面那条只挡住了"从 `AudioSystem` 直接放文件"，挡不住
+   `AudioSourceComponent`：它同时持有 `m_ClipPath` 和 `m_WwiseEvent` 两个字段，
+   两边都填了就有个"听谁的"的问题，而**任何一种静默回退都是错的**（回退到 clip ⇒ Wwise
+   模式下没声音；回退到 event ⇒ 内部模式下没声音）。所以路由是一个纯函数
+   `ResolveAudioPlayRoute(wwise_owns_output, clip_path, wwise_event)`，
+   返回 `kClipFile` / `kWwiseEvent` / `kNone`；**`kNone` 要打 error，不能当空操作**。
+   判据是"哪个后端拥有输出"，不是"哪个字段非空"——字段非空只决定这条路能不能走。
+7. **Wwise 的 game object id 不能从 1 开始**。默认 listener 占用 id 1，
+   所以 `AudioSourceComponent` 的发射体从 `0x40000000` 起编号（`kEmitterGameObjectIdOffset`），
+   避免发射体抢走 listener 的 id。
 
 ## 6. 已知边界
 
@@ -105,7 +127,10 @@ wwise->RenderAudio();                          // 每帧
   生成（`GeneratedSoundBanks/<Platform>`）。目前测试用 SDK 自带的
   `samples/IntegrationDemo/Motion/WwiseProject/GeneratedSoundBanks/Windows`。
 - 文件 ID（file package）解析没接，返回 `AK_FileNotFound`；ZEngine 现在只用散装 `.bnk`。
-- `AudioSourceComponent` / `AudioListenerComponent` 仍然只接内部通路，还没转 Wwise。
+- `AudioSourceComponent` 已通 Wwise（路由裁决 / emitter transform / stop / pause / is-playing
+  都接了），`AudioListenerComponent` 仍然只接内部通路。
+  Wwise 模式下 component 需要填 `m_WwiseEvent`（event 名），`m_ClipPath` 被忽略且**会打 error**；
+  内部模式下反之。
 - 只接了 Windows（vc160 x64）。Android / iOS / OpenHarmony 的库目录 SDK 里都有，
   接法是同一套：加 platform dir + 库清单。
 
@@ -121,12 +146,22 @@ WwiseIntegrationSmokeTest --with-device \
   --bank-dir E:/Agent2/SVN/Wwise/.../GeneratedSoundBanks/Windows
 ```
 
-15 条默认断言（A 组"无假支持" + B 组接线门，源码级、无声卡也能跑），
-加 `--with-device` 后 27 条。C 组跳过时会**打印跳过条数**，不是静默零断言。
+默认（**未编 Wwise**，CI 就是这个）跑 37 条断言；带 `-DZENGINE_WWISE_SDK_DIR=...` 的构建跑 31 条
+——差别只在 A 组：没编 Wwise 时 A 组会展开成 10 条（每个入口点都要返回失败并如实自报家门），
+编了就只有 4 条。B 组 11 条 + D 组 16 条两种构建一样，都是**源码级**、无声卡也能跑，
+所以它们在仓库里才有意义。加 `--with-device` 后再多 12 条（C 组，只在 SDK 构建上有意义，
+非 SDK 构建上它会**显式判失败**而不是跳过）。C 组跳过时会**打印跳过条数**，不是静默零断言。
 
-**未加入默认 CI 矩阵**：C 组需要声卡。A/B 组不需要，这才让它在仓库里有意义。
+D 组存在的唯一理由就是老规矩：**接线门**。路由函数写得再对，没接进 `Play()` 等于没实现，
+而且**能编译能运行、静默失效**（走内部通路、什么都不响）。所以 D8–D16 全是源码级计数断言，
+钉住 `ResolveAudioPlayRoute` / `PostEvent` / `PushWwiseEmitterTransform` / `StopPlayingId` /
+`IsPlayingId` 真的出现在 `AudioSourceComponent.cpp` 里，以及 `AK_EndOfEvent` 真的出现在
+`WwiseAudioSystem.cpp` 里。`PushWwiseEmitterTransform` 要求 ≥3 次调用（Play / Tick / 至少一处），
+因为只调一次的话"只在 Play 时设过 transform"这种移动物体不跟声像的 bug 抓不到。
 
-变异验证（4 个变异，每个都被预期断言捕获）：
+**未加入默认 CI 矩阵**：C 组需要声卡。A/B/D 组不需要，这才让它在仓库里有意义。
+
+变异验证（6 个变异，每个都被预期断言捕获）：
 
 | 变异 | 变红 |
 | --- | --- |
@@ -134,3 +169,5 @@ WwiseIntegrationSmokeTest --with-device \
 | `eFloorPlane` 改成 XZ | B9 |
 | 注册顺序颠倒 | B3 |
 | 不注册 bank 基础路径 | C5, C6, C12 |
+| Wwise 接管但没填 event ⇒ 悄悄回退到 clip 通路 | D5 |
+| 路由不看出端拥有者（只看字段非空） | D4, D5, D6, D7 |

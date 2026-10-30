@@ -66,9 +66,29 @@ public:
 
     // ---- events ----
     /// Returns kInvalidPlayingId when the event could not be posted.
+    ///
+    /// The post always asks Wwise for an end-of-event notification, because that
+    /// is the only way this facade can answer IsPlayingId() honestly later --
+    /// 2019.2 has no "is this playing id still alive?" query, and answering from
+    /// "we posted it once and never stopped it" would keep reporting a finished
+    /// one-shot as playing forever.
     uint64_t PostEvent(const char* in_event_name, uint64_t in_game_object);
     /// kInvalidGameObject stops everything, a real id stops only that emitter.
     void StopAll(uint64_t in_game_object = kInvalidGameObject);
+    /// Stops exactly one posting. StopAll() on the emitter would also cut
+    /// anything else that emitter is playing, which is not what "this component
+    /// stopped its own sound" means.
+    void StopPlayingId(uint64_t in_playing_id, float in_fade_out_seconds = 0.0f);
+    /// Pauses / resumes one posting. Returns false when the sound engine is down
+    /// or the id was never posted -- no silent no-op.
+    bool SetPlayingPaused(uint64_t in_playing_id, bool in_paused);
+    /// True when `in_playing_id` came from PostEvent() and Wwise has not told us
+    /// it reached the end yet.
+    ///
+    /// Not a promise about the speakers: it is "no end-of-event has arrived for
+    /// this id". That is the honest answer available here, and it is exactly the
+    /// truth AudioSourceComponent::IsPlaying() is allowed to report.
+    bool IsPlayingId(uint64_t in_playing_id) const;
 
     // ---- game objects / listener ----
     bool RegisterGameObject(uint64_t in_id, const char* in_debug_name);
