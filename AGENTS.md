@@ -4038,3 +4038,42 @@ on, and the script installs via `adb push` + `pm install --force-queryable`.
 详见 `doc/MOBILE_PACKAGING.md` §3.8。
 
 Android / OHOS 是同一个洞，目前仍然没有 job。
+
+### 2.47 体积：先拿 map，再谈裁谁
+
+2026-10-30 `ZRuntimeShared` 从 2.6 MB 涨到 8.1 MB，第一反应（包括我自己的）是"裁掉静态合入
+的模块，比如 PuertsCore"。**按链接 map 一量，PuertsCore 只有 0.01 MB** —— 猜测和真相差两个
+数量级。真实构成：
+
+| 项 | 修之前 |
+| --- | --- |
+| 引擎自身对象 | 2.31 MB |
+| spirv-cross（msl+glsl+core） | 1.90 MB |
+| PapiQuickjs | 0.76 MB |
+| GPUSpine | 0.35 MB |
+| Jolt | 0.21 MB |
+| **PuertsCore** | **0.01 MB** |
+
+而 5.5 MB 里真正能安全拿回的 3.69 MB 全在构建配置，一行业务代码都没动：
+
+- `ZENGINE_MOBILE_SIZE_OPTIMIZE` 对 iOS **默认就是 ON**，但那段 flag 判的是
+  `ANDROID OR OHOS` —— iOS 一直停在 CMake 默认的 `-O3`。补上 `-Oz` 拿回 2.0 MB `__TEXT`。
+- `-exported_symbols_list` 之后剩下的约 2 万个 LOCAL 符号吃掉 1.9 MB `__LINKEDIT`，
+  链接期 `-x` 拿回 1.7 MB。
+
+规则：
+
+- **别猜体积，生成链接 map**（`-DZENGINE_IOS_LINK_MAP_FILE=<path>`，见
+  `scripts/build_lib/ios/README.md`）。`-dead_strip` + 导出列表之下，"把 .a 大小加起来"
+  恒为高估，只有链接器保留下来的字节才算。
+- **`option(...) 默认 ON` 不等于它生效了**。判默认值的条件和判 flag 的条件是两份代码，
+  可以各说各话（这里就差了一个 `OR IOS`）。查这类问题看 flag 落在哪，不看 option 声明。
+- **符号表是体积的一部分**，别只盯 `__TEXT`。`size -m` 先看 `__LINKEDIT`。
+- **`-x`（链接期）≠ `strip -S`（post-build）**。后者重写已链接的 Mach-O，可能破坏 iOS 16+
+  dyld 要的 `LC_DYLD_INFO`；前者让链接器一次生成对。要裁符号就在链接期裁。
+- **裁模块前先确认它是不是在公开 ABI 里**：PapiQuickjs 之所以不能动，是因为
+  `CreateQjsPapiEnvRef` / `GetQjsFFIApi` 在 104 个导出符号中。导出表是判断依据，不是依赖图。
+- **只摘库不摘引用它的 TU = 制造 0 地址调用**。`MetalRHI.mm` 引用 `CompilerMSL`，摘掉
+  spirv-cross 后这些符号在 `-undefined dynamic_lookup` 下被绑成 0，调用即
+  `EXC_BAD_ACCESS at 0x0`。这条正好被 `nm -m | grep -c "dynamically looked up"` 抓到 ——
+  **那条断言不只是防漏链库，也是防"裁过头"**。
