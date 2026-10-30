@@ -2,6 +2,7 @@
 
 #include "Runtime/Core/Base/Macro.h"
 #include "Runtime/Function/Audio/AudioDecoder.h"
+#include "Runtime/Function/Audio/Wwise/WwiseAudioSystem.h"
 
 #include <cstdlib>
 
@@ -19,8 +20,51 @@ bool AudioSystem::IsDisabledByEnvironment() const
     return EnvFlagIsSet("ZENGINE_AUDIO_DISABLE");
 }
 
+bool AudioSystem::QueryWwiseOwnsOutput() const
+{
+    // WwiseAudioSystem is registered before AudioSystem, so by the time we get
+    // here its Initialize() has already made up its mind.
+    const WwiseAudioSystem* wwise = GET_SYSTEM(WwiseAudioSystem);
+    return (wwise != nullptr) && wwise->IsActive();
+}
+
+bool AudioSystem::WarnOrProceedForFilePlayback(const char* in_api_name) const
+{
+    if (!m_WwiseOwnsOutput)
+    {
+        return true;
+    }
+
+    // Wwise plays events, not files. Playing a decoded clip into the null
+    // device would return a perfectly valid voice id and produce no sound at
+    // all -- the exact failure mode this backend exists to avoid.
+    if (!m_WarnedWwiseFilePlayback)
+    {
+        m_WarnedWwiseFilePlayback = true;
+        LOG_ERROR(ZAudio,
+                  "AudioSystem::{} is unavailable while the Wwise backend owns the output "
+                  "(the mixer renders into the null device). Use WwiseAudioSystem::PostEvent() instead.",
+                  in_api_name);
+    }
+    return false;
+}
+
 bool AudioSystem::Initialize()
 {
+    m_WwiseOwnsOutput = QueryWwiseOwnsOutput();
+
+    if (m_WwiseOwnsOutput)
+    {
+        // Two engines must never drive the same speakers. Wwise owns the sink,
+        // so this side keeps a running device purely so IsDeviceRunning() and
+        // the mixer API stay meaningful -- it renders into nothing.
+        LOG_INFO(ZAudio, "Wwise backend owns the audio output; AudioSystem opens the null device");
+        m_Device = std::make_unique<AudioDeviceNull>();
+        m_Device->Open(kDefaultSampleRate, kDefaultChannels, kDefaultBufferFrames, nullptr);
+        m_Device->Start();
+        return true;
+    }
+
     if (IsDisabledByEnvironment())
     {
         // Keep the API alive but never touch a device. This is what makes
@@ -145,6 +189,11 @@ void AudioSystem::UnloadAllClips()
 
 AudioVoiceId AudioSystem::Play(const AudioClipData* in_clip, const AudioPlayParams& in_params)
 {
+    if (!WarnOrProceedForFilePlayback("Play"))
+    {
+        return kInvalidAudioVoiceId;
+    }
+
     if (in_clip == nullptr)
     {
         return kInvalidAudioVoiceId;
@@ -154,6 +203,11 @@ AudioVoiceId AudioSystem::Play(const AudioClipData* in_clip, const AudioPlayPara
 
 AudioVoiceId AudioSystem::PlayOneShot(const std::filesystem::path& in_path, const AudioPlayParams& in_params)
 {
+    if (!WarnOrProceedForFilePlayback("PlayOneShot"))
+    {
+        return kInvalidAudioVoiceId;
+    }
+
     const AudioClipData* clip = GetClip(in_path);
     if (clip == nullptr)
     {
@@ -258,7 +312,19 @@ bool AudioSystem::IsDeviceRunning() const
 
 const char* AudioSystem::GetBackendName() const
 {
+    if (m_WwiseOwnsOutput)
+    {
+        // The null device here is an implementation detail; what the player
+        // actually hears comes from Wwise, and that is what must be reported.
+        const WwiseAudioSystem* wwise = GET_SYSTEM(WwiseAudioSystem);
+        return (wwise != nullptr) ? wwise->GetBackendName() : "Wwise";
+    }
     return (m_Device != nullptr) ? m_Device->GetBackendName() : "None";
+}
+
+bool AudioSystem::IsWwiseActive() const
+{
+    return m_WwiseOwnsOutput;
 }
 
 uint32_t AudioSystem::GetDeviceSampleRate() const

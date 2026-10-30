@@ -5,6 +5,7 @@
 #include "Runtime/Function/Audio/AudioCommon.h"
 #include "Runtime/Function/Audio/AudioDevice.h"
 #include "Runtime/Function/Audio/AudioMixer.h"
+#include "Runtime/Function/Audio/Wwise/WwiseAudioSystem.h"
 
 #include <filesystem>
 #include <memory>
@@ -77,7 +78,14 @@ public:
     // ---- introspection ----
     AudioMixer& GetMixer() { return m_Mixer; }
     bool IsDeviceRunning() const;
+    /// Reports what is *audibly* playing, which is not always m_Device: when the
+    /// Wwise backend is active this returns the Wwise name even though the
+    /// device here is the null one.
     const char* GetBackendName() const;
+    /// True when WwiseAudioSystem owns the output. File-clip playback through
+    /// Play()/PlayOneShot() is unavailable in that mode -- use
+    /// WwiseAudioSystem::PostEvent() instead.
+    bool IsWwiseActive() const;
     uint32_t GetDeviceSampleRate() const;
     uint32_t GetDeviceChannels() const;
 
@@ -93,9 +101,18 @@ private:
     static constexpr uint32_t kDefaultBufferFrames = 480u;
 
     bool IsDisabledByEnvironment() const;
+    /// Asks WwiseAudioSystem whether it initialised and therefore owns the
+    /// speakers. Called once from Initialize(); the result is cached in
+    /// m_WwiseOwnsOutput so hot paths branch on a plain bool.
+    bool QueryWwiseOwnsOutput() const;
+    /// Returns false (after logging once) when file-clip playback would be
+    /// silent because Wwise owns the output.
+    bool WarnOrProceedForFilePlayback(const char* in_api_name) const;
 
     AudioMixer m_Mixer;
     std::unique_ptr<IAudioDevice> m_Device;
+    bool m_WwiseOwnsOutput {false};
+    mutable bool m_WarnedWwiseFilePlayback {false};
 
     mutable std::mutex m_ClipMutex;
     /// Key: std::filesystem::path::generic_string() (forward slashes, stable).

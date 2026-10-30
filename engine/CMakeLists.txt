@@ -320,6 +320,12 @@ include(cmake/AppManifest.cmake)
 # tree. Pass SUBDIR when the tool ships more than its .exe.
 include(cmake/ToolOutputDir.cmake)
 
+# Optional Wwise 2019.2.x backend. Defines the WwiseSDK interface target (and
+# ZENGINE_HAS_WWISE) when ZENGINE_WWISE_SDK_DIR points at a real SDK; otherwise
+# it returns early and the Wwise translation unit compiles its "not compiled
+# in" branch. Must run before Source/ so configure_runtime_library() can see it.
+include(${CMAKE_CURRENT_LIST_DIR}/cmake/WwiseSDK.cmake)
+
 add_subdirectory(3rdparty)
 
 # Ensure modules (e.g. render_doc) are configured before the Runtime so their

@@ -575,6 +575,14 @@ list(REMOVE_ITEM SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/Audio/Test/AudioMixerSmokeTest.cpp")
 list(REMOVE_ITEM REGULAR_SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/Audio/Test/AudioMixerSmokeTest.cpp")
+# Wwise backend smoke-test main. Same carve-out rationale as every entry above:
+# it owns main() and must not be whole-archived into ZRuntime. Built only when
+# ZENGINE_BUILD_WWISE_SMOKE_TEST=ON (see Function/Audio/Wwise/Test/
+# CMakeLists.txt).
+list(REMOVE_ITEM SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Audio/Wwise/Test/WwiseIntegrationSmokeTest.cpp")
+list(REMOVE_ITEM REGULAR_SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Audio/Wwise/Test/WwiseIntegrationSmokeTest.cpp")
 # P0-6: network layer smoke-test main. Same carve-out rationale as every entry
 # above: it owns main() and must not be whole-archived into ZRuntime. Built
 # only when ZENGINE_BUILD_NETWORK_SMOKE_TEST=ON (see Function/Network/Test/
@@ -1481,6 +1489,18 @@ function(configure_runtime_library target)
         message(STATUS "Runtime: libcurl unavailable; network layer degrades to NetworkStatus::Unsupported")
     endif()
 
+    # ---- Wwise audio backend (optional) ------------------------------------
+    #
+    # WwiseSDK only exists when cmake/WwiseSDK.cmake found a real SDK, so the
+    # same source file compiles either way: linked and functional, or not
+    # linked and reporting IsCompiledIn() == false.
+    if(TARGET WwiseSDK)
+        target_link_libraries(${target} PRIVATE WwiseSDK)
+        message(STATUS "Runtime: Wwise audio backend linked (${ZENGINE_WWISE_SDK_DIR})")
+    else()
+        message(STATUS "Runtime: Wwise audio backend not compiled in (set ZENGINE_WWISE_SDK_DIR to enable)")
+    endif()
+
     target_link_libraries(${target} PUBLIC mimalloc-static)
     target_link_libraries(${target} PUBLIC lmdb)
 endfunction()
@@ -2097,6 +2117,12 @@ add_subdirectory(Function/Physics/Test)
 # for the target helper but exercises only the dependency-free DSP layer, so it
 # runs headless on every host -- including CI machines with no audio device.
 add_subdirectory(Function/Audio/Test)
+
+# Wwise backend smoke test. Own main(); carved out of the ZRuntime glob above
+# and built only when ZENGINE_BUILD_WWISE_SMOKE_TEST=ON. Groups A (no fake
+# support) and B (wiring gate) are source-level and headless; group C needs
+# --with-device and a bank directory, so it is not part of the default matrix.
+add_subdirectory(Function/Audio/Wwise/Test)
 
 # Network layer smoke test (P0-6). Own main(); carved out of the ZRuntime glob
 # above and built only when ZENGINE_BUILD_NETWORK_SMOKE_TEST=ON. Offline by

@@ -111,6 +111,11 @@ jobs:
           -DZENGINE_BUILD_SCRIPT_TIME_SMOKE_TEST=ON
           -DZENGINE_BUILD_ASSET_PATH_PORTABILITY_SMOKE_TEST=ON
           -DZENGINE_BUILD_GLTF_MESH_IMPORT_SMOKE_TEST=ON
+          # Wwise backend gate. CI has no SDK (ZENGINE_WWISE_SDK_DIR unset), so
+          # this exercises the "not compiled in" branch: the API must report
+          # that honestly instead of pretending. Groups A/B are source-level and
+          # need no audio device; group C is skipped unless --with-device.
+          -DZENGINE_BUILD_WWISE_SMOKE_TEST=ON
           -DZENGINE_BUILD_ENVIRONMENT_CHECK_TESTS=ON
 
       - name: Build smoke tests
@@ -148,6 +153,7 @@ jobs:
           FixedTimeStepSmokeTest
           ScriptTimeSmokeTest
           AssetPathPortabilitySmokeTest
+          WwiseIntegrationSmokeTest
           GltfMeshImportSmokeTest
           DX12BindlessSmokeTest
           EnvironmentCollectorTests

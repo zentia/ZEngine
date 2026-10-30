@@ -68,6 +68,7 @@
 #include "Runtime/Scripting/ScriptRegistry.h"
 #include "Runtime/Scripting/ScriptingManager.h"
 #include "Runtime/Function/Audio/AudioSystem.h"
+#include "Runtime/Function/Audio/Wwise/WwiseAudioSystem.h"
 #include "Runtime/Function/Network/NetworkSystem.h"
 
 namespace
@@ -173,6 +174,11 @@ namespace
         REGISTER_SYSTEM(ShaderRegistry);
         REGISTER_SYSTEM(ResourceManager);
         REGISTER_SYSTEM(ScriptingManager);
+        // Wwise must come *before* AudioSystem: AudioSystem::Initialize() asks
+        // whether Wwise took the output, and if so deliberately opens the null
+        // device so the two never drive the same speakers. Wwise is a no-op
+        // unless ZENGINE_WWISE_ENABLE=1 and the SDK was linked in.
+        REGISTER_SYSTEM(WwiseAudioSystem);
         // Audio is registered last so a device failure can never block the rest
         // of the startup sequence: AudioSystem::Initialize() degrades to the
         // null device rather than returning false.
