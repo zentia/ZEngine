@@ -157,6 +157,69 @@ CMake 内部行为"变成"自己保证"，两者值相同不冲突。同时显�
 
 ---
 
+### 3.5 iOS arm64 交叉编译（2026-10-29 首次编通）
+
+不需要设备就能验的一部分，现在可以验了：**把引擎编到 iphoneos/arm64**。CI 里从来没有
+iOS job（只有 macos / linux / windows），所以这条路径此前从未被编译过，第一次跑就炸出
+5 处问题。
+
+```bash
+# 工程根是**仓库根**，不是 engine/ —— ios.cmake 顶部注释和
+# Player/IOS/CMakeLists.txt 里写的 `-S engine` 是错的（那样配会把路径解析成
+# /engine/Libraries/... 并报"GPUSpine submodule missing"）。
+cmake -S . -B build/ios -G Ninja -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_TOOLCHAIN_FILE=$PWD/engine/toolchain/ios.cmake
+ninja -C build/ios ZGameIOS
+# 产物：build/ios/engine/Source/Player/IOS/ZEngine.app/ZEngine（Mach-O arm64, platform 2）
+```
+
+前提是 Xcode 且**许可已同意**：没同意时 `xcodebuild` / `xcrun --sdk` / `simctl` /
+`codesign` 全部返回同一句 *You have not agreed to the Xcode license agreements*，很容易
+误判成"SDK 没装"。同意要管理员权限（`sudo xcodebuild -license accept`），也可以首次启动
+Xcode.app 在弹窗里点。
+
+修掉的 5 处（按踩到的顺序）：
+
+1. **`-fno-stack-check` 必须 iOS 全局，不能只加在 ZRuntime**。ZEnginePCH 是共享预编译头，
+   AppleClang 拒绝 PCH 与 TU 的 stack-check 设置不一致。只加 ZRuntime → PCH 报
+   *was enabled ... but is currently disabled*；只加 PCH → ZPlayer 反向报一次。落点：
+   `engine/CMakeLists.txt` 在 `add_subdirectory(Source/CommonPCH)` **之前** `add_compile_options`。
+   （arm64 iOS 没有 `___chkstk_darwin`，栈探测必须关，配合 `Platform/IOS/ZChkstkDarwin.c`。）
+2. **`if(APPLE)` 的 `.mm` glob 对 iOS 也成立**，于是把 macOS 的 AppKit 源
+   （`Render/Platform/MacOS/*.mm`）编进了 iOS —— iPhoneOS SDK 里没有 `Cocoa/Cocoa.h`。
+   iOS 下排除它们；ZRuntime 里没人 include 它们（只有 Editor 用，而 iOS 跳过了 Editor），
+   所以不会断链。iOS 的窗口本来就是宿主给的（UIKit UIView，
+   `WindowSystem::CreatePlatformApplication()` 对 iOS 返回 nullptr）。
+3. **MetalRHI 的 6 处 macOS 专属 API**：
+   * `MTLPixelFormatDepth24Unorm_Stencil8` —— Apple GPU 没有 24 位深度，iOS SDK 根本没声明；改 `Depth32Float_Stencil8`。
+   * `MTLStorageModeManaged` ×2 —— iOS 是统一内存，改 `Shared`（全文没有 `synchronizeResource` / `didModifyRange`，无需补同步）。
+   * `NSRect` + `convertRectToBacking:` —— `UIView` 没有这个方法；改 `bounds × contentsScale`，且 scale 来源必须与 `SyncLayerMetrics` **同一个**，否则 `resized` 每帧为真、swapchain 无限重建。
+   * `view.layer = nil` —— `UIView.layer` 只读，只有 `NSView` 能置。
+4. **CrashHandler.h 的 POSIX 分支：`WriteSnapshot()` 里那两个块作用域函数声明把名字放进了
+   `zcrash_posix`**（C++ 规定块作用域的函数声明落在最近的 enclosing namespace），而定义在
+   全局作用域 → 链接找 `zcrash_posix::ZEngineForceFlushLogs`，永远没有。Windows 分支不受
+   影响（它的 handler 本身在全局作用域）。iOS 是第一个把这条路径真正链起来的平台。
+   修法：在 `namespace zcrash_posix` 之前于全局作用域声明。
+
+⚠️ **两个构建树共用 `bin/`**：宿主的 `build/` 与 `build/ios` 都往仓库根的 `bin/` 输出同名
+`.a`。iOS 构建跑完，宿主那套静态库就全变成 iOS 版（platform 2），宿主测试随即崩溃。编完
+iOS 必须重建宿主（`ninja -C build <targets>`；归档是 ninja 的产物，删掉后会从现存的 `.o`
+重新链接）。建议后续给 iOS 单独设 `CMAKE_ARCHIVE_OUTPUT_DIRECTORY` 以根治。
+
+⚠️ 这条链路上还牵出两个**静默失败**的测试脚本问题（都不是 iOS 专属，但只有在这时被撞出来）：
+
+* `scripts/run_smoke_test.py` 的 `LINK_LIBS` 只认 `lib<name>.a`，而本机 cmake 是 Debug 配置、
+  产物叫 `lib<name>-debug.a`；认不到就**静默跳过**。偏偏 Apple 这条链接带了
+  `-Wl,-undefined,dynamic_lookup`，于是 `mi_malloc` 之类被推迟到运行时解析、**绑成 0**，
+  调用即 `EXC_BAD_ACCESS at 0x0000000000000000` —— 链接期零报错，崩溃栈还指向调用方
+  （`MemoryManager::Malloc`）而不是缺失的库。已改为按实际存在的归档名解析（含 `-debug` /
+  `-d` 变体），并把缺失的库打到 stderr。
+* 归档里混着"用旧头文件编的 `.o`"时会冒出老签名的未定义符号（例如
+  `ImmediatePtrResolveRead(int,long)` 两参版）。识别信号是 `nm -m <bin> | grep "dynamically
+  looked up"`。这种只能**全量重编**，不要去补声明。
+
+---
+
 ## 4. 仍然只能真机验的
 
 静态自检**覆盖不到**的部分，出包前必须在设备上确认：
@@ -185,4 +248,8 @@ CMake 内部行为"变成"自己保证"，两者值相同不冲突。同时显�
 | Gradle BUILD SUCCESSFUL 但报没产物 | 产物名猜错 | `zbuild_android.py::locate_output` |
 | iOS 配出来没有 target | `IOS` 变量不成立 | `engine/toolchain/ios.cmake:17` |
 | iOS 装上闪退，Xcode 报错指不到 | `Info.plist` 占位符没被替换 | 自检第 5 项（占位符 → CMake 属性） |
+| 所有 Apple 工具都说 *not agreed to the Xcode license* | 许可未同意（不是 SDK 缺失） | `sudo xcodebuild -license accept`（要管理员权限）或首次启动 Xcode.app 点同意 |
+| iOS 配置报 `GPUSpine submodule missing at /engine/Libraries/...` | 用了 `-S engine`；工程根是**仓库根** | §3.5 的命令（`cmake -S . -B build/ios`） |
+| PCH 报 *stack checking was enabled ... but is currently disabled* | `-fno-stack-check` 没同时覆盖 PCH 与所有消费方 | §3.5 第 1 条 |
+| 宿主测试崩在 `EXC_BAD_ACCESS at 0x0` 且链接期无报错 | 某个库没链上 + `dynamic_lookup` 绑成 0（或刚被 iOS 构建覆盖 `bin/`） | §3.5 末尾两条；`nm -m <bin> \| grep "dynamically looked up"` |
 | 链接期 undefined symbol | 宿主用了没有 `ZPLAYER_API` 的符号 | 自检"宿主符号"两项 |
