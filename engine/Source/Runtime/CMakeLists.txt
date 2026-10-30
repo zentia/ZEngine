@@ -1350,6 +1350,37 @@ if(IOS)
     if(ZENGINE_IOS_EXPORT_SYMBOLS_FILE)
         target_link_options(${SHARED_TARGET_NAME} PRIVATE "LINKER:-exported_symbols_list,${ZENGINE_IOS_EXPORT_SYMBOLS_FILE}")
     endif()
+    # --- Drop local symbols from the symbol table (link-time `-x`) -----------
+    # With -exported_symbols_list the 100-or-so C entry points are the only
+    # exported symbols; everything else the linker keeps becomes LOCAL, and
+    # `-dead_strip` guarantees none of it is referenced from outside. Those
+    # local entries are pure symbol-table ballast: nlist + the mangled-name
+    # string table. Measured on 2026-10-30 they cost ~1.3 MB of __LINKEDIT
+    # (20970 symbols / 0x1d4000 __LINKEDIT vs 7366 symbols / 0x90000 for the
+    # 2026-08 build of the same target).
+    #
+    # This is deliberately ld64's `-x` at LINK TIME and NOT a post-build
+    # `strip -S`: strip rewrites an already-linked Mach-O and can drop or
+    # corrupt LC_DYLD_INFO, which iOS 16+ dyld (and UnityFramework's embedded
+    # dyld) needs -- "missing LC_DYLD_INFO load command". `-x` is a linker
+    # flag, so the load commands are generated correctly in the first place.
+    # dSYM is still produced, so symbolication is unaffected.
+    if(ZENGINE_IOS_SHARED_STRIP_LOCAL_SYMBOLS)
+        # Only for the configurations that carry no debug info anyway
+        # (Release / MinSizeRel). RelWithDebInfo is excluded: dsymutil builds
+        # the dSYM from the linked image's symbol table, so throwing the LOCAL
+        # symbols away first would degrade it.
+        target_link_options(${SHARED_TARGET_NAME} PRIVATE
+            "$<$<NOT:$<OR:$<CONFIG:Debug>,$<CONFIG:RelWithDebInfo>>>:LINKER:-x>")
+    endif()
+    # Optional link map (-map <file>). Opt-in purely for size work: the map is
+    # the only way to attribute dylib bytes to a static archive / object, and
+    # -dead_strip + -exported_symbols_list mean the answer is never "sum the
+    # .a files" -- only live, non-stripped contributions show up. Pass
+    # -DZENGINE_IOS_LINK_MAP_FILE=<abs path> at configure time.
+    if(ZENGINE_IOS_LINK_MAP_FILE)
+        target_link_options(${SHARED_TARGET_NAME} PRIVATE "LINKER:-map,${ZENGINE_IOS_LINK_MAP_FILE}")
+    endif()
 endif()
 
 if(ZENGINE_MOBILE_HIDE_INTERNAL_SYMBOLS AND (ANDROID OR Z_PLATFORM_OHOS OR OHOS OR CMAKE_SYSTEM_NAME STREQUAL "OHOS"))
