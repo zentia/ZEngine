@@ -20,32 +20,31 @@ option(ZENGINE_BUILD_UMG_DELEGATES_SMOKE_TEST
        "Build the UMG named-event registry smoke-test executable"
        OFF)
 
-if(NOT ZENGINE_BUILD_UMG_DELEGATES_SMOKE_TEST)
-    return()
+if(ZENGINE_BUILD_UMG_DELEGATES_SMOKE_TEST)
+
+    add_executable(UMGDelegatesSmokeTest
+        UMGDelegatesSmokeTest.cpp
+        ../Core/UMGDelegates.cpp   # GetUMGEventRegistry() singleton (dependency-free)
+    )
+
+    set_target_properties(UMGDelegatesSmokeTest PROPERTIES
+        CXX_STANDARD 20
+        FOLDER "Engine/Tests"
+    )
+
+    # Header-only include chain: only the engine/Source root is needed.
+    target_include_directories(UMGDelegatesSmokeTest PRIVATE
+        ${ENGINE_ROOT_DIR}/Source
+    )
+
+    if(MSVC)
+        target_compile_options(UMGDelegatesSmokeTest PRIVATE /W4)
+    endif()
+
+    add_test(NAME UMGDelegatesSmokeTest COMMAND UMGDelegatesSmokeTest)
+
+    message(STATUS "Configured UMG delegates smoke-test target: UMGDelegatesSmokeTest")
 endif()
-
-add_executable(UMGDelegatesSmokeTest
-    UMGDelegatesSmokeTest.cpp
-    ../Core/UMGDelegates.cpp   # GetUMGEventRegistry() singleton (dependency-free)
-)
-
-set_target_properties(UMGDelegatesSmokeTest PROPERTIES
-    CXX_STANDARD 20
-    FOLDER "Engine/Tests"
-)
-
-# Header-only include chain: only the engine/Source root is needed.
-target_include_directories(UMGDelegatesSmokeTest PRIVATE
-    ${ENGINE_ROOT_DIR}/Source
-)
-
-if(MSVC)
-    target_compile_options(UMGDelegatesSmokeTest PRIVATE /W4)
-endif()
-
-add_test(NAME UMGDelegatesSmokeTest COMMAND UMGDelegatesSmokeTest)
-
-message(STATUS "Configured UMG delegates smoke-test target: UMGDelegatesSmokeTest")
 
 # =====================================================================
 # UMG widget-tree traversal smoke test (P0 focus nav + P1 tick).
@@ -64,31 +63,30 @@ option(ZENGINE_BUILD_UMG_TREE_SMOKE_TEST
        "Build the UMG widget-tree traversal smoke-test executable"
        OFF)
 
-if(NOT ZENGINE_BUILD_UMG_TREE_SMOKE_TEST)
-    return()
+if(ZENGINE_BUILD_UMG_TREE_SMOKE_TEST)
+
+    add_executable(UMGTreeSmokeTest UMGTreeSmokeTest.cpp)
+
+    set_target_properties(UMGTreeSmokeTest PROPERTIES
+        CXX_STANDARD 20
+        FOLDER "Engine/Tests"
+    )
+
+    # Header-only include chain: only the engine/Source root is needed. UMGTree.h is
+    # a template over the node type, so the test drives it with a minimal stub struct
+    # (no ZSlate / engine-math headers required).
+    target_include_directories(UMGTreeSmokeTest PRIVATE
+        ${ENGINE_ROOT_DIR}/Source
+    )
+
+    if(MSVC)
+        target_compile_options(UMGTreeSmokeTest PRIVATE /W4)
+    endif()
+
+    add_test(NAME UMGTreeSmokeTest COMMAND UMGTreeSmokeTest)
+
+    message(STATUS "Configured UMG tree smoke-test target: UMGTreeSmokeTest")
 endif()
-
-add_executable(UMGTreeSmokeTest UMGTreeSmokeTest.cpp)
-
-set_target_properties(UMGTreeSmokeTest PROPERTIES
-    CXX_STANDARD 20
-    FOLDER "Engine/Tests"
-)
-
-# Header-only include chain: only the engine/Source root is needed. UMGTree.h is
-# a template over the node type, so the test drives it with a minimal stub struct
-# (no ZSlate / engine-math headers required).
-target_include_directories(UMGTreeSmokeTest PRIVATE
-    ${ENGINE_ROOT_DIR}/Source
-)
-
-if(MSVC)
-    target_compile_options(UMGTreeSmokeTest PRIVATE /W4)
-endif()
-
-add_test(NAME UMGTreeSmokeTest COMMAND UMGTreeSmokeTest)
-
-message(STATUS "Configured UMG tree smoke-test target: UMGTreeSmokeTest")
 
 # =====================================================================
 # UMG animation smoke test (P1 animation + render transform).
@@ -109,29 +107,28 @@ option(ZENGINE_BUILD_UMG_ANIMATION_SMOKE_TEST
        "Build the UMG animation smoke-test executable"
        OFF)
 
-if(NOT ZENGINE_BUILD_UMG_ANIMATION_SMOKE_TEST)
-    return()
+if(ZENGINE_BUILD_UMG_ANIMATION_SMOKE_TEST)
+
+    add_executable(UMGAnimationSmokeTest UMGAnimationSmokeTest.cpp)
+
+    set_target_properties(UMGAnimationSmokeTest PROPERTIES
+        CXX_STANDARD 20
+        FOLDER "Engine/Tests"
+    )
+
+    # Header-only include chain: only the engine/Source root is needed.
+    target_include_directories(UMGAnimationSmokeTest PRIVATE
+        ${ENGINE_ROOT_DIR}/Source
+    )
+
+    if(MSVC)
+        target_compile_options(UMGAnimationSmokeTest PRIVATE /W4)
+    endif()
+
+    add_test(NAME UMGAnimationSmokeTest COMMAND UMGAnimationSmokeTest)
+
+    message(STATUS "Configured UMG animation smoke-test target: UMGAnimationSmokeTest")
 endif()
-
-add_executable(UMGAnimationSmokeTest UMGAnimationSmokeTest.cpp)
-
-set_target_properties(UMGAnimationSmokeTest PROPERTIES
-    CXX_STANDARD 20
-    FOLDER "Engine/Tests"
-)
-
-# Header-only include chain: only the engine/Source root is needed.
-target_include_directories(UMGAnimationSmokeTest PRIVATE
-    ${ENGINE_ROOT_DIR}/Source
-)
-
-if(MSVC)
-    target_compile_options(UMGAnimationSmokeTest PRIVATE /W4)
-endif()
-
-add_test(NAME UMGAnimationSmokeTest COMMAND UMGAnimationSmokeTest)
-
-message(STATUS "Configured UMG animation smoke-test target: UMGAnimationSmokeTest")
 
 # =====================================================================
 # UMG anchor smoke test (P1 anchor / adaptive layout).
@@ -150,26 +147,25 @@ option(ZENGINE_BUILD_UMG_ANCHOR_SMOKE_TEST
        "Build the UMG anchor smoke-test executable"
        OFF)
 
-if(NOT ZENGINE_BUILD_UMG_ANCHOR_SMOKE_TEST)
-    return()
+if(ZENGINE_BUILD_UMG_ANCHOR_SMOKE_TEST)
+
+    add_executable(UMGAnchorSmokeTest UMGAnchorSmokeTest.cpp)
+
+    set_target_properties(UMGAnchorSmokeTest PROPERTIES
+        CXX_STANDARD 20
+        FOLDER "Engine/Tests"
+    )
+
+    # Header-only include chain: only the engine/Source root is needed.
+    target_include_directories(UMGAnchorSmokeTest PRIVATE
+        ${ENGINE_ROOT_DIR}/Source
+    )
+
+    if(MSVC)
+        target_compile_options(UMGAnchorSmokeTest PRIVATE /W4)
+    endif()
+
+    add_test(NAME UMGAnchorSmokeTest COMMAND UMGAnchorSmokeTest)
+
+    message(STATUS "Configured UMG anchor smoke-test target: UMGAnchorSmokeTest")
 endif()
-
-add_executable(UMGAnchorSmokeTest UMGAnchorSmokeTest.cpp)
-
-set_target_properties(UMGAnchorSmokeTest PROPERTIES
-    CXX_STANDARD 20
-    FOLDER "Engine/Tests"
-)
-
-# Header-only include chain: only the engine/Source root is needed.
-target_include_directories(UMGAnchorSmokeTest PRIVATE
-    ${ENGINE_ROOT_DIR}/Source
-)
-
-if(MSVC)
-    target_compile_options(UMGAnchorSmokeTest PRIVATE /W4)
-endif()
-
-add_test(NAME UMGAnchorSmokeTest COMMAND UMGAnchorSmokeTest)
-
-message(STATUS "Configured UMG anchor smoke-test target: UMGAnchorSmokeTest")

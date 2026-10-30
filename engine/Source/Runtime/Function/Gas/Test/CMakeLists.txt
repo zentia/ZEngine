@@ -17,29 +17,28 @@ option(ZENGINE_BUILD_GAS_COOLDOWN_SMOKE_TEST
        "Build the GAS cooldown arithmetic smoke-test executable"
        OFF)
 
-if(NOT ZENGINE_BUILD_GAS_COOLDOWN_SMOKE_TEST)
-    return()
+if(ZENGINE_BUILD_GAS_COOLDOWN_SMOKE_TEST)
+
+    add_executable(GasCooldownSmokeTest GasCooldownSmokeTest.cpp)
+
+    set_target_properties(GasCooldownSmokeTest PROPERTIES
+        CXX_STANDARD 20
+        FOLDER "Engine/Tests"
+    )
+
+    # Header-only include chain: only the engine/Source root is needed.
+    target_include_directories(GasCooldownSmokeTest PRIVATE
+        ${ENGINE_ROOT_DIR}/Source
+    )
+
+    if(MSVC)
+        target_compile_options(GasCooldownSmokeTest PRIVATE /W4)
+    endif()
+
+    add_test(NAME GasCooldownSmokeTest COMMAND GasCooldownSmokeTest)
+
+    message(STATUS "Configured GAS cooldown smoke-test target: GasCooldownSmokeTest")
 endif()
-
-add_executable(GasCooldownSmokeTest GasCooldownSmokeTest.cpp)
-
-set_target_properties(GasCooldownSmokeTest PROPERTIES
-    CXX_STANDARD 20
-    FOLDER "Engine/Tests"
-)
-
-# Header-only include chain: only the engine/Source root is needed.
-target_include_directories(GasCooldownSmokeTest PRIVATE
-    ${ENGINE_ROOT_DIR}/Source
-)
-
-if(MSVC)
-    target_compile_options(GasCooldownSmokeTest PRIVATE /W4)
-endif()
-
-add_test(NAME GasCooldownSmokeTest COMMAND GasCooldownSmokeTest)
-
-message(STATUS "Configured GAS cooldown smoke-test target: GasCooldownSmokeTest")
 
 # =====================================================================
 # GAS 周期性效果冒烟测试（周期性效果执行落地验证）
@@ -61,26 +60,25 @@ option(ZENGINE_BUILD_GAS_PERIODIC_SMOKE_TEST
        "Build the GAS periodic-effect timing smoke-test executable"
        OFF)
 
-if(NOT ZENGINE_BUILD_GAS_PERIODIC_SMOKE_TEST)
-    return()
+if(ZENGINE_BUILD_GAS_PERIODIC_SMOKE_TEST)
+
+    add_executable(GasPeriodicSmokeTest GasPeriodicSmokeTest.cpp)
+
+    set_target_properties(GasPeriodicSmokeTest PROPERTIES
+        CXX_STANDARD 20
+        FOLDER "Engine/Tests"
+    )
+
+    # Header-only include chain: only the engine/Source root is needed.
+    target_include_directories(GasPeriodicSmokeTest PRIVATE
+        ${ENGINE_ROOT_DIR}/Source
+    )
+
+    if(MSVC)
+        target_compile_options(GasPeriodicSmokeTest PRIVATE /W4)
+    endif()
+
+    add_test(NAME GasPeriodicSmokeTest COMMAND GasPeriodicSmokeTest)
+
+    message(STATUS "Configured GAS periodic smoke-test target: GasPeriodicSmokeTest")
 endif()
-
-add_executable(GasPeriodicSmokeTest GasPeriodicSmokeTest.cpp)
-
-set_target_properties(GasPeriodicSmokeTest PROPERTIES
-    CXX_STANDARD 20
-    FOLDER "Engine/Tests"
-)
-
-# Header-only include chain: only the engine/Source root is needed.
-target_include_directories(GasPeriodicSmokeTest PRIVATE
-    ${ENGINE_ROOT_DIR}/Source
-)
-
-if(MSVC)
-    target_compile_options(GasPeriodicSmokeTest PRIVATE /W4)
-endif()
-
-add_test(NAME GasPeriodicSmokeTest COMMAND GasPeriodicSmokeTest)
-
-message(STATUS "Configured GAS periodic smoke-test target: GasPeriodicSmokeTest")

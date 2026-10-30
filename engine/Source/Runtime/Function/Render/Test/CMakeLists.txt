@@ -338,29 +338,28 @@ option(ZENGINE_BUILD_SPOTLIGHT_SMOKE_TEST
        "Build the SpotLight cone-attenuation smoke-test executable"
        OFF)
 
-if(NOT ZENGINE_BUILD_SPOTLIGHT_SMOKE_TEST)
-    return()
+if(ZENGINE_BUILD_SPOTLIGHT_SMOKE_TEST)
+
+    add_executable(SpotLightSmokeTest SpotLightSmokeTest.cpp)
+
+    set_target_properties(SpotLightSmokeTest PROPERTIES
+        CXX_STANDARD 20
+        FOLDER "Engine/Tests"
+    )
+
+    # Header-only include chain: only the engine/Source root is needed.
+    target_include_directories(SpotLightSmokeTest PRIVATE
+        ${ENGINE_ROOT_DIR}/Source
+    )
+
+    if(MSVC)
+        target_compile_options(SpotLightSmokeTest PRIVATE /W4)
+    endif()
+
+    add_test(NAME SpotLightSmokeTest COMMAND SpotLightSmokeTest)
+
+    message(STATUS "Configured SpotLight smoke-test target: SpotLightSmokeTest")
 endif()
-
-add_executable(SpotLightSmokeTest SpotLightSmokeTest.cpp)
-
-set_target_properties(SpotLightSmokeTest PROPERTIES
-    CXX_STANDARD 20
-    FOLDER "Engine/Tests"
-)
-
-# Header-only include chain: only the engine/Source root is needed.
-target_include_directories(SpotLightSmokeTest PRIVATE
-    ${ENGINE_ROOT_DIR}/Source
-)
-
-if(MSVC)
-    target_compile_options(SpotLightSmokeTest PRIVATE /W4)
-endif()
-
-add_test(NAME SpotLightSmokeTest COMMAND SpotLightSmokeTest)
-
-message(STATUS "Configured SpotLight smoke-test target: SpotLightSmokeTest")
 
 # =====================================================================
 # ShaderRegistry path-case smoke test.
@@ -446,26 +445,25 @@ option(ZENGINE_BUILD_SPOT_SHADOW_SMOKE_TEST
        "Build the SpotLight shadow-projection smoke-test executable"
        OFF)
 
-if(NOT ZENGINE_BUILD_SPOT_SHADOW_SMOKE_TEST)
-    return()
+if(ZENGINE_BUILD_SPOT_SHADOW_SMOKE_TEST)
+
+    add_executable(SpotShadowSmokeTest SpotShadowSmokeTest.cpp)
+
+    set_target_properties(SpotShadowSmokeTest PROPERTIES
+        CXX_STANDARD 20
+        FOLDER "Engine/Tests"
+    )
+
+    # Header-only include chain: only the engine/Source root is needed.
+    target_include_directories(SpotShadowSmokeTest PRIVATE
+        ${ENGINE_ROOT_DIR}/Source
+    )
+
+    if(MSVC)
+        target_compile_options(SpotShadowSmokeTest PRIVATE /W4)
+    endif()
+
+    add_test(NAME SpotShadowSmokeTest COMMAND SpotShadowSmokeTest)
+
+    message(STATUS "Configured SpotShadow smoke-test target: SpotShadowSmokeTest")
 endif()
-
-add_executable(SpotShadowSmokeTest SpotShadowSmokeTest.cpp)
-
-set_target_properties(SpotShadowSmokeTest PROPERTIES
-    CXX_STANDARD 20
-    FOLDER "Engine/Tests"
-)
-
-# Header-only include chain: only the engine/Source root is needed.
-target_include_directories(SpotShadowSmokeTest PRIVATE
-    ${ENGINE_ROOT_DIR}/Source
-)
-
-if(MSVC)
-    target_compile_options(SpotShadowSmokeTest PRIVATE /W4)
-endif()
-
-add_test(NAME SpotShadowSmokeTest COMMAND SpotShadowSmokeTest)
-
-message(STATUS "Configured SpotShadow smoke-test target: SpotShadowSmokeTest")

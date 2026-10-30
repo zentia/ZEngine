@@ -17,11 +17,15 @@ option(ZENGINE_BUILD_LUMEN_SCENE_GEOMETRY_SMOKE_TEST
        "Build the Lumen scene-geometry smoke-test executable"
        OFF)
 
-if(NOT ZENGINE_BUILD_LUMEN_SCENE_GEOMETRY_SMOKE_TEST)
-    return()
+# 这里**不能**用文件级 `if(NOT ...) return()`：本文件后面还有 6 个 option，
+# return() 会把它们连同 target 一起压死（曾经就是这样：只开后面某个选项时
+# CMake 报 "Manually-specified variables were not used"，测试静默不跑）。
+# LumenSceneGeometrySmokeTest 的 add_executable 在这里，而它的属性 / 链接 /
+# 注册段在**文件末尾**（因为要等 PCH / Apple stubs 的判定），两处都用
+# 正向 `if()` 包起来，等价于原来的 return() 语义但不影响后面的选项。
+if(ZENGINE_BUILD_LUMEN_SCENE_GEOMETRY_SMOKE_TEST)
+    add_executable(LumenSceneGeometrySmokeTest LumenSceneGeometrySmokeTest.cpp)
 endif()
-
-add_executable(LumenSceneGeometrySmokeTest LumenSceneGeometrySmokeTest.cpp)
 
 # ---------------------------------------------------------------------
 # Software ray-tracing smoke test. Same pattern, separate option: it pins the
@@ -287,32 +291,36 @@ if(ZENGINE_BUILD_LUMEN_REFLECTIONS_SMOKE_TEST)
     message(STATUS "Configured Lumen reflections smoke test: LumenReflectionsSmokeTest")
 endif()
 
-set_target_properties(LumenSceneGeometrySmokeTest PROPERTIES
-    CXX_STANDARD 23
-    FOLDER "Engine/Tests"
-)
+# LumenSceneGeometrySmokeTest 的收尾段（add_executable 在文件开头，同样的
+# 正向守卫）。
+if(ZENGINE_BUILD_LUMEN_SCENE_GEOMETRY_SMOKE_TEST)
+    set_target_properties(LumenSceneGeometrySmokeTest PROPERTIES
+        CXX_STANDARD 23
+        FOLDER "Engine/Tests"
+    )
 
-target_link_libraries(LumenSceneGeometrySmokeTest PRIVATE ZRuntime)
+    target_link_libraries(LumenSceneGeometrySmokeTest PRIVATE ZRuntime)
 
-if(TARGET ZEnginePCH)
-    target_link_libraries(LumenSceneGeometrySmokeTest PRIVATE ZEnginePCH)
-    target_include_directories(LumenSceneGeometrySmokeTest PRIVATE ${ENGINE_ROOT_DIR}/Source/CommonPCH)
-    add_dependencies(LumenSceneGeometrySmokeTest ZEnginePCH)
-    target_precompile_headers(LumenSceneGeometrySmokeTest REUSE_FROM ZEnginePCH)
+    if(TARGET ZEnginePCH)
+        target_link_libraries(LumenSceneGeometrySmokeTest PRIVATE ZEnginePCH)
+        target_include_directories(LumenSceneGeometrySmokeTest PRIVATE ${ENGINE_ROOT_DIR}/Source/CommonPCH)
+        add_dependencies(LumenSceneGeometrySmokeTest ZEnginePCH)
+        target_precompile_headers(LumenSceneGeometrySmokeTest REUSE_FROM ZEnginePCH)
+    endif()
+
+    if(MSVC)
+        target_compile_options(LumenSceneGeometrySmokeTest PRIVATE /W4)
+    endif()
+
+    # Same Apple link fix as PlayerSettings/Test: libZRuntime.a references render
+    # symbols whose TUs are not built for Apple, so without the stubs the target
+    # cannot link on macOS at all.
+    if(APPLE)
+        target_sources(LumenSceneGeometrySmokeTest PRIVATE
+            ${ENGINE_ROOT_DIR}/Source/Runtime/Core/Serialize/Test/SmokeTestAppleLinkStubs.cpp)
+    endif()
+
+    add_test(NAME LumenSceneGeometrySmokeTest COMMAND LumenSceneGeometrySmokeTest)
+
+    message(STATUS "Configured Lumen scene-geometry smoke-test target: LumenSceneGeometrySmokeTest")
 endif()
-
-if(MSVC)
-    target_compile_options(LumenSceneGeometrySmokeTest PRIVATE /W4)
-endif()
-
-# Same Apple link fix as PlayerSettings/Test: libZRuntime.a references render
-# symbols whose TUs are not built for Apple, so without the stubs the target
-# cannot link on macOS at all.
-if(APPLE)
-    target_sources(LumenSceneGeometrySmokeTest PRIVATE
-        ${ENGINE_ROOT_DIR}/Source/Runtime/Core/Serialize/Test/SmokeTestAppleLinkStubs.cpp)
-endif()
-
-add_test(NAME LumenSceneGeometrySmokeTest COMMAND LumenSceneGeometrySmokeTest)
-
-message(STATUS "Configured Lumen scene-geometry smoke-test target: LumenSceneGeometrySmokeTest")
