@@ -124,11 +124,19 @@ def configure(config: str, team: str | None, generator_args: str) -> None:
 
 
 def build_app(config: str) -> Path:
+    # -allowProvisioningUpdates 是必需的，不是可选优化：只给 DEVELOPMENT_TEAM
+    # 的话，xcodebuild **不会**去 Apple 后台补东西。而个人/免费团队的真机部署
+    # 有两件必须先发生的事——把这台设备的 UDID 注册到团队、并为
+    # com.zengine.player 生成（或刷新）开发用 provisioning profile —— 缺任一件
+    # 都会在签名阶段失败，且报错完全不提"设备没注册"（常见形态是
+    # "Provisioning profile ... doesn't include the device"，或干脆
+    # "No profile for team ... matched"）。加了它 xcodebuild 才会自动完成这两步。
     run(["xcodebuild",
          "-project", str(BUILD_DIR / "ZEngine.xcodeproj"),
          "-scheme", "ZGameIOS",
          "-configuration", config,
          "-destination", "generic/platform=iOS",
+         "-allowProvisioningUpdates",
          "build"], cwd=BUILD_DIR)
 
     # 不要硬猜一个路径。Xcode 生成器的产物位置随 CMake 版本和
@@ -165,6 +173,8 @@ def archive_and_export(config: str, team: str | None) -> Path:
            "-scheme", "ZGameIOS",
            "-configuration", config,
            "-destination", "generic/platform=iOS",
+           # 同 build_app()：没有这一项，个人团队的设备注册 / profile 生成都不会发生。
+           "-allowProvisioningUpdates",
            "-archivePath", str(archive),
            "archive"]
     if team:
