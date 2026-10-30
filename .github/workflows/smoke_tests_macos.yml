@@ -1,0 +1,153 @@
+name: Smoke tests (macOS)
+
+# =============================================================================
+# 与 smoke_tests_linux.yml 同一套模板、同一套失败语义：
+#
+#   1. configure / "0 个测试" / Build ZRuntime  => 红（基建坏了）
+#   2. 单个目标编译失败                        => 黄（continue-on-error）
+#   3. 单个测试失败                            => 黄（continue-on-error）
+#
+# 拿到首跑产物后把稳定集合固化成显式 -R 名单、去掉 continue-on-error，才升级成门禁。
+#
+# 为什么 macOS 这一份是**必需**的，而不是 Linux 那份的重复
+# ------------------------------------------------------
+# engine/CMakeLists.txt 的 APPLE 分支是 `ZENGINE_USE_METAL=ON` +
+# `ZENGINE_USE_VULKAN=OFF`（FORCE）。这三件事只有这个宿主能验证：
+#
+#   - Lumen 七组。engine/CMakeLists.txt 的注释写得很清楚："Apple builds Metal
+#     (no Vulkan) but do compile Lumen"。Windows 那边因为 ZENGINE_USE_VULKAN=OFF
+#     会把 Function/Render/Lumen/*.cpp 从 ZRuntime 剔除，跑不了；Linux 也跑，
+#     但 Metal 路径只有这里。
+#
+#   - ZENGINE_BUILD_APPLE_SCENE_BLIT_SMOKE_TEST / ..._SSAO_SMOKE_TEST。这两个
+#     此前在"从未在任何 CI 上跑过"的欠账名单里。它们离 Apple 会退化成源码文本
+#     契约检查（有用但不是重点），只有这里会用 ObjC++ 编到 <Metal/Metal.h> 并
+#     真正走一遍 MSL —— AppleSceneBlit 的 shader 是 .cpp 里的字符串字面量，
+#     写错了是"全绿编译 + 黑屏"，没有这个宿主就永远发现不了。
+#
+#   - ZENGINE_BUILD_NANITE_GPU_CULLING_SMOKE_TEST 的真机 dispatch 段本来就是
+#     Apple-only（要 Metal）：在 Windows/Linux 上跑的是它剩下的那部分。
+#
+# 不开的：ZENGINE_BUILD_BINDLESS_SMOKE_TEST（DX12）、
+# ZENGINE_BUILD_ENVIRONMENT_CHECK_TESTS（Windows 环境采集器，注册表 / Wer*）。
+# =============================================================================
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  macos-smoke-tests:
+    name: smoke tests (macos-latest, debug)
+    runs-on: macos-latest
+    timeout-minutes: 180
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      # 与 build_macos.yml 相同的 brew 依赖；ninja 是给下面的 --generator 用的。
+      - name: Install dependencies
+        run: |
+          brew install ninja glslang spirv-tools
+
+      # --generator ninja 是**必需**的，不是风格选择：
+      # zbuild.py 在 macOS 上默认取 macos_xcode_* 预设（见 zbuild.py
+      # get_preset_name），Xcode 是多配置生成器 —— 那样 ctest 必须带 -C Debug，
+      # 而且 build_macos.sh 走的也是 ninja（--target ZEditor），是已验证的路径。
+      # 两种预设的 binaryDir 都是 ${sourceDir}/build，所以下面 cmake --build
+      # build / ctest --test-dir build 成立。
+      #
+      # 说明一律放在块外：`>` 折叠块会把块内的 `#` 行折进命令尾部当 shell 注释。
+      - name: Configure with smoke tests enabled
+        run: >
+          python3 zbuild.py configure --config debug --generator ninja
+          --extra-args
+          -DPAPI_TYPE=quickjs
+          -DZENGINE_BUILD_PPTR_SMOKE_TEST=ON
+          -DZENGINE_BUILD_SCHEMA_EVOLUTION_SMOKE_TEST=ON
+          -DZENGINE_BUILD_YAML_ROUND_TRIP_SMOKE_TEST=ON
+          -DZENGINE_BUILD_REFLECTION_CODEGEN_SMOKE_TEST=ON
+          -DZENGINE_BUILD_ASSET_BUNDLE_SMOKE_TEST=ON
+          -DZENGINE_BUILD_PLAYER_SETTINGS_SMOKE_TEST=ON
+          -DZENGINE_BUILD_ADDRESSABLES_SMOKE_TEST=ON
+          -DZENGINE_BUILD_DDC_SMOKE_TEST=ON
+          -DZENGINE_BUILD_AI_SMOKE_TEST=ON
+          -DZENGINE_BUILD_AUDIO_SMOKE_TEST=ON
+          -DZENGINE_BUILD_ANIMATION_SMOKE_TEST=ON
+          -DZENGINE_BUILD_ANIMATOR_SMOKE_TEST=ON
+          -DZENGINE_BUILD_ANIMATION_PIPELINE_SMOKE_TEST=ON
+          -DZENGINE_BUILD_TEXTURE_COMPRESSOR_SMOKE_TEST=ON
+          -DZENGINE_BUILD_RENDERGRAPH_SMOKE_TEST=ON
+          -DZENGINE_BUILD_RENDERGRAPH_EXECUTE_SMOKE_TEST=ON
+          -DZENGINE_BUILD_UNDO_SMOKE_TEST=ON
+          -DZENGINE_BUILD_BUILD_CACHE_SMOKE_TEST=ON
+          -DZENGINE_BUILD_RHI_INDIRECT_DRAW_SMOKE_TEST=ON
+          -DZENGINE_BUILD_NANITE_CLUSTER_SMOKE_TEST=ON
+          -DZENGINE_BUILD_NANITE_CULLING_SMOKE_TEST=ON
+          -DZENGINE_BUILD_NANITE_SCENE_WIRING_SMOKE_TEST=ON
+          -DZENGINE_BUILD_NANITE_GPU_CULLING_SMOKE_TEST=ON
+          -DZENGINE_BUILD_SHADER_REGISTRY_SMOKE_TEST=ON
+          -DZENGINE_BUILD_FIXED_TIME_STEP_SMOKE_TEST=ON
+          -DZENGINE_BUILD_SCRIPT_TIME_SMOKE_TEST=ON
+          -DZENGINE_BUILD_ASSET_PATH_PORTABILITY_SMOKE_TEST=ON
+          -DZENGINE_BUILD_GLTF_MESH_IMPORT_SMOKE_TEST=ON
+          -DZENGINE_BUILD_WWISE_SMOKE_TEST=ON
+          -DZENGINE_BUILD_CI_COVERAGE_SMOKE_TEST=ON
+          -DZENGINE_BUILD_LUMEN_SCENE_GEOMETRY_SMOKE_TEST=ON
+          -DZENGINE_BUILD_LUMEN_RAY_TRACING_SMOKE_TEST=ON
+          -DZENGINE_BUILD_LUMEN_SURFACE_CACHE_SMOKE_TEST=ON
+          -DZENGINE_BUILD_LUMEN_GLOBAL_ILLUMINATION_SMOKE_TEST=ON
+          -DZENGINE_BUILD_LUMEN_RENDER_PASS_WIRING_SMOKE_TEST=ON
+          -DZENGINE_BUILD_LUMEN_REFLECTIONS_SMOKE_TEST=ON
+          -DZENGINE_BUILD_LUMEN_PER_FRAME_BRIDGE_SMOKE_TEST=ON
+          -DZENGINE_BUILD_APPLE_SCENE_BLIT_SMOKE_TEST=ON
+          -DZENGINE_BUILD_APPLE_SSAO_SMOKE_TEST=ON
+
+      # 硬红：ZRuntime 在 macOS/Metal 上编不过的话，后面全是陪跑。
+      - name: Build ZRuntime
+        run: cmake --build build --target ZRuntime
+
+      - name: Build smoke tests
+        id: build
+        continue-on-error: true
+        run: python3 zbuild.py build --config debug
+
+      - name: Run ctest
+        id: ctest
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          mkdir -p .ci
+          ctest --test-dir build --output-on-failure 2>&1 | tee .ci/ctest-macos.log
+
+      # 硬红：0 个测试 = job 因为"没跑"而绿，必须炸。
+      - name: Assert the suite is not empty
+        run: |
+          total=$(ctest --test-dir build -N | grep -oE 'Total Tests: [0-9]+' | grep -oE '[0-9]+' || true)
+          echo "registered tests on macOS: ${total:-0}"
+          if [ -z "${total}" ] || [ "${total}" -lt 1 ]; then
+            echo "::error::ctest registered 0 tests on macOS. A green run with no tests is worse than a red one."
+            exit 1
+          fi
+
+      - name: Summarise
+        if: always()
+        run: |
+          echo "=== failed targets / tests ==="
+          grep -E "^\s*[0-9]+/[0-9]+ Test.*(Failed|Not Run)|tests failed" .ci/ctest-macos.log || echo "(none)"
+          echo
+          echo "=== tail ==="
+          tail -6 .ci/ctest-macos.log || true
+
+      - name: Upload ctest log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ctest-macos-debug
+          path: .ci/ctest-macos.log
+          if-no-files-found: warn

@@ -8,15 +8,19 @@
 //
 // 为什么需要它
 // ------------
-// 2026-10-30 实测：仓库里有 **90 个** `option(ZENGINE_BUILD_*SMOKE_TEST|_TESTS)`，
-// 只有 **38 个** 被任何 workflow 以 `-D...=ON` 启用。另外 52 个从来没有在 CI 上
+// 2026-10-30 实测：仓库里有 **91 个** `option(ZENGINE_BUILD_*SMOKE_TEST|_TESTS)`，
+// 当时只有 **38 个** 被任何 workflow 以 `-D...=ON` 启用，另外 53 个从来没有在 CI 上
 // 跑过一次 —— 它们能编译、本地有人跑过、但换台机器没人知道。
 //
-// 最典型的样本是 Lumen 那六组：smoke_tests.yml 用 `ZENGINE_USE_VULKAN=OFF`，
+// 最典型的样本是 Lumen 那七组：smoke_tests.yml 用 `ZENGINE_USE_VULKAN=OFF`，
 // 该分支把 Function/Render/Lumen/*.cpp 从 ZRuntime 里剔除，所以那边跑不了；
 // 文件里的注释写着"它们由 Apple / Linux / Windows+Vulkan 宿主负责"——
-// 而 Linux 宿主当时**一个测试都没接**（build_linux.yml 只 build 不 ctest）。
+// 而 Linux / macOS 宿主当时**一个测试都没接**（build_*.yml 只 build 不 ctest）。
 // 于是"注释里有、实际没有"，静默了很久。
+//
+// 补上 smoke_tests_linux.yml 与 smoke_tests_macos.yml 后：启用 41、欠账 50。
+// macOS 那份额外收掉了两个此前没人跑的 Apple 专属测试
+// （APPLE_SCENE_BLIT / APPLE_SSAO）。
 //
 // 判据必须严格
 // ------------
@@ -26,9 +30,9 @@
 //
 // 双向棘轮
 // --------
-//   A3 已启用数 >= 39  —— 不许有人把已跑的测试从 CI 里删掉
-//   A4 未启用数 <= 52  —— 不许新增一个"写了但没人跑"的测试
-// 两个方向都要守：只守一个，另一个方向就能静默退化。52 是**欠账基线**，不是
+//   B2 已启用数 >= 41  —— 不许有人把已跑的测试从 CI 里删掉
+//   B3 未启用数 <= 50  —— 不许新增一个"写了但没人跑"的测试
+// 两个方向都要守：只守一个，另一个方向就能静默退化。50 是**欠账基线**，不是
 // 目标值；目标是把它压到 0，每压下去一个就把两个常量一起改小。
 // =============================================================================
 
@@ -252,7 +256,7 @@ int main()
         std::printf("       phantom flag: %s\n", name.c_str());
     }
 
-    Check(enabled_known >= 39u, "B2", "被 CI 真正启用的测试开关数（只许增）");
+    Check(enabled_known >= 41u, "B2", "被 CI 真正启用的测试开关数（只许增）");
 
     std::vector<std::string> unenabled;
     for (const auto& name : options)
@@ -263,7 +267,7 @@ int main()
         }
     }
 
-    Check(unenabled.size() <= 52u, "B3", "从未在任何 CI 上跑过的测试开关数（只许减）");
+    Check(unenabled.size() <= 50u, "B3", "从未在任何 CI 上跑过的测试开关数（只许减）");
 
     std::printf("\n   CI 启用 %zu / 仓库共 %zu；欠账 %zu：\n", enabled_known, options.size(), unenabled.size());
     for (const auto& name : unenabled)
