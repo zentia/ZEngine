@@ -2978,9 +2978,14 @@ ZEngine 的 `ParticlePass` 与 Unity 侧共用同一份发射 / 曲线 / 拼包�
 - **它已经是真正的子模块**（`https://github.com/zentia/GPUParticle.git`），不是
   in-tree 目录：改核心要**先**在 `engine/Libraries/GPUParticle` 里提交推送，再回
   ZEngine 更新 submodule 指针，否则 ZEngine 侧永远拉不到你的改动。
-- C# 镜像在 `Runtime/CSharp/`（netstandard2.1，整目录可拷进 Unity Assets），
-  跨语言对拍 `ctest -R ParticleGpuCSharpParityTest`（C++ 落盘 → C# 重算 →
-  逐字段比，当前 4622 项一致）。改任何核心公式/布局都要跑它。
+- ~~C# 镜像在 `Runtime/CSharp/`~~ **2026-10-30 已删**（GPUParticle 与 GPUSpine 都删了）。
+  原因：Unity 侧的导入器/运行时改成引擎内 C++，C# 镜像不在任何 ship 路径上。
+  跨端一致性现在靠**同一个子模块 = 同一份代码**结构性保证，不靠对拍。
+  公式层（`shader/particle_sim.h` / `shader/spine_skinning.h`）也在子模块里，
+  `engine/shader/include/` 下那两个只是**转发头**，别往里加公式。
+  改核心公式后要跑的是 core 自己的测试（`ctest -R ParticleGpu`）。
+  （老教训仍然有效：出生位置不能逐位比，单精度 sqrt 允许 1 ulp；uint 运算必须
+  unchecked，随机器依赖溢出 wrap。）
 - 本仓库根 `.gitignore:312` 的 `*~` 会静默吞掉任何 `Tests~` 目录 —— GPUParticle
   的测试就这么丢过一次（`git add -f` 才进来）。新库的 `Tests~` 要留意。
 

@@ -1207,7 +1207,15 @@ Chunks:
 > v11 的约束块 18-20 又跟其后；影响流紧跟
 > 顶点块；9 夹在 5 与 6 之间是
 > 历史顺序）。换了顺序文件照样能读，但字节不再逐字节相同 ⇒ 跨语言对拍（§12）立刻红，
-> 所以 C# 端必须照抄这个顺序（见 `SpineGpuContainerIo.cs`）。
+> 所以 C# 端必须照抄这个顺序（~~见 `SpineGpuContainerIo.cs`~~ **已删**，见下）。
+>
+> ⚠️ 2026-10-30：C# 容器镜像（`Runtime/CSharp/`）已整目录删除，跨语言对拍
+> （§12 的 `SpineGpuCSharpParityTest`）一并移除 —— Unity 侧的导入器改成引擎内
+> C++（`Modules/GPUSpine/GPUSpineBakedAsset` 直接调 core 的
+> `BakeSpineGpuAsset` / `ReadSpineGpuContainer`），"复刻一份再对拍"这层需求消失。
+> 与 GPUParticle 同一条理由（见 `Libraries/GPUParticle/doc/GPU_PARTICLE_DESIGN.md` §六）。
+> 顺序本身仍然必须照抄 —— 现在照抄的是"另一个引擎的 C++ 读端"，而它与本端
+> 是同一个子模块的同一份代码，不需要靠对拍去发现漂移。
 
 ### 9.1 skin 维度（v2）
 
@@ -1298,7 +1306,8 @@ Chunks:
 | 端 | 位置 |
 |---|---|
 | C++ | `Function/Render/Spine/SpineGpuFormat.h`（布局 + static_assert）<br>`SpineGpuImporter.cpp`（导入 + `Write/ReadSpineGpuContainer`） |
-| C# | `Function/Render/Spine/CSharp/`（`SpineGpuFormat.cs` / `SpineGpuContainerIo.cs`，netstandard2.1，可整目录拷进 Unity Assets） |
+| C# | ~~`Runtime/CSharp/`（`SpineGpuFormat.cs` / `SpineGpuContainerIo.cs`）~~ **2026-10-30 已删** |
+| Unity（替代） | 引擎内 C++：`Modules/GPUSpine/GPUSpineBakedAsset.{h,cpp}`，core 来自同一个子模块 `External/GPUSpine` |
 
 C++ 每个偏移都有 `static_assert` 钉着（布局错一个字节不报错，只是形状静默错）。
 C# **没有编译期 `offsetof`**，所以换三道关：

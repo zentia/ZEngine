@@ -12,6 +12,16 @@ function(compile_shader SHADERS TARGET_NAME SHADER_INCLUDE_FOLDER GENERATED_DIR 
     # 这里粗粒度处理：include 目录下任何文件变化都重编全部 shader（正确优先，shader 很小）。
     file(GLOB_RECURSE SHADER_INCLUDE_DEPENDENCIES CONFIGURE_DEPENDS "${SHADER_INCLUDE_FOLDER}/*")
 
+    # 公式层的**唯一权威**在子模块里（engine/Libraries/*/shader/）：
+    #   GPUParticle → shader/particle_sim.h
+    #   GPUSpine    → shader/spine_skinning.h
+    # engine/shader/include/ 下那两个只是转发头。所以子模块里的公式也必须进依赖，
+    # 否则改了公式不会重编 SPIR-V —— 就是上面那段注释说的坑（改了头、重建、
+    # 测试照绿，因为二进制里的 shader 还停在旧契约上）。
+    file(GLOB_RECURSE LIB_SHADER_INCLUDE_DEPENDENCIES CONFIGURE_DEPENDS
+         "${Z_ROOT_DIR}/engine/Libraries/*/shader/*")
+    list(APPEND SHADER_INCLUDE_DEPENDENCIES ${LIB_SHADER_INCLUDE_DEPENDENCIES})
+
     if(UNIX AND GLSLANG_BIN AND NOT GLSLANG_BIN MATCHES "^/usr/")
         execute_process(COMMAND chmod a+x ${GLSLANG_BIN})
     endif()
