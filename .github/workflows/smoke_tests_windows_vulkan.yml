@@ -38,7 +38,18 @@ name: Smoke tests (Windows + Vulkan)
 #   4. MaterialCustomParamSmokeTest K4b：`const auto* ka = a.Parts()[0]...data()`
 #      从**临时** vector 取指针 ⇒ 悬空，读已释放内存。我一开始误判成产品 bug
 #      （keyword 排序没归一化），实际排序逻辑是对的，坏的是测试自己。
-#
+#   5. NetworkSmokeTest 挂死：`ZENGINE_NETWORK_HAS_CURL=1` 只挂在 ZRuntime 的
+#      PRIVATE 上，而它决定 NetworkSystem 有没有 curl 成员 ⇒ 同一个类两份
+#      `sizeof()` ⇒ mutex 落在错偏移。测试自己一行输出都没有（stdout 在 ctest
+#      下是全缓冲）。已改 PUBLIC 并加跨 TU 的 ABI 指纹断言。
+#   6. PhysicsCharacterJointSmokeTest：测试把栈上的 ShapeSettings 交给了持有
+#      `RefConst` 的 BodyCreationSettings（Jolt 的 RefTarget 从 0 起算、归零就
+#      delete）⇒ delete 栈指针。修掉这个"测试自己的 bug"之后，才露出它下面压着
+#      的**三个真实产品 bug**：角色重力从未生效（Jolt 的 inGravity 不做自由
+#      落体）、控制器引用计数下溢导致从不释放、CreateJoint 用两个
+#      BodyLockWrite 触发 Jolt 锁序断言且有死锁风险。
+#      ⇒ 一个从未跑过的测试，往往是"测试本身是坏的"**和**"产品也是坏的"同时成立。
+
 # 顺带一提：正因为 2 和 4 这类问题只在特定宿主/行尾下出现，才更不该用 `-E`
 # 把红着的测试排除掉假装绿色。
 #
