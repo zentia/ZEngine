@@ -105,6 +105,21 @@ public:
     /// holds them by reference).
     RigidBodyComponentRes& GetRigidbodyResMutable() { return m_RigidbodyRes; }
 
+    /// The Jolt body id, or 0xffffffff when there is no body. Scripts compare
+    /// this against `RaycastHit.bodyId` to recognise their own object.
+    ZFUNCTION()
+    uint32_t GetBodyId() const { return m_RigidbodyId; }
+
+    /// Re-read the parent GameObject's layer and push it into the live body.
+    ///
+    /// Called by `GameObject::SetLayerIndex`: Unity applies a layer change to
+    /// physics immediately, and a body that kept its old Jolt object layer would
+    /// keep colliding through a matrix the author had just changed.
+    void RefreshBodyLayer();
+
+    /// The Unity layer the body should be created on.
+    int32_t CurrentGameObjectLayer() const;
+
 protected:
     void CreateRigidBody(const TransformTRS& global_transform);
     void RemoveRigidBody();

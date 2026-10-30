@@ -245,8 +245,15 @@ PhysicsScene::~PhysicsScene()
     JPH::Factory::sInstance = nullptr;
 }
 
+void PhysicsScene::setGravity(const Vector3& gravity)
+{
+    m_Config.m_Gravity = gravity;
+    m_Physics.m_JoltPhysicsSystem->SetGravity(toVec3(gravity));
+}
+
 uint32_t PhysicsScene::CreateRigidBody(const TransformTRS& global_transform,
-                                       const RigidBodyComponentRes& rigidbody_actor_res)
+                                       const RigidBodyComponentRes& rigidbody_actor_res,
+                                       int32_t unity_layer)
 {
     JPH::BodyInterface& body_interface = m_Physics.m_JoltPhysicsSystem->GetBodyInterface();
 
@@ -297,20 +304,30 @@ uint32_t PhysicsScene::CreateRigidBody(const TransformTRS& global_transform,
     const RigidBodyActorType actor_type = rigidbody_actor_res.GetActorType();
     const bool is_dynamic = actor_type == RigidBodyActorType::dynamic;
     JPH::EMotionType motion_type = JPH::EMotionType::Static;
-    JPH::ObjectLayer layer = Layers::NON_MOVING;
     switch (actor_type)
     {
         case RigidBodyActorType::kinematic:
             motion_type = JPH::EMotionType::Kinematic;
-            layer = Layers::MOVING;
             break;
         case RigidBodyActorType::dynamic:
             motion_type = JPH::EMotionType::Dynamic;
-            layer = Layers::MOVING;
             break;
         default:
             break;
     }
+
+    // The object layer IS the Unity layer: ObjectLayerPairFilterImpl resolves
+    // collisions through TagLayerManager's matrix and every query masks on it,
+    // so a body that kept the old NON_MOVING/MOVING pair would be invisible to
+    // `Physics.Raycast(..., layerMask)` and immune to IgnoreLayerCollision.
+    //
+    // An out-of-range layer falls back to 0 ("Default") instead of being
+    // clamped silently into some other layer: Jolt's BroadPhaseLayerInterface
+    // asserts on an unknown object layer, and JPH_ENABLE_ASSERTS is on in
+    // Debug, so passing 47 through would be a hard crash rather than a miss.
+    JPH::ObjectLayer layer = (unity_layer >= 0 && unity_layer < kPhysicsLayerCount)
+                                 ? static_cast<JPH::ObjectLayer>(unity_layer)
+                                 : static_cast<JPH::ObjectLayer>(0);
 
     JPH::Ref<JPH::StaticCompoundShapeSettings> compund_shape_setting = new JPH::StaticCompoundShapeSettings;
     for (const JPHShapeData& shape_data : jph_shapes)
@@ -362,6 +379,51 @@ uint32_t PhysicsScene::CreateRigidBody(const TransformTRS& global_transform,
 void PhysicsScene::RemoveRigidBody(uint32_t body_id)
 {
     m_PendingRemoveBodies.push_back(body_id);
+}
+
+bool PhysicsScene::GetBodyLayer(uint32_t body_id, int32_t& out_layer) const
+{
+    if (body_id == s_InvalidRigidbodyId)
+    {
+        return false;
+    }
+
+    JPH::BodyLockRead body_lock(m_Physics.m_JoltPhysicsSystem->GetBodyLockInterface(), JPH::BodyID(body_id));
+    if (!body_lock.Succeeded())
+    {
+        return false;
+    }
+
+    out_layer = static_cast<int32_t>(body_lock.GetBody().GetObjectLayer());
+    return true;
+}
+
+bool PhysicsScene::SetBodyLayer(uint32_t body_id, int32_t unity_layer)
+{
+    if (body_id == s_InvalidRigidbodyId || unity_layer < 0 || unity_layer >= kPhysicsLayerCount)
+    {
+        return false;
+    }
+
+    // Existence check only, and scoped so the read lock is released BEFORE
+    // SetObjectLayer takes its write lock. Jolt asserts on a same-or-higher
+    // priority lock taken while one is held ("this can create a deadlock") --
+    // and it is right, so the two must not overlap.
+    {
+        JPH::BodyLockRead body_lock(m_Physics.m_JoltPhysicsSystem->GetBodyLockInterface(), JPH::BodyID(body_id));
+        if (!body_lock.Succeeded())
+        {
+            return false;
+        }
+    }
+
+    // SetObjectLayer moves the body between broadphase layers too, so it has to
+    // go through the interface rather than poking the Body directly -- a direct
+    // write leaves the body in the old broadphase tree and it stops colliding
+    // with anything that moved into the new one.
+    m_Physics.m_JoltPhysicsSystem->GetBodyInterface().SetObjectLayer(
+        JPH::BodyID(body_id), static_cast<JPH::ObjectLayer>(unity_layer));
+    return true;
 }
 
 void PhysicsScene::UpdateRigidBodyGlobalTransform(uint32_t body_id, const TransformTRS& global_transform)
@@ -799,11 +861,51 @@ bool PhysicsScene::RemoveJoint(uint32_t joint_id)
     return true;
 }
 
+void PhysicsScene::FilterHitsByLayer(std::vector<PhysicsHitInfo>& in_out_hits, uint32_t layer_mask)
+{
+    // The mask pass also *stamps* hit.layer, which is why it runs even when
+    // layer_mask is "everything": an unfilled 0 would read as layer 0
+    // ("Default") rather than "not resolved".
+    std::vector<PhysicsHitInfo> kept;
+    kept.reserve(in_out_hits.size());
+
+    for (PhysicsHitInfo& hit : in_out_hits)
+    {
+        if (hit.body_id == s_InvalidRigidbodyId)
+        {
+            continue;
+        }
+
+        JPH::BodyLockRead body_lock(m_Physics.m_JoltPhysicsSystem->GetBodyLockInterface(),
+                                    JPH::BodyID(hit.body_id));
+        if (!body_lock.Succeeded())
+        {
+            // The body was removed between the query and this pass. Dropping it
+            // is right: handing back a hit on a body that no longer exists is
+            // worse than handing back one fewer hit.
+            continue;
+        }
+
+        const int32_t layer = static_cast<int32_t>(body_lock.GetBody().GetObjectLayer());
+        hit.layer = layer;
+
+        if (PhysicsLayerMaskContains(layer_mask, layer))
+        {
+            kept.push_back(hit);
+        }
+    }
+
+    in_out_hits.swap(kept);
+}
+
 bool PhysicsScene::Raycast(Vector3 ray_origin,
                            Vector3 ray_directory,
                            float ray_length,
-                           std::vector<PhysicsHitInfo>& out_hits)
+                           std::vector<PhysicsHitInfo>& out_hits,
+                           uint32_t layer_mask)
 {
+    out_hits.clear();
+
     const JPH::NarrowPhaseQuery& scene_query = m_Physics.m_JoltPhysicsSystem->GetNarrowPhaseQuery();
 
     JPH::RRayCast ray;
@@ -825,7 +927,6 @@ bool PhysicsScene::Raycast(Vector3 ray_origin,
 
     std::vector<JPH::RayCastResult> raycast_results(collector.mHits.begin(), collector.mHits.end());
 
-    out_hits.clear();
     out_hits.resize(raycast_results.size());
 
     for (size_t index = 0; index < raycast_results.size(); index++)
@@ -845,15 +946,20 @@ bool PhysicsScene::Raycast(Vector3 ray_origin,
             toVec3(hit_body.GetWorldSpaceSurfaceNormal(cast_result.mSubShapeID2, toVec3(hit.hit_position)));
     }
 
-    return true;
+    FilterHitsByLayer(out_hits, layer_mask);
+
+    return !out_hits.empty();
 }
 
 bool PhysicsScene::Sweep(const RigidBodyShape& shape,
                          const Matrix4x4& shape_transform,
                          Vector3 sweep_direction,
                          float sweep_length,
-                         std::vector<PhysicsHitInfo>& out_hits)
+                         std::vector<PhysicsHitInfo>& out_hits,
+                         uint32_t layer_mask)
 {
+    out_hits.clear();
+
     const JPH::NarrowPhaseQuery& scene_query = m_Physics.m_JoltPhysicsSystem->GetNarrowPhaseQuery();
 
     const Matrix4x4 shape_global_transform = shape_transform * shape.m_LocalTransform.getMatrix();
@@ -886,7 +992,6 @@ bool PhysicsScene::Sweep(const RigidBodyShape& shape,
 
     std::vector<JPH::ShapeCastResult> sweep_results(collector.mHits.begin(), collector.mHits.end());
 
-    out_hits.clear();
     out_hits.resize(sweep_results.size());
 
     for (size_t index = 0; index < sweep_results.size(); index++)
@@ -900,11 +1005,21 @@ bool PhysicsScene::Sweep(const RigidBodyShape& shape,
         hit.body_id = sweep_result.mBodyID2.GetIndexAndSequenceNumber();
     }
 
-    return true;
+    FilterHitsByLayer(out_hits, layer_mask);
+
+    return !out_hits.empty();
 }
 
-bool PhysicsScene::IsOverlap(const RigidBodyShape& shape, const Matrix4x4& global_transform)
+bool PhysicsScene::IsOverlap(const RigidBodyShape& shape,
+                             const Matrix4x4& global_transform,
+                             uint32_t layer_mask)
 {
+    // An "is there anything at all" query must NOT pay for the full result set,
+    // so this stays on the AnyHit collector and simply resolves the mask
+    // afterwards -- if the one body it found is masked out we cannot know
+    // whether another one would have passed, so fall back to the full query.
+    // That is the only correct answer and it is rare (a mask that excludes the
+    // first hit but not everything).
     const JPH::NarrowPhaseQuery& scene_query = m_Physics.m_JoltPhysicsSystem->GetNarrowPhaseQuery();
 
     const Matrix4x4 shape_global_transform = global_transform * shape.m_LocalTransform.getMatrix();
@@ -929,7 +1044,174 @@ bool PhysicsScene::IsOverlap(const RigidBodyShape& shape, const Matrix4x4& globa
                              JPH::Vec3(),
                              collector);
 
-    return collector.HadHit();
+    if (!collector.HadHit())
+    {
+        return false;
+    }
+
+    if (layer_mask == kPhysicsAllLayers)
+    {
+        return true;
+    }
+
+    const JPH::BodyID hit_body_id = collector.mHit.mBodyID2;
+    JPH::BodyLockRead body_lock(m_Physics.m_JoltPhysicsSystem->GetBodyLockInterface(), hit_body_id);
+    if (body_lock.Succeeded() &&
+        PhysicsLayerMaskContains(layer_mask, static_cast<int32_t>(body_lock.GetBody().GetObjectLayer())))
+    {
+        return true;
+    }
+
+    // The single hit was masked out: redo the query collecting everything so a
+    // second, qualifying body is not missed.
+    std::vector<PhysicsHitInfo> all_hits;
+    return OverlapAll(shape, global_transform, all_hits, layer_mask);
+}
+
+bool PhysicsScene::OverlapAll(const RigidBodyShape& shape,
+                              const Matrix4x4& global_transform,
+                              std::vector<PhysicsHitInfo>& out_hits,
+                              uint32_t layer_mask)
+{
+    out_hits.clear();
+
+    const JPH::NarrowPhaseQuery& scene_query = m_Physics.m_JoltPhysicsSystem->GetNarrowPhaseQuery();
+
+    const Matrix4x4 shape_global_transform = global_transform * shape.m_LocalTransform.getMatrix();
+
+    Vector3 global_position, global_scale;
+    Quaternion global_rotation;
+
+    shape_global_transform.Decomposition(global_position, global_scale, global_rotation);
+
+    JPH::Shape* jph_shape = toShape(shape, global_scale);
+
+    if (jph_shape == nullptr)
+    {
+        return false;
+    }
+
+    JPH::AllHitCollisionCollector<JPH::CollideShapeCollector> collector;
+    scene_query.CollideShape(jph_shape,
+                             JPH::Vec3::sReplicate(1.0f),
+                             toMat44(shape_global_transform),
+                             JPH::CollideShapeSettings(),
+                             JPH::Vec3(),
+                             collector);
+
+    if (!collector.HadHit())
+    {
+        return false;
+    }
+
+    out_hits.reserve(collector.mHits.size());
+    for (const JPH::CollideShapeResult& overlap_result : collector.mHits)
+    {
+        PhysicsHitInfo hit;
+        hit.hit_position = toVec3(overlap_result.mContactPointOn2);
+        hit.hit_normal = toVec3(overlap_result.mPenetrationAxis.Normalized());
+        // An overlap has no direction, so there is no meaningful distance.
+        hit.hit_distance = 0.f;
+        hit.body_id = overlap_result.mBodyID2.GetIndexAndSequenceNumber();
+        out_hits.push_back(hit);
+    }
+
+    FilterHitsByLayer(out_hits, layer_mask);
+
+    return !out_hits.empty();
+}
+
+bool PhysicsScene::CastPrimitive(const PhysicsPrimitiveDesc& desc,
+                                 const Matrix4x4& world_transform,
+                                 Vector3 sweep_direction,
+                                 float sweep_length,
+                                 std::vector<PhysicsHitInfo>& out_hits,
+                                 uint32_t layer_mask)
+{
+    out_hits.clear();
+
+    JPH::Shape* jph_shape = MakePrimitiveShape(desc);
+    if (jph_shape == nullptr)
+    {
+        return false;
+    }
+
+    const JPH::NarrowPhaseQuery& scene_query = m_Physics.m_JoltPhysicsSystem->GetNarrowPhaseQuery();
+
+    JPH::RShapeCast shape_cast(jph_shape,
+                               JPH::Vec3::sReplicate(1.f),
+                               toMat44(world_transform),
+                               toVec3(sweep_direction.normalisedCopy() * sweep_length));
+
+    JPH::AllHitCollisionCollector<JPH::CastShapeCollector> collector;
+    scene_query.CastShape(shape_cast, JPH::ShapeCastSettings(), JPH::RVec3Arg(), collector);
+
+    if (collector.HadHit())
+    {
+        collector.Sort();
+
+        out_hits.reserve(collector.mHits.size());
+        for (const JPH::ShapeCastResult& sweep_result : collector.mHits)
+        {
+            PhysicsHitInfo hit;
+            hit.hit_position = toVec3(sweep_result.mContactPointOn2);
+            hit.hit_normal = toVec3(sweep_result.mPenetrationAxis.Normalized());
+            hit.hit_distance = sweep_result.mFraction * sweep_length;
+            hit.body_id = sweep_result.mBodyID2.GetIndexAndSequenceNumber();
+            out_hits.push_back(hit);
+        }
+    }
+
+    // Owned by us, not by a RefTarget: Jolt did not take a reference.
+    delete jph_shape;
+
+    FilterHitsByLayer(out_hits, layer_mask);
+
+    return !out_hits.empty();
+}
+
+bool PhysicsScene::OverlapPrimitive(const PhysicsPrimitiveDesc& desc,
+                                    const Matrix4x4& world_transform,
+                                    std::vector<PhysicsHitInfo>& out_hits,
+                                    uint32_t layer_mask)
+{
+    out_hits.clear();
+
+    JPH::Shape* jph_shape = MakePrimitiveShape(desc);
+    if (jph_shape == nullptr)
+    {
+        return false;
+    }
+
+    const JPH::NarrowPhaseQuery& scene_query = m_Physics.m_JoltPhysicsSystem->GetNarrowPhaseQuery();
+
+    JPH::AllHitCollisionCollector<JPH::CollideShapeCollector> collector;
+    scene_query.CollideShape(jph_shape,
+                             JPH::Vec3::sReplicate(1.f),
+                             toMat44(world_transform),
+                             JPH::CollideShapeSettings(),
+                             JPH::Vec3(),
+                             collector);
+
+    if (collector.HadHit())
+    {
+        out_hits.reserve(collector.mHits.size());
+        for (const JPH::CollideShapeResult& overlap_result : collector.mHits)
+        {
+            PhysicsHitInfo hit;
+            hit.hit_position = toVec3(overlap_result.mContactPointOn2);
+            hit.hit_normal = toVec3(overlap_result.mPenetrationAxis.Normalized());
+            hit.hit_distance = 0.f;
+            hit.body_id = overlap_result.mBodyID2.GetIndexAndSequenceNumber();
+            out_hits.push_back(hit);
+        }
+    }
+
+    delete jph_shape;
+
+    FilterHitsByLayer(out_hits, layer_mask);
+
+    return !out_hits.empty();
 }
 
 void PhysicsScene::GetShapeBoundingBoxes(uint32_t body_id, std::vector<AxisAlignedBox>& out_bounding_boxes) const

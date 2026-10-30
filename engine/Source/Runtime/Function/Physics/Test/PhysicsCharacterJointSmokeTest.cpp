@@ -65,11 +65,16 @@ namespace
     // neither is not.
     box_settings.SetEmbedded();
 
+    // The object layer is the Unity layer now (see Jolt/Utils.h): motion type
+    // decides how Jolt simulates the body, and 0 ("Default") is the layer a
+    // GameObject without an explicit layer gets. Collisions between these two
+    // bodies therefore go through TagLayerManager's matrix, which in a bare
+    // test with no manager registered defaults to "everything collides".
     JPH::BodyCreationSettings body_settings(&box_settings,
                                                 JPH::RVec3(toVec3(in_position)),
                                                 JPH::Quat::sIdentity(),
                                                 in_is_dynamic ? JPH::EMotionType::Dynamic : JPH::EMotionType::Static,
-                                                in_is_dynamic ? Layers::MOVING : Layers::NON_MOVING);
+                                                /* inObjectLayer = */ 0);
 
         JPH::Body* jph_body = body_interface.CreateBody(body_settings);
         if (jph_body == nullptr)

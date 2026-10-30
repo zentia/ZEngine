@@ -56,12 +56,27 @@ PhysicsScene::PhysicsScene(const Vector3& gravity)
 
 PhysicsScene::~PhysicsScene() = default;
 
-uint32_t PhysicsScene::CreateRigidBody(const TransformTRS&, const RigidBodyComponentRes&)
+void PhysicsScene::setGravity(const Vector3& gravity)
+{
+    m_Config.m_Gravity = gravity;
+}
+
+uint32_t PhysicsScene::CreateRigidBody(const TransformTRS&, const RigidBodyComponentRes&, int32_t)
 {
     return s_InvalidRigidbodyId;
 }
 
 void PhysicsScene::RemoveRigidBody(uint32_t) {}
+
+bool PhysicsScene::GetBodyLayer(uint32_t, int32_t&) const
+{
+    return false;
+}
+
+bool PhysicsScene::SetBodyLayer(uint32_t, int32_t)
+{
+    return false;
+}
 
 void PhysicsScene::UpdateRigidBodyGlobalTransform(uint32_t, const TransformTRS&) {}
 
@@ -147,7 +162,7 @@ bool PhysicsScene::RemoveJoint(uint32_t)
     return false;
 }
 
-bool PhysicsScene::Raycast(Vector3, Vector3, float, std::vector<PhysicsHitInfo>& out_hits)
+bool PhysicsScene::Raycast(Vector3, Vector3, float, std::vector<PhysicsHitInfo>& out_hits, uint32_t)
 {
     out_hits.clear();
     return false;
@@ -157,15 +172,47 @@ bool PhysicsScene::Sweep(const RigidBodyShape&,
                          const Matrix4x4&,
                          Vector3,
                          float,
-                         std::vector<PhysicsHitInfo>& out_hits)
+                         std::vector<PhysicsHitInfo>& out_hits,
+                         uint32_t)
 {
     out_hits.clear();
     return false;
 }
 
-bool PhysicsScene::IsOverlap(const RigidBodyShape&, const Matrix4x4&)
+bool PhysicsScene::IsOverlap(const RigidBodyShape&, const Matrix4x4&, uint32_t)
 {
     return false;
+}
+
+bool PhysicsScene::OverlapAll(const RigidBodyShape&, const Matrix4x4&, std::vector<PhysicsHitInfo>& out_hits, uint32_t)
+{
+    out_hits.clear();
+    return false;
+}
+
+bool PhysicsScene::CastPrimitive(const PhysicsPrimitiveDesc&,
+                                 const Matrix4x4&,
+                                 Vector3,
+                                 float,
+                                 std::vector<PhysicsHitInfo>& out_hits,
+                                 uint32_t)
+{
+    out_hits.clear();
+    return false;
+}
+
+bool PhysicsScene::OverlapPrimitive(const PhysicsPrimitiveDesc&,
+                                    const Matrix4x4&,
+                                    std::vector<PhysicsHitInfo>& out_hits,
+                                    uint32_t)
+{
+    out_hits.clear();
+    return false;
+}
+
+void PhysicsScene::FilterHitsByLayer(std::vector<PhysicsHitInfo>& in_out_hits, uint32_t)
+{
+    in_out_hits.clear();
 }
 
 void PhysicsScene::GetShapeBoundingBoxes(uint32_t, std::vector<AxisAlignedBox>& out_bounding_boxes) const

@@ -44,7 +44,9 @@ void RigidBodyComponent::PostLoadResource(GameObject* parent_object)
         return;
     }
 
-    m_RigidbodyId = physics_scene->CreateRigidBody(parent_transform->BuildLocalTRS(), m_RigidbodyRes);
+    m_RigidbodyId = physics_scene->CreateRigidBody(parent_transform->BuildLocalTRS(),
+                                                   m_RigidbodyRes,
+                                                   CurrentGameObjectLayer());
     m_HasPendingBody = false;
 }
 
@@ -72,7 +74,8 @@ bool RigidBodyComponent::FlushPendingBody()
         return false;
     }
 
-    const uint32_t body_id = physics_scene->CreateRigidBody(parent_transform->BuildLocalTRS(), m_RigidbodyRes);
+    const uint32_t body_id =
+        physics_scene->CreateRigidBody(parent_transform->BuildLocalTRS(), m_RigidbodyRes, CurrentGameObjectLayer());
     if (body_id == k_invalid_rigidbody_id)
     {
         // CreateRigidBody logs the reason (e.g. no shapes resolved). Stay
@@ -110,7 +113,24 @@ void RigidBodyComponent::CreateRigidBody(const TransformTRS& global_transform)
     std::shared_ptr<PhysicsScene> physics_scene = CurrentPhysicsScene();
     ASSERT(physics_scene);
 
-    m_RigidbodyId = physics_scene->CreateRigidBody(global_transform, m_RigidbodyRes);
+    m_RigidbodyId = physics_scene->CreateRigidBody(global_transform, m_RigidbodyRes, CurrentGameObjectLayer());
+}
+
+int32_t RigidBodyComponent::CurrentGameObjectLayer() const
+{
+    // A body created outside a GameObject (imported resource, unit test) has no
+    // layer to inherit; 0 is "Default", which is what the old hardcoded
+    // NON_MOVING object layer effectively was.
+    return m_ParentObject != nullptr ? m_ParentObject->GetLayer() : 0;
+}
+
+void RigidBodyComponent::RefreshBodyLayer()
+{
+    std::shared_ptr<PhysicsScene> physics_scene = GetActivePhysicsScene();
+    if (physics_scene)
+    {
+        physics_scene->SetBodyLayer(m_RigidbodyId, CurrentGameObjectLayer());
+    }
 }
 
 void RigidBodyComponent::RemoveRigidBody()

@@ -13,30 +13,37 @@ namespace JPH
 }
 
 class RigidBodyShape;
+struct PhysicsPrimitiveDesc;
 
+// ---------------------------------------------------------------------------
+// The Jolt object layer IS the Unity layer.
+//
+// It used to be a 8-value enum (NON_MOVING / MOVING / DEBRIS / SENSOR) that
+// had nothing to do with what a level author picks in the Inspector, which is
+// why `Physics.IgnoreLayerCollision` and `layerMask` had nowhere to hook into:
+// there was no layer to test. Now CreateRigidBody writes the GameObject's
+// Unity layer (0..31) straight into the object layer, so
+//   * ObjectLayerPairFilterImpl resolves collisions through
+//     TagLayerManager's collision matrix, and
+//   * every query masks hits with PhysicsLayerMaskContains.
+//
+// Motion type (static / kinematic / dynamic) is a separate Jolt concept and is
+// unaffected: it still comes from RigidBodyActorType.
+// ---------------------------------------------------------------------------
 namespace Layers
 {
-    static constexpr uint8_t UNUSED1 = 0;  // 4 unused values so that broadphase layers values don't match with
-                                           // object layer values (for testing purposes)
-    static constexpr uint8_t UNUSED2 = 1;
-    static constexpr uint8_t UNUSED3 = 2;
-    static constexpr uint8_t UNUSED4 = 3;
-    static constexpr uint8_t NON_MOVING = 4;
-    static constexpr uint8_t MOVING = 5;
-    static constexpr uint8_t DEBRIS = 6;  // Example: Debris collides only with NON_MOVING
-    static constexpr uint8_t SENSOR = 7;  // Sensors only collide with MOVING objects
-    static constexpr uint8_t NUM_LAYERS = 8;
+    static constexpr uint8_t NUM_LAYERS = 32;  // == TagLayerManager::kLayerCount
 };  // namespace Layers
 
-/// Broadphase layers
+// A single broadphase layer. Splitting by layer would need 32 broadphase
+// layers, and the only thing the broadphase filter can usefully reject is
+// "static vs static" -- which Jolt already refuses on motion type. The pair
+// filter below does the real gating, and it runs per pair, so one coarse
+// bucket costs nothing in correctness.
 namespace BroadPhaseLayers
 {
-    static constexpr JPH::BroadPhaseLayer NON_MOVING(0);
-    static constexpr JPH::BroadPhaseLayer MOVING(1);
-    static constexpr JPH::BroadPhaseLayer DEBRIS(2);
-    static constexpr JPH::BroadPhaseLayer SENSOR(3);
-    static constexpr JPH::BroadPhaseLayer UNUSED(4);
-    static constexpr uint32_t NUM_LAYERS(5);
+    static constexpr JPH::BroadPhaseLayer ALL(0);
+    static constexpr uint32_t NUM_LAYERS(1);
 };  // namespace BroadPhaseLayers
 
 /// BroadPhaseLayerInterface implementation
@@ -99,6 +106,13 @@ JPH::Mat44 toMat44(const Matrix4x4& m);
 Matrix4x4 toMat44(const JPH::Mat44& m);
 
 JPH::Shape* toShape(const RigidBodyShape& shape, const Vector3& scale);
+
+/// Build a box / sphere / capsule straight from a descriptor, with no engine
+/// Object involved (see PhysicsPrimitiveDesc in PhysicsQuery.h).
+///
+/// The caller owns the result and must `delete` it: Jolt's RefTarget starts at
+/// refcount 0, so nothing has taken a reference.
+JPH::Shape* MakePrimitiveShape(const PhysicsPrimitiveDesc& desc);
 
 class ObjectVsBroadPhaseLayerFilterImpl : public JPH::ObjectVsBroadPhaseLayerFilter
 {

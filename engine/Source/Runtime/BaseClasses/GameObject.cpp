@@ -4,6 +4,7 @@
 #include "Runtime/Application/Application.h"
 #include "Runtime/BaseClasses/ObjectManager.h"
 #include "Runtime/Function/Framework/Component/Component.h"
+#include "Runtime/Function/Framework/Component/Rigidbody/RigidbodyComponent.h"
 #include "Runtime/Function/Framework/Component/Script/TypeScriptComponent.h"
 #include "Runtime/Function/Framework/Component/Transform/Transform.h"
 #include "Runtime/Function/Framework/Level/Level.h"
@@ -453,6 +454,13 @@ void GameObject::SetLayerIndex(int32_t layer)
         return;
     }
     m_Layer = layer;
+
+    // 层号是 Jolt 的 object layer（见 Jolt/Utils.h），所以改层必须同步到刚体，
+    // 否则 IgnoreLayerCollision 对这个对象不生效 —— 而它能编译、能运行、没有报错。
+    if (RigidBodyComponent* rigid_body = tryGetComponent(RigidBodyComponent))
+    {
+        rigid_body->RefreshBodyLayer();
+    }
 }
 
 namespace

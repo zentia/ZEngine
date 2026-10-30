@@ -187,6 +187,18 @@ namespace
         "    targetId: number;\n"
         "}\n"
         "\n"
+        // Unity 的 RaycastHit。`valid` 是 Unity 用 Physics.Raycast 的 bool
+        // 返回值表达的那一位——TS 侧没有 out 参数，所以由记录自己携带。
+        // 键名与 ZScript::Converter<RaycastHit> 一致。
+        "declare interface RaycastHit {\n"
+        "    valid: boolean;\n"
+        "    point: Vector3;\n"
+        "    normal: Vector3;\n"
+        "    distance: number;\n"
+        "    bodyId: number;\n"
+        "    layer: number;\n"
+        "}\n"
+        "\n"
         "/** Engine-side logging facade. Routes to the [ZScripting] log category. */\n"
         "declare namespace Debug {\n"
         "    function Log(...args: any[]): void;\n"

@@ -29,13 +29,28 @@
 #include "Runtime/Core/Math/UnityRandom.h"
 #include "Runtime/Function/Framework/Coroutine/Coroutine.h"
 #include "Runtime/Function/Framework/TagLayer/TagLayerManager.h"
+#include "Runtime/Function/Physics/Jolt/Utils.h"
+#include "Runtime/Function/Physics/Physics.h"
+#include "Runtime/Function/Physics/PhysicsManager.h"
+#include "Runtime/Function/Physics/PhysicsScene.h"
+
+#include "Jolt/Jolt.h"
+#include "Jolt/Physics/Body/Body.h"
+#include "Jolt/Physics/Body/BodyCreationSettings.h"
+#include "Jolt/Physics/Collision/Shape/BoxShape.h"
+#include "Jolt/Physics/PhysicsSystem.h"
 
 #include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <memory>
 #include <sstream>
 #include <string>
+
+#if defined(_MSC_VER) && defined(_DEBUG)
+    #include <crtdbg.h>
+#endif
 
 // The engine root is baked in by CMake so the wiring gate can read real source
 // files without hard-coding a developer's drive letter.
@@ -757,6 +772,258 @@ namespace
               "G12", "and splits on '/' (a plain name match would break 'A/B')");
     }
 
+    // ---------------------------------------------------------------- H ----
+    // Physics queries + the layer collision matrix.
+    //
+    // These run against a real PhysicsScene: the whole point of the slice is
+    // that the matrix is CONSUMED, and a source-level gate cannot tell the
+    // difference between "the filter reads the matrix" and "the filter reads
+    // the matrix and Jolt actually calls it".
+
+    /// A box straight through Jolt, tagged with an explicit Unity layer. Going
+    /// through RigidBodyComponentRes would drag the object + reflection layer
+    /// in; the layer plumbing that path adds is covered by group I.
+    uint32_t SpawnBox(PhysicsScene& in_scene, const Vector3& in_position, int32_t in_layer, bool in_dynamic)
+    {
+        JPH::BodyInterface& body_interface = in_scene.GetJoltPhysicsSystem()->GetBodyInterface();
+
+        JPH::BoxShapeSettings box_settings(JPH::Vec3(0.5f, 0.5f, 0.5f));
+        // RefTarget starts at refcount 0 and deletes at 0; a stack object
+        // without SetEmbedded() is "delete a stack pointer". See the note in
+        // PhysicsCharacterJointSmokeTest.
+        box_settings.SetEmbedded();
+
+        JPH::BodyCreationSettings body_settings(&box_settings,
+                                                JPH::RVec3(toVec3(in_position)),
+                                                JPH::Quat::sIdentity(),
+                                                in_dynamic ? JPH::EMotionType::Dynamic : JPH::EMotionType::Static,
+                                                static_cast<JPH::ObjectLayer>(in_layer));
+
+        JPH::Body* jph_body = body_interface.CreateBody(body_settings);
+        if (jph_body == nullptr)
+        {
+            return kInvalidPhysicsBodyId;
+        }
+
+        body_interface.AddBody(jph_body->GetID(), JPH::EActivation::Activate);
+        return jph_body->GetID().GetIndexAndSequenceNumber();
+    }
+
+    void StepScene(PhysicsScene& in_scene, int in_steps)
+    {
+        for (int i = 0; i < in_steps; ++i)
+        {
+            in_scene.Tick(1.0f / 60.0f);
+        }
+    }
+
+    void TestPhysicsQueries()
+    {
+        PhysicsManager* physics_manager = GET_SYSTEM(PhysicsManager);
+        Check(physics_manager != nullptr, "H0", "PhysicsManager is reachable");
+        if (physics_manager == nullptr)
+        {
+            return;
+        }
+
+        std::shared_ptr<PhysicsScene> scene = physics_manager->CreatePhysicsScene(Vector3(0.f, -9.81f, 0.f)).lock();
+        Check(scene != nullptr, "H0b", "a physics scene can be created");
+        if (!scene)
+        {
+            return;
+        }
+
+        // Two static boxes on two different layers, one nearer the ray origin.
+        const uint32_t box_default = SpawnBox(*scene, Vector3(0.f, 0.f, 0.f), 0, false);
+        const uint32_t box_ground = SpawnBox(*scene, Vector3(0.f, 0.f, 3.f), 8, false);
+        Check(box_default != kInvalidPhysicsBodyId && box_ground != kInvalidPhysicsBodyId,
+              "H0c", "both boxes were created");
+
+        // --- layering of the bodies themselves ------------------------------
+        int32_t read_layer = -1;
+        Check(scene->GetBodyLayer(box_default, read_layer) && read_layer == 0,
+              "H1", "a body reports the Unity layer it was created on");
+        Check(scene->GetBodyLayer(box_ground, read_layer) && read_layer == 8, "H2", "and so does the layer-8 box");
+        Check(!scene->GetBodyLayer(kInvalidPhysicsBodyId, read_layer), "H3", "an invalid body id reports no layer");
+        Check(!scene->SetBodyLayer(box_default, 99), "H4", "an out-of-range layer is refused");
+
+        // --- ray -------------------------------------------------------------
+        const Vector3 kRayOrigin(0.f, 0.f, 10.f);
+        const Vector3 kRayDirection(0.f, 0.f, -1.f);
+
+        const RaycastHit nearest = Physics::Raycast(kRayOrigin, kRayDirection, 100.f, -1);
+        Check(nearest.valid, "H5", "Raycast hits something");
+        Check(nearest.layer == 8, "H6", "and the nearest hit is the nearer box");
+        Check(nearest.bodyId == box_ground, "H7", "the hit carries the body id");
+        Check(nearest.distance > 6.f && nearest.distance < 7.f, "H8", "at the expected distance");
+
+        const RaycastHit only_default = Physics::Raycast(kRayOrigin, kRayDirection, 100.f, 1 << 0);
+        Check(only_default.valid && only_default.layer == 0 && only_default.bodyId == box_default,
+              "H9", "a layerMask of just layer 0 skips the layer-8 box");
+
+        const RaycastHit only_ground = Physics::Raycast(kRayOrigin, kRayDirection, 100.f, 1 << 8);
+        Check(only_ground.valid && only_ground.bodyId == box_ground, "H10", "and vice versa");
+
+        Check(!Physics::Raycast(kRayOrigin, kRayDirection, 100.f, 1 << 9).valid,
+              "H11", "a mask naming an empty layer hits nothing");
+        // Unity: layerMask 0 means "nothing", not "everything".
+        Check(!Physics::Raycast(kRayOrigin, kRayDirection, 100.f, 0).valid, "H12", "a mask of 0 hits nothing");
+        Check(!Physics::Raycast(kRayOrigin, kRayDirection, 2.f, -1).valid,
+              "H13", "maxDistance shorter than the gap hits nothing");
+
+        const std::vector<RaycastHit> all = Physics::RaycastAll(kRayOrigin, kRayDirection, 100.f, -1);
+        Check(all.size() == 2, "H14", "RaycastAll returns every hit");
+        Check(all.size() == 2 && all[0].distance < all[1].distance, "H15", "sorted nearest first");
+        Check(all.size() == 2 && all[0].bodyId == box_ground && all[1].bodyId == box_default,
+              "H16", "in the order the ray meets them");
+        Check(Physics::RaycastAll(kRayOrigin, kRayDirection, 100.f, 1 << 0).size() == 1,
+              "H17", "RaycastAll honours the mask");
+
+        Check(Physics::Linecast(Vector3(0.f, 0.f, 10.f), Vector3(0.f, 0.f, -10.f), -1),
+              "H18", "Linecast between two points through a box is true");
+        Check(!Physics::Linecast(Vector3(0.f, 5.f, 10.f), Vector3(0.f, 5.f, -10.f), -1),
+              "H19", "and false on a parallel line that misses it");
+
+        // --- sweeps ----------------------------------------------------------
+        const RaycastHit sphere_hit = Physics::SphereCast(kRayOrigin, 0.5f, kRayDirection, 100.f, -1);
+        Check(sphere_hit.valid && sphere_hit.bodyId == box_ground, "H20", "SphereCast hits the nearest box");
+        Check(!Physics::SphereCast(kRayOrigin, 0.5f, kRayDirection, 100.f, 1 << 0).valid ||
+                  Physics::SphereCast(kRayOrigin, 0.5f, kRayDirection, 100.f, 1 << 0).bodyId == box_default,
+              "H21", "SphereCast honours the mask");
+        Check(Physics::SphereCastAll(kRayOrigin, 0.5f, kRayDirection, 100.f, -1).size() == 2,
+              "H22", "SphereCastAll returns both");
+        Check(Physics::BoxCast(Vector3(0.f, 0.f, 10.f), Vector3(0.5f, 0.5f, 0.5f), kRayDirection, 100.f, -1).valid,
+              "H23", "BoxCast hits");
+        Check(Physics::CapsuleCast(Vector3(0.f, -0.5f, 10.f), Vector3(0.f, 0.5f, 10.f), 0.3f, kRayDirection, 100.f, -1)
+                  .valid,
+              "H24", "CapsuleCast hits");
+
+        // --- overlap ---------------------------------------------------------
+        Check(Physics::OverlapSphere(Vector3(0.f, 0.f, 0.f), 1.f, -1).size() == 1,
+              "H25", "OverlapSphere finds the box it is centred on");
+        Check(Physics::OverlapSphere(Vector3(0.f, 0.f, 1.5f), 5.f, -1).size() == 2,
+              "H26", "and both when it is big enough");
+        Check(Physics::OverlapSphere(Vector3(0.f, 0.f, 0.f), 1.f, 1 << 8).empty(),
+              "H27", "OverlapSphere honours the mask");
+        Check(Physics::OverlapSphere(Vector3(50.f, 50.f, 50.f), 1.f, -1).empty(), "H28", "and empty space is empty");
+
+        Check(Physics::CheckSphere(Vector3(0.f, 0.f, 0.f), 1.f, -1), "H29", "CheckSphere is true on a box");
+        Check(!Physics::CheckSphere(Vector3(50.f, 50.f, 50.f), 1.f, -1), "H30", "and false in empty space");
+        Check(Physics::CheckBox(Vector3(0.f, 0.f, 0.f), Vector3(0.5f, 0.5f, 0.5f), -1), "H31", "CheckBox is true");
+        Check(Physics::CheckCapsule(Vector3(0.f, -0.5f, 0.f), Vector3(0.f, 0.5f, 0.f), 0.3f, -1),
+              "H32", "CheckCapsule is true");
+        Check(Physics::OverlapBox(Vector3(0.f, 0.f, 0.f), Vector3(0.5f, 0.5f, 0.5f), -1).size() >= 1,
+              "H33", "OverlapBox finds it");
+        Check(Physics::OverlapCapsule(Vector3(0.f, -0.5f, 0.f), Vector3(0.f, 0.5f, 0.f), 0.3f, -1).size() >= 1,
+              "H34", "OverlapCapsule finds it");
+
+        // --- layer names / masks through the facade --------------------------
+        Check(Physics::LayerToName(0) == "Default", "H35", "Physics.LayerToName(0) is Default");
+        Check(Physics::NameToLayer("UI") == 5, "H36", "Physics.NameToLayer(\"UI\") is 5");
+        Check(Physics::NameToLayer("NoSuchLayer") == -1, "H37", "an unknown name is -1");
+
+        // --- the matrix actually gates the simulation ------------------------
+        //
+        // This is the check the whole slice exists for. Two bodies, one resting
+        // on the other; with the pair excluded they must pass straight through.
+        const uint32_t obstacle = SpawnBox(*scene, Vector3(20.f, 0.f, 0.f), 8, false);
+        const uint32_t faller = SpawnBox(*scene, Vector3(20.f, 3.f, 0.f), 9, true);
+        (void)obstacle;
+
+        auto reset_faller = [&]() {
+            JPH::BodyInterface& body_interface = scene->GetJoltPhysicsSystem()->GetBodyInterface();
+            body_interface.SetPosition(JPH::BodyID(faller), JPH::RVec3(20.f, 3.f, 0.f),
+                                       JPH::EActivation::Activate);
+            body_interface.SetLinearVelocity(JPH::BodyID(faller), JPH::Vec3::sZero());
+        };
+
+        Physics::IgnoreLayerCollision(8, 9, true);
+        Check(Physics::GetIgnoreLayerCollision(8, 9), "H38", "IgnoreLayerCollision(8, 9) takes effect");
+        Check(Physics::GetIgnoreLayerCollision(9, 8), "H39", "and is symmetric");
+        Check((static_cast<uint32_t>(Physics::GetCollisionLayerMask(8)) & (1u << 9)) == 0u,
+              "H40", "GetCollisionLayerMask(8) drops bit 9");
+
+        reset_faller();
+        StepScene(*scene, 90);
+        Vector3 fallen;
+        scene->GetRigidBodyPosition(faller, fallen);
+        Check(fallen.y < 0.f, "H41", "with the pair excluded the body falls straight through");
+
+        Physics::IgnoreLayerCollision(8, 9, false);
+        Check(!Physics::GetIgnoreLayerCollision(8, 9), "H42", "the exclusion can be lifted");
+
+        reset_faller();
+        StepScene(*scene, 90);
+        Vector3 rested;
+        scene->GetRigidBodyPosition(faller, rested);
+        Check(rested.y > 0.9f, "H43", "and once it collides again the body rests on top");
+
+        // --- gravity ---------------------------------------------------------
+        Check(std::fabs(Physics::GetGravity().y + 9.81f) < 0.001f, "H44", "Physics.GetGravity reads the scene");
+        Physics::SetGravity(Vector3(0.f, -20.f, 0.f));
+        Check(std::fabs(Physics::GetGravity().y + 20.f) < 0.001f, "H45", "Physics.SetGravity writes it");
+        Physics::SetGravity(Vector3(0.f, -9.81f, 0.f));
+
+        // A body retagged at runtime changes which queries see it.
+        Check(scene->SetBodyLayer(box_default, 8), "H46", "a body can be retagged");
+        Check(scene->GetBodyLayer(box_default, read_layer) && read_layer == 8, "H47", "and reads back the new layer");
+        Check(Physics::Raycast(kRayOrigin, kRayDirection, 100.f, 1 << 0).valid == false,
+              "H48", "so a mask of layer 0 no longer sees it");
+        Check(Physics::RaycastAll(kRayOrigin, kRayDirection, 100.f, 1 << 8).size() == 2,
+              "H49", "and a mask of layer 8 now sees both");
+    }
+
+    void TestPhysicsWiring()
+    {
+        const std::string scene_header = ReadFile("Source/Runtime/Function/Physics/PhysicsScene.h");
+        Check(!scene_header.empty(), "I0", "PhysicsScene.h is readable");
+        Check(CountOccurrences(scene_header, "layer_mask") >= 5,
+              "I1", "every query on PhysicsScene takes a layer mask");
+        Check(CountOccurrences(scene_header, "SetBodyLayer") >= 1, "I2", "bodies can be retagged");
+        Check(CountOccurrences(scene_header, "FilterHitsByLayer") >= 1, "I3", "there is one shared mask filter");
+
+        const std::string scene_source = ReadFile("Source/Runtime/Function/Physics/PhysicsScene.cpp");
+        Check(!scene_source.empty(), "I4", "PhysicsScene.cpp is readable");
+        // >= 4: declared once, called by raycast / sweep / overlap-all / the two
+        // primitive queries. "Declared but never called" is the exact failure
+        // the group-B gate was written for and it compiles silently.
+        Check(CountOccurrences(scene_source, "FilterHitsByLayer") >= 5,
+              "I5", "the mask filter is actually called by every query");
+        Check(CountOccurrences(scene_source, "kPhysicsLayerCount") >= 1,
+              "I6", "CreateRigidBody range-checks the Unity layer");
+
+        // The matrix has to be read where collisions are decided, not only where
+        // queries are filtered -- otherwise IgnoreLayerCollision moves no bodies.
+        const std::string utils_source = ReadFile("Source/Runtime/Function/Physics/Jolt/Utils.cpp");
+        Check(!utils_source.empty(), "I7", "Jolt/Utils.cpp is readable");
+        Check(CountOccurrences(utils_source, "TagLayerManager") >= 1,
+              "I8", "the Jolt object-layer filter includes the tag/layer manager");
+        Check(CountOccurrences(utils_source, "GetIgnoreLayerCollision") >= 1,
+              "I9", "and resolves pairs through the collision matrix");
+
+        const std::string rb_source =
+            ReadFile("Source/Runtime/Function/Framework/Component/Rigidbody/RigidbodyComponent.cpp");
+        Check(!rb_source.empty(), "I10", "RigidbodyComponent.cpp is readable");
+        Check(CountOccurrences(rb_source, "CurrentGameObjectLayer") >= 3,
+              "I11", "every body creation path passes the GameObject's layer");
+        Check(CountOccurrences(rb_source, "RefreshBodyLayer") >= 1, "I12", "and there is a retag path");
+
+        const std::string go_source = ReadFile("Source/Runtime/BaseClasses/GameObject.cpp");
+        Check(CountOccurrences(go_source, "RefreshBodyLayer") >= 1,
+              "I13", "GameObject.SetLayer pushes the new layer into the body");
+
+        const std::string binding_header = ReadFile("Source/Runtime/Scripting/Binding/ScriptBinding.h");
+        Check(!binding_header.empty(), "I14", "ScriptBinding.h is readable");
+        Check(CountOccurrences(binding_header, "Converter<RaycastHit>") >= 1,
+              "I15", "RaycastHit has a script converter");
+        Check(CountOccurrences(binding_header, "PhysicsQuery.h") >= 1,
+              "I16", "and it comes from the Jolt-free header, not PhysicsScene.h");
+
+        const std::string binding_source = ReadFile("Source/Runtime/Scripting/Binding/ScriptBinding.cpp");
+        Check(CountOccurrences(binding_source, "declare interface RaycastHit") >= 1,
+              "I17", "the .d.ts declares RaycastHit");
+    }
+
     // ---------------------------------------------------------------- B ----
     void TestWiringGate()
     {
@@ -810,6 +1077,36 @@ int main()
     SystemRegistry::GetInstance().RegisterSystem(new TagLayerManager());
     Check(GET_SYSTEM(TagLayerManager) != nullptr, "A0b", "the tag registry is reachable via GET_SYSTEM");
 
+    // Initialize the REGISTERED one, not just the local `manager`: the physics
+    // group reaches the tag table through GET_SYSTEM, and an uninitialized
+    // manager has no built-in layers -- so `Physics.LayerToName(0)` would come
+    // back empty and look like a facade bug.
+    Check(GET_SYSTEM(TagLayerManager)->Initialize(), "A0c", "the registered tag registry is initialized");
+
+    // Physics needs a manager for `Physics.CurrentScene()` to find a scene, and
+    // ObjectLayerPairFilterImpl needs the tag registry to resolve the collision
+    // matrix. Neither is initialized: PhysicsManager::Initialize only sets up
+    // the debug renderer, and TagLayerManager::Initialize just seeds built-ins.
+    SystemRegistry::GetInstance().RegisterSystem(new PhysicsManager());
+
+#if defined(_MSC_VER) && defined(_DEBUG)
+    _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE | _CRTDBG_MODE_DEBUG);
+    _CrtSetReportFile(_CRT_ASSERT, _CRTDBG_FILE_STDERR);
+    _CrtSetReportMode(_CRT_ERROR, _CRTDBG_MODE_FILE | _CRTDBG_MODE_DEBUG);
+    _CrtSetReportFile(_CRT_ERROR, _CRTDBG_FILE_STDERR);
+#endif
+    // Jolt's default AssertFailed breakpoints, which on a machine with no
+    // debugger is an instant 0x80000003 with no output at all.
+#if defined(JPH_ENABLE_ASSERTS)
+    JPH::AssertFailed = [](const char* in_expression, const char* in_message, const char* in_file,
+                           JPH::uint in_line) -> bool {
+        std::fprintf(stderr, "JPH ASSERT FAILED: %s\n  at %s:%u\n  %s\n", in_expression, in_file, in_line,
+                     in_message != nullptr ? in_message : "");
+        ++g_Failures;
+        return false;
+    };
+#endif
+
     TestTags(manager);
     TestLayers(manager);
     TestMasks();
@@ -819,6 +1116,8 @@ int main()
     TestRandom();
     TestHierarchyQueries();
     TestHierarchyWiring();
+    TestPhysicsQueries();
+    TestPhysicsWiring();
     TestWiringGate();
 
     std::printf("\n=== %d checks, %d failures ===\n", g_Checks, g_Failures);

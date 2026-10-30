@@ -1,24 +1,25 @@
 #include "Runtime/Function/Physics/Jolt/Utils.h"
 
+#include <algorithm>
+
 #include "Jolt/Physics/Collision/Shape/BoxShape.h"
 #include "Jolt/Physics/Collision/Shape/CapsuleShape.h"
 #include "Jolt/Physics/Collision/Shape/SphereShape.h"
 #include "Jolt/Physics/Collision/Shape/StaticCompoundShape.h"
+#include "Runtime/Function/Framework/TagLayer/TagLayerManager.h"
+#include "Runtime/Function/Physics/PhysicsQuery.h"
 #include "Runtime/Resource/ResType/Components/RigidBody.h"
 #include "Runtime/Resource/ResType/Data/BasicShape.h"
 #include "Runtime/BaseClasses/Cast.h"
 
 BPLayerInterfaceImpl::BPLayerInterfaceImpl()
 {
-    // Create a mapping table from object to broad phase layer
-    m_ObjectToBroadPhase[Layers::UNUSED1] = BroadPhaseLayers::UNUSED;
-    m_ObjectToBroadPhase[Layers::UNUSED2] = BroadPhaseLayers::UNUSED;
-    m_ObjectToBroadPhase[Layers::UNUSED3] = BroadPhaseLayers::UNUSED;
-    m_ObjectToBroadPhase[Layers::UNUSED4] = BroadPhaseLayers::UNUSED;
-    m_ObjectToBroadPhase[Layers::NON_MOVING] = BroadPhaseLayers::NON_MOVING;
-    m_ObjectToBroadPhase[Layers::MOVING] = BroadPhaseLayers::MOVING;
-    m_ObjectToBroadPhase[Layers::DEBRIS] = BroadPhaseLayers::DEBRIS;
-    m_ObjectToBroadPhase[Layers::SENSOR] = BroadPhaseLayers::SENSOR;
+    // Every Unity layer lands in the one broadphase bucket. The pair filter
+    // below is where the collision matrix is consulted.
+    for (uint8_t layer = 0; layer < Layers::NUM_LAYERS; ++layer)
+    {
+        m_ObjectToBroadPhase[layer] = BroadPhaseLayers::ALL;
+    }
 }
 
 #if defined(JPH_EXTERNAL_PROFILE) || defined(JPH_PROFILE_ENABLED)
@@ -26,16 +27,8 @@ const char* BPLayerInterfaceImpl::GetBroadPhaseLayerName(JPH::BroadPhaseLayer in
 {
     switch ((JPH::BroadPhaseLayer::Type)inLayer)
     {
-        case (JPH::BroadPhaseLayer::Type)BroadPhaseLayers::NON_MOVING:
-            return "NON_MOVING";
-        case (JPH::BroadPhaseLayer::Type)BroadPhaseLayers::MOVING:
-            return "MOVING";
-        case (JPH::BroadPhaseLayer::Type)BroadPhaseLayers::DEBRIS:
-            return "DEBRIS";
-        case (JPH::BroadPhaseLayer::Type)BroadPhaseLayers::SENSOR:
-            return "SENSOR";
-        case (JPH::BroadPhaseLayer::Type)BroadPhaseLayers::UNUSED:
-            return "UNUSED";
+        case (JPH::BroadPhaseLayer::Type)BroadPhaseLayers::ALL:
+            return "ALL";
         default:
             ASSERT(false);
             return "INVALID";
@@ -46,49 +39,28 @@ const char* BPLayerInterfaceImpl::GetBroadPhaseLayerName(JPH::BroadPhaseLayer in
 bool ObjectLayerPairFilterImpl::ShouldCollide([[maybe_unused]] JPH::ObjectLayer inLayer1,
                                               [[maybe_unused]] JPH::ObjectLayer inLayer2) const
 {
-    switch (inLayer1)
+    // Unity's layer collision matrix. This is the ONLY place the matrix gates
+    // anything: before this, `Physics.IgnoreLayerCollision` wrote bits that no
+    // simulation code ever read (implemented but not wired).
+    const TagLayerManager* tag_layer = GET_SYSTEM(TagLayerManager);
+    if (tag_layer == nullptr)
     {
-        case Layers::UNUSED1:
-        case Layers::UNUSED2:
-        case Layers::UNUSED3:
-        case Layers::UNUSED4:
-            return false;
-        case Layers::NON_MOVING:
-            return inLayer2 == Layers::MOVING || inLayer2 == Layers::DEBRIS;
-        case Layers::MOVING:
-            return inLayer2 == Layers::NON_MOVING || inLayer2 == Layers::MOVING || inLayer2 == Layers::SENSOR;
-        case Layers::DEBRIS:
-            return inLayer2 == Layers::NON_MOVING;
-        case Layers::SENSOR:
-            return inLayer2 == Layers::MOVING;
-        default:
-            ASSERT(false);
-            return false;
+        // No manager (headless test, or teardown ordering). Colliding is the
+        // pre-matrix behaviour, so it is the safe fallback: refusing to collide
+        // here would make every body fall through the world.
+        return true;
     }
+
+    return !tag_layer->GetIgnoreLayerCollision(static_cast<int32_t>(inLayer1), static_cast<int32_t>(inLayer2));
 }
 
 bool ObjectVsBroadPhaseLayerFilterImpl::ShouldCollide([[maybe_unused]] JPH::ObjectLayer inLayer1,
                                                       [[maybe_unused]] JPH::BroadPhaseLayer inLayer2) const
 {
-    switch (inLayer1)
-    {
-        case Layers::NON_MOVING:
-            return inLayer2 == BroadPhaseLayers::MOVING;
-        case Layers::MOVING:
-            return inLayer2 == BroadPhaseLayers::NON_MOVING || inLayer2 == BroadPhaseLayers::MOVING ||
-                   inLayer2 == BroadPhaseLayers::SENSOR;
-        case Layers::DEBRIS:
-            return inLayer2 == BroadPhaseLayers::NON_MOVING;
-        case Layers::SENSOR:
-            return inLayer2 == BroadPhaseLayers::MOVING;
-        case Layers::UNUSED1:
-        case Layers::UNUSED2:
-        case Layers::UNUSED3:
-            return false;
-        default:
-            ASSERT(false);
-            return false;
-    }
+    // Broadphase is a coarse bucket now, so there is nothing to reject here:
+    // gating on this level would silently drop pairs the pair filter would have
+    // allowed (Jolt tests both filters and requires BOTH to pass).
+    return inLayer1 < Layers::NUM_LAYERS && inLayer2 == BroadPhaseLayers::ALL;
 }
 
 JPH::Mat44 toMat44(const Matrix4x4& m)
@@ -151,4 +123,41 @@ JPH::Shape* toShape(const RigidBodyShape& shape, const Vector3& scale)
     }
 
     return jph_shape;
+}
+
+JPH::Shape* MakePrimitiveShape(const PhysicsPrimitiveDesc& desc)
+{
+    switch (desc.kind)
+    {
+        case PhysicsPrimitiveDesc::Kind::box:
+        {
+            // Jolt's BoxShape takes half extents and requires all three > 0;
+            // a flattened axis is a degenerate convex hull and Jolt asserts on
+            // it in debug. Clamp to a hair above zero rather than crashing a
+            // script that asked for a thin box.
+            const float kx = std::max(desc.halfExtents.x, 1.0e-4f);
+            const float ky = std::max(desc.halfExtents.y, 1.0e-4f);
+            const float kz = std::max(desc.halfExtents.z, 1.0e-4f);
+            return new JPH::BoxShape(JPH::Vec3(kx, ky, kz), 0.f);
+        }
+        case PhysicsPrimitiveDesc::Kind::sphere:
+        {
+            const float radius = std::max(desc.radius, 1.0e-4f);
+            return new JPH::SphereShape(radius);
+        }
+        case PhysicsPrimitiveDesc::Kind::capsule:
+        {
+            // CapsuleShape(halfHeightOfCylinder, radius): the total height is
+            // 2 * (halfHeight + radius), so a zero half-height is still a valid
+            // sphere. Both have to be positive for the convex support function.
+            const float radius = std::max(desc.radius, 1.0e-4f);
+            const float half_height = std::max(desc.halfHeight, 1.0e-4f);
+            return new JPH::CapsuleShape(half_height, radius);
+        }
+        default:
+            break;
+    }
+
+    LOG_ERROR(ZPhysics, "Unsupported primitive shape kind: {}", static_cast<int>(desc.kind));
+    return nullptr;
 }

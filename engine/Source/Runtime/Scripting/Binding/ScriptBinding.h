@@ -35,6 +35,10 @@
 // else, so binding the two AI value structs does not drag behaviour trees or
 // perception into every generated .gen.cpp.
 #include "Runtime/Function/AI/AIMoveIntent.h"
+// PhysicsQuery.h is the Jolt-free half of the physics module: RaycastHit has to
+// be marshallable here, and PhysicsScene.h would pull Jolt/Jolt.h into every
+// generated .gen.cpp (and into the Web build, which does not link Jolt).
+#include "Runtime/Function/Physics/PhysicsQuery.h"
 #include "pesapi.h"
 
 #include <eastl/string.h>
@@ -667,6 +671,40 @@ namespace ZScript
             AIActionRequest out;
             out.action_name = Converter<eastl::string>::FromJs(apis, env, apis->get_property(env, v, "actionName"));
             out.target_id = Converter<GObjectID>::FromJs(apis, env, apis->get_property(env, v, "targetId"));
+            return out;
+        }
+    };
+
+    // RaycastHit -- Unity's hit record, returned by value from every
+    // `Physics.*` query. `valid` is the field Unity expresses as the bool
+    // return of Physics.Raycast: TypeScript gets no out-parameters here, so the
+    // record carries its own validity instead.
+    //
+    // FromJs exists only so a signature *could* take one; queries never do, and
+    // a caller-written object simply round-trips.
+    template <>
+    struct Converter<RaycastHit>
+    {
+        static pesapi_value ToJs(pesapi_ffi* apis, pesapi_env env, const RaycastHit& v)
+        {
+            pesapi_value o = apis->create_object(env);
+            apis->set_property(env, o, "valid", Converter<bool>::ToJs(apis, env, v.valid));
+            apis->set_property(env, o, "point", Converter<Vector3>::ToJs(apis, env, v.point));
+            apis->set_property(env, o, "normal", Converter<Vector3>::ToJs(apis, env, v.normal));
+            apis->set_property(env, o, "distance", Converter<float>::ToJs(apis, env, v.distance));
+            apis->set_property(env, o, "bodyId", Converter<uint32_t>::ToJs(apis, env, v.bodyId));
+            apis->set_property(env, o, "layer", Converter<int32_t>::ToJs(apis, env, v.layer));
+            return o;
+        }
+        static RaycastHit FromJs(pesapi_ffi* apis, pesapi_env env, pesapi_value v)
+        {
+            RaycastHit out;
+            out.valid = Converter<bool>::FromJs(apis, env, apis->get_property(env, v, "valid"));
+            out.point = Converter<Vector3>::FromJs(apis, env, apis->get_property(env, v, "point"));
+            out.normal = Converter<Vector3>::FromJs(apis, env, apis->get_property(env, v, "normal"));
+            out.distance = Converter<float>::FromJs(apis, env, apis->get_property(env, v, "distance"));
+            out.bodyId = Converter<uint32_t>::FromJs(apis, env, apis->get_property(env, v, "bodyId"));
+            out.layer = Converter<int32_t>::FromJs(apis, env, apis->get_property(env, v, "layer"));
             return out;
         }
     };

@@ -53,6 +53,20 @@ std::weak_ptr<PhysicsScene> PhysicsManager::CreatePhysicsScene(const Vector3& gr
     return physics_scene;
 }
 
+std::shared_ptr<PhysicsScene> PhysicsManager::GetPhysicsScene(size_t index) const
+{
+    if (index >= m_Scenes.size())
+    {
+        return nullptr;
+    }
+    return m_Scenes[index];
+}
+
+std::shared_ptr<PhysicsScene> PhysicsManager::GetPrimaryPhysicsScene() const
+{
+    return m_Scenes.empty() ? nullptr : m_Scenes.front();
+}
+
 void PhysicsManager::DeletePhysicsScene(std::weak_ptr<PhysicsScene> physics_scene)
 {
     std::shared_ptr<PhysicsScene> deleted_scene = physics_scene.lock();

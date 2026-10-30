@@ -24,6 +24,7 @@ class ObjectLayerPairFilterImpl;
 #include "Runtime/Core/Math/AxisAligned.h"
 #include "Runtime/Core/Math/Quaternion.h"
 #include "Runtime/Function/Physics/PhysicsConfig.h"
+#include "Runtime/Function/Physics/PhysicsQuery.h"
 
 namespace JPH
 {
@@ -104,6 +105,9 @@ struct PhysicsHitInfo
     Vector3 hit_normal;
     float hit_distance {0.f};
     uint32_t body_id {s_InvalidRigidbodyId};
+    /// Unity layer of the hit body. Filled by every query so the caller does
+    /// not have to re-lock the body to find out whether it wanted the hit.
+    int32_t layer {0};
 };
 
 class PhysicsContactListener;
@@ -126,9 +130,32 @@ public:
     virtual ~PhysicsScene();
 
     const Vector3& getGravity() const { return m_Config.m_Gravity; }
+    /// Unity's `Physics.gravity`. Takes effect on the next step: Jolt reads the
+    /// gravity out of its own body state, so this also has to re-apply it to
+    /// every live body (a dynamic body keeps the gravity it was given at
+    /// creation until something sets it again).
+    void setGravity(const Vector3& gravity);
 
-    uint32_t CreateRigidBody(const TransformTRS& global_transform, const RigidBodyComponentRes& rigidbody_actor_res);
+    /// @param unity_layer  the GameObject's layer, which becomes the Jolt
+    /// object layer (see Jolt/Utils.h) and is therefore what the layer
+    /// collision matrix and every query mask filter on.
+    uint32_t CreateRigidBody(const TransformTRS& global_transform,
+                             const RigidBodyComponentRes& rigidbody_actor_res,
+                             int32_t unity_layer = 0);
     void RemoveRigidBody(uint32_t body_id);
+
+    // --- layers -------------------------------------------------------------
+    //
+    // The Unity layer IS the Jolt object layer, so there is no side table to
+    // keep in sync: the body is the single source of truth.
+
+    /// @return false when the body does not exist; out_layer untouched.
+    bool GetBodyLayer(uint32_t body_id, int32_t& out_layer) const;
+
+    /// Re-tag a live body. Used when a script assigns `gameObject.layer`, which
+    /// Unity applies to physics immediately rather than at the next rebuild.
+    /// @return false when the body does not exist or the layer is out of range.
+    bool SetBodyLayer(uint32_t body_id, int32_t unity_layer);
 
     void UpdateRigidBodyGlobalTransform(uint32_t body_id, const TransformTRS& global_transform);
 
@@ -209,8 +236,14 @@ public:
     /// @ray_direction: ray direction
     /// @ray_length: ray length, anything beyond this length will not be reported as a hit
     /// @out_hits: the found hits, sorted by distance
+    /// @layer_mask: only bodies on a layer selected by this mask are reported
+    ///             (default: every layer).
     /// @return: true if any hits found, else false
-    bool Raycast(Vector3 ray_origin, Vector3 ray_direction, float ray_length, std::vector<PhysicsHitInfo>& out_hits);
+    bool Raycast(Vector3 ray_origin,
+                 Vector3 ray_direction,
+                 float ray_length,
+                 std::vector<PhysicsHitInfo>& out_hits,
+                 uint32_t layer_mask = kPhysicsAllLayers);
 
     /// cast a shape and find the hits
     /// @shape: the casted rigidbody shape
@@ -218,17 +251,55 @@ public:
     /// @sweep_direction: sweep direction
     /// @sweep_length: sweep length, anything beyond this length will not be reported as a hit
     /// @out_hits: the found hits, sorted by distance
+    /// @layer_mask: only bodies on a selected layer are reported.
     /// @return: true if any hits found, else false
     bool Sweep(const RigidBodyShape& shape,
                const Matrix4x4& shape_transform,
                Vector3 sweep_direction,
                float sweep_length,
-               std::vector<PhysicsHitInfo>& out_hits);
+               std::vector<PhysicsHitInfo>& out_hits,
+               uint32_t layer_mask = kPhysicsAllLayers);
 
     /// overlap test
     /// @shape: rigidbody shape
+    /// @layer_mask: only bodies on a selected layer count.
     /// @return: true if overlapped with any rigidbodies
-    bool IsOverlap(const RigidBodyShape& shape, const Matrix4x4& global_transform);
+    bool IsOverlap(const RigidBodyShape& shape,
+                   const Matrix4x4& global_transform,
+                   uint32_t layer_mask = kPhysicsAllLayers);
+
+    /// Which bodies a shape overlaps. `IsOverlap` only answers "any", which is
+    /// enough for a Check* but not for Unity's `Physics.OverlapSphere`, whose
+    /// whole point is handing back the list.
+    ///
+    /// @out_hits: one entry per overlapping body. `hit_distance` is meaningless
+    ///            for an overlap (there is no direction) and stays 0.
+    /// @return: true if anything overlapped.
+    bool OverlapAll(const RigidBodyShape& shape,
+                    const Matrix4x4& global_transform,
+                    std::vector<PhysicsHitInfo>& out_hits,
+                    uint32_t layer_mask = kPhysicsAllLayers);
+
+    // --- primitive queries (no engine Object needed) ------------------------
+    //
+    // Sweep / OverlapAll take a RigidBodyShape, which means an engine Object
+    // (and ObjectManager) has to exist to describe "a sphere of radius 2".
+    // Scripts do not have one. These take a plain descriptor instead, so
+    // `Physics.SphereCast` costs no allocation.
+
+    /// Cast a box / sphere / capsule. @see Sweep.
+    bool CastPrimitive(const PhysicsPrimitiveDesc& desc,
+                       const Matrix4x4& world_transform,
+                       Vector3 sweep_direction,
+                       float sweep_length,
+                       std::vector<PhysicsHitInfo>& out_hits,
+                       uint32_t layer_mask = kPhysicsAllLayers);
+
+    /// Every body a box / sphere / capsule overlaps. @see OverlapAll.
+    bool OverlapPrimitive(const PhysicsPrimitiveDesc& desc,
+                          const Matrix4x4& world_transform,
+                          std::vector<PhysicsHitInfo>& out_hits,
+                          uint32_t layer_mask = kPhysicsAllLayers);
 
     void GetShapeBoundingBoxes(uint32_t body_id, std::vector<AxisAlignedBox>& out_bounding_boxes) const;
 
@@ -240,6 +311,15 @@ protected:
     /// Shared implementation of AddForce / AddImpulse: both take a body write
     /// lock and do nothing on a non-dynamic body.
     bool ApplyForceOrImpulse(uint32_t body_id, const Vector3& value, bool is_force);
+
+    /// Drop every hit whose body is on a layer `layer_mask` does not select,
+    /// and stamp the surviving hits with their layer.
+    ///
+    /// Applied *after* the collector has run rather than inside it: Jolt's
+    /// collector traits early-out on the first hit for AnyHit queries, and a
+    /// mask test that ran there would have to replicate Jolt's body locking.
+    /// Query result sets are small, so a second pass is the cheap option.
+    void FilterHitsByLayer(std::vector<PhysicsHitInfo>& in_out_hits, uint32_t layer_mask);
 
     // we use single Jolt physics system for each scene
     JoltPhysics m_Physics;
