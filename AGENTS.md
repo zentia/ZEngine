@@ -3971,3 +3971,66 @@ CMake 4.x. MIUI/HyperOS rejects `adb install -g`
 (`INSTALL_GRANT_RUNTIME_PERMISSIONS`) and, once the package is gone, plain
 `adb install` (`INSTALL_FAILED_USER_RESTRICTED`) — 开发者选项 → USB 安装 must be
 on, and the script installs via `adb push` + `pm install --force-queryable`.
+
+> 补记：下面 §2.46 / §2.47 曾被上游提交 `cf91441`（"公式层的唯一权威搬进子模块"，
+> 一次并行编辑）连带删掉约 114 行时一起丢失，这里是重新补回的版本。若那次截断是有意的，
+> 直接删掉这两节即可。
+
+### 2.46 静默的失败分支：症状和"根本没写这段代码"一模一样
+
+2026-10-30 修 iOS 上的 `ProjectInfo` 启动失败，时间几乎全耗在两个**什么都不说**的分支上：
+
+1. `if (auto* cs = GET_SYSTEM(CommandSystem); cs != nullptr) { /* 写回工程路径 */ }`
+   —— 放在 `RegisterGameRuntime()` **之前**，而 `CommandSystem` 本身就是 Runtime 系统，
+   所以 `cs` 恒为 `nullptr`，**整个块被静默跳过**，日志只剩一行没头没尾的
+   `[F] Failed to initialize system 'ProjectInfo', rolling back`。
+2. `CommandSystem::Initialize()` 里无条件 `project_path = project_path_str;`，没有 `-p` 时
+   是空串，把宿主刚写进来的值又冲掉。同样不打日志。
+
+规则：**取不到东西的分支要打日志**（至少 WARNING，起不来的打 ERROR）。`nullptr` / 空串 /
+早退不是"正常无事发生"，它们是诊断信息。**无条件覆盖**一个可能已被别人设过的字段，要想清楚
+并写进注释。排查这类问题时，先**证明代码执行到了**——在分支里加一行带实际值的日志，比反复
+读代码快。
+
+配套教训：**编译得过 ≠ 起得来。** iOS 那四个运行时阻塞（UIScene 生命周期、缺 `ZEditor.ini`、
+`ProjectInfo` 工程路径、粒子纹理空指针）全是编译期零报错、链接期零报错，装上才炸，而 CI 的
+编译闸门一个都发现不了（见 §2.45）。沙箱里 `ps` 会报 `operation not permitted`，改用**崩溃
+报告比对**（跑前跑后各取一次 `ls -t ~/Library/Logs/DiagnosticReports/ | head -1`）。
+
+Android / OHOS 是同一个洞，目前仍然没有 job。
+
+### 2.47 体积：先拿 map，再谈裁谁
+
+2026-10-30 `ZRuntimeShared` 从 2.6 MB 涨到 8.1 MB，第一反应（包括我自己的）是"裁掉静态合入
+的模块，比如 PuertsCore"。**按链接 map 一量，PuertsCore 只有 0.01 MB** —— 猜测和真相差两个
+数量级。真实构成（活字节）：引擎自身对象 2.31 / spirv-cross 1.90 / PapiQuickjs 0.76 /
+GPUSpine 0.35 / Jolt 0.21 / mimalloc 0.10 / **PuertsCore 0.01**（MB）。
+
+三刀总共拿回 5.53 MB（8.11 → 2.58），结论按数据记：
+
+- **别猜体积，生成链接 map**（`-DZENGINE_IOS_LINK_MAP_FILE=<path>`）。`-dead_strip` +
+  导出列表之下，"把 .a 大小加起来"恒为高估，只有链接器保留下来的字节才算。
+- **`option()` 默认 ON 不等于它生效了**。`ZENGINE_MOBILE_SIZE_OPTIMIZE` 对 iOS 默认就是 ON，
+  但 flag 那段只判 `ANDROID OR OHOS` —— iOS Release 一直停在 `-O3`。判默认值的条件和判 flag
+  的条件是两份代码，可以各说各话。补 `-Oz` 拿回 2.0 MB `__TEXT`。
+- **符号表是体积的一部分**，别只盯 `__TEXT`。`-exported_symbols_list` 之后剩下的 ~2 万 LOCAL
+  符号吃掉 1.9 MB `__LINKEDIT`，链接期 `-x` 拿回 1.7 MB。
+- **`-x`（链接期）≠ `strip -S`（post-build）**。后者重写已链接的 Mach-O，可能破坏 iOS 16+
+  dyld 要的 `LC_DYLD_INFO`；前者让链接器一次生成对。要裁符号就在链接期裁。
+- **裁模块前先确认它是不是在公开 ABI 里**：PapiQuickjs 不能动，因为
+  `CreateQjsPapiEnvRef` / `GetQjsFFIApi` 在 104 个导出符号中。导出表是判断依据，不是依赖图。
+- **只摘库不摘引用它的 TU = 制造 0 地址调用**。`MetalRHI.mm` 引用 `CompilerMSL`，摘掉
+  spirv-cross 后这些符号在 `-undefined dynamic_lookup` 下被绑成 0，调用即
+  `EXC_BAD_ACCESS at 0x0`。这条正好被 `nm -m | grep -c "dynamically looked up"` 抓到 ——
+  **那条断言不只是防漏链库，也是防"裁过头"**。
+- **"反射 TU"是这类裁剪最容易漏的一个**：裁 `SpineRenderer.cpp` 时，真正调它成员函数
+  （41 个符号）的是 `SpineRenderer.gen.cpp`，漏掉它等于白裁且留下未定义符号。
+  `ZHeaderTool.cmake` 因此加了 `<Target>_ZHT_EXCLUDE_BASENAMES`。
+- **`GLOB_RECURSE` 的新文件会进所有目标的源列表**：`PhysicsSceneNull.cpp` 想写
+  `#error "只在 slim 下有意义"` 会把宿主 / Editor / web 全编挂 —— 必须整体 `#if` 包成空 TU。
+- **`PUBLIC` 的链接库同时提供 include 目录**：想"不链 Jolt"会把 `Jolt/Jolt.h` 的 include 路径
+  一起拿走，`PhysicsManager.cpp` 直接编不过。库留在链接线上、靠"没有 TU 引用它"让归档贡献
+  0 字节更省事（用链接 map 证明 0 就行）。
+- **动一个被广泛包含的头文件前先确认它不在 PCH 里**：`PhysicsScene.h` 若被 ZEnginePCH
+  预编译，两个 target 看到不同宏就是 ODR 事故。当时是靠 grep 确认它只在 .cpp 里被直接
+  include 才敢加 `ZENGINE_SHARED_NO_PHYSICS` 接缝的。

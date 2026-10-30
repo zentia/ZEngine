@@ -11,7 +11,12 @@
 #include <cstring>
 #include <exception>
 
-#ifdef __APPLE__
+// ZENGINE_SHARED_NO_SPIRV_CROSS (slim iOS shared runtime -- see
+// ZENGINE_IOS_SHARED_SLIM_MODULES): SPIRV-Cross is NOT linked, so its headers
+// must not be included either. They are what drags spirv_cross::CompilerMSL --
+// and through it the whole spirv-cross msl+glsl+core archive (~1.2 MB) -- into
+// the dylib. spirv.hpp (the spv:: enums) comes from the same vendored tree.
+#if defined(__APPLE__) && !defined(ZENGINE_SHARED_NO_SPIRV_CROSS)
     // SPIR-V -> MSL (the engine's shaders are SPIR-V; Metal only accepts MSL).
     #include <spirv_cross.hpp>
     #include <spirv_msl.hpp>
@@ -539,7 +544,15 @@ namespace
             case RHI_FORMAT_R8G8B8A8_UINT:       return MTLPixelFormatRGBA8Uint;
             case RHI_FORMAT_D16_UNORM:           return MTLPixelFormatDepth16Unorm;
             case RHI_FORMAT_D32_SFLOAT:          return MTLPixelFormatDepth32Float;
-            case RHI_FORMAT_D24_UNORM_S8_UINT:   return MTLPixelFormatDepth24Unorm_Stencil8;
+            case RHI_FORMAT_D24_UNORM_S8_UINT:
+// Apple GPUs (A/M series) have no 24-bit depth + stencil: the iPhoneOS SDK does
+// not even declare MTLPixelFormatDepth24Unorm_Stencil8. 32-bit float depth is the
+// closest depth+stencil that exists on iOS.
+#if ZENGINE_METAL_IOS
+                return MTLPixelFormatDepth32Float_Stencil8;
+#else
+                return MTLPixelFormatDepth24Unorm_Stencil8;
+#endif
             case RHI_FORMAT_D32_SFLOAT_S8_UINT:  return MTLPixelFormatDepth32Float_Stencil8;
             default:                             return MTLPixelFormatRGBA8Unorm;
         }
@@ -747,6 +760,7 @@ namespace
         return metal_buffer->computeEncoder;
     }
 
+#if !defined(ZENGINE_SHARED_NO_SPIRV_CROSS)
     // SPIR-V: 扫 OpExecutionMode（opcode 16）找 LocalSize（17）或 LocalSizeId（38）。
     //
     // 为什么不问 SPIRV-Cross：它把 workgroup 尺寸藏在 EntryPoint 结构里，而这个仓库
@@ -788,11 +802,12 @@ namespace
                     return;
                 }
             }
-            i += count;
-        }
+        i += count;
     }
+}
+#endif  // !ZENGINE_SHARED_NO_SPIRV_CROSS
 
-    // MSL: `[[threads_per_threadgroup(256, 1, 1)]]`。MSL 源串是引擎自己拼的（Nanite
+// MSL: `[[threads_per_threadgroup(256, 1, 1)]]`。MSL 源串是引擎自己拼的（Nanite
     // 的剔除 kernel 走 CreateShaderModuleFromSource），所以手写解析就够了。
     void ReadWorkgroupSizeFromMsl(const std::string& source, uint32_t out_size[3])
     {
@@ -900,6 +915,7 @@ namespace
     }
 
 
+#if !defined(ZENGINE_SHARED_NO_SPIRV_CROSS)
     ShaderStage ToShaderStage(uint32_t execution_model)
     {
         switch (execution_model)
@@ -913,6 +929,7 @@ namespace
             default:                                   return ShaderStage::Vertex;
         }
     }
+#endif  // !ZENGINE_SHARED_NO_SPIRV_CROSS
 }  // namespace
 #endif
 
@@ -920,6 +937,15 @@ namespace
 // accepts MSL, so the SPIR-V goes through SPIRV-Cross' MSL backend here.
 RHIShader* MetalRHI::CreateShaderModule(const std::vector<unsigned char>& shader_code)
 {
+#ifdef ZENGINE_SHARED_NO_SPIRV_CROSS
+    // Slim shared runtime: SPIRV-Cross is not linked, so SPIR-V cannot be
+    // translated to MSL. Say so instead of calling a symbol that would have
+    // been bound to 0 by -undefined dynamic_lookup (EXC_BAD_ACCESS at 0x0).
+    (void)shader_code;
+    LOG_WARNING(ZRender, "MetalRHI: SPIR-V shader modules are unavailable in this build "
+                         "(ZENGINE_SHARED_NO_SPIRV_CROSS)");
+    return nullptr;
+#else
 #ifdef __APPLE__
     const bool is_spirv = shader_code.size() >= 4 && (shader_code.size() % 4) == 0 &&
                           shader_code[0] == 0x03 && shader_code[1] == 0x02 &&
@@ -1087,6 +1113,7 @@ RHIShader* MetalRHI::CreateShaderModule(const std::vector<unsigned char>& shader
     (void)shader_code;
     return nullptr;
 #endif
+#endif  // ZENGINE_SHARED_NO_SPIRV_CROSS
 }
 
 RHIShader* MetalRHI::CreateShaderModuleFromFile(const std::string& file_path,
@@ -1365,7 +1392,15 @@ void MetalRHI::CreateGlobalImage(RHIImage*&      image,
     descriptor.height           = static_cast<NSUInteger>(texture_image_height);
     descriptor.mipmapLevelCount = static_cast<NSUInteger>(miplevels > 0 ? miplevels : 1);
     descriptor.usage            = MTLTextureUsageShaderRead;
+// MTLStorageModeManaged is macOS-only (discrete VRAM needing explicit
+// synchronisation). iOS has unified memory, so Shared is the only mode that both
+// CPU and GPU can see. Nothing here calls synchronizeResource / didModifyRange,
+// so the switch needs no extra sync on the iOS side.
+#if ZENGINE_METAL_IOS
+    descriptor.storageMode      = MTLStorageModeShared;
+#else
     descriptor.storageMode      = MTLStorageModeManaged;
+#endif
 
     id<MTLTexture> texture = [m_Device newTextureWithDescriptor:descriptor];
     [descriptor release];
@@ -1453,7 +1488,15 @@ void MetalRHI::CreateCubeMap(RHIImage*&           image,
     descriptor.mipmapLevelCount = generate_mips ? requested_mips : 1u;
     descriptor.usage = generate_mips ? (MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite)
                                      : MTLTextureUsageShaderRead;
+// MTLStorageModeManaged is macOS-only (discrete VRAM needing explicit
+// synchronisation). iOS has unified memory, so Shared is the only mode that both
+// CPU and GPU can see. Nothing here calls synchronizeResource / didModifyRange,
+// so the switch needs no extra sync on the iOS side.
+#if ZENGINE_METAL_IOS
+    descriptor.storageMode      = MTLStorageModeShared;
+#else
     descriptor.storageMode      = MTLStorageModeManaged;
+#endif
 
     id<MTLTexture> texture = [m_Device newTextureWithDescriptor:descriptor];
     [descriptor release];
@@ -2042,7 +2085,10 @@ void MetalRHI::CmdBeginRenderPassPFN(RHICommandBuffer*              commandBuffe
         const bool is_depth = render_pass != nullptr && i < render_pass->attachments.size()
                                   ? render_pass->attachments[i].isDepthStencil
                                   : (texture.pixelFormat == MTLPixelFormatDepth32Float ||
+// The 24-bit depth+stencil enum does not exist on iOS (see ToMetalFormat).
+#if !ZENGINE_METAL_IOS
                                      texture.pixelFormat == MTLPixelFormatDepth24Unorm_Stencil8 ||
+#endif
                                      texture.pixelFormat == MTLPixelFormatDepth32Float_Stencil8);
 
         RHIAttachmentLoadOp  load_op  = RHI_ATTACHMENT_LOAD_OP_LOAD;
@@ -3058,7 +3104,23 @@ bool MetalRHI::PrepareBeforePass(std::function<void()> passUpdateAfterRecreateSw
     HostView* view = m_SwapchainView != nullptr ? (__bridge HostView*)m_SwapchainView : nil;
     if (view != nil)
     {
+// UIView has no -convertRectToBacking: (that is AppKit/NSView). The scale source
+// MUST be the same one SyncLayerMetrics uses -- it is what actually writes
+// m_SwapchainExtent -- otherwise `resized` stays true every frame and the
+// swapchain is recreated forever.
+#if ZENGINE_METAL_IOS
+        CGFloat backing_scale = m_MetalLayer.contentsScale > 0.0 ? m_MetalLayer.contentsScale
+                                                                : [UIScreen mainScreen].nativeScale;
+        if (backing_scale <= 0.0)
+        {
+            backing_scale = 1.0;
+        }
+        const CGRect backing = CGRectMake(0.0, 0.0,
+                                          view.bounds.size.width  * backing_scale,
+                                          view.bounds.size.height * backing_scale);
+#else
         const NSRect backing = [view convertRectToBacking:view.bounds];
+#endif
         const bool resized = backing.size.width <= 0.0 || backing.size.height <= 0.0 ||
                              std::fabs(backing.size.width - static_cast<double>(m_SwapchainExtent.width)) > 0.5 ||
                              std::fabs(backing.size.height - static_cast<double>(m_SwapchainExtent.height)) > 0.5;
@@ -3220,10 +3282,15 @@ void MetalRHI::ClearSwapchain()
         m_CurrentDrawable = nil;
     }
     HostView* view = m_SwapchainView != nullptr ? (__bridge HostView*)m_SwapchainView : nil;
+// UIView.layer is readonly (the view owns its layer and you cannot replace it),
+// so unlike NSView there is nothing to detach here: releasing m_MetalLayer below
+// is the whole cleanup. Assigning would not compile on iOS.
+#if !ZENGINE_METAL_IOS
     if (view != nil && view.layer == m_MetalLayer)
     {
         view.layer = nil;
     }
+#endif
     if (m_MetalLayer != nil)
     {
         [m_MetalLayer release];

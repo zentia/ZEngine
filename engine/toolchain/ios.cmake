@@ -1,11 +1,18 @@
 # =============================================================================
 # iOS toolchain（P0-1 移动端出包链）
 #
-# 用法：
-#   cmake -S engine -B build/ios -G Xcode \
-#         -DCMAKE_TOOLCHAIN_FILE=engine/toolchain/ios.cmake \
-#         -DZENGINE_IOS_DEVELOPMENT_TEAM=XXXXXXXXXX
+# 用法（2026-10-30 用 Ninja 从零实跑通过；-G Xcode 同样可以，zbuild_ios.py 走的是 Xcode）：
+#   cmake -S . -B build/ios -G Ninja \
+#         -DCMAKE_BUILD_TYPE=Release \
+#         -DCMAKE_TOOLCHAIN_FILE=$PWD/engine/toolchain/ios.cmake
+#   ninja -C build/ios ZGameIOS
 #
+# ⚠️ -S 必须是**仓库根**，不是 engine/：只有工程根的 CMakeLists.txt 登记了
+#    engine/Libraries/GPUSpine 与 GPUParticle 两个子模块。传 -S engine 会在
+#    configure 时报 "GPUSpine submodule missing"，而它提示你跑的那条 git
+#    submodule update --init 对**未登记**的路径必然失败 —— 看起来像本机环境
+#    坏了，实际只是根目录传错。CI 里同样只有这一个正确写法。
+
 # 为什么整个文件这么短：CMake 自带 Darwin-Initialize，设了 CMAKE_SYSTEM_NAME=iOS
 # 之后它自己会推导出 Xcode 需要的绝大多数变量。手写 toolchain 只补"iOS 特有的
 # 那几项"，不要重复造（重复造的那类 toolchain 通常在 Xcode 升级后就失效）。

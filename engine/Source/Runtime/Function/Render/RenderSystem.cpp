@@ -350,9 +350,11 @@ void RenderSystem::Tick(float delta_time)
                 }
 #endif  // __APPLE__
 
+#if !defined(ZENGINE_SHARED_NO_SPINE)
                 // GPU-Spine（控制台 `spine.load` 才有东西画）：场景之后、编辑器 UI 之前 ⇒ 面板盖在它上面，
                 // 与 Vulkan（RP2 UI subpass 里画在 UI 之前）同一层次。swapchain pass 是 Apple 上唯一开着的 pass。
                 SpineGpuRenderer::Get().DrawInEditorViewport(m_Rhi, render_pass, 0);
+#endif
 
                 if (m_RenderPipeline)
                 {

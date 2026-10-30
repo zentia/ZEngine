@@ -9,7 +9,13 @@
 #include <mutex>
 #include <vector>
 
-#if defined(__EMSCRIPTEN__)
+// ZENGINE_SHARED_NO_PHYSICS: the slim iOS shared runtime drops the Jolt-backed
+// TUs (PhysicsScene.cpp / PhysicsCharacter.cpp / Jolt/Utils.cpp) and links
+// PhysicsSceneNull.cpp instead, so this header must not pull jolt/utils.h and
+// must not declare members whose construction needs a symbol from those TUs
+// (the two filter impls, whose vtables live in Jolt/Utils.cpp). Everything else
+// is pointer-only and stays.
+#if defined(__EMSCRIPTEN__) || defined(ZENGINE_SHARED_NO_PHYSICS)
 class ObjectVsBroadPhaseLayerFilterImpl;
 class ObjectLayerPairFilterImpl;
 #else
@@ -241,18 +247,25 @@ protected:
     // Web stub: forward-declared so the header doesn't need Jolt at all.
     std::unique_ptr<ObjectVsBroadPhaseLayerFilterImpl> m_ObjectVsBroadPhaseLayerFilter;
     std::unique_ptr<ObjectLayerPairFilterImpl> m_ObjectLayerPairFilter;
-#else
+#elif !defined(ZENGINE_SHARED_NO_PHYSICS)
     ObjectVsBroadPhaseLayerFilterImpl m_ObjectVsBroadPhaseLayerFilter;
     ObjectLayerPairFilterImpl m_ObjectLayerPairFilter;
 #endif
+    // (slim build: no filter members at all -- see the note at the top of the file)
     PhysicsConfig m_Config;
 
     std::vector<uint32_t> m_PendingRemoveBodies;
 
+#if !defined(ZENGINE_SHARED_NO_PHYSICS)
     /// Registered on the Jolt system so sensors can produce trigger events.
     /// Kept behind a unique_ptr because the header only forward-declares it
     /// (and because on Web the whole thing is replaced by a stub).
+    ///
+    /// Dropped on the slim build: PhysicsContactListener is only *defined* in
+    /// PhysicsScene.cpp, so a TU that cannot see it cannot destroy the
+    /// unique_ptr either -- and that TU is exactly the one that is excluded.
     std::unique_ptr<PhysicsContactListener> m_ContactListener;
+#endif
 
     /// Constraints owned by this scene. Jolt's ConstraintManager does not take
     /// ownership, so entries are released by hand.

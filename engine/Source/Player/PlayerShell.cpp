@@ -18,6 +18,7 @@
 #include "Runtime/Core/Base/CrashHandler.h"
 #include "Runtime/Core/Base/SystemRegistry.h"
 #include "Runtime/Core/Log/LogSystem.h"
+#include "Runtime/Function/Command/CommandSystem.h"
 #include "Runtime/Function/Console/ConsoleManager.h"
 #include "Runtime/Function/Framework/GameFramework/GameEngine.h"
 #include "Runtime/Function/Render/WindowSystem.h"
@@ -63,6 +64,26 @@ namespace
     std::filesystem::path ResolveWorkingDir(const std::filesystem::path& project_path)
     {
         return std::filesystem::is_directory(project_path) ? project_path : project_path.parent_path();
+    }
+
+    /// 在工程目录里找 .zproject。
+    ///
+    /// ProjectInfo::Initialize() 吃的是 **.zproject 文件**的路径（它自己
+    /// exists() 之后解析），而 Player 拿到的是"工程目录"。桌面端这个路径由命令行
+    /// `-p` 传进来，移动端没有命令行，所以只能自己找。
+    std::filesystem::path FindProjectFile(const std::filesystem::path& dir)
+    {
+        std::error_code ec;
+        std::filesystem::directory_iterator it(dir, ec);
+        const std::filesystem::directory_iterator end {};
+        for (; !ec && it != end; it.increment(ec))
+        {
+            if (it->is_regular_file() && it->path().extension() == ".zproject")
+            {
+                return it->path();
+            }
+        }
+        return {};
     }
 }  // namespace
 
@@ -189,6 +210,45 @@ extern "C" ZPlayerResult ZPlayer_Boot(const ZPlayerBootDesc* desc)
 
     // 游戏层：Runtime 全部系统 + GameEngine（后者会接管关卡里的角色）。
     RegisterGameRuntime(ToPreferredRHI(desc->preferred_rhi));
+
+    // 工程路径必须写回 CommandSystem，再启动系统。
+    //
+    // ProjectInfo（以及若干 importer）是从 CommandSystem::GetProjectPath() /
+    // GetWorkingDir() 拿工程的，桌面端靠命令行 `-p` 填进去，而**移动端没有命令行**
+    // —— ZPlayer_Boot 只设了进程 cwd，CommandSystem 里那两个字段一直是空的。
+    // 漏这一步的表现极其没信息量：
+    //     [F] Failed to initialize system 'ProjectInfo', rolling back
+    // 前面没有任何一行解释为什么（LoadFromFile("") 直接返回 false）。
+    //
+    // 位置必须在 RegisterGameRuntime() **之后**：CommandSystem 本身是 Runtime
+    // 系统，RegisterRuntime() 才 REGISTER_SYSTEM(CommandSystem)，在那之前
+    // GET_SYSTEM 返回 nullptr，整个块会被静默跳过 —— 症状和"根本没写这段代码"
+    // 一模一样。2026-10-30 就因为这个把块放错位置，白等了一轮"改了但没生效"。
+    if (auto* command_system = GET_SYSTEM(CommandSystem); command_system != nullptr)
+    {
+        command_system->GetWorkingDir() = working_dir;
+
+        const std::filesystem::path project_file = FindProjectFile(working_dir);
+        if (!project_file.empty())
+        {
+            command_system->GetProjectPath() = project_file;
+            LOG_INFO(ZEngine, "ZPlayer: project file = {}", project_file.generic_string());
+        }
+        else
+        {
+            LOG_WARNING(ZEngine,
+                        "ZPlayer: no .zproject found under {} -- ProjectInfo will have no project",
+                        working_dir.generic_string());
+        }
+    }
+    else
+    {
+        // 不要静默：上一次就是这里返回 nullptr 而没人知道，日志里只剩一行
+        // 没头没尾的 "[F] Failed to initialize system 'ProjectInfo'"。
+        LOG_ERROR(ZEngine,
+                  "ZPlayer: CommandSystem is not registered -- ProjectInfo will have no project");
+    }
+
     START_SYSTEM();
 
     zengine::player::ApplyStartupConsoleVariables(g_cvar_file.c_str(), g_has_cvar_file);

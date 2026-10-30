@@ -275,7 +275,22 @@ bool CommandSystem::Initialize()
 
     LOG_INFO(ZEditor, "Configuration file: {}", config_file_path.string());
     // Set working directory to the directory containing project_path_str
-    project_path = project_path_str;
+    //
+    // 只在命令行**真的给了** -p 时才覆盖。
+    //
+    // Player（移动端 / Web / 外部宿主）没有命令行：工程路径是 ZPlayer_Boot 在
+    // RegisterGameRuntime() 之后、START_SYSTEM() 之前写进来的（见 PlayerShell.cpp）。
+    // 这里原来是无条件 `project_path = project_path_str`，而 project_path_str 在
+    // 没有 -p 时是空串 —— 于是在 iOS 上把刚写进来的值冲成空，ProjectInfo::
+    // LoadFromFile("") 走 `!exists("")` 直接返回 false，日志里只剩一行没头没尾的
+    //     [F] Failed to initialize system 'ProjectInfo', rolling back
+    // 前面一行解释都没有（2026-10-30 实际踩到）。
+    //
+    // 语义：命令行 > 宿主预设 > 空。
+    if (!project_path_str.empty())
+    {
+        project_path = project_path_str;
+    }
     if (!project_path.empty())
     {
         if (std::filesystem::is_directory(project_path))

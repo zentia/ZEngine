@@ -43,7 +43,22 @@ set(BINARY_ROOT_DIR "${CMAKE_INSTALL_PREFIX}/")
 # Set unified output directories for libraries and executables
 # This allows multiple projects to share the same engine build outputs
 # and avoid recompiling the engine for each project
-if(NOT DEFINED ZENGINE_UNIFIED_OUTPUT_DIR)
+if(IOS OR ANDROID OR OHOS OR CMAKE_SYSTEM_NAME STREQUAL "OHOS")
+    # 交叉构建**不能**写宿主的 bin/：两套构建产出的是**同名**归档（libZRuntime.a、
+    # libz.a、libJolt.a ...），谁后编谁覆盖，被覆盖的一方随后以完全不相关的症状炸掉：
+    #   编完 iOS  -> 宿主测试链上 iOS 归档，跑起来 SIGSEGV（栈指向 MemoryManager::Malloc
+    #              之类，看不出是库被换了）；
+    #   编完宿主  -> iOS 链接报 "building for 'iOS', but linking in object file
+    #              (bin/libz.a[2](adler32.c.o)) built for 'macOS'"。
+    # 所以交叉构建输出到自己的构建树（build/<platform>/bin），宿主的 bin/ 只留宿主产物。
+    # 想指定别处就传 -DZENGINE_CROSS_UNIFIED_OUTPUT_DIR=<path>。
+    if(NOT ZENGINE_CROSS_UNIFIED_OUTPUT_DIR)
+        set(ZENGINE_CROSS_UNIFIED_OUTPUT_DIR "${CMAKE_BINARY_DIR}/bin/")
+    endif()
+    # FORCE 是故意的：交叉构建的缓存里可能残留宿主（或上一次）的值，而那正是要覆盖掉的。
+    set(ZENGINE_UNIFIED_OUTPUT_DIR "${ZENGINE_CROSS_UNIFIED_OUTPUT_DIR}"
+        CACHE PATH "Unified output directory for ZEngine libraries" FORCE)
+elseif(NOT DEFINED ZENGINE_UNIFIED_OUTPUT_DIR)
     set(ZENGINE_UNIFIED_OUTPUT_DIR "${BINARY_ROOT_DIR}" CACHE PATH "Unified output directory for ZEngine libraries")
 endif()
 

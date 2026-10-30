@@ -24,7 +24,15 @@
 namespace
 {
     /// 项目内容在 .app 里的位置（由 zbuild_ios.py 拷进 bundle 的 Resources）。
-    constexpr const char* k_bundled_project_dir = "zengine";
+    ///
+    /// ⚠️ 名字**不能**叫 "zengine"：可执行文件的 OUTPUT_NAME 是 "ZEngine"，
+    /// 而 macOS 默认卷宗是**大小写不敏感**的，于是 `<app>/zengine` 与
+    /// `<app>/ZEngine` 被当成同一条路径 —— 拷贝资源时 mkdir 得到
+    /// ENOTDIR / EEXIST（ninja 报法：`mkdir(.../ZEngine.app/zengine/Build):
+    /// Not a directory`，看上去完全不像大小写问题），带项目内容的 iOS 构建
+    /// 在 Mac 上根本编不出来。iOS 设备本身是大小写敏感的，所以这个坑只在
+    /// 构建宿主机上发作，真机上永远不会复现。
+    constexpr const char* k_bundled_project_dir = "zengine_project";
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -117,7 +125,19 @@ namespace
 
 @end
 
-@interface ZEngineAppDelegate : UIResponder <UIApplicationDelegate>
+// ---------------------------------------------------------------------------
+// iOS 26+ SDK **强制** UIScene 生命周期。只给 UIApplicationDelegate + window 的
+// App 会在启动那一刻被系统判死：
+//
+//   UIKitCore: failure in _UIApplicationEvaluateRuntimeIssueForNoSceneLifecycleAdoption
+//   "Application failed to launch: UIScene life cycle is required for apps built
+//    with this SDK."
+//
+// 而这条**只在运行期报**，编译期一声不吭 —— 2026-10-30 用 iOS 模拟器跑出来的
+// （真机上同样会挂，只是模拟器是当时唯一能跑起来的地方）。所以窗口创建、引擎
+// boot、帧循环全部搬到 ZEngineSceneDelegate 里，AppDelegate 只负责把场景交给它。
+// ---------------------------------------------------------------------------
+@interface ZEngineSceneDelegate : UIResponder <UIWindowSceneDelegate>
 
 @property (nonatomic, strong) UIWindow*      window;
 @property (nonatomic, strong) UIView*        renderView;
@@ -126,25 +146,40 @@ namespace
 
 @end
 
-@implementation ZEngineAppDelegate
+@interface ZEngineAppDelegate : UIResponder <UIApplicationDelegate>
 
-- (BOOL)application:(UIApplication*)application
-    didFinishLaunchingWithOptions:(NSDictionary*)launchOptions
+@end
+
+@implementation ZEngineSceneDelegate
+
+- (void)scene:(UIScene*)scene
+    willConnectToSession:(UISceneSession*)session
+    options:(UISceneConnectionOptions*)connectionOptions
 {
+    if (self.window != nil)
+    {
+        return;  // 场景重连：窗口和引擎都还在，不能再 boot 一次（ZPlayer_Boot 会报 called twice）
+    }
+    if (![scene isKindOfClass:[UIWindowScene class]])
+    {
+        return;
+    }
+
+    // iOS 13 起 UIWindow 必须绑在 UIWindowScene 上，不能用 initWithFrame: 另建。
+    self.window        = [[UIWindow alloc] initWithWindowScene:(UIWindowScene*)scene];
+    self.window.frame  = [UIScreen mainScreen].bounds;
+
     [self setupWindow];
     [self bootEngine];
     if (self.bootFailed)
     {
-        return YES;  // 错误已经画在屏幕上，不再启动帧循环
+        return;  // 错误已经画在屏幕上，不再启动帧循环
     }
     [self startFrameLoop];
-    return YES;
 }
 
 - (void)setupWindow
 {
-    self.window = [[UIWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
-
     UIViewController* controller = [[UIViewController alloc] init];
     self.renderView = [[ZEngineRenderView alloc] initWithFrame:self.window.bounds];
     // drawable 要按物理像素算，否则 Retina 上是糊的。
@@ -231,6 +266,33 @@ namespace
           static_cast<int>(result), projectPath);
 }
 
+- (void)sceneDidDisconnect:(UIScene*)scene
+{
+    // 场景被回收（切后台被系统释放、窗口销毁）：停帧循环。引擎的 Shutdown 留给
+    // AppDelegate 的 applicationWillTerminate —— 这里关了引擎、场景又连回来时
+    // ZPlayer_Boot 会报 "called twice"。
+    [self.displayLink invalidate];
+    self.displayLink = nil;
+}
+
+@end
+
+@implementation ZEngineAppDelegate
+
+/// 没有这个方法，系统直接判 "UIScene life cycle is required"（见上面
+/// ZEngineSceneDelegate 的注释）。名字与 Info.plist 的 UIApplicationSceneManifest
+/// 对齐，但 delegateClass 在这里给，避免 plist 里写死类名容易与重构脱节。
+- (UISceneConfiguration*)application:(UIApplication*)application
+    configurationForConnectingSceneSession:(UISceneSession*)connectingSceneSession
+    options:(UISceneConnectionOptions*)options
+{
+    UISceneConfiguration* configuration =
+        [[UISceneConfiguration alloc] initWithName:@"Default Configuration"
+                                       sessionRole:connectingSceneSession.role];
+    configuration.delegateClass = [ZEngineSceneDelegate class];
+    return configuration;
+}
+
 - (void)applicationWillResignActive:(UIApplication*)application
 {
     ZPlayer_SetFocus(0);
@@ -255,8 +317,6 @@ namespace
 
 - (void)applicationWillTerminate:(UIApplication*)application
 {
-    [self.displayLink invalidate];
-    self.displayLink = nil;
     ZPlayer_Shutdown();
 }
 

@@ -74,6 +74,19 @@ if(ANDROID OR IOS OR Z_PLATFORM_OHOS OR OHOS OR CMAKE_SYSTEM_NAME STREQUAL "OHOS
 endif()
 option(ZENGINE_MOBILE_SIZE_OPTIMIZE "Optimize mobile shared libraries for smaller package size" ${_ZENGINE_MOBILE_PLATFORM})
 option(ZENGINE_MOBILE_HIDE_INTERNAL_SYMBOLS "Hide non-exported mobile runtime symbols" ${_ZENGINE_MOBILE_PLATFORM})
+# iOS-only, local to the shared runtime dylib: pass ld64 `-x` so the LOCAL
+# symbols left behind by -exported_symbols_list are never written into the
+# symbol table. Measured 2026-10-30: ~1.3 MB of __LINKEDIT on a 8.1 MB dylib.
+# (Deliberately a link-time flag, not a post-build `strip -S`, which can
+# damage LC_DYLD_INFO and make iOS 16+ dyld reject the image.)
+option(ZENGINE_IOS_SHARED_STRIP_LOCAL_SYMBOLS "Strip local symbols from the iOS shared runtime at link time (-x)" ${_ZENGINE_MOBILE_PLATFORM})
+# Drop whole subsystems from the iOS ZRuntimeShared dylib. Default OFF: this
+# changes what the dylib *is*, not just how it is built. Safe only because the
+# exported ABI is 104 C symbols that contain no rendering / physics / Spine
+# entry point -- see the "what is left to cut" table in
+# scripts/build_lib/ios/README.md. The static ZRuntime (iOS player, Editor,
+# host tools) is untouched.
+option(ZENGINE_IOS_SHARED_SLIM_MODULES "Drop SPIRV-Cross / GPUSpine / Jolt from the iOS shared runtime" OFF)
 unset(_ZENGINE_MOBILE_PLATFORM)
 option(ZENGINE_WINDOWS_SIZE_OPTIMIZE "Optimize Windows shared runtime for smaller package size" OFF)
 
@@ -133,20 +146,32 @@ elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   if(Z_PLATFORM_OHOS OR OHOS OR CMAKE_SYSTEM_NAME STREQUAL "OHOS")
     add_compile_options("-Wno-unused-command-line-argument")
   endif()
-  if(ZENGINE_MOBILE_SIZE_OPTIMIZE AND (ANDROID OR Z_PLATFORM_OHOS OR OHOS OR CMAKE_SYSTEM_NAME STREQUAL "OHOS"))
+  # iOS is a mobile platform too (ZENGINE_MOBILE_SIZE_OPTIMIZE defaults to ON
+  # for it), but the flags below used to be gated on Android/OHOS only -- so a
+  # Release iOS build quietly stayed at CMake's default -O3 while Android got
+  # -Oz. The AppleClang spelling of the section-GC half is -dead_strip (already
+  # set on ZRuntimeShared), so only the compile side is added here.
+  if(ZENGINE_MOBILE_SIZE_OPTIMIZE AND (ANDROID OR IOS OR Z_PLATFORM_OHOS OR OHOS OR CMAKE_SYSTEM_NAME STREQUAL "OHOS"))
     add_compile_options(
       "$<$<CONFIG:Release>:-Oz>"
       "$<$<CONFIG:MinSizeRel>:-Oz>"
       -ffunction-sections
       -fdata-sections
     )
-    if(ZENGINE_MOBILE_HIDE_INTERNAL_SYMBOLS)
+    # -fvisibility=hidden is deliberately NOT applied on Apple: the iOS shared
+    # runtime links with -flat_namespace + -undefined dynamic_lookup so that
+    # libc++ VTT/vtable/typeinfo can bind against the copy embedded in the host
+    # (UnityFramework). Marking those hidden at compile time would make local
+    # copies instead and change type identity across the boundary.
+    if(ZENGINE_MOBILE_HIDE_INTERNAL_SYMBOLS AND NOT APPLE)
       add_compile_options(-fvisibility=hidden -fvisibility-inlines-hidden)
     endif()
-    add_link_options(
-      "$<$<CONFIG:Release>:-Wl,--gc-sections>"
-      "$<$<CONFIG:MinSizeRel>:-Wl,--gc-sections>"
-    )
+    if(NOT APPLE)
+      add_link_options(
+        "$<$<CONFIG:Release>:-Wl,--gc-sections>"
+        "$<$<CONFIG:MinSizeRel>:-Wl,--gc-sections>"
+      )
+    endif()
     if(ANDROID)
       add_link_options(
         "$<$<CONFIG:Release>:-Wl,--icf=safe>"
@@ -348,6 +373,28 @@ add_subdirectory(3rdparty)
 # install(EXPORT ...) errors when a runtime target requires a module target
 # that wasn't yet defined.
 add_subdirectory(Source/Modules)
+
+# ---------------------------------------------------------------------------
+# iOS: no stack probing anywhere (ZEngine targets, 3rdparty and the PCH alike).
+#
+# On arm64 iOS, Clang inserts ___chkstk_darwin calls for frames >4KB. That symbol
+# lives in macOS libSystem but is NOT exported by the iOS SDK stubs, so dyld
+# rejects the binary ("Symbol not found: ___chkstk_darwin"). We ship a no-op in
+# Platform/IOS/ZChkstkDarwin.c and disable the probing instead (iOS uses kernel
+# guard pages for stack overflow detection).
+#
+# This MUST be directory-global, not per-target: ZEnginePCH is a shared
+# precompiled header, and AppleClang refuses a PCH whose stack-check setting
+# differs from the translation unit consuming it --
+#   "stack checking was enabled in precompiled file ... but is currently disabled"
+# (and the mirror error the other way round). Adding the flag to ZRuntime alone
+# broke ZPlayer; adding it to the PCH alone broke ZPlayer the other way. One
+# global switch is the only arrangement where every consumer agrees.
+# ---------------------------------------------------------------------------
+if(IOS)
+  add_compile_options(-fno-stack-check)
+endif()
+
 add_subdirectory(Source/CommonPCH)
 
 add_subdirectory(Source/Runtime)

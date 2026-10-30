@@ -225,6 +225,32 @@ if(NOT TARGET BqLog)
         add_subdirectory(bqlog/src)
 
         set_target_properties(BqLog PROPERTIES FOLDER ${third_party_folder}/BqLog)
+
+        # 交叉编译不要把 BqLog 写进源码树。
+        #
+        # bqlog 的 CMakeLists 把产物目录硬编码成源码树内的
+        #     <bqlog>/artifacts/static_lib/lib/$<CONFIG>/
+        # (src/CMakeLists.txt:135)。那是它"分发产物"的设计 —— 一台机器只编一个
+        # 平台时没问题，但我们是**单机交叉编译**：宿主(macOS, Debug) 和
+        # iOS(Debug) 的 ARTIFACTS_SUB_DIR 都是 "lib/$<CONFIG>"，先编的那个会被
+        # 后编的静默覆盖（android/ohos 反倒没事，它们的子目录带 ABI）。
+        #
+        # 症状极难懂：宿主链接报
+        #     ld: building for 'macOS', but linking in object file
+        #     (.../BqLog.framework/BqLog[2](aes.cpp.o)) built for 'iOS-simulator'
+        # 而 verify_prefab_native.sh 只打印一句
+        #     clang++: error: linker command failed with exit code 1
+        # 看上去像是 prefab 测试本身坏了（2026-10-30 实际踩到：跑完
+        # `ninja -C build/iossim` 之后 verify_prefab_native 三个用例全变红，
+        # 与 prefab 毫无关系）。
+        #
+        # 所以让交叉编译的产物落进 build tree：源码树的 artifacts/ 只由宿主写。
+        if(IOS OR ANDROID OR OHOS OR CMAKE_SYSTEM_NAME STREQUAL "OHOS")
+            set(_bqlog_out "${CMAKE_BINARY_DIR}/3rdparty/bqlog")
+            set_target_properties(BqLog PROPERTIES
+                ARCHIVE_OUTPUT_DIRECTORY "${_bqlog_out}"
+                LIBRARY_OUTPUT_DIRECTORY "${_bqlog_out}")
+        endif()
     endif()
 endif()
 

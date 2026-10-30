@@ -19,9 +19,13 @@ IOS_TOOLCHAIN="$ROOT_DIR/engine/3rdparty/bqlog/build/lib/ios/ios.toolchain.cmake
 # is also what the engine ships on Web/wasm. v8 is selectable for dev-only
 # iOS builds (must run in jitless mode under Apple's policy).
 PAPI_TYPE="quickjs"
+# Drop SPIRV-Cross / GPUSpine / Jolt from the dylib. Opt-in: it changes what the
+# dylib *is*, not just how it is built. See "--slim" in the usage text and the
+# "what gets dropped" section of README.md.
+SLIM_MODULES=0
 
 usage() {
-  echo "Usage: $(basename "$0") [--config Release|Debug|MinSizeRel|RelWithDebInfo] [--all-configs] [--platform OS64] [--deployment-target 16.0] [--jobs N] [--vulkan-sdk PATH] [--toolchain PATH] [--papi quickjs|v8] [--clean] [--strip] [--no-strip] [--no-export-list] [--framework] [--no-framework] [--framework-name NAME] [--bundle-id ID]"
+  echo "Usage: $(basename "$0") [--config Release|Debug|MinSizeRel|RelWithDebInfo] [--all-configs] [--platform OS64] [--deployment-target 16.0] [--jobs N] [--vulkan-sdk PATH] [--toolchain PATH] [--papi quickjs|v8] [--slim] [--no-slim] [--clean] [--strip] [--no-strip] [--no-export-list] [--framework] [--no-framework] [--framework-name NAME] [--bundle-id ID]"
   echo "Output:    bin/ios/PLATFORM/CONFIG/libZRuntimeShared.dylib"
   echo "Framework: bin/ios/PLATFORM/CONFIG/ZRuntimeShared.framework"
   echo "Symbols:   bin/ios/PLATFORM/CONFIG/libZRuntimeShared.dylib.dSYM"
@@ -45,6 +49,8 @@ while [[ $# -gt 0 ]]; do
     --framework-name) FRAMEWORK_NAME="$2"; shift 2 ;;
     --bundle-id) FRAMEWORK_BUNDLE_ID="$2"; shift 2 ;;
     --papi) PAPI_TYPE="$2"; shift 2 ;;
+    --slim) SLIM_MODULES=1; shift ;;
+    --no-slim) SLIM_MODULES=0; shift ;;
     --help|-h) usage; exit 0 ;;
     *) echo "Unknown option: $1"; usage; exit 1 ;;
   esac
@@ -140,6 +146,7 @@ Vulkan SDK: $VULKAN_SDK
 Platform:   $PLATFORM
 Deploy:     $DEPLOYMENT_TARGET
 PAPI:       $PAPI_TYPE
+Slim:       $SLIM_MODULES (drop SPIRV-Cross / GPUSpine / Jolt)
 Configs:    ${CONFIGS[*]}
 Strip:      $STRIP_OUTPUT (auto strips Release/MinSizeRel)
 Output:     $ROOT_DIR/bin/$OUTPUT_SUBDIR/<CONFIG>/libZRuntimeShared.dylib
@@ -187,6 +194,9 @@ fi
 CMAKE_EXPORT_ARGS=()
 if [[ "$LIMIT_EXPORTS" == "1" ]]; then
   CMAKE_EXPORT_ARGS=(-DZENGINE_IOS_EXPORT_SYMBOLS_FILE="$EXPORTS_FILE")
+fi
+if [[ "$SLIM_MODULES" == "1" ]]; then
+  CMAKE_EXPORT_ARGS+=(-DZENGINE_IOS_SHARED_SLIM_MODULES=ON)
 fi
 
 create_framework() {
@@ -314,8 +324,29 @@ cmake -S "$ROOT_DIR" -B "$BUILD_DIR" -G Xcode \
 # Strip it from the generated pbxproj post-configure.
 _pbxproj="${BUILD_DIR}/ZEngine.xcodeproj/project.pbxproj"
 if [[ -f "$_pbxproj" ]]; then
-  sed -i '' 's| /Y- ||g' "$_pbxproj"
-  echo "[PATCH] Stripped /Y- from ${_pbxproj}"
+  # `sed -i ''` is the BSD spelling. On a machine whose sed is GNU or toybox it
+  # means something else entirely: the '' is taken as the script and the real
+  # script as a filename, so the whole call dies with
+  #     sed: s| /Y- ||g: No such file or directory
+  # and (under `set -e`) takes the build down with it -- which is exactly what
+  # happened on 2026-10-30, where `sed` is toybox 0.8.13. Write to a temp file
+  # and move it over instead; that works under every sed.
+  #
+  # Also: only patch when the flag is actually there. CMake 4.4.5 no longer
+  # injects /Y- into the pbxproj, and patching unconditionally is how a no-op
+  # step turns into a hard failure.
+  if grep -q ' /Y- ' "$_pbxproj"; then
+    _pbxproj_tmp="${_pbxproj}.tmp"
+    if sed 's| /Y- ||g' "$_pbxproj" > "$_pbxproj_tmp" && mv "$_pbxproj_tmp" "$_pbxproj"; then
+      echo "[PATCH] Stripped /Y- from ${_pbxproj}"
+    else
+      rm -f "$_pbxproj_tmp"
+      echo "[ERROR] Failed to strip /Y- from ${_pbxproj}"
+      exit 1
+    fi
+  else
+    echo "[PATCH] No /Y- in ${_pbxproj} -- nothing to strip"
+  fi
 fi
 
 for build_config in "${CONFIGS[@]}"; do

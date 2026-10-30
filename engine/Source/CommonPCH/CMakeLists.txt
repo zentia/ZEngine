@@ -28,6 +28,10 @@ if(NOT WIN32 AND NOT (EMSCRIPTEN OR CMAKE_SYSTEM_NAME STREQUAL "Emscripten"))
   target_link_options(${PCH_TARGET_NAME} PRIVATE -pthread)
   target_link_libraries(${PCH_TARGET_NAME} PRIVATE Threads::Threads)
 endif()
+# NOTE: -fno-stack-check on iOS is applied directory-globally in
+# engine/CMakeLists.txt (just before this file is added), NOT here. It has to be
+# global: AppleClang refuses a PCH whose stack-check setting differs from the TU
+# consuming it, so the PCH and every consumer must share one switch.
 
 
 set_target_properties(${PCH_TARGET_NAME} PROPERTIES

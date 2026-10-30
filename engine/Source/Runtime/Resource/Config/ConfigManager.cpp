@@ -27,6 +27,26 @@ bool ConfigManager::Initialize()
         // 不刷这一下，上面那行（唯一说清楚"到底去哪儿找了 ini"的证据）就随缓冲区
         // 一起没了。双击 .app 启动时没有终端，日志是唯一的线索。
         ZEngineForceFlushLogs();
+
+        // 文件**根本不存在**时用默认值继续，不能让整个引擎起不来。
+        //
+        // 桌面端 ini 是 CMake install 放到可执行文件旁边的（bin/Debug/ZEditor.ini），
+        // 缺了通常意味着安装损坏；但移动端 Player 的 .app bundle 里从来就没有这个
+        // 文件 —— 2026-10-30 在 iOS 模拟器上第一次真跑起来就撞在这里：
+        //   [E] ConfigManager: cannot open config file '<app>/ZEngine.app/ZEditor.ini'
+        //   [F] Failed to initialize system 'ConfigManager', rolling back
+        // 于是 ZPlayer_Boot 直接失败、App 白屏退出。没有 ini 的正确语义是"全部用
+        // 默认值"，不是"启动失败"。
+        //
+        // 区分"不存在"与"存在但打不开"：后者（权限、被占用）仍然是真故障，保持致命。
+        if (!std::filesystem::exists(config_file_path))
+        {
+            LOG_WARNING(ZEditor,
+                        "ConfigManager: no config file at '{}' -- continuing with defaults",
+                        config_file_path.string());
+            ZEngineForceFlushLogs();
+            return true;
+        }
         return false;
     }
     char line_buf[4096];

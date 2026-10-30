@@ -32,12 +32,25 @@ REPO_ROOT = Path(__file__).resolve().parent
 ENGINE_DIR = REPO_ROOT / "engine"
 IOS_PROJECT_DIR = ENGINE_DIR / "Source" / "Player" / "IOS"
 STAGING_DIR = IOS_PROJECT_DIR / "staging"
-STAGING_PROJECT = STAGING_DIR / "zengine"
+# 目录名**不能**叫 "zengine"：可执行文件的 OUTPUT_NAME 是 "ZEngine"，而 macOS
+# 默认卷宗大小写不敏感，`<app>/zengine` 会跟 `<app>/ZEngine` 撞成同一条路径，
+# 拷贝资源时 mkdir 直接 ENOTDIR（ninja 报 "Not a directory"，看不出是大小写）。
+# 详见 IOSMain.mm 里 k_bundled_project_dir 的注释。改这里必须同步改那边。
+STAGING_PROJECT = STAGING_DIR / "zengine_project"
 TOOLCHAIN_FILE = ENGINE_DIR / "toolchain" / "ios.cmake"
-BUILD_DIR = REPO_ROOT / "build" / "ios"
+# Xcode 生成器**不能**与 Ninja 共用同一个构建树：CMake 缓存里写着
+# CMAKE_GENERATOR，两者不一致时 cmake 直接报
+#   "generator : Xcode does not match the generator used previously: Ninja"
+# 而 build/ios 现在是 CI 编译闸门（.github/workflows/build_ios.yml，Ninja）用的
+# 目录 —— 在本机跑一次 CI 那条命令之后，zbuild_ios.py 就会卡在这一句上，看着像
+# "工程坏了"。所以出包（Xcode，要签名/Archive）单独用一棵树。
+BUILD_DIR = REPO_ROOT / "build" / "ios-xcode"
 
 EXCLUDED_DIR_NAMES = {".git", ".svn", ".vs", ".idea", "Intermediate", "Saved", "Logs"}
 KEEP_BUILD_SUBDIRS = {"iOS"}
+# macOS 的 Finder 会在项目目录里留下 .DS_Store，rglob 会把它一起打进 bundle。
+# 它不是目录所以 EXCLUDED_DIR_NAMES 挡不住，得单独按文件名过滤。
+EXCLUDED_FILE_NAMES = {".DS_Store"}
 
 
 def log(msg: str) -> None:
@@ -71,6 +84,8 @@ def stage_project(project_root: Path) -> int:
         rel = src.relative_to(project_root)
         if any(part in EXCLUDED_DIR_NAMES for part in rel.parts):
             continue
+        if src.name in EXCLUDED_FILE_NAMES:
+            continue
         # 只带 iOS 的构建产物（Bundles / manifest 都在 Build/<Platform> 下）。
         if rel.parts[0] == "Build" and (len(rel.parts) < 2 or rel.parts[1] not in KEEP_BUILD_SUBDIRS):
             continue
@@ -98,7 +113,12 @@ def configure(config: str, team: str | None, generator_args: str) -> None:
     BUILD_DIR.mkdir(parents=True, exist_ok=True)
     cmd = [
         "cmake",
-        "-S", str(ENGINE_DIR),
+        # 工程根是**仓库根**，不是 engine/：只有仓库根的 CMakeLists.txt 登记了
+        # engine/Libraries/GPUSpine 与 GPUParticle 两个子模块。传 -S engine 会在
+        # configure 时报 "GPUSpine submodule missing"，并建议你跑一条对**未登记**
+        # 路径必然失败的 git submodule update --init —— 看上去像仓库坏了，实际只是
+        # 根目录传错。（2026-10-30 修；同 AGENTS.md §2.45）
+        "-S", str(REPO_ROOT),
         "-B", str(BUILD_DIR),
         "-G", "Xcode",
         f"-DCMAKE_TOOLCHAIN_FILE={TOOLCHAIN_FILE}",
@@ -113,11 +133,19 @@ def configure(config: str, team: str | None, generator_args: str) -> None:
 
 
 def build_app(config: str) -> Path:
+    # -allowProvisioningUpdates 是必需的，不是可选优化：只给 DEVELOPMENT_TEAM
+    # 的话，xcodebuild **不会**去 Apple 后台补东西。而个人/免费团队的真机部署
+    # 有两件必须先发生的事——把这台设备的 UDID 注册到团队、并为
+    # com.zengine.player 生成（或刷新）开发用 provisioning profile —— 缺任一件
+    # 都会在签名阶段失败，且报错完全不提"设备没注册"（常见形态是
+    # "Provisioning profile ... doesn't include the device"，或干脆
+    # "No profile for team ... matched"）。加了它 xcodebuild 才会自动完成这两步。
     run(["xcodebuild",
          "-project", str(BUILD_DIR / "ZEngine.xcodeproj"),
          "-scheme", "ZGameIOS",
          "-configuration", config,
          "-destination", "generic/platform=iOS",
+         "-allowProvisioningUpdates",
          "build"], cwd=BUILD_DIR)
 
     # 不要硬猜一个路径。Xcode 生成器的产物位置随 CMake 版本和
@@ -154,6 +182,8 @@ def archive_and_export(config: str, team: str | None) -> Path:
            "-scheme", "ZGameIOS",
            "-configuration", config,
            "-destination", "generic/platform=iOS",
+           # 同 build_app()：没有这一项，个人团队的设备注册 / profile 生成都不会发生。
+           "-allowProvisioningUpdates",
            "-archivePath", str(archive),
            "archive"]
     if team:
