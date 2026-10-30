@@ -24,6 +24,8 @@
 //      that catches that.
 // =============================================================================
 
+#include "Runtime/BaseClasses/GameObject.h"
+#include "Runtime/Core/Base/SystemRegistry.h"
 #include "Runtime/Core/Math/UnityRandom.h"
 #include "Runtime/Function/Framework/Coroutine/Coroutine.h"
 #include "Runtime/Function/Framework/TagLayer/TagLayerManager.h"
@@ -676,6 +678,85 @@ namespace
               "Range(0, 3) is flat across buckets (no modulo bias)");
     }
 
+    // ---------------------------------------------------------------- F ----
+    // Hierarchy queries + messaging.
+    //
+    // 这里只做"空对象"这一档运行时检查 + 源码接线门。深度层级的运行时行为
+    // （多级 Find("A/B")、InChildren 的先序顺序）需要构造 GameObject + Transform
+    // 树，那要 MemoryManager / TransformHierarchy 一整套起来，留作后续 —— 本组
+    // 先把"这些方法存在且真的被实现调用"钉住，防止空实现蒙混。
+    void TestHierarchyQueries()
+    {
+        GameObject solo(1);
+        solo.SetName("Solo");
+
+        Check(solo.SendMessageByName("") == 0, "F1", "SendMessage with an empty name delivers nothing");
+        Check(solo.SendMessageByName("OnDamaged") == 0,
+              "F2", "SendMessage on an object with no script component returns 0");
+        Check(solo.BroadcastMessageByName("OnDamaged") == 0, "F3", "BroadcastMessage likewise");
+        Check(solo.SendMessageUpwardsByName("OnDamaged") == 0, "F4", "SendMessageUpwards likewise");
+        Check(solo.GetComponentInChildrenByTypeName("Transform") == nullptr,
+              "F5", "GetComponentInChildren on a component-less object is nullptr");
+        Check(solo.GetComponentsInChildrenByTypeName("Transform").empty(),
+              "F6", "GetComponentsInChildren on it is empty");
+        Check(solo.GetComponentInParentByTypeName("Transform") == nullptr,
+              "F7", "GetComponentInParent on it is nullptr");
+
+        // A GameObject with a tag/layer must survive a default construction:
+        // that is the state old assets deserialize into.
+        Check(solo.GetTag() == TagLayerManager::kUntagged, "F8", "a fresh object is Untagged");
+        Check(solo.GetLayer() == 0, "F9", "and on layer 0 (Default)");
+        Check(!solo.CompareTagName("Untagged") == false, "F10", "CompareTag(\"Untagged\") is true");
+        solo.SetLayerIndex(99);
+        Check(solo.GetLayer() == 0, "F11", "an out-of-range layer is clamped to 0, not stored");
+        solo.SetLayerIndex(-5);
+        Check(solo.GetLayer() == 0, "F12", "a negative layer is clamped to 0");
+        solo.SetLayerIndex(9);
+        Check(solo.GetLayer() == 9, "F13", "a valid layer sticks");
+        Check(!solo.SetTagByName("ThisTagDoesNotExist"),
+              "F14", "setting an unregistered tag is refused, not silently accepted");
+        Check(solo.GetTag() == TagLayerManager::kUntagged, "F15", "and the old tag is kept");
+    }
+
+    void TestHierarchyWiring()
+    {
+        const std::string go_header = ReadFile("Source/Runtime/BaseClasses/GameObject.h");
+        Check(CountOccurrences(go_header, "GetComponentInChildren") >= 1,
+              "G1", "GetComponentInChildren is declared");
+        Check(CountOccurrences(go_header, "GetComponentsInChildren") >= 1,
+              "G2", "GetComponentsInChildren is declared");
+        Check(CountOccurrences(go_header, "GetComponentInParent") >= 1,
+              "G3", "GetComponentInParent is declared");
+        Check(CountOccurrences(go_header, "BroadcastMessage") >= 1, "G4", "BroadcastMessage is declared");
+        Check(CountOccurrences(go_header, "SendMessageUpwards") >= 1, "G5", "SendMessageUpwards is declared");
+
+        const std::string go_source = ReadFile("Source/Runtime/BaseClasses/GameObject.cpp");
+        // >= 2: declared *and* called. A declaration with no call site is exactly
+        // the "implemented but never reached" failure this gate exists for.
+        Check(CountOccurrences(go_source, "CollectComponentsInChildren") >= 2,
+              "G6", "the child search is both declared and used");
+        Check(CountOccurrences(go_source, "DeliverMessageToSelfComponents") >= 3,
+              "G7", "all three message entry points go through one delivery helper");
+        Check(CountOccurrences(go_source, "TypeScriptComponent") >= 1,
+              "G8", "messaging reaches script components");
+
+        const std::string ts_header =
+            ReadFile("Source/Runtime/Function/Framework/Component/Script/TypeScriptComponent.h");
+        Check(CountOccurrences(ts_header, "InvokeMethod") >= 1,
+              "G9", "TypeScriptComponent can invoke a method by name");
+
+        const std::string tr_header =
+            ReadFile("Source/Runtime/Function/Framework/Component/Transform/Transform.h");
+        Check(CountOccurrences(tr_header, "Find(const eastl::string& path)") >= 1,
+              "G10", "Transform.Find(path) is declared");
+
+        const std::string tr_source =
+            ReadFile("Source/Runtime/Function/Framework/Component/Transform/Transform.cpp");
+        Check(CountOccurrences(tr_source, "Transform::Find") >= 1, "G11", "Transform.Find is implemented");
+        Check(CountOccurrences(tr_source, "path.find('/'") >= 1,
+              "G12", "and splits on '/' (a plain name match would break 'A/B')");
+    }
+
     // ---------------------------------------------------------------- B ----
     void TestWiringGate()
     {
@@ -722,6 +803,13 @@ int main()
     TagLayerManager manager;
     Check(manager.Initialize(), "A0", "TagLayerManager initializes");
 
+    // Also publish it to the registry: GameObject::SetTagByName() looks the tag
+    // table up through GET_SYSTEM, so without this the tag-validation checks
+    // would exercise the "no manager" path instead of the real one -- and that
+    // path is a deliberate fallback, not the behaviour under test.
+    SystemRegistry::GetInstance().RegisterSystem(new TagLayerManager());
+    Check(GET_SYSTEM(TagLayerManager) != nullptr, "A0b", "the tag registry is reachable via GET_SYSTEM");
+
     TestTags(manager);
     TestLayers(manager);
     TestMasks();
@@ -729,6 +817,8 @@ int main()
     TestCoroutines();
     TestCoroutineWiring();
     TestRandom();
+    TestHierarchyQueries();
+    TestHierarchyWiring();
     TestWiringGate();
 
     std::printf("\n=== %d checks, %d failures ===\n", g_Checks, g_Failures);

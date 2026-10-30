@@ -208,6 +208,49 @@ public:
     ZFUNCTION(Name="Instantiate")
     static GameObject* InstantiateFromPrefabPath(const std::filesystem::path& prefab_path);
 
+    // ---- 层级查询（Unity：GetComponentInChildren / InParent）------------
+    //
+    // 三条规则的来源都是 Unity，且都踩过坑：
+    //   * InChildren **包含自己** —— Unity 的 GetComponentInChildren 先查自己。
+    //     不含自己的话 `GetComponentInChildren<Collider>()` 在"碰撞体就在本对象上"
+    //     这个最常见的情况下返回 null，而调用方拿 null 当"没有碰撞体"。
+    //   * 深度优先、**返回第一个**命中的（不是最近的一层）—— Unity 是先序遍历。
+    //   * InParent **也包含自己**，然后逐级向上。
+
+    /// TS 入口 `go.GetComponentInChildren(type)`：自己 + 所有后代里的第一个。
+    ZFUNCTION(Name="GetComponentInChildren")
+    Component* GetComponentInChildrenByTypeName(const std::string& component_type_name) const;
+
+    /// TS 入口 `go.GetComponentsInChildren(type)`：自己 + 所有后代里的全部。
+    /// 顺序是先序遍历（父在子前），与 Unity 一致。
+    ZFUNCTION(Name="GetComponentsInChildren")
+    std::vector<Component*> GetComponentsInChildrenByTypeName(const std::string& component_type_name) const;
+
+    /// TS 入口 `go.GetComponentInParent(type)`：自己 + 所有祖先里的第一个。
+    ZFUNCTION(Name="GetComponentInParent")
+    Component* GetComponentInParentByTypeName(const std::string& component_type_name) const;
+
+    // ---- 消息（Unity：SendMessage / BroadcastMessage / SendMessageUpwards）---
+    //
+    // 按名字调用脚本方法。只投递给 TypeScriptComponent（脚本是唯一能用字符串
+    // 寻址方法的组件；C++ 组件的方法在编译期就定死了）。
+    //
+    // 返回**实际收到这条消息的组件数**。Unity 返回 void，这里返回 int 是有意的
+    // 超集：0 表示"没人收到"，而"没人收到"绝大多数时候是拼错了方法名 —— 一个
+    // 静默的 void 会让这种拼写错误活到上线。调用方可以忽略返回值。
+
+    /// 本对象上的所有脚本组件。
+    ZFUNCTION(Name="SendMessage")
+    int SendMessageByName(const eastl::string& method_name);
+
+    /// 本对象 + 所有后代（Unity 的 BroadcastMessage 是向下广播）。
+    ZFUNCTION(Name="BroadcastMessage")
+    int BroadcastMessageByName(const eastl::string& method_name);
+
+    /// 本对象 + 所有祖先（Unity 的 SendMessageUpwards）。
+    ZFUNCTION(Name="SendMessageUpwards")
+    int SendMessageUpwardsByName(const eastl::string& method_name);
+
     /// TS 入口：`GameObject.Find(name)`。
     ///
     /// 按名字在当前关卡里找对象：先查关卡对象表，再查运行时生成的对象表。
@@ -366,6 +409,14 @@ private:
     /// 把主 Transform 归位到 m_Components[0]（理由与实现见 .cpp）。
     /// 读进来的组件顺序由文件决定，不能假设它本来就在第一个。
     void EnsureTransformIsFirst();
+
+    /// 先序遍历自己和所有后代，把命中 `component_type_name` 的组件收进 out。
+    /// 自己排在前面（Unity 的 GetComponentsInChildren 顺序）。
+    void CollectComponentsInChildren(const std::string& component_type_name,
+                                     std::vector<Component*>& out) const;
+
+    /// 把消息投递给本对象上的所有脚本组件，返回真正收到的个数。
+    int DeliverMessageToSelfComponents(const eastl::string& method_name);
 
     Container m_Component;
 };

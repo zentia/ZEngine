@@ -156,6 +156,17 @@ public:
     Transform* GetChild(int index) const;
     size_t GetChildCount() const { return m_Children.size(); }
 
+    /// Unity 的 `transform.Find("Child/Grandchild")`：按**名字**找后代，支持用
+    /// '/' 分隔的相对路径。与 `GameObject.Find` 的区别是它只看子树，而且名字
+    /// 不需要全局唯一 —— 场景里十个 "Wheel" 也不会互相干扰。
+    ///
+    /// 任一段缺失就返回 nullptr（不抛、不部分返回）：半个路径的结果没有意义，
+    /// 而调用方拿到一个非预期的中间节点会当成找到了再往下去用。
+    ///
+    /// 空串 / 只有 '/' 返回 nullptr，不返回自己 —— Unity 同。
+    ZFUNCTION()
+    Transform* Find(const eastl::string& path) const;
+
     /// Forget m_Father / m_Children on THIS transform only, without touching the
     /// transforms they point at. For an object whose serialized state was just copied
     /// from another Transform (EditorPrefabCloner): its links still name the ORIGINAL's

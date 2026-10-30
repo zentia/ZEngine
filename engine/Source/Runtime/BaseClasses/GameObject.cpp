@@ -4,6 +4,7 @@
 #include "Runtime/Application/Application.h"
 #include "Runtime/BaseClasses/ObjectManager.h"
 #include "Runtime/Function/Framework/Component/Component.h"
+#include "Runtime/Function/Framework/Component/Script/TypeScriptComponent.h"
 #include "Runtime/Function/Framework/Component/Transform/Transform.h"
 #include "Runtime/Function/Framework/Level/Level.h"
 #include "Runtime/Function/Framework/World/WorldManager.h"
@@ -487,6 +488,178 @@ namespace
         }
     }
 }  // namespace
+
+void GameObject::CollectComponentsInChildren(const std::string& component_type_name,
+                                            std::vector<Component*>& out) const
+{
+    // 自己先：Unity 的 GetComponentInChildren 含自己，且先序遍历父在子前。
+    if (Component* own = GetComponentByTypeName(component_type_name))
+    {
+        out.push_back(own);
+    }
+
+    const Transform* self_transform = GetTransform();
+    if (self_transform == nullptr)
+    {
+        return;
+    }
+
+    for (const PPtr<Transform>& child : self_transform->GetChildren())
+    {
+        Transform* child_transform = child;
+        if (child_transform == nullptr)
+        {
+            continue;
+        }
+        GameObject* child_object = child_transform->GetParentObject();
+        if (child_object == nullptr)
+        {
+            continue;
+        }
+        child_object->CollectComponentsInChildren(component_type_name, out);
+    }
+}
+
+Component* GameObject::GetComponentInChildrenByTypeName(const std::string& component_type_name) const
+{
+    std::vector<Component*> found;
+    CollectComponentsInChildren(component_type_name, found);
+    return found.empty() ? nullptr : found.front();
+}
+
+std::vector<Component*> GameObject::GetComponentsInChildrenByTypeName(
+    const std::string& component_type_name) const
+{
+    std::vector<Component*> found;
+    CollectComponentsInChildren(component_type_name, found);
+    return found;
+}
+
+Component* GameObject::GetComponentInParentByTypeName(const std::string& component_type_name) const
+{
+    // 含自己 —— 与 InChildren 同一个理由。
+    if (Component* own = GetComponentByTypeName(component_type_name))
+    {
+        return own;
+    }
+
+    const Transform* self_transform = GetTransform();
+    if (self_transform == nullptr)
+    {
+        return nullptr;
+    }
+
+    for (Transform* parent = self_transform->GetParent(); parent != nullptr;
+         parent = parent->GetParent())
+    {
+        GameObject* parent_object = parent->GetParentObject();
+        if (parent_object == nullptr)
+        {
+            continue;
+        }
+        if (Component* hit = parent_object->GetComponentByTypeName(component_type_name))
+        {
+            return hit;
+        }
+    }
+    return nullptr;
+}
+
+int GameObject::DeliverMessageToSelfComponents(const eastl::string& method_name)
+{
+    int delivered = 0;
+    for (auto& component : m_Components)
+    {
+        Component* base = component;
+        if (base == nullptr)
+        {
+            continue;
+        }
+        // 只有脚本组件能按名字寻址方法。C++ 组件的方法在编译期定死，
+        // 字符串查找在这里没有任何落点。
+        TypeScriptComponent* script = Cast<TypeScriptComponent>(base);
+        if (script != nullptr && script->InvokeMethod(method_name.c_str()))
+        {
+            ++delivered;
+        }
+    }
+    return delivered;
+}
+
+int GameObject::SendMessageByName(const eastl::string& method_name)
+{
+    if (method_name.empty())
+    {
+        return 0;
+    }
+    const int delivered = DeliverMessageToSelfComponents(method_name);
+    if (delivered == 0)
+    {
+        // 说出来而不是静默。"没人收到"绝大多数时候是方法名拼错了，而一个
+        // 静默的 SendMessage 会让这个拼写错误一直活到上线。
+        LOG_WARNING(ZObject,
+                    "SendMessage('{}') on '{}': no live script component received it "
+                    "(method name misspelled, or the component has not bound yet?)",
+                    method_name.c_str(), name.c_str());
+    }
+    return delivered;
+}
+
+int GameObject::BroadcastMessageByName(const eastl::string& method_name)
+{
+    if (method_name.empty())
+    {
+        return 0;
+    }
+
+    int delivered = DeliverMessageToSelfComponents(method_name);
+
+    const Transform* self_transform = GetTransform();
+    if (self_transform != nullptr)
+    {
+        for (const PPtr<Transform>& child : self_transform->GetChildren())
+        {
+            Transform* child_transform = child;
+            if (child_transform == nullptr)
+            {
+                continue;
+            }
+            GameObject* child_object = child_transform->GetParentObject();
+            if (child_object != nullptr)
+            {
+                delivered += child_object->BroadcastMessageByName(method_name);
+            }
+        }
+    }
+    return delivered;
+}
+
+int GameObject::SendMessageUpwardsByName(const eastl::string& method_name)
+{
+    if (method_name.empty())
+    {
+        return 0;
+    }
+
+    int delivered = DeliverMessageToSelfComponents(method_name);
+
+    const Transform* self_transform = GetTransform();
+    if (self_transform != nullptr)
+    {
+        // 只往上走一层然后交给父对象自己的 SendMessageUpwards：把"自己"这一段
+        // 的判定留在同一个函数里，避免两处规则漂移（一处含自己、一处不含）。
+        Transform* parent = self_transform->GetParent();
+        if (parent != nullptr)
+        {
+            GameObject* parent_object = parent->GetParentObject();
+            if (parent_object != nullptr)
+            {
+                delivered += parent_object->SendMessageUpwardsByName(method_name);
+            }
+        }
+    }
+    return delivered;
+}
 
 GameObject* GameObject::FindWithTagName(const eastl::string& tag)
 {

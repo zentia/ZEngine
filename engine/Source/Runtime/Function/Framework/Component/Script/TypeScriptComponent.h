@@ -254,4 +254,13 @@ public:
     /// component is bound). Updates m_SerializedFields and calls into
     /// the JS env. No-op if m_JsInstance is null.
     bool LiveSetField(const eastl::string& key, const eastl::string& value);
+
+    /// Invokes a method by name on the live JS instance -- the receiving half of
+    /// `GameObject.SendMessage()`.
+    ///
+    /// Returns false when there is no live instance (not bound, or the module
+    /// has not compiled yet). A method that simply does not exist on the JS
+    /// object is NOT reported as a failure: that matches Unity's SendMessage,
+    /// which only complains under SendMessageOptions.RequireReceiver.
+    bool InvokeMethod(const char* method_name);
 };

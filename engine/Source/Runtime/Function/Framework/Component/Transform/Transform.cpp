@@ -542,6 +542,61 @@ Transform* Transform::GetChild(int index) const
     return m_Children[static_cast<size_t>(index)];
 }
 
+Transform* Transform::Find(const eastl::string& path) const
+{
+    if (path.empty())
+    {
+        return nullptr;
+    }
+
+    // 逐段走，而不是先切成一个 vector 再去查：路径绝大多数情况只有一两段，
+    // 且任一段缺失就可以立刻返回，没必要为剩下的段分配内存。
+    Transform* current = const_cast<Transform*>(this);
+    eastl::string::size_type segment_begin = 0;
+
+    while (segment_begin < path.size())
+    {
+        eastl::string::size_type slash = path.find('/', segment_begin);
+        if (slash == eastl::string::npos)
+        {
+            slash = path.size();
+        }
+        if (slash == segment_begin)
+        {
+            // 空段（前导 '/'、连续 '//'、结尾 '/'）。Unity 不把它当"自己"，
+            // 这里同样返回 nullptr —— 半个路径的结果没有意义。
+            return nullptr;
+        }
+
+        const eastl::string segment = path.substr(segment_begin, slash - segment_begin);
+
+        Transform* next = nullptr;
+        for (const PPtr<Transform>& child : current->m_Children)
+        {
+            Transform* child_transform = child;
+            if (child_transform == nullptr)
+            {
+                continue;
+            }
+            const GameObject* child_object = child_transform->GetParentObject();
+            if (child_object != nullptr && child_object->GetName() == segment)
+            {
+                next = child_transform;
+                break;
+            }
+        }
+        if (next == nullptr)
+        {
+            return nullptr;
+        }
+
+        current = next;
+        segment_begin = slash + 1;
+    }
+
+    return current;
+}
+
 Transform* Transform::GetRoot()
 {
     Transform* root = this;
