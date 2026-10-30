@@ -59,10 +59,10 @@ jobs:
       # ZENGINE_USE_VULKAN=OFF, and that branch strips
       # Function/Render/Lumen/*.cpp out of ZRuntime, so there is nothing for
       # those tests to link against here. They are configured and run on the
-      # hosts that do build Lumen: smoke_tests_linux.yml and
+      # hosts that do build Lumen: smoke_tests_linux.yml,
       # smoke_tests_macos.yml (Apple builds Metal -- no Vulkan -- but does
-      # compile Lumen, see engine/CMakeLists.txt). Windows+Vulkan is still not
-      # covered by any job.
+      # compile Lumen, see engine/CMakeLists.txt) and
+      # smoke_tests_windows_vulkan.yml.
       #
       # ZENGINE_BUILD_NANITE_CLUSTER_SMOKE_TEST is enabled here on purpose,
       # unlike the Lumen set: Function/Render/Nanite is never stripped from

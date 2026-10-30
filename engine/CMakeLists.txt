@@ -247,6 +247,21 @@ endif()
 # builds keep Vulkan on; Windows defaults to DX12 and Apple to Metal.
 if(ZENGINE_USE_VULKAN)
   add_compile_definitions(Z_HAS_VULKAN=1)
+
+  # The include path is the other half of that switch and has to be applied at
+  # the same scope, or the two halves disagree.
+  #
+  # `Z_HAS_VULKAN=1` is global, so any TU -- including ones in executables that
+  # deliberately do not link ZRuntime -- that reaches RHIStruct.h gets
+  # `#include <vulkan/vulkan.h>`. The Vulkan include directory was only attached
+  # to ZRuntime as PUBLIC, so those targets inherited the macro without the
+  # header path and failed with C1083 even though nothing was wrong with them.
+  # RenderGraphExecuteSmokeTest and RHIIndirectDrawSmokeTest both hit this on a
+  # Windows + Vulkan build; a Windows + Vulkan=OFF build cannot reproduce it,
+  # which is why it survived.
+  if(vulkan_include)
+    include_directories(${vulkan_include})
+  endif()
 endif()
 
 # Lumen (CPU global illumination) is stripped from ZRuntime on Emscripten and on

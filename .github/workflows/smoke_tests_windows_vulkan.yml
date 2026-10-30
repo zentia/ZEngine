@@ -1,0 +1,250 @@
+name: Smoke tests (Windows + Vulkan)
+
+# =============================================================================
+# 为什么在已有 smoke_tests.yml（Windows）之外还要这一份
+#
+# smoke_tests.yml 用 `-DZENGINE_USE_VULKAN=OFF`。`Runtime/CMakeLists.txt:305`
+# 的 `elseif(WIN32 AND NOT ZENGINE_USE_VULKAN)` 分支会把下面这些从 ZRuntime 里
+# **整个剔除**：
+#
+#   Function/Render/Interface/Vulkan/*.cpp
+#   Function/Render/Texture/VirtualTexture*.cpp
+#   Function/Render/DebugDraw/DebugDrawBuffer.cpp
+#   Function/Render/Lumen/*.cpp
+#   Function/ShaderLab/ShaderLabCompiler.cpp
+#   Function/ShaderLab/ShaderLabTest.cpp
+#   Function/Render/Interface/Metal/*
+#
+# 也就是说：今天没有任何 CI job 编译过这些代码。这一份是唯一把它们纳入编译
+# 覆盖的 job，也是 `smoke_tests.yml` 里 "Windows+Vulkan is still not covered by
+# any job" 那句注释的兑现。
+#
+# 它是三个新宿主里**唯一能在本机端到端验证**的一个（Linux 无 WSL、macOS 无
+# 机器）：本机 Vulkan SDK 1.4.363.0，`ZENGINE_USE_VULKAN=ON`，108 个测试注册、
+# 106 通过、2 失败（见下）。所以下面的失败清单是实测的，不是估计的。
+#
+# 已知失败（2026-10-30 实测，均为此前从未被任何 CI 编过的测试）
+# ----------------------------------------------------------
+#   MaterialCustomParamSmokeTest  K4b：先 enable A 再 B 与先 B 再 A 得到的
+#     keyword 列表顺序不一致 ⇒ MaterialSourceDesc::getHashValue 会给两份等价
+#     材质 mint 出两个不同的 shared material。疑似**产品 bug**，不是测试问题，
+#     修之前需要确认排序该在哪一层归一化。
+#   AppleSceneBlitSmokeTest  4/286：失败的全是**非 Apple 降级路径**的源码文本
+#     断言（UpdateViewport 日志、RenderNaniteCmd 委托、.prefab yaml 转发、
+#     scene-placement 实例化）。源码改了、断言没跟。Apple 上跑的是另一段。
+#
+# 两处都不是"环境噪音"，所以**不**用 `-E` 排除掉假装绿色 —— 排除会让这份
+# job 失去它唯一的价值。修好之前它们就该是红的。
+#
+# 失败语义同 smoke_tests_linux.yml / smoke_tests_macos.yml：
+#   1. configure / "0 个测试" / Build ZRuntime  => 红
+#   2. 单个目标编译失败                        => 黄（continue-on-error）
+#   3. 单个测试失败                            => 黄（continue-on-error）
+# =============================================================================
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  # 与本机验证用的 SDK 同版本。升级要有意改这一行，不要让它悄悄漂。
+  VULKAN_SDK_VERSION: '1.4.363.0'
+
+jobs:
+  windows-vulkan-smoke-tests:
+    name: smoke tests (windows-latest, vulkan, debug)
+    runs-on: windows-latest
+    timeout-minutes: 240
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      # Runner 不自带 Vulkan SDK（smoke_tests.yml 选 VULKAN=OFF 就是这个原因）。
+      # 引擎读 `VULKAN_SDK` 环境变量，Windows + Vulkan 下缺失会走
+      # `message(FATAL_ERROR "Critical configuration VULKAN_SDK environment
+      # variable not set")` —— 所以装失败 = configure 硬红，不会静默跑成
+      # "其实没开 Vulkan" 的假绿。下面再显式断言一次头文件存在，双保险。
+      - name: Cache Vulkan SDK installer
+        id: cache-vulkan
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}\VulkanSDK-${{ env.VULKAN_SDK_VERSION }}-Installer.exe
+          key: vulkan-sdk-${{ env.VULKAN_SDK_VERSION }}-installer
+
+      - name: Install Vulkan SDK
+        if: steps.cache-vulkan.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version  = $env:VULKAN_SDK_VERSION
+          $installer = Join-Path $env:RUNNER_TEMP "VulkanSDK-$version-Installer.exe"
+          if (-not (Test-Path $installer)) {
+            $url = "https://sdk.lunarg.com/sdk/download/$version/windows/VulkanSDK-$version-Installer.exe"
+            Write-Host "downloading $url"
+            Invoke-WebRequest -Uri $url -OutFile $installer
+          } else {
+            Write-Host "installer from cache: $installer"
+          }
+          Start-Process -FilePath $installer -ArgumentList '/S' -Wait
+
+      - name: Assert the Vulkan SDK is usable
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = "C:\VulkanSDK\$env:VULKAN_SDK_VERSION"
+          if (-not (Test-Path (Join-Path $root 'Include\vulkan\vulkan.h'))) {
+            Write-Error "Vulkan SDK $env:VULKAN_SDK_VERSION not found at $root -- RHIStruct.h includes <vulkan/vulkan.h> whenever Z_HAS_VULKAN is set, so configure would fail or, worse, silently not be a Vulkan build."
+          }
+          Add-Content -Path $env:GITHUB_ENV -Value "VULKAN_SDK=$root"
+          Write-Host "VULKAN_SDK=$root"
+
+      # 说明一律放在块外：`>` 折叠块会把块内的 `#` 行折进命令尾部当 shell 注释。
+      #
+      # 不开 ZENGINE_BUILD_BINDLESS_SMOKE_TEST：那个是 DX12 的，与本 job 正交，
+      # 由 smoke_tests.yml 覆盖。
+      # 不开 ZENGINE_BUILD_ENVIRONMENT_CHECK_TESTS：Windows 环境采集器，
+      # 同样已由 smoke_tests.yml 覆盖，不在这里重复。
+      - name: Configure with smoke tests enabled
+        run: >
+          cmake -S . -B build
+          -DZENGINE_USE_VULKAN=ON
+          -DPAPI_TYPE=quickjs
+          -DZENGINE_BUILD_PPTR_SMOKE_TEST=ON
+          -DZENGINE_BUILD_SCHEMA_EVOLUTION_SMOKE_TEST=ON
+          -DZENGINE_BUILD_YAML_ROUND_TRIP_SMOKE_TEST=ON
+          -DZENGINE_BUILD_REFLECTION_CODEGEN_SMOKE_TEST=ON
+          -DZENGINE_BUILD_ASSET_BUNDLE_SMOKE_TEST=ON
+          -DZENGINE_BUILD_PLAYER_SETTINGS_SMOKE_TEST=ON
+          -DZENGINE_BUILD_ADDRESSABLES_SMOKE_TEST=ON
+          -DZENGINE_BUILD_DDC_SMOKE_TEST=ON
+          -DZENGINE_BUILD_AI_SMOKE_TEST=ON
+          -DZENGINE_BUILD_AUDIO_SMOKE_TEST=ON
+          -DZENGINE_BUILD_ANIMATION_SMOKE_TEST=ON
+          -DZENGINE_BUILD_ANIMATOR_SMOKE_TEST=ON
+          -DZENGINE_BUILD_ANIMATION_PIPELINE_SMOKE_TEST=ON
+          -DZENGINE_BUILD_TEXTURE_COMPRESSOR_SMOKE_TEST=ON
+          -DZENGINE_BUILD_RENDERGRAPH_SMOKE_TEST=ON
+          -DZENGINE_BUILD_RENDERGRAPH_EXECUTE_SMOKE_TEST=ON
+          -DZENGINE_BUILD_UNDO_SMOKE_TEST=ON
+          -DZENGINE_BUILD_BUILD_CACHE_SMOKE_TEST=ON
+          -DZENGINE_BUILD_RHI_INDIRECT_DRAW_SMOKE_TEST=ON
+          -DZENGINE_BUILD_NANITE_CLUSTER_SMOKE_TEST=ON
+          -DZENGINE_BUILD_NANITE_CULLING_SMOKE_TEST=ON
+          -DZENGINE_BUILD_NANITE_SCENE_WIRING_SMOKE_TEST=ON
+          -DZENGINE_BUILD_NANITE_GPU_CULLING_SMOKE_TEST=ON
+          -DZENGINE_BUILD_SHADER_REGISTRY_SMOKE_TEST=ON
+          -DZENGINE_BUILD_FIXED_TIME_STEP_SMOKE_TEST=ON
+          -DZENGINE_BUILD_SCRIPT_TIME_SMOKE_TEST=ON
+          -DZENGINE_BUILD_ASSET_PATH_PORTABILITY_SMOKE_TEST=ON
+          -DZENGINE_BUILD_GLTF_MESH_IMPORT_SMOKE_TEST=ON
+          -DZENGINE_BUILD_WWISE_SMOKE_TEST=ON
+          -DZENGINE_BUILD_CI_COVERAGE_SMOKE_TEST=ON
+          -DZENGINE_BUILD_LUMEN_SCENE_GEOMETRY_SMOKE_TEST=ON
+          -DZENGINE_BUILD_LUMEN_RAY_TRACING_SMOKE_TEST=ON
+          -DZENGINE_BUILD_LUMEN_SURFACE_CACHE_SMOKE_TEST=ON
+          -DZENGINE_BUILD_LUMEN_GLOBAL_ILLUMINATION_SMOKE_TEST=ON
+          -DZENGINE_BUILD_LUMEN_RENDER_PASS_WIRING_SMOKE_TEST=ON
+          -DZENGINE_BUILD_LUMEN_REFLECTIONS_SMOKE_TEST=ON
+          -DZENGINE_BUILD_LUMEN_PER_FRAME_BRIDGE_SMOKE_TEST=ON
+          -DZENGINE_BUILD_CONSOLE_VARIABLES_FILE_SMOKE_TEST=ON
+          -DZENGINE_BUILD_CRASH_LOG_TAIL_SMOKE_TEST=ON
+          -DZENGINE_BUILD_DIRECTIONAL_SHADOW_SMOKE_TEST=ON
+          -DZENGINE_BUILD_ENHANCED_INPUT_DELTA_SMOKE_TEST=ON
+          -DZENGINE_BUILD_GAS_COOLDOWN_SMOKE_TEST=ON
+          -DZENGINE_BUILD_GAS_PERIODIC_SMOKE_TEST=ON
+          -DZENGINE_BUILD_LAUNCHER_WIRING_SMOKE_TEST=ON
+          -DZENGINE_BUILD_MATERIAL_CUSTOM_PARAM_SMOKE_TEST=ON
+          -DZENGINE_BUILD_MATERIAL_INSTANCE_SMOKE_TEST=ON
+          -DZENGINE_BUILD_MEMORY_PAIRING_SMOKE_TEST=ON
+          -DZENGINE_BUILD_METAL_SCENE_DEPTH_SMOKE_TEST=ON
+          -DZENGINE_BUILD_METAL_SPIRV_SHADER_SMOKE_TEST=ON
+          -DZENGINE_BUILD_NANITE_HIZ_AB_SMOKE_TEST=ON
+          -DZENGINE_BUILD_NANITE_HIZ_OCCLUSION_AB_SMOKE_TEST=ON
+          -DZENGINE_BUILD_NANITE_HIZ_SMOKE_TEST=ON
+          -DZENGINE_BUILD_NANITE_PAGEPOOL_AB_SMOKE_TEST=ON
+          -DZENGINE_BUILD_NANITE_PAGEPOOL_SMOKE_TEST=ON
+          -DZENGINE_BUILD_NANITE_PAGETABLE_SMOKE_TEST=ON
+          -DZENGINE_BUILD_NANITE_UPLOADPLANNER_SMOKE_TEST=ON
+          -DZENGINE_BUILD_NETWORK_SMOKE_TEST=ON
+          -DZENGINE_BUILD_OBJECT_LIFETIME_SMOKE_TEST=ON
+          -DZENGINE_BUILD_PHYSICS_CHARACTER_SMOKE_TEST=ON
+          -DZENGINE_BUILD_PPTR_LIFETIME_SMOKE_TEST=ON
+          -DZENGINE_BUILD_PREFAB_E2E_SMOKE_TEST=ON
+          -DZENGINE_BUILD_PROJECT_INFO_PATHS_SMOKE_TEST=ON
+          -DZENGINE_BUILD_REF_COUNTED_SMOKE_TEST=ON
+          -DZENGINE_BUILD_RHI_REGISTRY_SMOKE_TEST=ON
+          -DZENGINE_BUILD_SCRIPT_INPUT_SMOKE_TEST=ON
+          -DZENGINE_BUILD_SCRIPT_MATH_SMOKE_TEST=ON
+          -DZENGINE_BUILD_SCRIPT_VM_SMOKE_TEST=ON
+          -DZENGINE_BUILD_SPOTLIGHT_SMOKE_TEST=ON
+          -DZENGINE_BUILD_SPOT_SHADOW_SMOKE_TEST=ON
+          -DZENGINE_BUILD_UAF_DETECTION_SMOKE_TEST=ON
+          -DZENGINE_BUILD_UMG_ANCHOR_SMOKE_TEST=ON
+          -DZENGINE_BUILD_UMG_ANIMATION_SMOKE_TEST=ON
+          -DZENGINE_BUILD_UMG_DELEGATES_SMOKE_TEST=ON
+          -DZENGINE_BUILD_UMG_TREE_SMOKE_TEST=ON
+          -DZENGINE_BUILD_VK_BINDLESS_SMOKE_TEST=ON
+          -DZENGINE_BUILD_VT_ASYNC_LOAD_AB_SMOKE_TEST=ON
+          -DZENGINE_BUILD_VT_BLIT_AB_SMOKE_TEST=ON
+          -DZENGINE_BUILD_VT_GPU_UPLOAD_AB_SMOKE_TEST=ON
+          -DZENGINE_BUILD_VT_MATERIAL_SLOT_AB_SMOKE_TEST=ON
+          -DZENGINE_BUILD_VT_MIP_BILINEAR_AB_SMOKE_TEST=ON
+          -DZENGINE_BUILD_VT_PAGETABLE_LIFECYCLE_AB_SMOKE_TEST=ON
+          -DZENGINE_BUILD_VT_PRODUCER_AB_SMOKE_TEST=ON
+          -DZENGINE_BUILD_VT_PRODUCER_THREADED_AB_SMOKE_TEST=ON
+          -DZENGINE_BUILD_VT_RESOLVE_AB_SMOKE_TEST=ON
+          -DZENGINE_BUILD_WEAK_OBJECT_PTR_SMOKE_TEST=ON
+          -DZENGINE_BUILD_APPLE_SCENE_BLIT_SMOKE_TEST=ON
+          -DZENGINE_BUILD_APPLE_SSAO_SMOKE_TEST=ON
+
+      # 硬红：ZRuntime 在 Windows+Vulkan 下编不过的话，后面全是陪跑。
+      # 这一段尤其重要：它正是 VulkanRHI / VirtualTexture / Lumen /
+      # ShaderLabCompiler 这些 TU 唯一被编译的地方。
+      - name: Build ZRuntime
+        run: cmake --build build --config Debug --target ZRuntime
+
+      - name: Build smoke tests
+        id: build
+        continue-on-error: true
+        run: cmake --build build --config Debug --parallel 4
+
+      - name: Run ctest
+        id: ctest
+        continue-on-error: true
+        run: |
+          mkdir -p .ci
+          ctest --test-dir build -C Debug --output-on-failure 2>&1 | tee .ci/ctest-win-vk.log
+
+      # 硬红：0 个测试 = job 因为"没跑"而绿，必须炸。
+      - name: Assert the suite is not empty
+        run: |
+          $total = (ctest --test-dir build -C Debug -N | Select-String -Pattern 'Total Tests:\s*(\d+)' | ForEach-Object { $_.Matches[0].Groups[1].Value })
+          Write-Host "registered tests on Windows+Vulkan: $total"
+          if (-not $total -or [int]$total -lt 1) {
+            Write-Error "ctest registered 0 tests. A green run with no tests is worse than a red one."
+            exit 1
+          }
+        shell: pwsh
+
+      - name: Summarise
+        if: always()
+        shell: pwsh
+        run: |
+          Write-Host "=== failed tests ==="
+          Select-String -Path .ci/ctest-win-vk.log -Pattern 'Test.*(Failed|Not Run)' | ForEach-Object { $_.Line }
+          Write-Host ""
+          Write-Host "=== tail ==="
+          Get-Content .ci/ctest-win-vk.log -Tail 6
+
+      - name: Upload ctest log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ctest-windows-vulkan-debug
+          path: .ci/ctest-win-vk.log
+          if-no-files-found: warn

@@ -24,7 +24,13 @@ if(NOT ZENGINE_BUILD_ENHANCED_INPUT_DELTA_SMOKE_TEST)
     return()
 endif()
 
-add_executable(EnhancedInputFrameDeltaSmokeTest EnhancedInputFrameDeltaSmokeTest.cpp)
+# Vector2::ZERO is declared in the header but defined out-of-line in Vector2.cpp,
+# so this target is not purely header-only: without that one TU it links with
+# LNK2001 on Windows. Nothing else from the runtime is needed.
+add_executable(EnhancedInputFrameDeltaSmokeTest
+    EnhancedInputFrameDeltaSmokeTest.cpp
+    ${ENGINE_ROOT_DIR}/Source/Runtime/Core/Math/Vector2.cpp
+)
 
 set_target_properties(EnhancedInputFrameDeltaSmokeTest PROPERTIES
     CXX_STANDARD 23

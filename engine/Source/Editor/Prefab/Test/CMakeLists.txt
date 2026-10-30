@@ -24,10 +24,16 @@ endif()
 
 file(GLOB PREFAB_EDITOR_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/../*.cpp)
 
+# Editor-side TUs the test drives directly. The Prefab glob alone is not enough:
+# AssetRegistry, UndoSystem and BuildDependencyWalk are separate editor
+# subsystems, and without them the link fails with 14 unresolved externals.
 add_executable(PrefabEndToEndSmokeTest
     PrefabEndToEndSmokeTest.cpp
     ${PREFAB_EDITOR_SOURCES}
     ${CMAKE_CURRENT_SOURCE_DIR}/../../Build/SceneCook.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../Build/BuildDependencyWalk.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../AssetRegistry/AssetRegistry.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../Undo/UndoSystem.cpp
 )
 
 set_target_properties(PrefabEndToEndSmokeTest PROPERTIES
@@ -38,9 +44,26 @@ set_target_properties(PrefabEndToEndSmokeTest PROPERTIES
 # "Editor/Prefab/..." is included engine-Source relative.
 target_include_directories(PrefabEndToEndSmokeTest PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../../..
+    ${ENGINE_ROOT_DIR}/Source
 )
 
+# Object.h derives from eastl types and ImmediatePtr.h calls TransferMetaFlags,
+# neither of which is reachable without EASTL on the include path and the shared
+# PCH -- the same wiring every other ZRuntime-linked smoke test uses. Without it
+# this target fails with ~109 errors (eastl is not a class or namespace, ...).
+target_include_directories(PrefabEndToEndSmokeTest PRIVATE
+    ${THIRD_PARTY_DIR}/puerts/unity/native/EASTL/include
+)
+target_compile_definitions(PrefabEndToEndSmokeTest PRIVATE EASTL_OPENSOURCE=1)
+
 target_link_libraries(PrefabEndToEndSmokeTest PRIVATE ZRuntime)
+
+if(TARGET ZEnginePCH)
+    target_link_libraries(PrefabEndToEndSmokeTest PRIVATE ZEnginePCH)
+    target_include_directories(PrefabEndToEndSmokeTest PRIVATE ${ENGINE_ROOT_DIR}/Source/CommonPCH)
+    add_dependencies(PrefabEndToEndSmokeTest ZEnginePCH)
+    target_precompile_headers(PrefabEndToEndSmokeTest REUSE_FROM ZEnginePCH)
+endif()
 
 # Exit code is the verdict (0 pass, 1 a check failed, 77 bring-up failed).
 add_test(NAME PrefabEndToEndSmokeTest COMMAND PrefabEndToEndSmokeTest)
