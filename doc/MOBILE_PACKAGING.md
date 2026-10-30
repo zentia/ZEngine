@@ -246,13 +246,37 @@ runner 分钟数翻倍，却不会多覆盖任何一类"编译错误"。
 -- ShaderCompile: glslangValidator is unavailable; skipping SPIR-V generation
 ```
 
-没有 `glslangValidator` 时，整个 shader 生成步骤被**静默跳过** —— 构建照样绿，产物却少了
-shader 数据，真机上一片黑还查不到原因。所以 job 里除了装它，还加了一步断言：
+没有 `glslangValidator` 时 `compile_shader()` **整体不跑** —— `engine/shader/CMakeLists.txt:31-41`
+的 else 分支只有一句 `add_custom_target(... SOURCES ...)`，**没有任何生成规则**，于是
+`engine/shader/generated/cpp/*.h` 不会被生成。
+
+⚠️ **"不生成"不等于"构建会失败"**：那批 `.h` 是 gitignore 的构建产物
+（`engine/.gitignore` 的 `generated/`），**磁盘上残留的那份会一直被用下去**。所以缺
+glslang 的表现不是报错，而是——**你改了 shader 源码，构建却悄悄用着旧的那份**。
+这比"真机一片黑"更难发现：构建绿、能跑、只有 shader 行为对不上。
+（2026-10-30 之前本机正是这样：从没装过 glslang，所有验证用的都是磁盘残留的 `.h`。）
+
+所以 job 里除了装它，还加了一步断言：
 configure 日志里出现 `glslangValidator is unavailable` 就直接判红。
 
 ⚠️ 这一条最初写反过：当时写的是"只装 ninja，iOS 路径 0 次提及 glslang"。那是**假阴性**——
 本机 bash 的 `grep` 在这个环境里会静默返回空，看着像"没有匹配"。教训：
 **"grep 没匹配到"不等于"不存在"**，尤其在这个环境里一律用工具而不是 bash grep 下结论。
+
+✅ **本机已于 2026-10-30 装好**（`brew install glslang spirv-tools`，glslang 16.6.0 /
+SPIRV-Tools v2026.4）。装上后 configure 变成
+`-- Found glslangValidator on PATH: /opt/homebrew/bin/glslangValidator`，不再出现
+`skipping SPIR-V generation`，构建日志里会多出整批
+`Generating .../engine/shader/generated/cpp/*.h`。
+
+⚠️ **宿主也一样，而且没有 job 拦它**：`engine/shader/CMakeLists.txt` 不区分平台，缺
+glslang 时宿主的 `generated/cpp/*.h` 同样不重新生成，用的还是磁盘残留那份 —— 但
+`build_macos/linux/windows` 里只有 macos 和 linux 装了它。装好之后两条树都要**重新
+configure**（CMake 缓存里存着"没找到 glslang"的探测结果，不重配不会重探）并重编，
+否则你以为验证过了，其实验证的是"旧 `.h`"那个构建。
+
+装完后用真产物重跑过四条断言，全绿：`Mach-O 64-bit executable arm64` /
+`platform 2` / `dynamically looked up` 0 条 / `Info.plist` 存在。
 
 **光"编译成功"不算证据**，所以最后一步是四条断言 —— 都做过正向 + 负向实跑：
 

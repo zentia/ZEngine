@@ -3989,7 +3989,10 @@ on, and the script installs via `adb push` + `pm install --force-queryable`.
   路径必然失败的 `git submodule update --init`，看上去极像"仓库坏了"。
 - **必须装** `glslang` / `spirv-tools`：iOS 走 Metal，但内置 shader 是"宿主上编成
   SPIR-V → SPIRV-Cross 转 MSL"。没有 glslangValidator 时 configure 只打一行
-  `skipping SPIR-V generation` 然后**静默跳过**，构建照样绿、产物却没 shader 数据。
+  `skipping SPIR-V generation` 然后**静默跳过**，构建照样绿。准确的后果不是"没 shader"：
+  那批 `generated/cpp/*.h` 只是**不再重新生成**，磁盘上残留的那份继续被用（它是
+  gitignore 的构建产物，`engine/shader/CMakeLists.txt` 的 else 分支没有任何生成规则）——
+  也就是说改了 shader 源码而构建悄悄用旧的，比直接报错更难发现。
   所以 job 里还加了一步断言：configure 日志出现该字符串就判红。
   ⚠️ 这一条最初写反成"只装 ninja，0 次提及 glslang"——那是**假阴性**：本机 bash 的
   `grep` 在这个环境里会静默返回空。**"grep 没匹配到"不等于"不存在"。**
