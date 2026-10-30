@@ -35,6 +35,8 @@ scripts/build_lib/ios/macos_build_zruntime_shared.sh \
   [--jobs N] \
   [--vulkan-sdk PATH] \
   [--toolchain PATH] \
+  [--papi quickjs|v8] \
+  [--slim] [--no-slim] \
   [--clean] \
   [--strip] \
   [--no-strip] \
@@ -156,15 +158,20 @@ map 里 `# Object files:` 给 `[编号] 路径`，`# Symbols:` 给 `地址 大�
 | --- | --- | --- | --- | --- | --- |
 | 2026-08-10 线上版（r757786） | 2.69 MB | 1.83 MB | 0.59 MB | 7366 | 104 |
 | 2026-10-30 修之前 | **8.11 MB** | 5.09 MB | 1.92 MB | 20970 | 104 |
-| 2026-10-30 修之后 | **4.42 MB** | 3.90 MB | 0.22 MB | 4688 | 104 |
+| 2026-10-30 构建配置修完 | **4.42 MB** | 3.90 MB | 0.22 MB | 4688 | 104 |
+| 2026-10-30 再开 `--slim` | **2.58 MB** | — | — | — | 104 |
 
-framework（含 ad-hoc 签名）为 **4.45 MB**。
+framework（含 ad-hoc 签名）：修完构建配置是 **4.45 MB**，`--slim` 是 **2.61 MB**
+—— 已经比 2026-08 线上那份更小。
 
 - 导出符号：**104** 个（导出列表生效）
 - `otool -l`：有 `LC_DYLD_INFO_ONLY`、无 `LC_DYLD_CHAINED_FIXUPS` → `-no_fixup_chains` 生效
 - `LC_BUILD_VERSION` platform = **2**（iOS）
 - `nm -m | grep -c "dynamically looked up"` = **0**
+- `--slim` 之后同样全绿：导出仍 104、`dynamically looked up` 仍 0，
+  `nm -a | grep -ci "JPH\|spine\|spirv_cross"` = 0
 - Release iOS 模拟器仍能启动：`scripts/verify_ios_boot.sh` → PASS
+- 宿主回归不受影响：`scripts/verify_prefab_native.sh all` → PASS（472/0）
 
 ⚠️ **脚本不再做 post-build strip**：iOS 16+ 的 dyld 要求 `LC_DYLD_INFO_ONLY`，
 `strip -S` 可能破坏它，导致加载时报 `missing LC_DYLD_INFO load command`。死代码裁剪
@@ -197,19 +204,51 @@ framework（含 ad-hoc 签名）为 **4.45 MB**。
 3. 能安全拿回来的 3.69 MB 全部来自构建配置（`-Oz` 拿回 2.0 MB `__TEXT`、
    链接期 `-x` 拿回 1.7 MB `__LINKEDIT`），一行业务代码都没动。
 
-### 还剩什么可以裁（以及代价）
+### `--slim`：裁掉 SPIRV-Cross / GPUSpine / Jolt（−1.84 MB）
 
-按当前 map，剩下的候选和它们的问题：
+```bash
+scripts/build_lib/ios/macos_build_zruntime_shared.sh --slim --papi quickjs
+```
 
-1. **spirv-cross 1.17 MB**：Metal 后端的运行时 SPIR-V→MSL。
-   ⚠️ **只摘库不摘引用它的 TU 会出事**：`MetalRHI.mm` 引用 `CompilerMSL`，摘掉库之后这些
-   符号变成 undefined，在 `-undefined dynamic_lookup` 下被绑成 0，调用即
-   `EXC_BAD_ACCESS at 0x0` —— 正是 `nm -m | grep "dynamically looked up"` 那条断言要抓的。
-   要裁就得连 `MetalRHI.mm` 一起从 shared target 的源列表里去掉，等于这个 dylib 不再带
-   Metal 后端。
-2. **PapiQuickjs 0.44 MB**：**不能裁**。`CreateQjsPapiEnvRef` / `GetQjsFFIApi` /
-   `GetQjsPapiVersion` 在 104 个导出符号里，属于公开 ABI。
-3. **GPUSpine 0.17 MB + Jolt 0.18 MB**：同理，得连 `SpineRenderer` / 物理相关 TU 一起摘。
-4. 全部 104 个导出符号里**没有任何渲染入口**（只有 MemoryProfiler 的 10 个函数 +
-   pesapi），所以从"宿主实际用得到什么"看，1/3/4 确实都是死重；但这是**功能裁剪**，
-   不是构建配置问题，需要产品侧确认后再动。
+即 CMake 的 `ZENGINE_IOS_SHARED_SLIM_MODULES`（默认 **OFF**）。它是 opt-in 不是因为它有
+风险没验，而是因为它改的是**这个 dylib 是什么**，不只是"怎么编"：
+
+- 它**只作用于 `ZRuntimeShared`**。静态库 `ZRuntime`（iOS 播放器、Editor、宿主工具）一行
+  没变 —— 所以 iOS 播放器仍然有 Metal 后端、Spine 和物理。
+- 前提：**104 个导出符号里没有任何渲染 / Spine / 物理入口**（只有 MemoryProfiler 的 10 个
+  函数 + pesapi）。宿主拿不到被裁掉的那些能力。
+- 每裁一刀都靠 `nm -m | grep -c "dynamically looked up"` == **0** 兜底。这条断言不是"防漏链
+  库"，它是**防"裁过头"**：只摘库不摘引用它的 TU，符号会被 `-undefined dynamic_lookup`
+  绑成 0，第一次调用就是 `EXC_BAD_ACCESS at 0x0`。
+
+三刀分别怎么落的：
+
+| 裁掉 | 做法 | 大小 |
+| --- | --- | --- |
+| SPIRV-Cross | `MetalRHI.mm` 是唯一引用者（13 个符号），`CreateShaderModule` 在 `ZENGINE_SHARED_NO_SPIRV_CROSS` 下编译期返回 nullptr 并打 WARNING | −1.29 MB |
+| GPUSpine | `SpineRenderer.cpp` / `SpineGpuRenderer.cpp` / `RuntimeConsoleCommands.cpp` 移出 shared 源列表，**外加** `SpineRenderer.gen.cpp`（反射 TU 才是真正调那些成员函数的地方，`ZHeaderTool` 因此多了 `<Target>_ZHT_EXCLUDE_BASENAMES` 钩子）；`WorldManager` / `RenderSystem` / `RenderScene` / `MainCameraRp1Pass` 共 5 处调用点加守卫 | −0.28 MB |
+| Jolt | `PhysicsScene.cpp` / `PhysicsCharacter.cpp` / `Jolt/Utils.cpp` 换成 `PhysicsSceneNull.cpp`（约 20 个方法全部"无此刚体"）；`PhysicsScene.h` 加 `ZENGINE_SHARED_NO_PHYSICS` 接缝，去掉只有 Jolt 才需要的成员 | −0.27 MB |
+
+⚠️ **Jolt 仍然留在链接命令行上**：它是 `PUBLIC`，同时提供 Jolt 的 **include 目录**，而没被
+排除的 `PhysicsManager.cpp` 还要用 `Jolt/Utils.h` 里的 `toVec3/toQuat` 内联助手。因为已经
+没有任何 TU 引用 JPH 符号，ld64 从归档里取 0 个成员 —— 链接 map 确认 `libJolt.a` 贡献
+**0 字节**。想改回"直接不链"的话，必须先把 include 目录补回去，否则 `PhysicsManager.cpp`
+会报 `'Jolt/Jolt.h' file not found`。
+
+⚠️ **`PhysicsSceneNull.cpp` 是整体 `#if` 包起来的，不是 `#error`**：`Runtime/CMakeLists.txt`
+用 `GLOB_RECURSE *.cpp`，它会进**每一个**目标（宿主 / Editor / web / 静态库）的源列表，
+非 slim 构建里必须编译成空 TU。
+
+剩下的构成（slim 后，链接 map 活字节）：
+
+| 模块 | 大小 |
+| --- | --- |
+| 引擎自身对象 | 1.61 MB |
+| PapiQuickjs | 0.44 MB |
+| mimalloc | 0.08 MB |
+| zlib | 0.02 MB |
+| PuertsCore | 0.01 MB |
+| BqLog | ~0.08 MB |
+
+**PapiQuickjs 不能裁**：`CreateQjsPapiEnvRef` / `GetQjsFFIApi` / `GetQjsPapiVersion` 在 104
+个导出符号里，是公开 ABI。**PuertsCore 只有 0.01 MB**，裁它没有意义。
