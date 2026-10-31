@@ -531,6 +531,70 @@ int main()
         CheckTrue("H4", "给 Vector3 参数传空对象不会崩（NaN 而非 crash）", !r.threw);
     }
 
+    std::printf("\n--- I. Color：值类型往返 + 静态属性（pesapi Variables）---\n");
+
+    // 这一节钉的是"静态属性真的装到了构造器上"。
+    //
+    // 静态属性走的是 pesapi 的 `Variables` 表（实例属性走 `Properties`），后端把
+    // 前者装到**类对象**上、后者装到 prototype（papi-quickjs 的
+    // FindOrCreateClass 对两张表分别调 InitProperty）。这两条路只要有一条接错，
+    // 症状是 `Color.red` 为 undefined —— 类型检查照样过，因为 .d.ts 是从同一张
+    // 表生成的。所以这里必须真的从 JS 里取值，不能只看声明。
+    CheckJs("I1", "Color 已发布，且 red 是对象而不是 undefined", script_env,
+            "globalThis.__zResult = typeof Color + '/' + typeof Color.red;", "function/object");
+    CheckJs("I2", "Color.red 的四个通道", script_env,
+            "var c = Color.red;\n"
+            "globalThis.__zResult = c.r + ',' + c.g + ',' + c.b + ',' + c.a;\n",
+            "1,0,0,1");
+    CheckJs("I3", "clear / white / black / yellow 的通道", script_env,
+            "function f(c){ return c.r.toFixed(3) + ',' + c.g.toFixed(3) + ',' + c.b.toFixed(3) + ',' + c.a.toFixed(3); }\n"
+            "globalThis.__zResult = [Color.clear, Color.white, Color.black, Color.yellow].map(f).join(' | ');\n",
+            "0.000,0.000,0.000,0.000 | 1.000,1.000,1.000,1.000 | 0.000,0.000,0.000,1.000 | "
+            "1.000,0.922,0.016,1.000");
+    CheckJs("I4", "gray 与 grey 是同一个值", script_env,
+            "globalThis.__zResult = String(Color.gray.g === Color.grey.g);\n", "true");
+    // 静态属性是 readonly：写不进去也不能崩。
+    CheckJs("I5", "给只读静态属性赋值不改变它（也不是异常）", script_env,
+            "Color.red = {r: 9, g: 9, b: 9, a: 9};\n"
+            "globalThis.__zResult = String(Color.red.r);\n",
+            "1");
+
+    // 值类型往返：JS 字面量 -> C++ -> JS。
+    CheckJs("I6", "Lerp 两端 + t=0.5", script_env,
+            "var c = Color.Lerp(Color.black, Color.white, 0.5);\n"
+            "globalThis.__zResult = c.r.toFixed(3) + ',' + c.g.toFixed(3) + ',' + c.b.toFixed(3) + ',' + c.a.toFixed(3);\n",
+            "0.500,0.500,0.500,1.000");
+    // t 被夹住 —— 不夹会得到 2，写进材质就是溢出。
+    CheckJs("I7", "Lerp 把 t 夹到 [0,1]", script_env,
+            "globalThis.__zResult = Color.Lerp(Color.black, Color.white, 2).r.toFixed(3) + '/' + "
+            "Color.Lerp(Color.black, Color.white, -1).r.toFixed(3);\n",
+            "1.000/0.000");
+    CheckJs("I8", "LerpUnclamped 不夹（外推到 2）", script_env,
+            "globalThis.__zResult = Color.LerpUnclamped(Color.black, Color.white, 2).r.toFixed(3);\n", "2.000");
+    // 脚本写颜色经常只给 rgb：alpha 必须默认 1，否则"看不见"。
+    CheckJs("I9", "缺 alpha 的字面量按 1 处理（不是 0 / 不是 NaN）", script_env,
+            "var c = Color.Lerp({r: 0, g: 0, b: 0}, {r: 1, g: 1, b: 1}, 0.5);\n"
+            "globalThis.__zResult = c.r.toFixed(3) + ',' + c.a.toFixed(3);\n",
+            "0.500,1.000");
+    CheckJs("I10", "HSVToRGB 三个基色", script_env,
+            "function f(c){ return c.r.toFixed(2) + ',' + c.g.toFixed(2) + ',' + c.b.toFixed(2); }\n"
+            "globalThis.__zResult = [f(Color.HSVToRGB(0, 1, 1)), f(Color.HSVToRGB(1/3, 1, 1)), "
+            "f(Color.HSVToRGB(2/3, 1, 1))].join(' | ');\n",
+            "1.00,0.00,0.00 | 0.00,1.00,0.00 | 0.00,0.00,1.00");
+    CheckJs("I11", "RGBToHSV 返回 Vector3(h, s, v) 且能往返", script_env,
+            "var hsv = Color.RGBToHSV(Color.HSVToRGB(0.25, 0.5, 1));\n"
+            "globalThis.__zResult = hsv.x.toFixed(3) + ',' + hsv.y.toFixed(3) + ',' + hsv.z.toFixed(3);\n",
+            "0.250,0.500,1.000");
+    // Unity 的约定：灰的 h 是 1/3（不是 0），只有纯黑的 h 才是 0。
+    CheckJs("I12", "灰色是 (h=1/3, s=0, v=0.5)，纯黑才是 (0,0,0)", script_env,
+            "function g(c){ var v = Color.RGBToHSV(c); return v.x.toFixed(3) + ',' + v.y.toFixed(3) + ',' + v.z.toFixed(3); }\n"
+            "globalThis.__zResult = g(Color.gray) + ' | ' + g(Color.black);\n",
+            "0.333,0.000,0.500 | 0.000,0.000,0.000");
+    CheckJs("I13", "静态常量是真 getter（每次取到新对象，不是共享的可变单例）", script_env,
+            "var a = Color.red; a.r = 0.25;\n"
+            "globalThis.__zResult = String(Color.red.r);\n",
+            "1");
+
     std::printf("\n========================================\n");
     std::printf("总计 %d 项检查，失败 %d 项\n", g_Checks, g_Failed);
     std::printf("========================================\n");

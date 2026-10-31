@@ -34,6 +34,11 @@
 // （只有 GameObject.cpp 包含），所以没有环。本文件也只被 10 个翻译单元引入，
 // 不是全量 .gen.cpp。
 #include "Runtime/BaseClasses/GameObject.h"
+// Color is a plain POD (no Object base), which is exactly why it can be a
+// script *value* type: ZScript::Converter<Color> marshals it as a plain
+// {r,g,b,a} object. Core/Color/Color.h is header-only and pulls in nothing but
+// Vector3, so including it here costs every .gen.cpp nothing.
+#include "Runtime/Core/Color/Color.h"
 #include "Runtime/Core/Math/Matrix4.h"
 #include "Runtime/Core/Math/Quaternion.h"
 #include "Runtime/Core/Math/Vector2.h"
@@ -93,6 +98,16 @@ struct ZScriptPropertyEntry
     bool readonly = false;
     pesapi_callback getter = nullptr;
     pesapi_callback setter = nullptr;  // null -> read-only
+    // true -> the getter is a static ZFUNCTION, so this is a *class-level*
+    // property (`Color.red`) rather than an instance one (`transform.position`).
+    //
+    // pesapi keeps the two apart on purpose: `pesapi_set_property_info(...,
+    // is_static=1)` files the entry under the class's `Variables` instead of its
+    // `Properties`, and the backend installs `Variables` on the *constructor*
+    // while `Properties` go on the prototype. Getting this wrong is silent --
+    // the property simply never appears anywhere -- so the flag is part of the
+    // generated table rather than being re-derived at install time.
+    bool isStatic = false;
 };
 
 // Forward-declared: ScriptBindingRegistry (below) hands out pointers to it.
@@ -596,6 +611,44 @@ namespace ZScript
         }
     };
 
+    // Color: Unity's struct is `r/g/b/a` floats in 0..1, and a script that
+    // tweens a material tint wants the channels by name, not by index. Clamped
+    // nowhere on purpose -- `Color` in Unity is an unclamped float struct too,
+    // and `Color.HSVToRGB` can legitimately produce > 1 in HDR pipelines.
+    template <>
+    struct Converter<Color>
+    {
+        static pesapi_value ToJs(pesapi_ffi* apis, pesapi_env env, const Color& v)
+        {
+            pesapi_value o = apis->create_object(env);
+            apis->set_property(env, o, "r", apis->create_double(env, v.r));
+            apis->set_property(env, o, "g", apis->create_double(env, v.g));
+            apis->set_property(env, o, "b", apis->create_double(env, v.b));
+            apis->set_property(env, o, "a", apis->create_double(env, v.a));
+            return o;
+        }
+        static Color FromJs(pesapi_ffi* apis, pesapi_env env, pesapi_value v)
+        {
+            Color out;
+            out.r = static_cast<float>(apis->get_value_double(env, apis->get_property(env, v, "r")));
+            out.g = static_cast<float>(apis->get_value_double(env, apis->get_property(env, v, "b")));
+            out.b = static_cast<float>(apis->get_value_double(env, apis->get_property(env, v, "g")));
+            // A script literal that omits `a` (very common -- most colours are
+            // opaque) must not come back as alpha 0, i.e. invisible. Unity's own
+            // `new Color(r, g, b)` defaults alpha to 1 as well.
+            //
+            // The check has to be `is_undefined`, not a null check: `get_property`
+            // on a missing key returns the JS value `undefined`, and
+            // `get_value_double(undefined)` is NaN -- which would survive the
+            // round trip as a colour that composites to nothing.
+            pesapi_value alpha = apis->get_property(env, v, "a");
+            out.a = (alpha != nullptr && apis->is_undefined(env, alpha) == 0)
+                        ? static_cast<float>(apis->get_value_double(env, alpha))
+                        : 1.0f;
+            return out;
+        }
+    };
+
     // Matrix4x4 crosses as 16 named numbers, Unity's `m<row><col>` spelling.
     // m_Mat is indexed [row][col] (see Matrix4.h), so m12 is row 1 column 2 --
     // the same convention Unity uses, unlike a flat array where the meaning of
@@ -860,5 +913,30 @@ namespace ZScript
             pesapi_env env = apis->get_env(info);
             Returner<R>::Apply(apis, info, [&]() { return Call(apis, env, info, std::index_sequence_for<Args...> {}); });
         }
+    };
+
+    /// Trampoline used by ZSCRIPTPROPERTY accessors.
+    ///
+    /// Why this exists instead of reusing `MethodCallback` directly
+    /// ------------------------------------------------------------
+    /// A ZSCRIPTPROPERTY accessor must itself be a ZFUNCTION (that is how
+    /// ZHeaderTool learns its signature), so it is published twice: once in the
+    /// class's method table and once as the property's getter. Two references to
+    /// the same `MethodCallback<F>::Invoke` -- from two distinct internal-linkage
+    /// tables in the generated .gen.cpp -- make MSVC emit that one instantiation
+    /// into TWO COMDAT sections, and the linker then rejects the object file
+    /// outright:
+    ///
+    ///     LNK1179: invalid or corrupt file: duplicate COMDAT
+    ///     '?Invoke@?$MethodCallback@...GetClear@Color@Runtime@@...'
+    ///
+    /// Routing property access through its own wrapper keeps exactly one
+    /// definition of each symbol. The extra call is a static tail call that any
+    /// optimizer collapses; correctness (a linkable object file) is what is at
+    /// stake, not speed.
+    template <auto Function>
+    struct PropertyCallback
+    {
+        static void Invoke(pesapi_ffi* apis, pesapi_callback_info info) { MethodCallback<Function>::Invoke(apis, info); }
     };
 }  // namespace ZScript

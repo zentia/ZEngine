@@ -166,6 +166,11 @@ _SCRIPT_PROPERTY_TYPES = {
     "Vector3": "Vector3",
     "Vector2": "Vector2",
     "Quaternion": "Quaternion",
+    # Color is a POD value type with a ZScript::Converter (see ScriptBinding.h),
+    # so a component may expose `ZPROPERTY() Color m_Tint;` and scripts read
+    # `tint.r`. Of every type in this table it is the one gameplay scripts reach
+    # for most often.
+    "Color": "Color",
     # Matrix4x4 is deliberately absent: a 4x4 matrix makes a poor Inspector
     # field, and ZPROPERTY means "serialized", not "editable from script".
     # It is still usable in ZFUNCTION signatures -- ts_type_for() passes any
@@ -537,8 +542,14 @@ def _validate_script_properties(info: ClassInfo) -> None:
         if getter is None:
             raise ParseError(prop.line, "ZSCRIPTPROPERTY '%s': '%s' is not a ZFUNCTION-annotated member of '%s'"
                              % (prop.name, prop.getter, info.name))
-        if getter.is_static:
-            raise ParseError(prop.line, "ZSCRIPTPROPERTY '%s': getter '%s' must not be static" % (prop.name, prop.getter))
+        # A static accessor makes the property class-level (`Color.red`) rather
+        # than instance-level (`transform.position`). This used to be rejected
+        # outright, which forced every Unity property that is really a static
+        # (`Time.deltaTime`, `Color.white`) to be exported as a GetXxx() method.
+        # pesapi has a second, dedicated table for these (`Variables`, installed
+        # on the constructor by the backend), so they are safe to publish -- see
+        # ScriptBindingRegistry::InstallAll.
+        prop.is_static = getter.is_static
         if getter.params:
             raise ParseError(prop.line, "ZSCRIPTPROPERTY '%s': getter '%s' must take no parameters" % (prop.name, prop.getter))
         if getter.return_type.strip() in ("void", ""):
@@ -553,6 +564,13 @@ def _validate_script_properties(info: ClassInfo) -> None:
             if len(setter.params) != 1:
                 raise ParseError(prop.line, "ZSCRIPTPROPERTY '%s': setter '%s' must take exactly one parameter"
                                  % (prop.name, prop.setter))
+            # Reading and writing must agree on which table the property lives
+            # in. A static getter with an instance setter would let
+            # `Color.red = x` assign to something else than `Color.red` reads.
+            if setter.is_static != getter.is_static:
+                raise ParseError(prop.line, "ZSCRIPTPROPERTY '%s': setter '%s' is %s but getter '%s' is %s"
+                                 % (prop.name, prop.setter, "static" if setter.is_static else "not static",
+                                    prop.getter, "static" if getter.is_static else "not static"))
 
     # Field names are keyed by the *script* spelling: two distinct serialized
     # names can collapse onto one (`m_Foo` and `m_foo` both become `foo`), and
@@ -1023,10 +1041,20 @@ def ts_type_for(cpp_type: str, line: int) -> str:
     declares it); anything more complex than that is a hard error.
     """
     text = " ".join(cpp_type.split())
-    while text.startswith("const "):
-        text = text[len("const ") :].strip()
+    # `const` without assuming a following space: the token join that produced
+    # `text` drops the whitespace, so a ZCLASS in a namespace spelling a global
+    # type as `const ::Color&` arrives here as `const::Color&`.
+    while text.startswith("const") and not (text[5:6].isalnum() or text[5:6] == "_"):
+        text = text[5:].lstrip()
     while text.endswith("&&") or text.endswith("&"):
         text = text[:-1].strip() if text.endswith("&&") is False else text[:-2].strip()
+    # A ZCLASS that lives in a namespace has to spell a global type `::Foo` --
+    # a bare `Foo` would resolve to the enclosing namespace instead (`Runtime::Color`
+    # vs the global value type `::Color`). The leading `::` is a C++ name-lookup
+    # detail with no TypeScript counterpart, so it is dropped here rather than
+    # being a hard error.
+    while text.startswith("::"):
+        text = text[2:].strip()
     if text.endswith("*"):
         inner = text[:-1].strip()
         while inner.startswith("const "):

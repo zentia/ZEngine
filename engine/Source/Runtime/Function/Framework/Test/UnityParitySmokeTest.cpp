@@ -70,6 +70,9 @@
 #include "Runtime/Scripting/ScriptScene/ScriptScene.h"
 #include "Runtime/Scripting/ScriptNavigation/ScriptNavMesh.h"
 #include "Runtime/Scripting/ScriptResources/ScriptResources.h"
+// `Runtime::Color` 是 Color 的脚本门面（值类型仍是全局的 `::Color`），所以本文件
+// 里凡指值类型一律写 `::Color`，避免与门面混淆。
+#include "Runtime/Scripting/ScriptColor/ScriptColor.h"
 #include "Runtime/Resource/Asset/RuntimeAssetManager.h"
 #include "Runtime/File/FileSystem.h"
 #include "Runtime/Scripting/ScriptScreen/ScriptScreen.h"
@@ -6076,6 +6079,173 @@ namespace
               "loadAssetJson returns the object, not `true` (which decayed to (T*)1)");
     }
 
+    // ------------------------------------------------------------- AZ ------
+    // Color：Unity 的 `Color` 静态面 + 值类型跨边界。
+    //
+    // 这里测的是 C++ 实现（插值是否夹、HSV 往返是否闭合）；"静态属性能不能在
+    // JS 里真的取到"（pesapi Variables -> 构造器）由 ScriptVMSmokeTest 的 I 组
+    // 端到端验。两头都要：只验 C++ 会漏掉属性根本没装到对象上，只验 JS 会漏掉
+    // 数值本身算错。
+    namespace
+    {
+        bool SameColor(const ::Color& a, const ::Color& b, float eps = 0.0005f)
+        {
+            return std::fabs(a.r - b.r) <= eps && std::fabs(a.g - b.g) <= eps && std::fabs(a.b - b.b) <= eps &&
+                   std::fabs(a.a - b.a) <= eps;
+        }
+
+        ::Color MakeColor(float r, float g, float b, float a)
+        {
+            ::Color c;
+            c.r = r;
+            c.g = g;
+            c.b = b;
+            c.a = a;
+            return c;
+        }
+    }  // namespace
+
+    void TestColor()
+    {
+        // ---- 常量 ----
+        Check(SameColor(Runtime::Color::GetClear(), MakeColor(0, 0, 0, 0)), "AZ1",
+              "Color.clear is (0,0,0,0) -- fully transparent, not black");
+        Check(SameColor(Runtime::Color::GetWhite(), MakeColor(1, 1, 1, 1)), "AZ2", "Color.white is (1,1,1,1)");
+        // 黑是 (0,0,0,1)：alpha 为 0 的话"黑色"会画不出来 —— 这是最容易写错的一个。
+        Check(SameColor(Runtime::Color::GetBlack(), MakeColor(0, 0, 0, 1)), "AZ3",
+              "Color.black is opaque (alpha 1), not transparent");
+        Check(SameColor(Runtime::Color::GetRed(), MakeColor(1, 0, 0, 1)), "AZ4", "Color.red");
+        Check(SameColor(Runtime::Color::GetGreen(), MakeColor(0, 1, 0, 1)), "AZ5", "Color.green");
+        Check(SameColor(Runtime::Color::GetBlue(), MakeColor(0, 0, 1, 1)), "AZ6", "Color.blue");
+        // Unity 的 yellow 是 RGB(255,235,4)，不是纯 (1,1,0)。
+        Check(SameColor(Runtime::Color::GetYellow(), MakeColor(1.0f, 235.0f / 255.0f, 4.0f / 255.0f, 1.0f)), "AZ7",
+              "Color.yellow matches Unity's RGB(255,235,4), not (1,1,0)");
+        Check(SameColor(Runtime::Color::GetCyan(), MakeColor(0, 1, 1, 1)), "AZ8", "Color.cyan");
+        Check(SameColor(Runtime::Color::GetMagenta(), MakeColor(1, 0, 1, 1)), "AZ9", "Color.magenta");
+        Check(SameColor(Runtime::Color::GetGray(), MakeColor(0.5f, 0.5f, 0.5f, 1.0f)), "AZ10", "Color.gray is 50%");
+        Check(SameColor(Runtime::Color::GetGrey(), Runtime::Color::GetGray()), "AZ11",
+              "gray and grey are the same value (Unity keeps both spellings)");
+
+        // ---- Lerp ----
+        const ::Color black = Runtime::Color::GetBlack();
+        const ::Color white = Runtime::Color::GetWhite();
+        // t 夹到 [0,1]：不夹的话 t=2 会得到 2 —— 那不是插值，是外推，接下去写进
+        // 材质就溢出。
+        Check(SameColor(Runtime::Color::Lerp(black, white, 2.0f), white), "AZ12",
+              "Lerp clamps t > 1 to the end colour");
+        Check(SameColor(Runtime::Color::Lerp(black, white, -1.0f), black), "AZ13",
+              "Lerp clamps t < 0 to the start colour");
+        Check(SameColor(Runtime::Color::Lerp(black, white, 0.5f), MakeColor(0.5f, 0.5f, 0.5f, 1.0f)), "AZ14",
+              "Lerp at t = 0.5 is the midpoint");
+        Check(SameColor(Runtime::Color::LerpUnclamped(black, white, 2.0f), MakeColor(2, 2, 2, 1.0f)), "AZ15",
+              "LerpUnclamped extrapolates past the end colour");
+        // alpha 也要插：两个不同透明度的颜色插值后 alpha 不动是最典型的漏项。
+        Check(SameColor(Runtime::Color::Lerp(MakeColor(0, 0, 0, 0), MakeColor(1, 1, 1, 1), 0.25f),
+                        MakeColor(0.25f, 0.25f, 0.25f, 0.25f)),
+              "AZ16", "Lerp interpolates alpha too, not just rgb");
+
+        // ---- HSV ----
+        Check(SameColor(Runtime::Color::HSVToRGB(0.25f, 0.0f, 0.7f), MakeColor(0.7f, 0.7f, 0.7f, 1.0f)), "AZ17",
+              "HSVToRGB with s = 0 is grey regardless of h");
+        // 负饱和度（脚本里除错出来的常见值）也必须退化成灰，而不是算出 > v 的通道。
+        Check(SameColor(Runtime::Color::HSVToRGB(0.25f, -0.5f, 0.7f), MakeColor(0.7f, 0.7f, 0.7f, 1.0f)), "AZ17b",
+              "a negative saturation degrades to grey instead of overshooting");
+        Check(SameColor(Runtime::Color::HSVToRGB(0.0f, 1.0f, 1.0f), MakeColor(1, 0, 0, 1)), "AZ18",
+              "h = 0 is red");
+        Check(SameColor(Runtime::Color::HSVToRGB(1.0f / 3.0f, 1.0f, 1.0f), MakeColor(0, 1, 0, 1)), "AZ19",
+              "h = 1/3 is green");
+        Check(SameColor(Runtime::Color::HSVToRGB(2.0f / 3.0f, 1.0f, 1.0f), MakeColor(0, 0, 1, 1)), "AZ20",
+              "h = 2/3 is blue");
+        // 色相是环绕的：1.25 与 0.25 同色。
+        Check(SameColor(Runtime::Color::HSVToRGB(1.25f, 1.0f, 1.0f), Runtime::Color::HSVToRGB(0.25f, 1.0f, 1.0f)),
+              "AZ21", "hue wraps: h = 1.25 is the same colour as h = 0.25");
+        Check(SameColor(Runtime::Color::HSVToRGB(-0.25f, 1.0f, 1.0f), Runtime::Color::HSVToRGB(0.75f, 1.0f, 1.0f)),
+              "AZ22", "and a negative hue wraps the other way");
+
+        // 往返：RGB -> HSV -> RGB 必须闭合，否则"取色 -> 改饱和 -> 写回"会把
+        // 颜色慢慢漂掉（每次往返丢一点，几十帧后肉眼可见）。
+        for (int i = 0; i < 6; ++i)
+        {
+            const float h = static_cast<float>(i) / 6.0f + 0.02f;
+            const ::Color rgb = Runtime::Color::HSVToRGB(h, 0.6f, 0.9f);
+            const Vector3 hsv = Runtime::Color::RGBToHSV(rgb);
+            Check(std::fabs(hsv.x - h) < 0.002f && std::fabs(hsv.y - 0.6f) < 0.002f && std::fabs(hsv.z - 0.9f) < 0.002f,
+                  "AZ23", "RGBToHSV(HSVToRGB(h,s,v)) round-trips (6 hues sampled)");
+            Check(SameColor(Runtime::Color::HSVToRGB(hsv.x, hsv.y, hsv.z), rgb), "AZ24",
+                  "and HSVToRGB(RGBToHSV(c)) returns the original colour");
+        }
+
+        // 灰的 H 是 1/3 —— Unity 的 `HSVToRGBHelper` 走 else 分支（offset = 2），
+        // diff == 0 时 H = offset，/6 得 1/3。抄成 0 就和 Unity 对不上了。
+        const Vector3 gray_hsv = Runtime::Color::RGBToHSV(Runtime::Color::GetGray());
+        Check(std::fabs(gray_hsv.x - 1.0f / 3.0f) < 1e-6f && std::fabs(gray_hsv.y) < 1e-6f &&
+                  std::fabs(gray_hsv.z - 0.5f) < 1e-6f,
+              "AZ25", "grey is (h=1/3, s=0, v=0.5) -- Unity's own convention, h is NOT 0");
+        // 只有纯黑（V == 0）的 H 才是 0，那是 `V != 0` 那条判据。
+        const Vector3 black_hsv = Runtime::Color::RGBToHSV(Runtime::Color::GetBlack());
+        Check(std::fabs(black_hsv.x) < 1e-6f && std::fabs(black_hsv.y) < 1e-6f && std::fabs(black_hsv.z) < 1e-6f,
+              "AZ25b", "black is (0,0,0) -- the V == 0 branch, not the grey one");
+        const Vector3 red_hsv = Runtime::Color::RGBToHSV(Runtime::Color::GetRed());
+        Check(std::fabs(red_hsv.x) < 1e-6f && std::fabs(red_hsv.y - 1.0f) < 1e-6f && std::fabs(red_hsv.z - 1.0f) < 1e-6f,
+              "AZ26", "pure red is (h=0, s=1, v=1)");
+        const Vector3 blue_hsv = Runtime::Color::RGBToHSV(Runtime::Color::GetBlue());
+        Check(std::fabs(blue_hsv.x - 2.0f / 3.0f) < 0.002f, "AZ27", "pure blue sits at h = 2/3");
+    }
+
+    void TestColorWiring()
+    {
+        const std::string header = ReadFile("Source/Runtime/Scripting/ScriptColor/ScriptColor.h");
+        Check(!header.empty(), "BA0", "ScriptColor.h is readable");
+        Check(CountOccurrences(header, "class Color : public Object") >= 1, "BA1",
+              "the Color facade is a ZCLASS (so ZHeaderTool publishes it as `declare class Color`)");
+        // 值类型与门面同名，靠命名空间分开；门面里所有值类型必须写全 `::Color`。
+        Check(CountOccurrences(header, "namespace Runtime") >= 1, "BA2",
+              "the facade lives in a namespace (a global `Color` would collide with the value type)");
+        Check(CountOccurrences(header, "static ::Color GetRed()") >= 1, "BA3",
+              "constants are static ZFUNCTIONs (the getter a ZSCRIPTPROPERTY needs)");
+        Check(CountOccurrences(header, "ZSCRIPTPROPERTY(Name = \"red\", Getter = \"GetRed\")") >= 1, "BA4",
+              "and are published as Unity's lowercase static properties (Color.red)");
+
+        const std::string bind_h = ReadFile("Source/Runtime/Scripting/Binding/ScriptBinding.h");
+        Check(!bind_h.empty(), "BA5", "ScriptBinding.h is readable");
+        Check(CountOccurrences(bind_h, "struct Converter<Color>") >= 1, "BA6",
+              "Color has a ZScript::Converter, so it can cross into scripts at all");
+        Check(CountOccurrences(bind_h, "bool isStatic = false;") >= 1, "BA7",
+              "ZScriptPropertyEntry carries isStatic (Properties vs Variables)");
+        Check(CountOccurrences(bind_h, "struct PropertyCallback") >= 1, "BA8",
+              "property accessors use their own trampoline (sharing MethodCallback trips LNK1179)");
+
+        const std::string bind_cpp = ReadFile("Source/Runtime/Scripting/Binding/ScriptBinding.cpp");
+        Check(!bind_cpp.empty(), "BA9", "ScriptBinding.cpp is readable");
+        Check(CountOccurrences(bind_cpp, "declare interface Color") >= 1, "BA10",
+              "the .d.ts declares Color as a value type (interface, not class)");
+        // 静态属性走 pesapi 的 Variables 表、装到构造器；传错 is_static 它就
+        // 哪儿都不出现（不报错、不崩，只是 undefined）。
+        Check(CountOccurrences(bind_cpp, "prop.isStatic ? 1 : 0") >= 1, "BA11",
+              "static properties are registered with is_static = 1 (pesapi Variables)");
+        Check(CountOccurrences(bind_cpp, "instance_prop_count, static_prop_count") >= 1, "BA12",
+              "and the two property tables are sized separately");
+        Check(CountOccurrences(bind_cpp, "if (prop.isStatic)") >= 1, "BA13",
+              "the .d.ts writes `static` before `readonly`");
+
+        const std::string codegen = ReadFile("tools/ZHeaderTool/zht/codegen.py");
+        Check(!codegen.empty(), "BA14", "codegen.py is readable");
+        Check(CountOccurrences(codegen, "prop.isStatic ? 1 : 0") == 0 &&
+                  CountOccurrences(codegen, "sp.is_static else \"false\"") >= 1,
+              "BA15", "codegen stamps isStatic into the generated property entry");
+        // 这条是 LNK1179 的回归门：静态访问器再从方法表里发一遍，MSVC 就会把
+        // MethodCallback 编进两个 COMDAT 段，链接器直接拒收整个 obj。
+        Check(CountOccurrences(codegen, "m.is_static and m.name in static_accessors") >= 1, "BA16",
+              "static accessors are kept out of the method table (otherwise: duplicate COMDAT)");
+
+        const std::string parser = ReadFile("tools/ZHeaderTool/zht/parser.py");
+        Check(!parser.empty(), "BA17", "parser.py is readable");
+        Check(CountOccurrences(parser, "getter '%s' must not be static") == 0, "BA18",
+              "ZSCRIPTPROPERTY no longer rejects a static getter");
+        Check(CountOccurrences(parser, "\"Color\": \"Color\"") >= 1, "BA19",
+              "a ZPROPERTY(Color) field is marshallable");
+    }
+
     // ---------------------------------------------------------------- B ----
     void TestWiringGate()
     {
@@ -6227,6 +6397,8 @@ int main()
     TestNavMeshAgentWiring();
     TestAudioSource();
     TestAudioSourceWiring();
+    TestColor();
+    TestColorWiring();
     TestWiringGate();
 
     std::printf("\n=== %d checks, %d failures ===\n", g_Checks, g_Failures);

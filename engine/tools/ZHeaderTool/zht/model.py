@@ -139,12 +139,18 @@ class ScriptPropertyInfo:
     existing getter (and optionally a setter) as a pesapi accessor property, so
     scripts can write `transform.position = v` instead of `SetPosition(v)`.
     `ts_type` is filled in from the getter's return type by codegen.
+
+    `is_static` mirrors the getter: when the accessor is a static ZFUNCTION the
+    property is a *class-level* one (`Color.red`), not an instance one
+    (`transform.position`). pesapi keeps those in a separate `Variables` table
+    and installs them on the constructor, so the two never share an index.
     """
     name: str
     getter: str
     setter: str = ""  # empty -> read-only
     line: int = 0
     ts_type: str = ""
+    is_static: bool = False
 
     def to_dict(self) -> dict:
         return {
@@ -153,6 +159,7 @@ class ScriptPropertyInfo:
             "setter": self.setter,
             "line": self.line,
             "ts_type": self.ts_type,
+            "is_static": self.is_static,
         }
 
 

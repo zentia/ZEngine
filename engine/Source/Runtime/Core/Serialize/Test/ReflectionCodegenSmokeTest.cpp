@@ -660,8 +660,13 @@ namespace
                     }
                 }
 
-                const std::string line = std::string("    ") + (prop.readonly ? "readonly " : "") + prop.name + ": " +
-                                         prop.tsType + ";\n";
+                // `static readonly red: Color;` for a class-level property --
+                // the emitter writes `static` first and `readonly` second (TS
+                // rejects the reverse), and this string has to match it
+                // character for character or the check drifts into "always
+                // passes" territory.
+                const std::string line = std::string("    ") + (prop.isStatic ? "static " : "") +
+                                         (prop.readonly ? "readonly " : "") + prop.name + ": " + prop.tsType + ";\n";
                 if (dts.find(line) == std::string::npos)
                 {
                     std::fprintf(stderr, "SCRIPT_PROPERTY: %s.%s is not declared in the generated .d.ts\n", owner, prop.name);

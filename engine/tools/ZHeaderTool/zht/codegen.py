@@ -276,7 +276,8 @@ def _script_method_entry(cls: ClassInfo, method) -> str:
     pointer = "static_cast<%s>(%s)" % (_function_pointer_type(cls, method), target)
     callback = "&ZScript::MethodCallback<%s>::Invoke" % pointer
     return ('{.name = "%s", .tsSignature = "%s", .isStatic = %s, .callback = %s}'
-            % (method.ts_name, method.ts_signature.replace('"', '\\"'), "true" if method.is_static else "false", callback))
+            % (method.ts_name, method.ts_signature.replace('"', '\\"'),
+               "true" if method.is_static else "false", callback))
 
 
 def _signature_type_names(cls: ClassInfo) -> List[str]:
@@ -388,14 +389,19 @@ def _script_property_entries(cls: ClassInfo, script_enums: Optional[Dict[str, st
 
     by_name = {m.name: m for m in cls.methods}
     for sp in cls.script_properties:
-        getter = "&ZScript::MethodCallback<static_cast<%s>(&%s::%s)>::Invoke" % (
+        # PropertyCallback rather than MethodCallback: an accessor is a ZFUNCTION
+        # too, so it appears in the method table as well, and MSVC emits a
+        # symbol referenced from two internal-linkage tables into two COMDAT
+        # sections (LNK1179 "duplicate COMDAT") -- see ScriptBinding.h.
+        getter = "&ZScript::PropertyCallback<static_cast<%s>(&%s::%s)>::Invoke" % (
             _function_pointer_type(cls, by_name[sp.getter]), q, sp.getter)
         setter = "nullptr"
         if sp.setter:
-            setter = "&ZScript::MethodCallback<static_cast<%s>(&%s::%s)>::Invoke" % (
+            setter = "&ZScript::PropertyCallback<static_cast<%s>(&%s::%s)>::Invoke" % (
                 _function_pointer_type(cls, by_name[sp.setter]), q, sp.setter)
-        out.append('{.name = "%s", .tsType = "%s", .readonly = %s, .getter = %s, .setter = %s}'
-                   % (sp.name, sp.ts_type, "true" if not sp.setter else "false", getter, setter))
+        out.append('{.name = "%s", .tsType = "%s", .readonly = %s, .getter = %s, .setter = %s, .isStatic = %s}'
+                   % (sp.name, sp.ts_type, "true" if not sp.setter else "false", getter, setter,
+                      "true" if sp.is_static else "false"))
     return out
 
 
@@ -405,13 +411,26 @@ def _script_block(cls: ClassInfo, super_name: Optional[str], script_enums: Optio
     properties = _script_property_entries(cls, script_enums)
     if not cls.methods and not properties:
         return []
+    # A *static* accessor is dropped from the method table: it only exists to
+    # back its property, and publishing it twice (as a method and as the
+    # property's getter) makes MSVC emit the MethodCallback instantiation into
+    # two COMDAT sections of the same object -- the linker then rejects the file
+    # with LNK1179 "duplicate COMDAT". It is also the better API: `Color.red`
+    # with no `Color.GetRed()` beside it is exactly what Unity declares.
+    #
+    # Instance accessors are deliberately left alone: `transform.GetPosition()`
+    # is already published for every existing class, and removing it would be a
+    # breaking change for no gain (instance accessors do not trip the bug).
+    static_accessors = {sp.getter for sp in cls.script_properties if sp.is_static}
+    static_accessors |= {sp.setter for sp in cls.script_properties if sp.is_static and sp.setter}
+    methods = [m for m in cls.methods if not (m.is_static and m.name in static_accessors)]
     ident = cls.qualified_name.replace("::", "_")
     super_type = "ZScriptTypeId<%s>::Get()" % super_name if super_name else "nullptr"
     super_name_lit = '"%s"' % super_name if super_name else "nullptr"
     out = ["\n", "namespace\n{\n"]
-    if cls.methods:
+    if methods:
         out.append("    const ZScriptMethodEntry kZhtScriptMethods_%s[] = {\n" % ident)
-        out.extend("        %s,\n" % _script_method_entry(cls, m) for m in cls.methods)
+        out.extend("        %s,\n" % _script_method_entry(cls, m) for m in methods)
         out.append("    };\n")
     if properties:
         out.append("    const ZScriptPropertyEntry kZhtScriptProperties_%s[] = {\n" % ident)
@@ -419,7 +438,7 @@ def _script_block(cls: ClassInfo, super_name: Optional[str], script_enums: Optio
         out.append("    };\n")
     out.append("    ZClassScriptBinding kZhtScriptClass_%s {ZScriptTypeId<%s>::Get(), %s, \"%s\", %s, %s, %d, %s, %d%s};\n"
                % (ident, cls.qualified_name, super_type, cls.name, super_name_lit,
-                  "kZhtScriptMethods_%s" % ident if cls.methods else "nullptr", len(cls.methods),
+                  "kZhtScriptMethods_%s" % ident if methods else "nullptr", len(methods),
                   "kZhtScriptProperties_%s" % ident if properties else "nullptr", len(properties),
                   _domain_init_suffix(domain)))
     out.append("    const ZClassScriptBindingRegistrar kZhtScriptRegistrar_%s(kZhtScriptClass_%s);\n" % (ident, ident))

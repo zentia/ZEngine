@@ -177,6 +177,19 @@ namespace
         "    y: number;\n"
         "}\n"
         "\n"
+        // Color：与 Vector3 同族的值类型（r/g/b/a 四个 0..1 的 float），键名与
+        // ZScript::Converter<Color> 一致。它同时也是一个**绑定类**：`Color.Lerp`
+        // / `Color.red` 那些静态成员由 ZHeaderTool 从 ScriptColor.h 生成
+        // `declare class Color`，与这里的 interface 声明合并（TS 允许
+        // class + interface 同名合并：interface 补实例成员，class 带静态成员）。
+        // 这正是 Unity 的形状 —— `Color` 既是值类型，又挂着一堆静态常量与工具。
+        "declare interface Color {\n"
+        "    r: number;\n"
+        "    g: number;\n"
+        "    b: number;\n"
+        "    a: number;\n"
+        "}\n"
+        "\n"
         "declare interface Quaternion {\n"
         "    w: number;\n"
         "    x: number;\n"
@@ -357,8 +370,21 @@ namespace ScriptBindingRegistry
                 if (cls->methods[i].callback != nullptr)
                     ++(cls->methods[i].isStatic ? static_count : instance_count);
             }
+            // 属性同理也是两张表：Properties（实例，装到 prototype）与
+            // Variables（静态，装到构造器）。两者各自 malloc、各自从 0 编号，
+            // 所以个数必须分开传，下标也必须分开设。混在一起会写穿堆块 —— 和
+            // 上面方法表那次是同一个坑。
+            int instance_prop_count = 0;
+            int static_prop_count = 0;
+            for (std::size_t i = 0; i < cls->propertyCount; ++i)
+            {
+                const ZScriptPropertyEntry& prop = cls->properties[i];
+                if (prop.name == nullptr || prop.getter == nullptr)
+                    continue;
+                ++(prop.isStatic ? static_prop_count : instance_prop_count);
+            }
             apis->set_property_info_size(registry, cls->typeId, instance_count, static_count,
-                                         static_cast<int>(cls->propertyCount), 0);
+                                         instance_prop_count, static_prop_count);
             int instance_index = 0;
             int static_index = 0;
             for (std::size_t i = 0; i < cls->methodCount; ++i)
@@ -370,16 +396,20 @@ namespace ScriptBindingRegistry
                 apis->set_method_info(registry, cls->typeId, index, method.name, method.isStatic ? 1 : 0, method.callback,
                                       nullptr, 1);
             }
-            // Instance (not static) accessor properties. is_static must be 0 or
-            // pesapi files them under `Variables` (class-level) instead of
-            // `Properties`, and only Properties are installed on the prototype
-            // -- so a 1 here would silently produce an unreachable property.
+            // Accessor properties. `is_static` routes the entry into pesapi's
+            // `Variables` (installed on the constructor -- `Color.red`) or
+            // `Properties` (installed on the prototype -- `transform.position`).
+            // Each table is indexed from 0 independently, so the two counters
+            // here are not the same as `i`.
+            int instance_prop_index = 0;
+            int static_prop_index = 0;
             for (std::size_t i = 0; i < cls->propertyCount; ++i)
             {
                 const ZScriptPropertyEntry& prop = cls->properties[i];
                 if (prop.name == nullptr || prop.getter == nullptr)
                     continue;
-                apis->set_property_info(registry, cls->typeId, static_cast<int>(i), prop.name, 0,
+                const int index = prop.isStatic ? static_prop_index++ : instance_prop_index++;
+                apis->set_property_info(registry, cls->typeId, index, prop.name, prop.isStatic ? 1 : 0,
                                         prop.getter, prop.readonly ? nullptr : prop.setter,
                                         nullptr, nullptr, 1);
             }
@@ -546,6 +576,12 @@ namespace ScriptBindingRegistry
                     out += " */\n";
                 }
                 out += "    ";
+                // A static accessor is a class-level property (`Color.red`),
+                // installed on the constructor rather than the prototype -- see
+                // InstallAll. Order matters: `static readonly`, never the
+                // reverse (TS rejects `readonly static`).
+                if (prop.isStatic)
+                    out += "static ";
                 out += prop.readonly ? "readonly " : "";
                 out += prop.name;
                 out += ": ";
