@@ -221,6 +221,25 @@ bool ScriptingManager::InvokeInstanceMethodGameObject(pesapi_value_ref instance,
     return m_ScriptEnv && m_ScriptEnv->InvokeInstanceMethodGameObject(instance, method_name, other);
 }
 
+pesapi_value_ref ScriptingManager::InvokeInstanceMethodReturning(pesapi_value_ref instance,
+                                                                 const char* method_name)
+{
+    return m_ScriptEnv ? m_ScriptEnv->InvokeInstanceMethodReturning(instance, method_name) : nullptr;
+}
+
+bool ScriptingManager::GeneratorNext(pesapi_value_ref generator, ScriptYield& out)
+{
+    return m_ScriptEnv && m_ScriptEnv->GeneratorNext(generator, out);
+}
+
+void ScriptingManager::ReleaseCoroutineValue(pesapi_value_ref value)
+{
+    if (m_ScriptEnv != nullptr)
+    {
+        m_ScriptEnv->ReleaseValue(value);
+    }
+}
+
 // -----------------------------------------------------------------------
 // Phase-7 serialised-field forwarders. Both are pure thin shells -- the
 // real work lives in ScriptEnv where the pesapi handle is in scope.

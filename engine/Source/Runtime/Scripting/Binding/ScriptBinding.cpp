@@ -98,6 +98,20 @@ namespace
         "    InvokeRepeating(methodName: string, time: number, repeatRate: number): void;",
         "    CancelInvoke(methodName: string): void;",
         "    IsInvoking(methodName: string): boolean;",
+        // 协程。Unity 有两个重载：`StartCoroutine(IEnumerator)` 和
+        // `StartCoroutine(string)`。生成器对象没法穿过 ZFUNCTION 边界
+        // （绑定表只认引擎自己的类型），所以这里只提供字符串重载 —— 它本身
+        // 就是 Unity 的公开 API，不是凑数的替代品。
+        //
+        // 返回 null 表示启动失败（没有 component，或那个方法没返回生成器）；
+        // Unity 在同样的情形下会抛，这里按 Invoke 的既有风格记日志并返回空。
+        "    StartCoroutine(methodName: string): Coroutine | null;",
+        // 两个重载对应 Unity 的 `StopCoroutine(Coroutine)` 与
+        // `StopCoroutine(string)`。C++ 侧只有一个 `StopCoroutine(string)`：
+        // JS shim 从 Coroutine 句柄里取出方法名再转发。
+        "    StopCoroutine(routine: Coroutine): void;",
+        "    StopCoroutine(methodName: string): void;",
+        "    StopAllCoroutines(): void;",
         // Unity 的碰撞 / 触发回调。由 PhysicsManager::DispatchContactEvents
         // 通过 SendMessageWithOther 调用（不是 ZFUNCTION，所以这里只是
         // 声明）—— 不写的话 tsc 会因为 `this.OnCollisionEnter` 不存在而报
@@ -233,6 +247,49 @@ namespace
         "    layer: number;\n"
         "    /** 打中的 body 属于哪个对象。纯几何体（没有 RigidBodyComponent 的）为 null。 */\n"
         "    gameObject: GameObject | null;\n"
+        "}\n"
+        "\n"
+        // Unity 的 `YieldInstruction` 家族 + `StartCoroutine` 的返回句柄。
+        //
+        // 这四个在 C++ 侧没有对应类型：脚本 yield 出来的对象只带一个
+        // `__zWait` 字符串标记（ScriptEnv 的 shim 打上，ScriptEnv::
+        // GeneratorNext 读掉）。所以这里声明成"带一个私有标记字段的 class"，
+        // 让用户**必须**走构造器 —— 手写 `{ __zWait: 'seconds' }` 仍能过
+        // 运行期，但会丢掉类型检查。
+        //
+        // 声明成 class 而不是 interface：Unity 里 `new WaitForSeconds(1)` 是
+        // 唯一的合法构造方式，interface 会让 `yield { seconds: 1 }` 也过编译，
+        // 然后在运行期因为缺 `__zWait` 被当成"下一帧继续"——一个静默的语义
+        // 降级，比编译期报错糟得多。
+        "/** Unity's YieldInstruction family: the values a script coroutine yields. */\n"
+        "declare class YieldInstruction {\n"
+        "    private __zWait: string;\n"
+        "}\n"
+        "\n"
+        "declare class WaitForSeconds extends YieldInstruction {\n"
+        "    constructor(seconds: number);\n"
+        "}\n"
+        "\n"
+        "declare class WaitForSecondsRealtime extends YieldInstruction {\n"
+        "    constructor(seconds: number);\n"
+        "}\n"
+        "\n"
+        "declare class WaitForFixedUpdate extends YieldInstruction {\n"
+        "    constructor();\n"
+        "}\n"
+        "\n"
+        "declare class WaitForLateUpdate extends YieldInstruction {\n"
+        "    constructor();\n"
+        "}\n"
+        "\n"
+        "declare class WaitForEndOfFrame extends YieldInstruction {\n"
+        "    constructor();\n"
+        "}\n"
+        "\n"
+        "/** What `StartCoroutine` hands back; feed it to `StopCoroutine`. */\n"
+        "declare class Coroutine {\n"
+        "    private __zId: number;\n"
+        "    private __zMethod: string;\n"
         "}\n"
         "\n"
         "/** Engine-side logging facade. Routes to the [ZScripting] log category. */\n"

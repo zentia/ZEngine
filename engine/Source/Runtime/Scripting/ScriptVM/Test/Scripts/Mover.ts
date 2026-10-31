@@ -43,6 +43,55 @@ class Mover extends Behaviour {
 
     lastSnapshot: string = "";
 
+    // ---- 协程（Unity 的 StartCoroutine / yield）----------------------------
+    //
+    // 这一段是**端到端**的证明：C++ 侧的每个断言都能在完全没有 JS 的情况下
+    // 通过（UnityParitySmokeTest 的 CoroutineProbe 就是这么做的），只有真的
+    // 从 TypeScript 里 `*MyRoutine()` 出一个生成器、真的 `yield new
+    // WaitForSeconds(...)`，才能证明 shim 的 `__zWait` 标记、ScriptEnv 的
+    // 翻译、以及调度器的相位三者接得上。
+    routineSteps: number = 0;
+    routineKinds: string = "";
+    routineDone: boolean = false;
+    routineHandleOk: boolean = false;
+    lastRoutineSnapshot: string = "";
+
+    /// 测试通过 `InvokeMethod("StartMyRoutine")` 触发。
+    StartMyRoutine(): void {
+        this.routineSteps = 0;
+        this.routineKinds = "";
+        this.routineDone = false;
+        const handle = this.StartCoroutine("MyRoutine");
+        this.routineHandleOk = (handle != null);
+    }
+
+    /// 一个 Unity 式的协程体。三次 yield，三种等待，每步写一个不同的位
+    /// （1 / 2 / 4）—— 这样"跑到了第几步"是一个数字就能读出来的，而不是
+    /// 要靠数字符串。
+    *MyRoutine(): Generator<YieldInstruction, void, unknown> {
+        this.routineSteps = this.routineSteps + 1;
+        this.routineKinds = "a";
+        yield new WaitForSeconds(0.2);
+
+        this.routineSteps = this.routineSteps + 2;
+        this.routineKinds = this.routineKinds + "b";
+        yield new WaitForEndOfFrame();
+
+        this.routineSteps = this.routineSteps + 4;
+        this.routineKinds = this.routineKinds + "c";
+        this.routineDone = true;
+    }
+
+    routineSnapshot(): string {
+        this.lastRoutineSnapshot = [
+            String(this.routineSteps),
+            this.routineKinds,
+            String(this.routineDone),
+            String(this.routineHandleOk)
+        ].join("|");
+        return this.lastRoutineSnapshot;
+    }
+
     OnAwake(): void {
         Debug.Log("Mover.OnAwake");
     }

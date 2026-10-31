@@ -29,11 +29,68 @@ namespace
             co_yield WaitForSeconds {repeat_rate};
         }
     }
+    /// One script generator, pumped.
+    ///
+    /// The body lives on the script side; this coroutine is only the adapter
+    /// between "the scheduler resumed me" and "call `next()` once". Each resume
+    /// therefore costs exactly one `generator.next()` -- a script coroutine can
+    /// never run ahead of the frame loop, even if its body yields in a loop.
+    ///
+    /// `self` is a raw pointer for the same reason InvokeOnceRoutine's is: the
+    /// coroutine is owned by the scheduler and cancelled from Behaviour's
+    /// destructor, so a PPtr here would extend the component's lifetime by one
+    /// frame past its own destruction.
+    Coroutine ScriptCoroutinePump(Behaviour* self, uint64_t script_id)
+    {
+        for (;;)
+        {
+            ScriptYield yielded;
+            if (!self->StepScriptCoroutine(script_id, yielded))
+            {
+                // 生成器不再应答：释放它然后退出。不放的话这个 JS 值会一直
+                // 挂到下一次 Start / IsCoroutineRunning 触发剪枝为止 —— 而
+                // 那两个调用可能永远不来。
+                self->ReleaseScriptCoroutine(script_id);
+                co_return;
+            }
+            if (yielded.done)
+            {
+                self->ReleaseScriptCoroutine(script_id);
+                co_return;
+            }
+
+            switch (yielded.kind)
+            {
+                case ScriptYieldKind::kSeconds:
+                    co_yield WaitForSeconds {yielded.seconds};
+                    break;
+                case ScriptYieldKind::kSecondsRealtime:
+                    co_yield WaitForSecondsRealtime {yielded.seconds};
+                    break;
+                case ScriptYieldKind::kFixedUpdate:
+                    co_yield WaitForFixedUpdate {};
+                    break;
+                case ScriptYieldKind::kLateUpdate:
+                    co_yield WaitForLateUpdate {};
+                    break;
+                case ScriptYieldKind::kEndOfFrame:
+                    co_yield WaitForEndOfFrame {};
+                    break;
+                case ScriptYieldKind::kNull:
+                default:
+                    // 未知标记在 ScriptEnv 里已经降级成 kNull 并记了日志，这里
+                    // 不再吵一次。
+                    co_yield WaitForNextFrame {};
+                    break;
+            }
+        }
+    }
 }  // namespace
 
 Behaviour::~Behaviour()
 {
     CancelAllInvokes();
+    StopAllCoroutines();
 }
 
 void Behaviour::Invoke(const eastl::string& methodName, float time)
@@ -162,6 +219,173 @@ void Behaviour::FireInvoke(const eastl::string& method_name)
     {
         m_ParentObject->SendMessageByName(method_name);
     }
+}
+
+uint64_t Behaviour::StartCoroutine(const eastl::string& methodName)
+{
+    if (methodName.empty())
+    {
+        LOG_WARNING(ZObject, "Behaviour.StartCoroutine: needs a method name");
+        return CoroutineScheduler::kInvalidId;
+    }
+
+    PruneFinishedCoroutines();
+
+    uint64_t script_id = 0;
+    if (!StartScriptCoroutine(methodName.c_str(), script_id))
+    {
+        LOG_WARNING(ZObject,
+                    "Behaviour.StartCoroutine('{}'): this behaviour has no script side, "
+                    "or the method did not return a generator",
+                    methodName.c_str());
+        return CoroutineScheduler::kInvalidId;
+    }
+
+    CoroutineScheduler* scheduler = GET_SYSTEM(CoroutineScheduler);
+    if (scheduler == nullptr)
+    {
+        LOG_WARNING(ZObject, "Behaviour.StartCoroutine: no coroutine scheduler (engine not running?)");
+        EndScriptCoroutine(script_id);
+        return CoroutineScheduler::kInvalidId;
+    }
+
+    const uint64_t id = scheduler->Start(ScriptCoroutinePump(this, script_id),
+                                         reinterpret_cast<uint64_t>(this));
+    if (id == CoroutineScheduler::kInvalidId)
+    {
+        // 已经跑完（第一次 resume 就 done）—— 生成器还是要放掉。
+        EndScriptCoroutine(script_id);
+        return CoroutineScheduler::kInvalidId;
+    }
+
+    m_Coroutines.push_back({methodName, id, script_id});
+    return id;
+}
+
+void Behaviour::StopCoroutine(const eastl::string& methodName)
+{
+    if (methodName.empty())
+    {
+        return;
+    }
+
+    CoroutineScheduler* scheduler = GET_SYSTEM(CoroutineScheduler);
+
+    eastl::vector<PendingCoroutine> kept;
+    kept.reserve(m_Coroutines.size());
+    for (PendingCoroutine& pending : m_Coroutines)
+    {
+        if (pending.method != methodName)
+        {
+            kept.push_back(pending);
+            continue;
+        }
+        if (scheduler != nullptr)
+        {
+            scheduler->Stop(pending.id);
+        }
+        ReleasePendingGenerator(pending);
+    }
+    m_Coroutines.swap(kept);
+}
+
+void Behaviour::StopAllCoroutines()
+{
+    CoroutineScheduler* scheduler = GET_SYSTEM(CoroutineScheduler);
+    if (scheduler != nullptr)
+    {
+        for (const PendingCoroutine& pending : m_Coroutines)
+        {
+            scheduler->Stop(pending.id);
+        }
+    }
+    for (PendingCoroutine& pending : m_Coroutines)
+    {
+        ReleasePendingGenerator(pending);
+    }
+    m_Coroutines.clear();
+}
+
+bool Behaviour::IsCoroutineRunning(const eastl::string& methodName)
+{
+    PruneFinishedCoroutines();
+
+    for (const PendingCoroutine& pending : m_Coroutines)
+    {
+        if (pending.method == methodName)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+size_t Behaviour::GetCoroutineCount() const
+{
+    // 不是 const 方法里的 Prune：剪枝要调 EndScriptCoroutine（会释放 JS 引用），
+    // 属于状态变更。这里只报"当前登记的条数"，调用方想拿到准确值先调
+    // IsCoroutineRunning 或直接看 scheduler。
+    return m_Coroutines.size();
+}
+
+bool Behaviour::StartScriptCoroutine([[maybe_unused]] const char* method_name,
+                                     [[maybe_unused]] uint64_t& out_script_id)
+{
+    return false;
+}
+
+bool Behaviour::StepScriptCoroutine([[maybe_unused]] uint64_t script_id,
+                                    [[maybe_unused]] ScriptYield& out)
+{
+    return false;
+}
+
+void Behaviour::EndScriptCoroutine([[maybe_unused]] uint64_t script_id) {}
+
+void Behaviour::ReleaseScriptCoroutine(uint64_t script_id)
+{
+    for (PendingCoroutine& pending : m_Coroutines)
+    {
+        if (pending.script_id == script_id)
+        {
+            ReleasePendingGenerator(pending);
+            return;
+        }
+    }
+    // Not registered yet: the body ran out during `Start()`'s synchronous
+    // first resume. StartCoroutine's kInvalidId branch releases it there.
+}
+
+void Behaviour::ReleasePendingGenerator(PendingCoroutine& entry)
+{
+    if (!entry.generator_owned)
+    {
+        return;
+    }
+    entry.generator_owned = false;
+    EndScriptCoroutine(entry.script_id);
+}
+
+void Behaviour::PruneFinishedCoroutines()
+{
+    CoroutineScheduler* scheduler = GET_SYSTEM(CoroutineScheduler);
+    if (scheduler == nullptr)
+    {
+        return;
+    }
+
+    eastl::vector<PendingCoroutine> kept;
+    kept.reserve(m_Coroutines.size());
+    for (PendingCoroutine& pending : m_Coroutines)
+    {
+        if (scheduler->IsRunning(pending.id))
+        {
+            kept.push_back(pending);
+            continue;
+        }
+        ReleasePendingGenerator(pending);
+    }
+    m_Coroutines.swap(kept);
 }
 
 void Behaviour::PruneFinishedInvokes()

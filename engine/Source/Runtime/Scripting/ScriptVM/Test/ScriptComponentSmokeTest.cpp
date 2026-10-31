@@ -60,6 +60,7 @@
 #include "Runtime/BaseClasses/ObjectManager.h"
 #include "Runtime/BaseClasses/TypeManager.h"
 #include "Runtime/Function/Command/CommandSystem.h"
+#include "Runtime/Function/Framework/Coroutine/Coroutine.h"
 #include "Runtime/Function/Framework/Component/Script/TypeScriptComponent.h"
 #include "Runtime/Function/Framework/Component/Transform/Transform.h"
 #include "Runtime/Project/ProjectInfo.h"
@@ -333,6 +334,10 @@ int main(int argc, char** argv)
     REGISTER_SYSTEM(ProjectInfo);
     REGISTER_SYSTEM(ScriptRegistry);
     REGISTER_SYSTEM(ScriptingManager);
+    // StartCoroutine 走 Behaviour -> GET_SYSTEM(CoroutineScheduler)。这里必须
+    // 注册一个真的：没有它时 StartCoroutine 会记一条 warning 并返回 0，于是
+    // "协程根本没跑"和"协程没被驱动"看起来是一模一样的结果。
+    REGISTER_SYSTEM(CoroutineScheduler);
     // CommandSystem::Initialize() 从 argv 解析 -p/--project，测试进程没这个参数，
     // 它会把 project_path 冲成空，于是 ProjectInfo::LoadFromFile 失败、整个
     // InitializeAll 回滚。手工填好并标成"已初始化"让 InitializeAll 跳过它。
@@ -575,6 +580,78 @@ int main(int argc, char** argv)
                 return std::string("<missing>");
             }(),
             "true");
+
+    // ---- F2. 协程：TypeScript 生成器 <-> 引擎调度器 ------------------------
+    //
+    // 这一段是整条链唯一的端到端证明。UnityParitySmokeTest 的 CoroutineProbe
+    // 自己回答 Start/Step/End 三个钩子，所以它全程绿也不能说明 JS 侧接上了：
+    // shim 里的 `__zWait` 标记写错一个字母、ScriptEnv 少读一个分支、tsc 把
+    // generator 降级成别的东西，C++ 那边都看不见。这里三个相位各推一次，
+    // 每一步的步数都不同（1 / 3 / 7），因此"停在第几步"是一个数字就能读出的。
+    std::printf("\n--- F2. 协程（StartCoroutine / yield）---\n");
+    auto* scheduler = GET_SYSTEM(CoroutineScheduler);
+    CheckTrue("H0", "CoroutineScheduler 注册了", scheduler != nullptr);
+    if (scheduler != nullptr)
+    {
+        scheduler->StopAll();
+        auto mover_value = [&](const char* key) {
+            for (const auto& entry : comp2->EnumerateLiveFields())
+            {
+                if (std::get<0>(entry) == key)
+                {
+                    return std::get<2>(entry);
+                }
+            }
+            return std::string("<missing>");
+        };
+
+        CheckTrue("H1", "InvokeMethod(\"StartMyRoutine\") 送到了 JS 侧",
+                  comp2->InvokeMethod("StartMyRoutine"));
+        // Unity 的形状：StartCoroutine 返回时第一段已经同步跑完。
+        CheckEq("H2", "第一段同步跑了（steps=1）", mover_value("routineSteps"), "1");
+        CheckEq("H3", "StartCoroutine 交回了句柄（不是 null）",
+                mover_value("routineHandleOk"), "true");
+
+        // WaitForSeconds(0.2)：先给 0.1，不够。
+        scheduler->TickUpdate(0.1f, 0.1f);
+        CheckEq("H4", "0.1s 时 WaitForSeconds 还没到期", mover_value("routineSteps"), "1");
+        scheduler->TickUpdate(0.1f, 0.1f);
+        CheckEq("H5", "0.2s 时进入第二段", mover_value("routineSteps"), "3");
+
+        // WaitForEndOfFrame：Update 相位不许推它。
+        scheduler->TickUpdate(0.1f, 0.1f);
+        CheckEq("H6", "WaitForEndOfFrame 不会被 Update 推着走",
+                mover_value("routineSteps"), "3");
+        scheduler->TickEndOfFrame();
+        CheckEq("H7", "EndOfFrame 相位把它推到收尾", mover_value("routineSteps"), "7");
+        CheckEq("H8", "三次 yield 按顺序都跑到了", mover_value("routineKinds"), "abc");
+        CheckEq("H9", "并且协程体自己结束了", mover_value("routineDone"), "true");
+        // `done` 没被翻译出来的话，泵会一直 next() 下去：生成器每次都老实回答
+        // {done:true}，步数停在 7，看起来"跑完了"，但调度器里多了一个永远
+        // 不会结束的条目。数目才是那条断言。
+        CheckEq("H9b", "跑完之后调度器把它摘掉了", std::to_string(scheduler->GetRunningCount()), "0");
+        scheduler->TickUpdate(0.1f, 0.1f);
+        scheduler->TickEndOfFrame();
+        CheckEq("H9c", "之后再怎么 tick 也不会多跑一步", mover_value("routineSteps"), "7");
+
+        // 跑完之后 StopAllCoroutines 必须是安全的（生成器已经释放过一次）。
+        comp2->StopAllCoroutines();
+        CheckTrue("H10", "跑完之后 StopAllCoroutines 不炸", comp2->HasLiveInstance());
+        scheduler->StopAll();
+
+        // 反过来：中途停掉。这是 C++ 侧唯一需要自己释放生成器的路径
+        // （调度器 Stop 会直接丢掉协程帧，泵永远到不了自己的出口）。
+        CheckTrue("H11", "第二次启动协程", comp2->InvokeMethod("StartMyRoutine"));
+        CheckEq("H12", "又同步跑了第一段", mover_value("routineSteps"), "1");
+        comp2->StopAllCoroutines();
+        CheckEq("H12b", "停的时候调度器里的那条也摘掉了",
+                std::to_string(scheduler->GetRunningCount()), "0");
+        scheduler->TickUpdate(0.1f, 0.1f);
+        scheduler->TickUpdate(0.1f, 0.1f);
+        scheduler->TickEndOfFrame();
+        CheckEq("H13", "停掉之后不再推进", mover_value("routineSteps"), "1");
+        CheckEq("H14", "也不影响实例本身", mover_value("routineHandleOk"), "true");
+    }
 
     // ---- G. 卸载：OnDestroy -> 不再有活实例 -------------------------------
     // 宿主和组件都是 Produce() 用 `new` 造的，所以统一走 ObjectManager::Destroy

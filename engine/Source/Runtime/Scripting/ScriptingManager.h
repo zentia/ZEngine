@@ -89,6 +89,28 @@ public:
     bool InvokeInstanceMethodGameObject(pesapi_value_ref instance, const char* method_name, class GameObject* other);
 
     // -----------------------------------------------------------------------
+    // Script coroutines (`StartCoroutine`).
+    //
+    // Forwarders to ScriptEnv; see ScriptEnv.h for the contract. A script
+    // coroutine's body is a JS generator, so the engine has to keep the value
+    // alive across frames -- hence the explicit ReleaseCoroutineValue (there is
+    // no RAII wrapper because the owner is a component whose destruction order
+    // relative to the VM is not guaranteed).
+    // -----------------------------------------------------------------------
+
+    /// Call `instance.<method>()` and keep a strong ref to the returned
+    /// generator. nullptr when the method is missing or throws.
+    pesapi_value_ref InvokeInstanceMethodReturning(pesapi_value_ref instance, const char* method_name);
+
+    /// One `generator.next()`. Returns false when the body threw or the value
+    /// is not a generator -- the caller must stop pumping.
+    bool GeneratorNext(pesapi_value_ref generator, ScriptYield& out);
+
+    /// Release a ref from InvokeInstanceMethodReturning. Safe with nullptr and
+    /// safe with a value whose env has already been torn down.
+    void ReleaseCoroutineValue(pesapi_value_ref value);
+
+    // -----------------------------------------------------------------------
     // Phase-7 serialised-field bridge (forwarders to ScriptEnv).
     //
     // ApplyInstanceField pushes a single (key, value-as-string) override

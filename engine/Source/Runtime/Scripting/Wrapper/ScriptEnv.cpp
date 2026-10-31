@@ -449,6 +449,41 @@ void ScriptEnv::InstallConsoleAndDebugGlobals()
         "  g.Behaviour.prototype.IsInvoking = function(name) {"
         "    return this.component ? this.component.IsInvoking(name) : false;"
         "  };"
+        // Unity 的 `YieldInstruction` 家族。它们**没有** C++ 实体：脚本 yield
+        // 出来的对象只是被打上一个 `__zWait` 字符串标记，C++ 侧（ScriptEnv::
+        // GeneratorNext）读这个标记再翻译成引擎自己的 WaitForSeconds /
+        // WaitForEndOfFrame。
+        //
+        // 为什么用标记而不是 instanceof：C++ 拿不到 JS 的构造器，也就没法做
+        // 类型判断；而一个字符串字段既能被 pesapi 直接读出来，也让"用户自己
+        // 造了个 {__zWait:'endOfFrame'}"这种写法合法 —— 与 Unity 里
+        // 继承 YieldInstruction 自己写等待指令的用法对应。
+        //
+        // 这些构造器用 `new` 和不用 `new` 都要能工作（TS 编译出来一定是 new，
+        // 但手写 JS 可能漏），所以统一写成"返回对象"的形式：JS 里 `new F()`
+        // 遇到 `return obj` 时会丢弃 this 用返回的那个对象。
+        "  g.WaitForSeconds = function(s) { return { __zWait: 'seconds', seconds: s }; };"
+        "  g.WaitForSecondsRealtime = function(s) { return { __zWait: 'secondsRealtime', seconds: s }; };"
+        "  g.WaitForFixedUpdate = function() { return { __zWait: 'fixedUpdate' }; };"
+        "  g.WaitForLateUpdate = function() { return { __zWait: 'lateUpdate' }; };"
+        "  g.WaitForEndOfFrame = function() { return { __zWait: 'endOfFrame' }; };"
+        // `StartCoroutine` 返回的句柄。Unity 返回的是 Coroutine 对象（不是
+        // id），StopCoroutine 既能吃这个对象也能吃方法名字符串 —— 所以这里把
+        // 方法名一起存下来，C++ 侧就只需要一个 `StopCoroutine(string)`。
+        "  g.Coroutine = function(id, method) { this.__zId = id; this.__zMethod = method; };"
+        "  g.Behaviour.prototype.StartCoroutine = function(name) {"
+        "    if (!this.component) return null;"
+        "    var id = this.component.StartCoroutine(name);"
+        "    return id ? new g.Coroutine(id, name) : null;"
+        "  };"
+        "  g.Behaviour.prototype.StopCoroutine = function(x) {"
+        "    if (!this.component || x === null || x === undefined) return;"
+        "    var m = (typeof x === 'string') ? x : x.__zMethod;"
+        "    if (m) this.component.StopCoroutine(m);"
+        "  };"
+        "  g.Behaviour.prototype.StopAllCoroutines = function() {"
+        "    if (this.component) this.component.StopAllCoroutines();"
+        "  };"
         // （P8 的 __zhmr_native_* / require 入口不在这里 —— 它们是真正的 native
         //   函数，见下面 InstallConsoleAndDebugGlobals 尾部。早先这里写成了纯 JS
         //   存根，只往 JS 侧的普通对象里塞回调，从不回调 C++ ⇒ m_HmrStates 恒空，
@@ -1396,6 +1431,203 @@ bool ScriptEnv::InvokeInstanceMethodGameObject(pesapi_value_ref instance, const 
             ok = false;
         }
     }
+    pesapi_close_scope(m_Papis, scope);
+    return ok;
+}
+
+// ---------------------------------------------------------------------------
+// Script coroutines
+// ---------------------------------------------------------------------------
+
+pesapi_value_ref ScriptEnv::InvokeInstanceMethodReturning(pesapi_value_ref instance, const char* method_name)
+{
+    if (!instance || !method_name || !*method_name)
+        return nullptr;
+
+    auto scope = pesapi_open_scope(m_Papis, m_EnvRef);
+    auto env = pesapi_get_env_from_ref(m_Papis, m_EnvRef);
+
+    pesapi_value_ref result_ref = nullptr;
+    do
+    {
+        pesapi_value this_val = pesapi_get_value_from_ref(m_Papis, env, instance);
+        if (!this_val)
+            break;
+        pesapi_value fn = pesapi_get_property(m_Papis, env, this_val, method_name);
+        if (!fn || !pesapi_is_function(m_Papis, env, fn))
+        {
+            // 与 InvokeInstanceMethod 同一条规矩：方法不存在是 no-op，不是错误。
+            // 但这里返回 nullptr —— 调用方要能分出"没有这个方法"。
+            break;
+        }
+        pesapi_value returned = pesapi_call_function(m_Papis, env, fn, this_val, 0, nullptr);
+        if (pesapi_has_caught(m_Papis, scope))
+        {
+            const char* msg = pesapi_get_exception_as_string(m_Papis, scope, 1);
+            LOG_ERROR(ZScripting, "instance.{}() threw: {}", method_name, msg ? msg : "<no message>");
+            break;
+        }
+        if (!returned)
+            break;
+        result_ref = pesapi_create_value_ref(m_Papis, env, returned, 0);
+        if (!result_ref)
+        {
+            LOG_ERROR(ZScripting, "instance.{}(): create_value_ref failed", method_name);
+            break;
+        }
+    } while (false);
+
+    pesapi_close_scope(m_Papis, scope);
+    return result_ref;
+}
+
+void ScriptEnv::ReleaseValue(pesapi_value_ref value)
+{
+    if (!value)
+        return;
+    pesapi_release_value_ref(m_Papis, value);
+}
+
+namespace
+{
+    /// 这个 backend 没有 `pesapi_is_number`：整数和浮点是两套类型标记。
+    /// `yield 1` 落 int32，`yield 0.5` 落 double，两个都得认。
+    bool zIsNumber(pesapi_ffi* apis, pesapi_env env, pesapi_value v)
+    {
+        return v && (pesapi_is_double(apis, env, v) || pesapi_is_int32(apis, env, v));
+    }
+
+    /// `pesapi_get_value_string` 不存在（只有 utf8/utf16 两版，且要调用方给缓冲）。
+    /// 短字符串走栈缓冲，长的才上堆。
+    std::string zGetString(pesapi_ffi* apis, pesapi_env env, pesapi_value v)
+    {
+        if (!v || !pesapi_is_string(apis, env, v))
+            return {};
+        char    stack_buf[256];
+        size_t  len = sizeof(stack_buf) - 1;
+        if (const char* s = pesapi_get_value_string_utf8(apis, env, v, stack_buf, &len))
+        {
+            return std::string(s, len);
+        }
+        // 缓冲不够：先问长度再取。get_value_string_utf8 的 bufsize 是入参兼出参。
+        size_t needed = 0;
+        pesapi_get_value_string_utf8(apis, env, v, nullptr, &needed);
+        std::string big(needed, '\0');
+        size_t      got = needed;
+        if (!pesapi_get_value_string_utf8(apis, env, v, big.data(), &got))
+            return {};
+        big.resize(got);
+        return big;
+    }
+
+    double zGetNumber(pesapi_ffi* apis, pesapi_env env, pesapi_value v)
+    {
+        return zIsNumber(apis, env, v) ? pesapi_get_value_double(apis, env, v) : 0.0;
+    }
+}  // namespace
+
+bool ScriptEnv::GeneratorNext(pesapi_value_ref generator, ScriptYield& out)
+{
+    out = ScriptYield {};
+    if (!generator)
+        return false;
+
+    auto scope = pesapi_open_scope(m_Papis, m_EnvRef);
+    auto env = pesapi_get_env_from_ref(m_Papis, m_EnvRef);
+
+    bool ok = false;
+    do
+    {
+        pesapi_value gen = pesapi_get_value_from_ref(m_Papis, env, generator);
+        if (!gen)
+            break;
+        pesapi_value next_fn = pesapi_get_property(m_Papis, env, gen, "next");
+        if (!next_fn || !pesapi_is_function(m_Papis, env, next_fn))
+        {
+            LOG_ERROR(ZScripting, "StartCoroutine: the method did not return a generator "
+                                  "(write `*myRoutine()` -- a plain function has no .next)");
+            break;
+        }
+        pesapi_value step = pesapi_call_function(m_Papis, env, next_fn, gen, 0, nullptr);
+        if (pesapi_has_caught(m_Papis, scope))
+        {
+            const char* msg = pesapi_get_exception_as_string(m_Papis, scope, 1);
+            LOG_ERROR(ZScripting, "coroutine body threw: {}", msg ? msg : "<no message>");
+            break;
+        }
+        if (!step)
+            break;
+
+        pesapi_value done_val = pesapi_get_property(m_Papis, env, step, "done");
+        out.done = pesapi_get_value_bool(m_Papis, env, done_val) != 0;
+        if (out.done)
+        {
+            ok = true;  // 正常结束，不是失败。
+            break;
+        }
+
+        // ---- 翻译 yield 出来的值 ----
+        pesapi_value yielded = pesapi_get_property(m_Papis, env, step, "value");
+        if (!yielded || pesapi_is_null(m_Papis, env, yielded) || pesapi_is_undefined(m_Papis, env, yielded))
+        {
+            out.kind = ScriptYieldKind::kNull;
+            ok = true;
+            break;
+        }
+        if (zIsNumber(m_Papis, env, yielded))
+        {
+            // `yield 0.5` —— 当 WaitForSeconds 用。Unity 里必须 new 一个对象，
+            // 这里两种都收（见 __zWait 分支）。
+            out.kind = ScriptYieldKind::kSeconds;
+            out.seconds = static_cast<float>(pesapi_get_value_double(m_Papis, env, yielded));
+            ok = true;
+            break;
+        }
+        // 对象：读 `__zWait`（由 WaitForSeconds / WaitForEndOfFrame 这些全局类
+        // 打上的标记）。用标记而不是 instanceof —— C++ 侧拿不到 JS 的构造器。
+        pesapi_value tag = pesapi_get_property(m_Papis, env, yielded, "__zWait");
+        if (tag && pesapi_is_string(m_Papis, env, tag))
+        {
+            const std::string kind = zGetString(m_Papis, env, tag);
+            const double      secs = zGetNumber(
+                m_Papis, env, pesapi_get_property(m_Papis, env, yielded, "seconds"));
+            if (kind == "seconds")
+            {
+                out.kind = ScriptYieldKind::kSeconds;
+                out.seconds = static_cast<float>(secs);
+            }
+            else if (kind == "secondsRealtime")
+            {
+                out.kind = ScriptYieldKind::kSecondsRealtime;
+                out.seconds = static_cast<float>(secs);
+            }
+            else if (kind == "fixedUpdate")
+            {
+                out.kind = ScriptYieldKind::kFixedUpdate;
+            }
+            else if (kind == "lateUpdate")
+            {
+                out.kind = ScriptYieldKind::kLateUpdate;
+            }
+            else if (kind == "endOfFrame")
+            {
+                out.kind = ScriptYieldKind::kEndOfFrame;
+            }
+            else
+            {
+                LOG_ERROR(ZScripting, "coroutine yielded an unknown __zWait '{}' -- "
+                                      "resuming next frame instead of hanging", kind);
+                out.kind = ScriptYieldKind::kNull;
+            }
+            ok = true;
+            break;
+        }
+        // 别的类型（字符串、布尔、数组…）：按 Unity 的 `yield return null`
+        // 处理，而不是把协程永久挂起。挂起比"多跑一帧"难查得多。
+        out.kind = ScriptYieldKind::kNull;
+        ok = true;
+    } while (false);
+
     pesapi_close_scope(m_Papis, scope);
     return ok;
 }

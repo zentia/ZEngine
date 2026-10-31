@@ -419,6 +419,18 @@ void TypeScriptComponent::TearDown()
     if (m_JsInstance == nullptr)
         return;
 
+    // 协程生成器必须先于实例释放：它们是从实例上的方法返回的，实例一没，
+    // 再 next() 就没有 `this` 了。Behaviour 的 StopAll 走的是
+    // EndScriptCoroutine，那里的 sm 判空语义和这里一致。
+    for (void* generator : m_CoroutineGenerators)
+    {
+        if (generator != nullptr && sm != nullptr)
+        {
+            sm->ReleaseCoroutineValue(static_cast<pesapi_value_ref>(generator));
+        }
+    }
+    m_CoroutineGenerators.clear();
+
     auto ref = static_cast<pesapi_value_ref>(m_JsInstance);
 
     // Only fire OnDestroy if we actually got past OnAwake. Mirrors Unity's
@@ -625,4 +637,104 @@ void TypeScriptComponent::CancelAllInvokes()
 bool TypeScriptComponent::IsInvoking(const eastl::string& methodName)
 {
     return Behaviour::IsInvoking(methodName);
+}
+
+uint64_t TypeScriptComponent::StartCoroutine(const eastl::string& methodName)
+{
+    return Behaviour::StartCoroutine(methodName);
+}
+
+void TypeScriptComponent::StopCoroutine(const eastl::string& methodName)
+{
+    Behaviour::StopCoroutine(methodName);
+}
+
+void TypeScriptComponent::StopAllCoroutines()
+{
+    Behaviour::StopAllCoroutines();
+}
+
+bool TypeScriptComponent::IsCoroutineRunning(const eastl::string& methodName)
+{
+    return Behaviour::IsCoroutineRunning(methodName);
+}
+
+// --- Script-coroutine bridge -------------------------------------------------
+//
+// The generator is a JS value, so it lives here rather than on Behaviour: the
+// base class only ever sees the small integer index into
+// m_CoroutineGenerators. Two consequences worth spelling out:
+//
+//   * `script_id` is index+1, never an index. 0 means "nothing" up in
+//     Behaviour, so handing out 0 would make a real generator look absent.
+//   * Released slots are nulled, not erased. Erasing would shift every later
+//     id down by one, so a coroutine started before the erase would resume a
+//     different body -- a misbehaviour that only shows up with two routines
+//     in flight, which is exactly when it is hardest to read.
+
+bool TypeScriptComponent::StartScriptCoroutine(const char* method_name, uint64_t& out_script_id)
+{
+    if (m_JsInstance == nullptr || method_name == nullptr || method_name[0] == '\0')
+    {
+        return false;
+    }
+
+    auto* sm = GET_SYSTEM(ScriptingManager);
+    if (sm == nullptr)
+    {
+        return false;
+    }
+
+    auto generator = sm->InvokeInstanceMethodReturning(static_cast<pesapi_value_ref>(m_JsInstance),
+                                                       method_name);
+    if (generator == nullptr)
+    {
+        return false;
+    }
+
+    m_CoroutineGenerators.push_back(generator);
+    out_script_id = static_cast<uint64_t>(m_CoroutineGenerators.size());
+    return true;
+}
+
+bool TypeScriptComponent::StepScriptCoroutine(uint64_t script_id, ScriptYield& out)
+{
+    if (script_id == 0 || script_id > m_CoroutineGenerators.size())
+    {
+        return false;
+    }
+
+    void* generator = m_CoroutineGenerators[static_cast<size_t>(script_id - 1)];
+    if (generator == nullptr)
+    {
+        return false;
+    }
+
+    auto* sm = GET_SYSTEM(ScriptingManager);
+    if (sm == nullptr)
+    {
+        return false;
+    }
+
+    return sm->GeneratorNext(static_cast<pesapi_value_ref>(generator), out);
+}
+
+void TypeScriptComponent::EndScriptCoroutine(uint64_t script_id)
+{
+    if (script_id == 0 || script_id > m_CoroutineGenerators.size())
+    {
+        return;
+    }
+
+    auto& slot = m_CoroutineGenerators[static_cast<size_t>(script_id - 1)];
+    if (slot == nullptr)
+    {
+        return;  // 已经释放过（Stop 之后再 Prune 是正常序列）。
+    }
+
+    if (auto* sm = GET_SYSTEM(ScriptingManager))
+    {
+        sm->ReleaseCoroutineValue(static_cast<pesapi_value_ref>(slot));
+    }
+    slot = nullptr;
 }

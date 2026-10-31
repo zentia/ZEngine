@@ -6388,6 +6388,440 @@ namespace
               "BD8", "up x right == forward (right-handed, same as transform)");
     }
 
+    // ---------------------------------------------------------------- BE ---
+    // Script coroutines: StartCoroutine / StopCoroutine / StopAllCoroutines.
+
+    /// Stands in for a script-side generator.
+    ///
+    /// `Behaviour` sees a script coroutine through exactly three hooks and one
+    /// opaque integer, so a class that answers those hooks with a canned yield
+    /// sequence *is* a script coroutine as far as the engine is concerned. That
+    /// is what lets this group test the adapter (does `yield new
+    /// WaitForEndOfFrame()` land in the EndOfFrame phase?) without standing up a
+    /// whole JS VM -- the VM is ScriptVMSmokeTest's job.
+    class CoroutineProbe : public Behaviour
+    {
+        REGISTER_CLASS(CoroutineProbe)
+
+    public:
+        /// false -> "this Behaviour has no script side", which every plain C++
+        /// Behaviour answers by default.
+        bool has_script = true;
+
+        /// false -> "the body threw" / "the value is gone".
+        bool step_ok = true;
+
+        /// One entry per `yield`, in order. Past the end the body is done.
+        eastl::vector<ScriptYield> body;
+
+        // -- observations -------------------------------------------------
+        eastl::vector<eastl::string> started;
+        int steps = 0;
+        int finishes = 0;
+        int released = 0;
+        int double_release = 0;
+
+        /// The invariant that matters: a generator that has been released must
+        /// never be polled again. In the real (JS) implementation that is a
+        /// value ref that has already been dropped.
+        int polled_after_release = 0;
+
+        bool StartScriptCoroutine(const char* method_name, uint64_t& out_script_id) override
+        {
+            if (!has_script)
+            {
+                return false;
+            }
+            started.emplace_back(method_name);
+            gen_steps.push_back(0);
+            out_script_id = static_cast<uint64_t>(gen_steps.size());
+            return true;
+        }
+
+        bool StepScriptCoroutine(uint64_t script_id, ScriptYield& out) override
+        {
+            if (!step_ok || script_id == 0 || script_id > gen_steps.size())
+            {
+                return false;
+            }
+            if (gen_steps[script_id - 1] == kReleased)
+            {
+                ++polled_after_release;
+                return false;
+            }
+            const int step = gen_steps[script_id - 1];
+            if (step >= static_cast<int>(body.size()))
+            {
+                out.done = true;
+                ++finishes;
+                return true;
+            }
+            out = body[static_cast<std::size_t>(step)];
+            gen_steps[script_id - 1] = step + 1;
+            ++steps;
+            return true;
+        }
+
+        void EndScriptCoroutine(uint64_t script_id) override
+        {
+            if (script_id == 0 || script_id > gen_steps.size())
+            {
+                return;
+            }
+            if (gen_steps[script_id - 1] == kReleased)
+            {
+                ++double_release;
+                return;
+            }
+            gen_steps[script_id - 1] = kReleased;
+            ++released;
+        }
+
+    private:
+        static constexpr int kReleased = -1;
+        eastl::vector<int> gen_steps;
+    };
+
+    void AdvanceUpdate(int frames, float scaled, float unscaled)
+    {
+        CoroutineScheduler* scheduler = GET_SYSTEM(CoroutineScheduler);
+        for (int i = 0; i < frames && scheduler != nullptr; ++i)
+        {
+            scheduler->TickUpdate(scaled, unscaled);
+        }
+    }
+
+    void AdvancePhase(int frames, CoroutinePhase phase)
+    {
+        CoroutineScheduler* scheduler = GET_SYSTEM(CoroutineScheduler);
+        for (int i = 0; i < frames && scheduler != nullptr; ++i)
+        {
+            switch (phase)
+            {
+                case CoroutinePhase::kFixedUpdate: scheduler->TickFixedUpdate(); break;
+                case CoroutinePhase::kLateUpdate: scheduler->TickLateUpdate(); break;
+                case CoroutinePhase::kEndOfFrame: scheduler->TickEndOfFrame(); break;
+                case CoroutinePhase::kUpdate:
+                default: scheduler->TickUpdate(0.f, 0.f); break;
+            }
+        }
+    }
+
+    void TestScriptCoroutines()
+    {
+        CoroutineScheduler* scheduler = GET_SYSTEM(CoroutineScheduler);
+        Check(scheduler != nullptr, "BE0", "CoroutineScheduler is reachable");
+        if (scheduler == nullptr)
+        {
+            return;
+        }
+        scheduler->StopAll();
+
+        // --- a Behaviour with no script side ------------------------------
+        {
+            CoroutineProbe probe;
+            probe.has_script = false;
+            Check(probe.StartCoroutine("Nope") == CoroutineScheduler::kInvalidId,
+                  "BE1", "no script side -> StartCoroutine refuses");
+            Check(scheduler->GetRunningCount() == 0, "BE2", "and nothing is scheduled");
+            Check(probe.GetCoroutineCount() == 0, "BE3", "and nothing is recorded on the behaviour");
+        }
+
+        // --- rejected input -----------------------------------------------
+        {
+            CoroutineProbe probe;
+            Check(probe.StartCoroutine("") == CoroutineScheduler::kInvalidId,
+                  "BE4", "an empty method name starts nothing");
+            Check(scheduler->GetRunningCount() == 0, "BE5", "and schedules nothing");
+        }
+
+        // --- `yield null`: one resume per Update ---------------------------
+        {
+            CoroutineProbe probe;
+            ScriptYield null_yield {};
+            null_yield.kind = ScriptYieldKind::kNull;
+            probe.body = {null_yield, null_yield};
+
+            const uint64_t id = probe.StartCoroutine("Tick");
+            Check(id != CoroutineScheduler::kInvalidId, "BE6", "StartCoroutine hands back a real id");
+            Check(probe.started.size() == 1 && probe.started[0] == "Tick",
+                  "BE7", "and the method name reached the script side");
+            Check(probe.steps == 1, "BE8", "the first segment runs synchronously, like Unity");
+            Check(probe.IsCoroutineRunning("Tick"), "BE9", "the behaviour lists it");
+            Check(probe.GetCoroutineCount() == 1, "BE10", "exactly once");
+
+            AdvanceUpdate(1, 0.1f, 0.1f);
+            Check(probe.steps == 2, "BE11", "`yield null` resumes on the very next Update");
+
+            AdvanceUpdate(1, 0.1f, 0.1f);
+            Check(probe.finishes == 1, "BE12", "the body is asked one more time and reports done");
+            // 必须在"没有任何人触发剪枝"的前提下断言：泵自己在出口释放，而不是
+            // 等到下一次 Start / IsCoroutineRunning 顺手剪掉。写过一次没有这行的
+            // 版本 —— 自然结束的协程会一直攥着 JS 值，而调用方完全看不出来。
+            Check(probe.released == 1, "BE12b", "the pump releases on its own exit, unpruned");
+            Check(!probe.IsCoroutineRunning("Tick"), "BE13", "so it is no longer listed");
+            Check(probe.released == 1, "BE14", "and the generator is released");
+            Check(probe.polled_after_release == 0, "BE15", "never polled after release");
+            Check(probe.double_release == 0, "BE16", "and never released twice");
+        }
+
+        // --- WaitForSeconds: scaled time ----------------------------------
+        {
+            CoroutineProbe probe;
+            ScriptYield wait {};
+            wait.kind = ScriptYieldKind::kSeconds;
+            wait.seconds = 0.25f;
+            ScriptYield null_yield {};
+            probe.body = {wait, null_yield};
+
+            probe.StartCoroutine("Wait");
+            AdvanceUpdate(2, 0.1f, 0.1f);  // 0.2s
+            Check(probe.steps == 1, "BE17", "WaitForSeconds does not resume early");
+            AdvanceUpdate(1, 0.1f, 0.1f);  // 0.3s
+            Check(probe.steps == 2, "BE18", "and resumes once the scaled time elapsed");
+        }
+
+        // --- WaitForSecondsRealtime: the unscaled clock -------------------
+        {
+            CoroutineProbe probe;
+            ScriptYield wait {};
+            wait.kind = ScriptYieldKind::kSecondsRealtime;
+            wait.seconds = 0.2f;
+            ScriptYield null_yield {};
+            probe.body = {wait, null_yield};
+
+            probe.StartCoroutine("Realtime");
+            // A paused world: scaled 0, but the wall clock is running.
+            AdvanceUpdate(1, 0.f, 0.1f);
+            Check(probe.steps == 1, "BE19", "a realtime wait ignores a zero scaled delta");
+            AdvanceUpdate(1, 0.f, 0.1f);
+            Check(probe.steps == 2, "BE20", "and advances on the unscaled clock alone");
+        }
+
+        // --- the phase-carrying waits -------------------------------------
+        // The whole reason ScriptYield carries a *kind* and not just a number:
+        // resuming a WaitForEndOfFrame in Update still produces a value, just
+        // one phase stale, which is a bug with no error anywhere.
+        {
+            CoroutineProbe probe;
+            ScriptYield end_of_frame {};
+            end_of_frame.kind = ScriptYieldKind::kEndOfFrame;
+            ScriptYield null_yield {};
+            probe.body = {end_of_frame, null_yield};
+
+            probe.StartCoroutine("Late");
+            AdvanceUpdate(3, 0.1f, 0.1f);
+            Check(probe.steps == 1, "BE21", "WaitForEndOfFrame is NOT resumed by Update");
+            AdvancePhase(1, CoroutinePhase::kEndOfFrame);
+            Check(probe.steps == 2, "BE22", "and is resumed by the EndOfFrame phase");
+        }
+        {
+            CoroutineProbe probe;
+            ScriptYield fixed {};
+            fixed.kind = ScriptYieldKind::kFixedUpdate;
+            ScriptYield null_yield {};
+            probe.body = {fixed, null_yield};
+
+            probe.StartCoroutine("Fixed");
+            AdvanceUpdate(2, 0.1f, 0.1f);
+            Check(probe.steps == 1, "BE23", "WaitForFixedUpdate is not resumed by Update");
+            AdvancePhase(1, CoroutinePhase::kFixedUpdate);
+            Check(probe.steps == 2, "BE24", "and is resumed by the FixedUpdate phase");
+        }
+        {
+            CoroutineProbe probe;
+            ScriptYield late {};
+            late.kind = ScriptYieldKind::kLateUpdate;
+            ScriptYield null_yield {};
+            probe.body = {late, null_yield};
+
+            probe.StartCoroutine("LateOne");
+            AdvanceUpdate(2, 0.1f, 0.1f);
+            Check(probe.steps == 1, "BE25", "WaitForLateUpdate is not resumed by Update");
+            AdvancePhase(1, CoroutinePhase::kLateUpdate);
+            Check(probe.steps == 2, "BE26", "and is resumed by the LateUpdate phase");
+        }
+
+        // --- a broken generator is dropped, not polled forever -------------
+        {
+            CoroutineProbe probe;
+            ScriptYield null_yield {};
+            probe.body = {null_yield, null_yield};
+            probe.step_ok = true;
+            probe.StartCoroutine("Broken");
+            probe.step_ok = false;
+
+            const int before = scheduler->GetRunningCount();
+            AdvanceUpdate(4, 0.1f, 0.1f);
+            Check(scheduler->GetRunningCount() < before,
+                  "BE27", "a generator that stops answering ends the coroutine");
+            Check(probe.released >= 1, "BE28", "and is released rather than leaked");
+        }
+
+        // --- StopCoroutine by name ----------------------------------------
+        {
+            CoroutineProbe probe;
+            ScriptYield null_yield {};
+            probe.body = {null_yield, null_yield, null_yield};
+
+            probe.StartCoroutine("A");
+            probe.StartCoroutine("B");
+            Check(scheduler->GetRunningCount() == 2, "BE29", "two coroutines are running");
+            Check(probe.GetCoroutineCount() == 2, "BE30", "and both are recorded");
+
+            probe.StopCoroutine("A");
+            Check(!probe.IsCoroutineRunning("A"), "BE31", "StopCoroutine drops that name");
+            Check(probe.IsCoroutineRunning("B"), "BE32", "and leaves the other alone");
+            Check(scheduler->GetRunningCount() == 1, "BE33", "one is left in the scheduler");
+            Check(probe.released == 1, "BE34", "the stopped generator was released");
+
+            AdvanceUpdate(3, 0.1f, 0.1f);
+            Check(probe.started.size() == 2, "BE35", "no extra generator was created");
+            Check(probe.polled_after_release == 0, "BE36", "the stopped one is never polled again");
+        }
+
+        // --- StopAllCoroutines --------------------------------------------
+        {
+            CoroutineProbe probe;
+            ScriptYield null_yield {};
+            probe.body = {null_yield, null_yield, null_yield};
+            probe.StartCoroutine("A");
+            probe.StartCoroutine("B");
+            probe.StopAllCoroutines();
+            Check(scheduler->GetRunningCount() == 0, "BE37", "StopAllCoroutines empties the scheduler");
+            Check(probe.GetCoroutineCount() == 0, "BE38", "and the behaviour's own list");
+            Check(probe.released == 2, "BE39", "both generators released, once each");
+            Check(probe.double_release == 0, "BE40", "no double release");
+            AdvanceUpdate(3, 0.1f, 0.1f);
+            Check(probe.polled_after_release == 0, "BE41", "and neither is polled afterwards");
+        }
+
+        // --- destruction stops everything ---------------------------------
+        {
+            const int before = scheduler->GetRunningCount();
+            {
+                CoroutineProbe temp;
+                ScriptYield null_yield {};
+                temp.body = {null_yield, null_yield, null_yield};
+                temp.StartCoroutine("A");
+                temp.StartCoroutine("B");
+                Check(scheduler->GetRunningCount() == before + 2, "BE42", "two are running");
+            }
+            // A coroutine that outlives its Behaviour would resume into freed
+            // script state on the very next frame -- the same reason the Invoke
+            // group has a check for this.
+            Check(scheduler->GetRunningCount() == before, "BE43", "destroying the Behaviour stops them");
+        }
+
+        scheduler->StopAll();
+    }
+
+    void TestScriptCoroutineWiring()
+    {
+        const std::string behaviour_header =
+            ReadFile("Source/Runtime/Function/Framework/Component/Behaviour.h");
+        Check(!behaviour_header.empty(), "BF0", "Behaviour.h is readable");
+        Check(CountOccurrences(behaviour_header, "uint64_t StartCoroutine(") >= 1,
+              "BF1", "StartCoroutine is declared");
+        Check(CountOccurrences(behaviour_header, "void StopCoroutine(") >= 1,
+              "BF2", "StopCoroutine is declared");
+        Check(CountOccurrences(behaviour_header, "void StopAllCoroutines(") >= 1,
+              "BF3", "StopAllCoroutines is declared");
+        Check(CountOccurrences(behaviour_header, "IsCoroutineRunning") >= 1,
+              "BF4", "IsCoroutineRunning is declared");
+        Check(CountOccurrences(behaviour_header, "StartScriptCoroutine") >= 1,
+              "BF5", "the script-side hook is virtual");
+        Check(CountOccurrences(behaviour_header, "StepScriptCoroutine") >= 1,
+              "BF6", "and so is the step hook");
+        Check(CountOccurrences(behaviour_header, "EndScriptCoroutine") >= 1,
+              "BF7", "and the release hook");
+        Check(CountOccurrences(behaviour_header, "ScriptYield.h") >= 1,
+              "BF8", "Behaviour.h takes the dependency-free yield type, not pesapi");
+        // Same trap as the Invoke group: publishing `Behaviour` emits a second
+        // `declare class Behaviour` and tsc fails inside the user's project.
+        Check(CountOccurrences(behaviour_header, "ZFUNCTION()") == 0,
+              "BF9", "Behaviour itself is still NOT published as a script class");
+
+        const std::string behaviour_source =
+            ReadFile("Source/Runtime/Function/Framework/Component/Behaviour.cpp");
+        Check(!behaviour_source.empty(), "BF10", "Behaviour.cpp is readable");
+        Check(CountOccurrences(behaviour_source, "ScriptCoroutinePump") >= 2,
+              "BF11", "a single pump coroutine adapts generator.next() to co_yield");
+        Check(CountOccurrences(behaviour_source, "kEndOfFrame") >= 1,
+              "BF12", "the pump maps the EndOfFrame kind");
+        Check(CountOccurrences(behaviour_source, "kSecondsRealtime") >= 1,
+              "BF13", "and the realtime kind");
+        Check(CountOccurrences(behaviour_source, "EndScriptCoroutine") >= 2,
+              "BF14", "the release hook is actually called");
+        // Two exits can end one coroutine (body finished vs. somebody stopped
+        // it) and a JS value ref must be released exactly once. Without a flag
+        // the second release lands on whoever owns the slot by then.
+        // 2 = 读一次 + 写一次，都在 ReleasePendingGenerator 里。低于 2 说明
+        // 释放又变成了"谁先到谁释放"，双释放就会落到当时占着那个槽的人身上。
+        Check(CountOccurrences(behaviour_source, "generator_owned") >= 2,
+              "BF14b", "release is gated on an ownership flag, not on call order");
+        Check(CountOccurrences(behaviour_source, "ReleaseScriptCoroutine") >= 3,
+              "BF14c", "and the pump releases on its own exit, not only on prune");
+
+        const std::string ts_header =
+            ReadFile("Source/Runtime/Function/Framework/Component/Script/TypeScriptComponent.h");
+        Check(CountOccurrences(ts_header, "uint64_t StartCoroutine(const eastl::string& methodName)") >= 1,
+              "BF15", "TypeScriptComponent publishes StartCoroutine");
+        Check(CountOccurrences(ts_header, "void StopAllCoroutines();") >= 1,
+              "BF16", "and StopAllCoroutines");
+        Check(CountOccurrences(ts_header, "void StopCoroutine(const eastl::string& methodName);") >= 1,
+              "BF16b", "and StopCoroutine");
+        // 11 ZFUNCTIONs: HasLiveInstance, GetScriptGuid, the five Invoke-family
+        // forwarders and the four coroutine ones. Counting them (rather than one
+        // name) is what catches a method that was added to the class but never
+        // annotated -- which compiles, links, runs, and is simply invisible to
+        // scripts.
+        Check(CountOccurrences(ts_header, "ZFUNCTION") >= 10,
+              "BF16c", "all of them carry ZFUNCTION");
+        Check(CountOccurrences(ts_header, "m_CoroutineGenerators") >= 1,
+              "BF17", "the JS generators are owned on the script side");
+
+        const std::string ts_source =
+            ReadFile("Source/Runtime/Function/Framework/Component/Script/TypeScriptComponent.cpp");
+        Check(!ts_source.empty(), "BF18", "TypeScriptComponent.cpp is readable");
+        Check(CountOccurrences(ts_source, "StartScriptCoroutine") >= 1,
+              "BF19", "it starts the generator through the hook");
+        Check(CountOccurrences(ts_source, "GeneratorNext") >= 1,
+              "BF20", "and steps it through ScriptEnv");
+        Check(CountOccurrences(ts_source, "ReleaseCoroutineValue") >= 2,
+              "BF21", "and releases it (both explicit and on teardown)");
+
+        const std::string env_source = ReadFile("Source/Runtime/Scripting/Wrapper/ScriptEnv.cpp");
+        Check(!env_source.empty(), "BF22", "ScriptEnv.cpp is readable");
+        // The declaration alone is a lie: without the prototype forwarding,
+        // `this.StartCoroutine(...)` type-checks and then does nothing.
+        Check(CountOccurrences(env_source, "Behaviour.prototype.StartCoroutine") >= 1,
+              "BF23", "the JS Behaviour prototype forwards StartCoroutine");
+        Check(CountOccurrences(env_source, "Behaviour.prototype.StopAllCoroutines") >= 1,
+              "BF24", "and StopAllCoroutines");
+        Check(CountOccurrences(env_source, "__zWait") >= 5,
+              "BF25", "the YieldInstruction globals carry the __zWait tag");
+        Check(CountOccurrences(env_source, "g.WaitForEndOfFrame") >= 1,
+              "BF26", "WaitForEndOfFrame is installed as a global");
+        Check(CountOccurrences(env_source, "g.Coroutine") >= 1,
+              "BF27", "and so is the Coroutine handle type");
+        // Every tag the shim can emit must have a branch that reads it, or a
+        // script can yield something the engine silently treats as one frame.
+        Check(CountOccurrences(env_source, "\"secondsRealtime\"") >= 1,
+              "BF28", "GeneratorNext reads the realtime tag");
+        Check(CountOccurrences(env_source, "\"endOfFrame\"") >= 1,
+              "BF29", "and the end-of-frame tag");
+
+        const std::string binding_source =
+            ReadFile("Source/Runtime/Scripting/Binding/ScriptBinding.cpp");
+        Check(CountOccurrences(binding_source, "StartCoroutine(methodName: string): Coroutine | null") >= 1,
+              "BF30", "the .d.ts declares StartCoroutine on Behaviour");
+        Check(CountOccurrences(binding_source, "declare class WaitForEndOfFrame") >= 1,
+              "BF31", "and WaitForEndOfFrame as a global class");
+        Check(CountOccurrences(binding_source, "declare class Coroutine") >= 1,
+              "BF32", "and the Coroutine handle");
+    }
+
     // ---------------------------------------------------------------- B ----
     void TestWiringGate()
     {
@@ -6544,6 +6978,8 @@ int main()
     TestStaticFieldWiring();
     TestVectorFacadeWiring();
     TestAxisConventionAgreement();
+    TestScriptCoroutines();
+    TestScriptCoroutineWiring();
     TestWiringGate();
 
     std::printf("\n=== %d checks, %d failures ===\n", g_Checks, g_Failures);

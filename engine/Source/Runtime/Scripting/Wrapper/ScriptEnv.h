@@ -1,6 +1,8 @@
 #pragma once
 #include "pesapi.h"
 
+#include "Runtime/Function/Framework/Coroutine/ScriptYield.h"
+
 #include <functional>
 #include <mutex>
 #include <string>
@@ -154,6 +156,36 @@ public:
     /// 转成脚本侧的 GameObject —— 复用绑定表的同一条路径，脚本拿到的对象与
     /// `gameObject` 属性是同一种东西。
     bool InvokeInstanceMethodGameObject(pesapi_value_ref instance, const char* method_name, class GameObject* other);
+
+    // -----------------------------------------------------------------------
+    // Script coroutines (Unity's StartCoroutine / yield).
+    //
+    // The engine's coroutine machinery is C++20 (see Coroutine.h); a script
+    // coroutine is a *generator* that lives on the JS side. So the bridge is
+    // one C++ coroutine per script generator: it calls `generator.next()`
+    // once per resume and co_yields whatever the script yielded, translated
+    // into the engine's own YieldInstruction. The scheduler never learns
+    // that JS is involved.
+    // -----------------------------------------------------------------------
+
+    /// Call `instance.<method_name>()` and keep a strong ref to what it
+    /// returned -- a generator, for `StartCoroutine`. Returns nullptr when
+    /// the method is missing or throws. Caller releases with `ReleaseValue`.
+    pesapi_value_ref InvokeInstanceMethodReturning(pesapi_value_ref instance, const char* method_name);
+
+    /// One `generator.next()`.
+    ///
+    /// The result is written into `out` (a `Runtime::ScriptYield` -- see
+    /// ScriptYield.h for why that type is dependency-free). `out.done` says the
+    /// body ran out; `out.kind` / `out.seconds` are meaningless then.
+    ///
+    /// Returns false when the call threw or `generator` is not a generator --
+    /// the caller must stop the coroutine in that case, because a broken
+    /// generator would otherwise be polled every frame forever.
+    bool GeneratorNext(pesapi_value_ref generator, ScriptYield& out);
+
+    /// Release a ref from InvokeInstanceMethodReturning. Safe with nullptr.
+    void ReleaseValue(pesapi_value_ref value);
 
     // -----------------------------------------------------------------------
     // P7 serialised-field bridge.

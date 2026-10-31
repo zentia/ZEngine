@@ -3,6 +3,7 @@
 #include "Runtime/Function/Framework/Component/Behaviour.h"
 
 #include <EASTL/string.h>
+#include <cstdint>
 #include <string>
 #include <tuple>
 #include <vector>
@@ -205,6 +206,14 @@ private:
     bool m_AwakeCalled = false;
     bool m_StartCalled = false;
 
+    // Live JS generators backing the coroutines this behaviour started.
+    //
+    // Indexed by `script_id - 1`. Slots are nulled on release rather than
+    // erased, so an id handed out earlier can never silently start pointing at
+    // a different generator -- which would make `Stop` kill the wrong
+    // coroutine, a bug with no symptom until two routines run at once.
+    std::vector<void*> m_CoroutineGenerators;
+
     // Phase-6 hot-reload subscription token. 0 means "not subscribed".
     // ScriptingManager::AddModuleReloadObserver hands these out; we drop
     // ours in TearDown / dtor.
@@ -300,6 +309,43 @@ public:
     /// Is there a pending invocation of `methodName`?
     ZFUNCTION()
     bool IsInvoking(const eastl::string& methodName);
+
+    // --- Unity's coroutine family ------------------------------------------
+    // Same shape as the Invoke forwarders above: `Behaviour` owns the
+    // bookkeeping, the ZFUNCTIONs can only live on a publishable class, and
+    // ScriptEnv's `Behaviour.prototype` shim turns them back into
+    // `this.StartCoroutine(...)`.
+    //
+    // `StartCoroutine` returns the scheduler id (0 on failure); the JS shim
+    // wraps it into a `Coroutine` handle so `StopCoroutine(handle)` works with
+    // one C++ entry point.
+
+    /// Start `methodName` (which must return a generator) as a coroutine.
+    ZFUNCTION()
+    uint64_t StartCoroutine(const eastl::string& methodName);
+
+    /// Stop every coroutine this behaviour started from `methodName`.
+    ZFUNCTION()
+    void StopCoroutine(const eastl::string& methodName);
+
+    /// Stop every coroutine owned by this behaviour.
+    ZFUNCTION()
+    void StopAllCoroutines();
+
+    /// Is a coroutine started from `methodName` still running?
+    ZFUNCTION()
+    bool IsCoroutineRunning(const eastl::string& methodName);
+
+public:
+    // -- Script-coroutine bridge -------------------------------------------
+    // These own the JS generator objects. `Behaviour` refers to them through
+    // the opaque `script_id`, which here is an index into
+    // m_CoroutineGenerators + 1 (0 is reserved for "none", matching
+    // Behaviour's use of 0 as "no script side").
+
+    bool StartScriptCoroutine(const char* method_name, uint64_t& out_script_id) override;
+    bool StepScriptCoroutine(uint64_t script_id, ScriptYield& out) override;
+    void EndScriptCoroutine(uint64_t script_id) override;
 
 protected:
     /// `Behaviour.Invoke` delivery: a delayed call reaches THIS instance rather
