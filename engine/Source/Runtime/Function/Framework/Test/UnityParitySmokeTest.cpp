@@ -69,6 +69,9 @@
 #include "Runtime/Scripting/ScriptRandom/ScriptRandom.h"
 #include "Runtime/Scripting/ScriptScene/ScriptScene.h"
 #include "Runtime/Scripting/ScriptNavigation/ScriptNavMesh.h"
+#include "Runtime/Scripting/ScriptResources/ScriptResources.h"
+#include "Runtime/Resource/Asset/RuntimeAssetManager.h"
+#include "Runtime/File/FileSystem.h"
 #include "Runtime/Scripting/ScriptScreen/ScriptScreen.h"
 
 #include "Jolt/Jolt.h"
@@ -5915,6 +5918,164 @@ namespace
         Check(CountOccurrences(system_header, "IsVoicePaused") >= 1, "AV21", "and the paused state");
     }
 
+    // =====================================================================
+    // AX / AY -- Resources（Unity 的 `Resources.Load`）。
+    //
+    // 引擎有完整的素材管线，但那全是 C++ 侧的：组件在 PostLoadResource 里按路径
+    // 取素材，脚本什么都拿不到。于是"运行时动态取一个 prefab / 配置"这件事在
+    // 脚本世界里根本做不到。
+    //
+    // 这一组用**绝对路径**驱动解析（相对路径要 ConfigManager / ProjectInfo 提供
+    // 搜索根，那两个的初始化依赖 CommandSystem 与磁盘上的 ini，无头下不可控），
+    // 解析规则本身因此完全确定。
+    // =====================================================================
+
+    void TestResources()
+    {
+        // 类型表还没建：TestScenes()（它调 RegisterRuntimeTypesForTest）排在
+        // TestApplicationFacade 之后，而本组必须排在它之前 —— 见 main() 里的顺序
+        // 注释。没有类型表 `ObjectManager::Produce(TypeOf<GameObject>())` 拿不到
+        // 工厂函数。
+        RegisterRuntimeTypesForTest();
+
+        if (GET_SYSTEM(FileSystem) == nullptr)
+        {
+            SystemRegistry::GetInstance().RegisterSystem(new FileSystem());
+        }
+        // AssetManager 是抽象类（InsertPathNameInternal 是纯虚），运行时侧的实现
+        // 是 RuntimeAssetManager。
+        if (GET_SYSTEM(AssetManager) == nullptr)
+        {
+            SystemRegistry::GetInstance().RegisterSystem(new RuntimeAssetManager());
+        }
+        Check(GET_SYSTEM(AssetManager) != nullptr, "AX1", "an AssetManager is reachable");
+
+        // --- 解析 ----------------------------------------------------------
+        std::error_code ec;
+        const std::filesystem::path probe_dir = std::filesystem::temp_directory_path() / "zengine_resource_probe";
+        std::filesystem::create_directories(probe_dir, ec);
+        const std::filesystem::path probe = probe_dir / "probe.zasset";
+        {
+            std::ofstream out(probe, std::ios::binary);
+            out << "not a real asset";
+        }
+        Check(std::filesystem::exists(probe), "AX2", "a probe file exists");
+
+        const std::string probe_str = probe.generic_string();
+        Check(Resources::Exists(probe_str.c_str()), "AX3", "an absolute path resolves as-is");
+        Check(!Resources::GetResolvedPath(probe_str.c_str()).empty(), "AX4", "and reports where it went");
+
+        const std::filesystem::path no_extension = probe_dir / "probe";
+        Check(Resources::Exists(no_extension.generic_string().c_str()), "AX5",
+              "an extension-less path is probed (Unity writes them without one)");
+        Check(Resources::GetResolvedPath(no_extension.generic_string().c_str()) ==
+                  Resources::GetResolvedPath(probe_str.c_str()),
+              "AX6", "both spellings resolve to the same file (the key is the resolved path)");
+
+        Check(!Resources::Exists(""), "AX7", "an empty path resolves to nothing");
+        Check(!Resources::Exists((probe_dir / "nope").generic_string().c_str()), "AX8",
+              "a missing file does not resolve");
+        Check(Resources::GetResolvedPath((probe_dir / "nope").generic_string().c_str()).empty(), "AX9",
+              "and reports nothing");
+        Check(Resources::GetTypeName(nullptr).empty(), "AX10", "GetTypeName(null) is empty");
+
+        // 找不到必须是 nullptr 而不是"看起来成功" —— 见 FileSystem::loadAssetJson
+        // 那个 `return true;`：它在一个返回 T* 的函数里，等于 (T*)1。
+        Check(Resources::Load((probe_dir / "nope").generic_string().c_str()) == nullptr, "AX11",
+              "loading a missing asset returns null (not a bogus non-null pointer)");
+
+        // --- 一张真写的 YAML 资产 -------------------------------------------
+        //
+        // 仓库里那些 .zasset 是 cooked 产物，读它要 SerializedFile + FileCacher
+        // + MemoryManager 全套初始化，无头下拿不到（第一次试就是直接段错误）。
+        // 所以改用引擎自己的写出器**现写**一张 .scene：写出和读回走的是同一套
+        // YAML 图模型，`Resources.Load` 走的加载路径是真的（类型名从文件里读、
+        // ObjectManager 按类型 Produce、按图反序列化），只是素材来源换成了这一张。
+        if (GET_SYSTEM(ObjectManager) == nullptr)
+        {
+            SystemRegistry::GetInstance().RegisterSystem(new ObjectManager());
+        }
+        ObjectManager* om = GET_SYSTEM(ObjectManager);
+        Check(om != nullptr, "AX12", "ObjectManager is reachable");
+        if (om == nullptr)
+        {
+            return;
+        }
+
+        GameObject* const authored = static_cast<GameObject*>(om->Produce(TypeOf<GameObject>(), 0));
+        Check(authored != nullptr, "AX13", "a GameObject can be produced to author an asset");
+        if (authored == nullptr)
+        {
+            return;
+        }
+        om->AllocateAndAssignInstanceID(authored);
+        authored->SetName("ResourcesProbe");
+
+        const std::filesystem::path scene_path = std::filesystem::temp_directory_path() / "zengine_resources_probe.scene";
+        std::filesystem::remove(scene_path, ec);
+        std::vector<Object*> graph_objects {authored};
+        std::vector<int64_t> graph_ids {1};
+        Check(GET_SYSTEM(AssetManager)->WriteObjectsToYaml(scene_path, graph_objects.data(), graph_ids.data(), 1),
+              "AX14", "the engine authors the probe asset");
+        Check(std::filesystem::exists(scene_path, ec), "AX15", "and it is on disk");
+
+        const std::string scene_str = scene_path.generic_string();
+        Object* const first = Resources::Load(scene_str.c_str());
+        Check(first != nullptr, "AX16", "Resources.Load reads the asset back");
+        if (first == nullptr)
+        {
+            return;
+        }
+        Check(Resources::GetTypeName(first) == "GameObject", "AX17",
+              "and it decodes as the type the file declares");
+        Check(Resources::Load(scene_str.c_str()) == first, "AX18",
+              "a second Load returns the cached instance (Unity caches)");
+        Check(Resources::GetLoadedCount() >= 1, "AX19", "the cache holds it");
+
+        Check(Resources::LoadTyped(scene_str.c_str(), "NoSuchAssetType") == nullptr, "AX20",
+              "an unknown type name is rejected");
+        Check(Resources::LoadTyped(scene_str.c_str(), "GameObject") != nullptr, "AX21",
+              "and the declared type name loads it");
+
+        const int before_unload = Resources::GetLoadedCount();
+        Check(Resources::UnloadAsset(first), "AX22", "UnloadAsset drops the cached entry");
+        Check(Resources::GetLoadedCount() == before_unload - 1, "AX23", "exactly one entry goes away");
+        Check(Resources::Load(scene_str.c_str()) != nullptr, "AX24", "so the next Load reads it again");
+        Check(Resources::GetLoadedCount() == before_unload, "AX25", "and the cache is refilled");
+
+        Check(Resources::UnloadUnusedAssets() >= 1, "AX26", "UnloadUnusedAssets reports what it dropped");
+        Check(Resources::GetLoadedCount() == 0, "AX27", "and the cache is empty afterwards");
+    }
+
+    void TestResourcesWiring()
+    {
+        const std::string header = ReadFile("Source/Runtime/Scripting/ScriptResources/ScriptResources.h");
+        Check(!header.empty(), "AY0", "ScriptResources.h is readable");
+        Check(CountOccurrences(header, "class Resources :") >= 1, "AY1", "the Resources facade exists");
+        Check(CountOccurrences(header, "ZFUNCTION()") >= 8, "AY2", "and publishes a real script surface");
+
+        const std::string source = ReadFile("Source/Runtime/Scripting/ScriptResources/ScriptResources.cpp");
+        Check(!source.empty(), "AY3", "ScriptResources.cpp is readable");
+        // Unity 的约定：素材放在 Resources/ 子目录里，且调用时不带扩展名。
+        Check(CountOccurrences(source, "\"Resources\"") >= 1, "AY4",
+              "the Unity Resources/ folder convention is honoured");
+        // `.zasset` 里刻着真实类型名；只按扩展名分派会解出一个裸 Object。
+        Check(CountOccurrences(source, "GetAssetTypeName(resolved)") >= 1, "AY5",
+              "the type stamped in the file drives the decode");
+        Check(CountOccurrences(source, "CacheKey(resolved)") >= 2, "AY6", "loading goes through the path cache");
+        // 缓存键必须是解析后的绝对路径：按调用方传进来的拼写缓存，`a/b` 与
+        // `A/b` 在 Windows 上是同一个文件却会读出两份对象。
+        Check(CountOccurrences(source, "std::string key = resolved.generic_string();") >= 1, "AY7",
+              "the cache key is the resolved absolute path, not the caller's spelling");
+
+        // `FileSystem::loadAssetJson` 原来在一个返回 `AssetType*` 的函数里
+        // `return true;` —— 那就是 `(AssetType*)1`：非空、完全无效。
+        const std::string fs = ReadFile("Source/Runtime/File/FileSystem.h");
+        Check(!fs.empty(), "AY8", "FileSystem.h is readable");
+        Check(CountOccurrences(fs, "return obj;") >= 2, "AY9",
+              "loadAssetJson returns the object, not `true` (which decayed to (T*)1)");
+    }
+
     // ---------------------------------------------------------------- B ----
     void TestWiringGate()
     {
@@ -6021,6 +6182,13 @@ int main()
     // 顺序有讲究：TestScreenFacade 的 M0 断言"WindowSystem 还没注册"，所以它
     // 必须跑在 TestApplicationFacade（会注册一堆系统）之前。
     TestScreenFacade();
+    // TestResources 必须跑在 TestApplicationFacade **之前**：后者会注册并初始化
+    // ConfigManager / ProjectInfo，而那两个正是 Resources 相对路径解析的搜索根。
+    // 在它们不存在时跑，才能真正验证"绝对路径不依赖搜索根"这一条 —— 有了搜索根，
+    // `std::filesystem::operator/` 遇到绝对右值本来就会整体替换，那条快速路径会
+    // 被完全掩盖（变异 R3 就是这么漏掉的）。
+    TestResources();
+    TestResourcesWiring();
     TestApplicationFacade();
     TestApplicationScreenWiring();
     TestDebugFacade();

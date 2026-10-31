@@ -52,6 +52,14 @@ public:
         fclose(f);
 
         // parse to json object and read to runtime res object
+        //
+        // ⚠️ 这里原来是 `return true;` / `return false;` —— 而返回类型是
+        // `AssetType*`。`true` 会转成 `(AssetType*)1`：一个**非空但完全无效**的
+        // 指针。调用方（AssetManager::loadAsset<T>）拿到它只会判空，于是"加载
+        // 成功"、一解引用就崩，而且刚 CreateObject 出来的那个对象还泄漏了。
+        // 表现为"读 JSON 素材偶发崩溃"，且没有任何日志 —— 因为错误分支那个
+        // `return false` 同样被解释成了 `(AssetType*)0`（恰好是 nullptr，反而
+        // 看起来"对"）。
         try
         {
             AssetType* obj = MemoryManager::CreateObject<AssetType>();
@@ -59,16 +67,14 @@ public:
 
             JSONUtility::DeserializedFromJSONRead(reader, *obj);
             reader.ResetCurrentNodeToOriginalState();
+            return obj;
         }
         catch (const std::exception& e)
         {
             LOG_ERROR(
                 ZFileSystem, "parse json file {} failed: {}!", asset_path.string(), Encoding::GetExceptionMessage(e));
-            return false;
+            return nullptr;
         }
-
-        // Serializer::read(asset_json, out_asset);
-        return true;
     }
 
     template<typename T, typename... Args>
