@@ -104,6 +104,19 @@ int NavigationSystem::BuildFromActiveLevel(const NavMeshBuildSettings& settings)
   return walkable;
 }
 
+int NavigationSystem::BuildWithSampler(const NavMeshBuildSettings& settings, NavRaycastFunc raycast)
+{
+  if (raycast == nullptr)
+  {
+    LOG_WARNING(ZGame, "NavigationSystem: BuildWithSampler called with a null sampler");
+    return 0;
+  }
+
+  // 走的是与 BuildFromActiveLevel 完全相同的网格对象，所以建的这张表对
+  // FindPath / IsStandable 立刻可见 —— 不需要"激活关卡"这一步。
+  return m_NavMesh.Build(settings, raycast);
+}
+
 void NavigationSystem::RequestDeferredBuild(const NavMeshBuildSettings& settings)
 {
   m_DeferredSettings = settings;

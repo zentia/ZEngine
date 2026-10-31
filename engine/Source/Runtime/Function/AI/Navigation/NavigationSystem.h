@@ -31,6 +31,15 @@ public:
   /// Convenience path for levels without an explicit volume.
   int BuildFromActiveLevel(const NavMeshBuildSettings& settings);
 
+  /// Rebuild with a caller-supplied sampler instead of the active physics
+  /// scene.
+  ///
+  /// `NavMesh::Build` 本来就只吃一个函数指针（为了让网格能脱离物理单测），这里
+  /// 把那个口子开到系统层：跑在编辑器之外的地方（服务器、烘焙工具、测试）没有
+  /// PhysicsScene，但它们照样要一张网格。少了这一层，"无头环境下建导航网格"就
+  /// 只能靠先伪造一个 WorldManager 再激活关卡。
+  int BuildWithSampler(const NavMeshBuildSettings& settings, NavRaycastFunc raycast);
+
   // ---- deferred build -----------------------------------------------------
   //
   // A volume with build_on_load fires from PostLoadResource(), which runs

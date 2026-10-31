@@ -32,6 +32,8 @@
 #include "Runtime/BaseClasses/TypeManager.h"
 #include "Runtime/Core/Base/SystemRegistry.h"
 #include "Runtime/Core/Math/UnityRandom.h"
+#include "Runtime/Function/AI/Navigation/NavMeshAgentComponent.h"
+#include "Runtime/Function/AI/Navigation/NavigationSystem.h"
 #include "Runtime/Function/Command/CommandSystem.h"
 #include "Runtime/Function/Framework/Component/Behaviour.h"
 #include "Runtime/Function/Framework/Level/Level.h"
@@ -63,6 +65,7 @@
 #include "Runtime/Scripting/ScriptDebug/ScriptDebug.h"
 #include "Runtime/Scripting/ScriptRandom/ScriptRandom.h"
 #include "Runtime/Scripting/ScriptScene/ScriptScene.h"
+#include "Runtime/Scripting/ScriptNavigation/ScriptNavMesh.h"
 #include "Runtime/Scripting/ScriptScreen/ScriptScreen.h"
 
 #include "Jolt/Jolt.h"
@@ -100,6 +103,7 @@ template<> void RegisterKlass<RigidBodyComponent>();
 template<> void RegisterKlass<Collider>();
 template<> void RegisterKlass<PlayerPrefs>();
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -5041,6 +5045,528 @@ namespace
               "ResetAspect reaches the render camera (it is not a no-op)");
     }
 
+    // ---- 合成导航关卡（Z-up）----------------------------------------------
+    //
+    // 与 `Function/AI/Test/NavMeshTest.cpp` 同一套做法：`NavMesh::Build` 只吃一个
+    // 函数指针，就是为了能这样脱离物理单测。整个 AT 组因此不需要 PhysicsManager、
+    // 不需要 WorldManager，也不需要激活关卡。
+    struct NavBox
+    {
+        float min_x {0.f};
+        float max_x {0.f};
+        float min_y {0.f};
+        float max_y {0.f};
+        float min_z {0.f};
+        float max_z {0.f};
+    };
+
+    std::vector<NavBox> g_nav_boxes;
+
+    bool NavRayBoxHit(const Vector3& origin, const Vector3& direction, float length, const NavBox& box,
+                      float& out_t)
+    {
+        //  slabs：返回 [0, length] 内最近的正向命中。
+        float t_min = 0.f;
+        float t_max = length;
+        const float o[3] = {origin.x, origin.y, origin.z};
+        const float d[3] = {direction.x, direction.y, direction.z};
+        const float b_min[3] = {box.min_x, box.min_y, box.min_z};
+        const float b_max[3] = {box.max_x, box.max_y, box.max_z};
+
+        for (int axis = 0; axis < 3; ++axis)
+        {
+            if (std::fabs(d[axis]) < 1e-8f)
+            {
+                if (o[axis] < b_min[axis] || o[axis] > b_max[axis])
+                {
+                    return false;
+                }
+                continue;
+            }
+            const float inv = 1.f / d[axis];
+            float t1 = (b_min[axis] - o[axis]) * inv;
+            float t2 = (b_max[axis] - o[axis]) * inv;
+            if (t1 > t2)
+            {
+                const float swap = t1;
+                t1 = t2;
+                t2 = swap;
+            }
+            if (t1 > t_min)
+            {
+                t_min = t1;
+            }
+            if (t2 < t_max)
+            {
+                t_max = t2;
+            }
+            if (t_min > t_max)
+            {
+                return false;
+            }
+        }
+        out_t = t_min;
+        return true;
+    }
+
+    bool NavSyntheticRaycast(const Vector3& origin, const Vector3& direction, float length,
+                             Vector3& out_hit_position)
+    {
+        float best_t = length;
+        bool found = false;
+        for (const NavBox& box : g_nav_boxes)
+        {
+            float t = 0.f;
+            if (NavRayBoxHit(origin, direction, length, box, t) && t < best_t)
+            {
+                best_t = t;
+                found = true;
+            }
+        }
+        if (!found)
+        {
+            return false;
+        }
+        out_hit_position = origin + direction * best_t;
+        return true;
+    }
+
+    NavBox MakeNavBox(float cx, float cy, float hx, float hy, float min_z, float max_z)
+    {
+        NavBox box;
+        box.min_x = cx - hx;
+        box.max_x = cx + hx;
+        box.min_y = cy - hy;
+        box.max_y = cy + hy;
+        box.min_z = min_z;
+        box.max_z = max_z;
+        return box;
+    }
+
+    /// 地板铺满网格；一道墙挡住 x ∈ [-0.5, 0.5]、y ∈ [-10, 0]，只在 y > 0 留缺口。
+    /// AGENT_START → AGENT_GOAL 的直线**一定**穿墙，所以"走到终点"这件事本身就
+    /// 证明了转向真的沿航点走。
+    void ResetNavLevel()
+    {
+        g_nav_boxes.clear();
+        g_nav_boxes.push_back(MakeNavBox(0.f, 0.f, 20.f, 20.f, -1.f, 0.f));   // 地板，顶面 z = 0
+        g_nav_boxes.push_back(MakeNavBox(0.f, -5.f, 0.5f, 5.f, 0.f, 3.f));    // 墙
+    }
+
+    NavMeshBuildSettings NavFlatSettings()
+    {
+        NavMeshBuildSettings settings;
+        settings.origin = Vector3(0.f, 0.f, 0.f);
+        settings.cell_size = 1.f;
+        settings.cells_x = 20;
+        settings.cells_y = 20;
+        settings.probe_height = 10.f;
+        settings.probe_depth = 20.f;
+        settings.agent_radius = 0.4f;
+        settings.agent_height = 0.9f;
+        settings.max_step_height = 0.6f;
+        settings.max_slope = 0.7f;
+        return settings;
+    }
+
+    // --------------------------------------------------------------- AT ----
+    /// 导航代理（`NavMeshAgentComponent`）+ `Navigation` 静态门面。
+    ///
+    /// 补这个之前引擎有网格、有寻路，但没有"会走路的东西"：AI 层拿到航点数组后
+    /// 各自现写推进逻辑。下面绝大多数断言盯的是**推进**这件事本身（不穿墙、不超
+    /// 速、会绕、会减速、会停），因为寻路已经有 NavMeshTest 单测了。
+    void TestNavMeshAgent()
+    {
+        const Vector3 agent_start(-5.f, -5.f, 0.f);
+        const Vector3 agent_goal(5.f, -5.f, 0.f);
+        const float dt = 1.f / 60.f;
+
+        // --- 建一张网格 ---------------------------------------------------
+        ResetNavLevel();
+        NavigationSystem* nav = new NavigationSystem();
+        SystemRegistry::GetInstance().RegisterSystem(nav);
+        Check(GET_SYSTEM(NavigationSystem) == nav, "AT0", "NavigationSystem is registered");
+
+        const int walkable = nav->BuildWithSampler(NavFlatSettings(), &NavSyntheticRaycast);
+        Check(walkable > 0, "AT1", "the synthetic level builds a navmesh");
+        // 墙必须真的把直线挡掉：不然下面所有"绕过去"的断言都是空转。
+        //
+        // 注意不能靠"可走格数变少"来判断 —— 墙顶那一格也是 walkable 的（网格按
+        // 射线打到的第一个面取样，墙顶是一座孤岛），所以它只改了高度、没减格子。
+        // 真正挡路的是 `IsConnected` 里的 max_step_height：孤岛与地面差 3 米，
+        // 连不上。直接问"这个点站不站得住"才是这件事的判据。
+        Check(!nav->IsStandable(Vector3(0.f, -5.f, 0.f)), "AT2",
+              "and the wall really blocks the straight line (that point is not standable)");
+        Check(nav->IsStandable(Vector3(-5.f, -5.f, 0.f)), "AT2a",
+              "while the start is standable (so the check above is not just 'nothing is')");
+        Check(nav->IsReady(), "AT3", "and the system reports ready");
+        Check(Navigation::IsReady(), "AT4", "the script facade sees it too");
+        Check(Navigation::GetWalkableCellCount() == walkable, "AT5", "and reports the same cell count");
+
+        ObjectManager* om = GET_SYSTEM(ObjectManager);
+        Check(om != nullptr, "AT6", "ObjectManager is reachable");
+
+        Level level;
+        level.setLevelResUrl("Assets/Scenes/Nav.level");
+        level.LoadObjectGraph({}, false);
+        Transform* transform = nullptr;
+        GameObject* go = MakeRuntimeObject(*om, level, &transform);
+        Check(go != nullptr && transform != nullptr, "AT7", "a runtime object with a Transform exists");
+        if (go == nullptr || transform == nullptr)
+        {
+            return;
+        }
+
+        NavMeshAgentComponent* agent = new NavMeshAgentComponent();
+        om->AllocateAndAssignInstanceID(agent);
+        go->addComponent(agent);
+        agent->PostLoadResource(go);
+
+        transform->SetPosition(agent_start);
+        Check(agent->IsOnNavMesh(), "AT8", "an agent standing on the floor is on the navmesh");
+        Check(!agent->HasPath(), "AT9", "and has no path before a destination is set");
+        Check(Near(agent->GetRemainingDistance(), 0.f), "AT10", "so remainingDistance is 0");
+        Check(agent->GetVelocity() == Vector3::ZERO, "AT11", "and the velocity is zero");
+
+        // --- 绕过墙 --------------------------------------------------------
+        Check(agent->SetDestination(agent_goal), "AT12", "SetDestination finds a path around the wall");
+        Check(agent->HasPath(), "AT13", "and the path is live");
+        Check(agent->GetPathStatus() == 0, "AT14", "and it is a complete path (PathComplete)");
+        Check(agent->GetWaypointCount() >= 2, "AT15", "with more than one waypoint (it really bends)");
+        Check(Near(agent->GetDestination(), agent_goal), "AT16", "and the destination is remembered");
+        Check(agent->GetRemainingDistance() > 10.f, "AT17",
+              "remainingDistance follows the detour, not the straight line (which is 10)");
+
+        float max_y = -1000.f;
+        float max_step = 0.f;
+        bool entered_wall = false;
+        float speed_when_close = -1.f;
+        Vector3 previous = transform->GetPosition();
+        int ticks = 0;
+        while (agent->HasPath() && ticks < 3000)
+        {
+            agent->Tick(dt);
+            ++ticks;
+            const Vector3 p = transform->GetPosition();
+            max_y = std::max(max_y, p.y);
+            max_step = std::max(max_step, (p - previous).length());
+            // 墙占 x ∈ [-0.5, 0.5]、y ∈ [-10, 0]。留 0.1 余量给离散化。
+            if (std::fabs(p.x) < 0.6f && p.y < 0.f)
+            {
+                entered_wall = true;
+            }
+            if (speed_when_close < 0.f && agent->GetRemainingDistance() < 0.2f)
+            {
+                speed_when_close = agent->GetVelocity().length();
+            }
+            previous = p;
+        }
+
+        Check(ticks < 3000, "AT18", "the agent reaches the goal in bounded time");
+        Check(!entered_wall, "AT19", "and never walks through the wall");
+        Check(max_y > 0.4f, "AT20", "it detours through the gap at y > 0 (steering follows the waypoints)");
+        Check(Near(transform->GetPosition(), agent_goal, 0.8f), "AT21", "and ends up at the destination");
+        Check(max_step <= agent->GetSpeed() * dt + 1e-3f, "AT22", "no frame moves faster than speed * dt");
+        Check(!agent->HasPath(), "AT23", "the path is cleared on arrival");
+        Check(Near(agent->GetRemainingDistance(), 0.f), "AT24", "remainingDistance is 0 on arrival");
+        Check(agent->GetVelocity() == Vector3::ZERO, "AT25", "and it stopped");
+        // 拐角必须真的走到：把中间航点的"算走过"半径放宽到 0.5 会让代理抄近路，
+        // 在真实关卡里表现为贴着墙角斜插然后卡住。这条是唯一能抓到它的判据
+        // （不穿墙、能到点那两条都抓不到 —— 切掉的那一小段本来就在空地上）。
+        // --- 航点贴合度：不能抄近路切掉拐角 --------------------------------
+        //
+        // 用**低速 + 高加速**来量：正常速度 3.5 m/s 下转弯的横向偏移有 0.4 米（惯性，
+        // 是物理上对的），那个量级会把"切拐角"完全淹没掉。把速度压到 1、加速拉到 20，
+        // 惯性偏移降到 3cm 量级，剩下的偏差就只反映"算走过"的半径了。
+        //
+        // 半径放宽到 stoppingDistance（0.5）时，最近的拐角会被切掉约 0.2 米 —— 在
+        // 真实关卡里就是贴着墙角斜插然后卡住。不穿墙 / 能到点那两条断言都抓不到它
+        // （被切掉的那一小段本来就在空地上），只有这条抓得到。
+        agent->Warp(agent_start);
+        agent->SetSpeed(1.f);
+        agent->SetAcceleration(20.f);
+        Check(agent->SetDestination(agent_goal), "AT25a", "(a slow-speed pass is set up)");
+        std::vector<Vector3> planned;
+        for (int i = 0; i < agent->GetWaypointCount(); ++i)
+        {
+            planned.push_back(agent->GetWaypoint(i));
+        }
+        std::vector<float> closest_to_waypoint(planned.size(), 1.0e9f);
+        int slow_ticks = 0;
+        while (agent->HasPath() && slow_ticks < 4000)
+        {
+            agent->Tick(dt);
+            ++slow_ticks;
+            const Vector3 p = transform->GetPosition();
+            // 终点不算：它是靠 stoppingDistance 判到达的，本来就差得到 0.5。
+            for (std::size_t i = 0; i + 1 < planned.size(); ++i)
+            {
+                closest_to_waypoint[i] = std::min(closest_to_waypoint[i], (p - planned[i]).length());
+            }
+        }
+        float worst_waypoint_miss = 0.f;
+        for (std::size_t i = 0; i + 1 < planned.size(); ++i)
+        {
+            worst_waypoint_miss = std::max(worst_waypoint_miss, closest_to_waypoint[i]);
+        }
+        Check(slow_ticks < 4000, "AT25b", "and it still arrives");
+        Check(worst_waypoint_miss < 0.12f, "AT25c",
+              "the agent passes within 12cm of every intermediate waypoint (no corner cutting)");
+        agent->SetSpeed(3.5f);
+        agent->SetAcceleration(8.f);
+
+        // --- 自动减速 ------------------------------------------------------
+        //
+        // 只断言"到点速度 < 最大速度"是不够的（离散化下几乎必然成立），所以同时
+        // 卡住制动曲线 sqrt(2·a·d) —— 关掉 autoBraking 时速度会一直是 3.5，两条
+        // 一起才抓得住"根本没减速"。
+        Check(speed_when_close >= 0.f, "AT26", "(the agent was sampled close to the goal)");
+        Check(speed_when_close < agent->GetSpeed() * 0.9f, "AT27",
+              "autoBraking slows it down below max speed before arrival");
+        Check(speed_when_close <= std::sqrt(2.f * agent->GetAcceleration() * 0.25f) + 1e-2f, "AT28",
+              "and by the braking curve, not by an arbitrary factor");
+
+        // --- 起步是加速，不是瞬移 ------------------------------------------
+        transform->SetPosition(agent_start);
+        agent->SetSpeed(3.5f);
+        agent->SetAcceleration(8.f);
+        Check(agent->SetDestination(Vector3(-2.f, -5.f, 0.f)), "AT29", "a short straight destination is accepted");
+        const Vector3 before_first_tick = transform->GetPosition();
+        agent->Tick(dt);
+        const float first_step = (transform->GetPosition() - before_first_tick).length();
+        Check(first_step > 0.f, "AT30", "the first frame does move");
+        Check(first_step <= agent->GetAcceleration() * dt * dt + 1e-3f, "AT31",
+              "but only by acceleration * dt^2 (it accelerates from rest, it does not teleport)");
+
+        // --- Stop / Resume -------------------------------------------------
+        transform->SetPosition(agent_start);
+        agent->SetDestination(agent_goal);
+        for (int i = 0; i < 30; ++i)
+        {
+            agent->Tick(dt);
+        }
+        const Vector3 moved_to = transform->GetPosition();
+        Check((moved_to - agent_start).length() > 0.1f, "AT32", "the agent really moves before Stop");
+        agent->Stop();
+        Check(agent->IsStopped(), "AT33", "Stop sets isStopped");
+        Check(agent->GetVelocity() == Vector3::ZERO, "AT34", "and zeroes the velocity at once");
+        for (int i = 0; i < 60; ++i)
+        {
+            agent->Tick(dt);
+        }
+        Check(Near(transform->GetPosition(), moved_to, 1e-3f), "AT35", "and it does not drift while stopped");
+        agent->Resume();
+        Check(!agent->IsStopped(), "AT36", "Resume clears isStopped");
+        int guard = 0;
+        while (agent->HasPath() && guard < 3000)
+        {
+            agent->Tick(dt);
+            ++guard;
+        }
+        Check(Near(transform->GetPosition(), agent_goal, 0.8f), "AT37",
+              "and it finishes the same destination afterwards (the destination was kept)");
+
+        // --- Warp / Move ---------------------------------------------------
+        // 先建一条路再 Warp：直接断言"Warp 之后没有路"在"本来就没路"时是空转。
+        agent->SetDestination(agent_start);
+        Check(agent->HasPath(), "AT37a", "(a path is live before the Warp)");
+        Check(agent->Warp(Vector3(0.f, 8.f, 0.f)), "AT38", "Warp onto the floor reports standable");
+        Check(Near(transform->GetPosition(), Vector3(0.f, 8.f, 0.f)), "AT39", "and the transform moved");
+        Check(!agent->HasPath(), "AT40", "and the old path is dropped");
+        Check(!agent->Warp(Vector3(1000.f, 1000.f, 0.f)), "AT41", "Warp far off the mesh reports not standable");
+        Check(!agent->IsOnNavMesh(), "AT42", "and IsOnNavMesh is false out there");
+
+        agent->Warp(Vector3(0.f, 8.f, 0.f));
+        const Vector3 before_move = transform->GetPosition();
+        agent->Move(Vector3(1.f, 0.f, 0.f));
+        Check(Near(transform->GetPosition(), before_move + Vector3(1.f, 0.f, 0.f)), "AT43",
+              "Move applies a relative offset");
+        Check(!agent->HasPath(), "AT44", "and creates no path (it is not a walk)");
+
+        // --- updatePosition ------------------------------------------------
+        agent->Warp(agent_start);
+        agent->SetUpdatePosition(false);
+        agent->SetDestination(agent_goal);
+        for (int i = 0; i < 10; ++i)
+        {
+            agent->Tick(dt);
+        }
+        Check(Near(transform->GetPosition(), agent_start, 1e-4f), "AT45",
+              "with updatePosition off the transform does not move");
+        Check(agent->GetVelocity().squaredLength() > 0.f, "AT46",
+              "but the velocity is still computed (that is what a controller consumes)");
+        agent->SetUpdatePosition(true);
+
+        // --- updateRotation / 朝向是本地 -Y --------------------------------
+        agent->Warp(Vector3(-8.f, -5.f, 0.f));
+        agent->SetUpdateRotation(false);
+        agent->SetDestination(Vector3(-1.f, -5.f, 0.f));
+        for (int i = 0; i < 5; ++i)
+        {
+            agent->Tick(dt);
+        }
+        const Quaternion rotation_before = transform->GetRotation();
+        for (int i = 0; i < 20; ++i)
+        {
+            agent->Tick(dt);
+        }
+        // 比四元数本身没意义（q 与 -q 是同一个旋转），比它转出来的前向量才有。
+        const Vector3 facing_before = rotation_before * Vector3::NEGATIVE_UNIT_Y;
+        const Vector3 facing_after = transform->GetRotation() * Vector3::NEGATIVE_UNIT_Y;
+        Check(Near(facing_after, facing_before, 1e-4f), "AT47",
+              "with updateRotation off the rotation is untouched");
+        agent->SetUpdateRotation(true);
+        for (int i = 0; i < 90; ++i)
+        {
+            agent->Tick(dt);
+        }
+        // 朝 +X 走：本地 -Y 必须转到 +X。只验"转了"不够 —— 转反了也是"转了"。
+        const Vector3 facing = transform->GetRotation() * Vector3::NEGATIVE_UNIT_Y;
+        Check(facing.x > 0.9f, "AT48", "facing local -Y ends up along +X, the direction of travel");
+        Check(!agent->GetVelocity().isZero(), "AT49", "(it was still moving when facing was sampled)");
+
+        // --- 目标不可达 / 部分可达 ------------------------------------------
+        agent->Warp(agent_start);
+        agent->ResetPath();
+        // 墙**里**的目标：会被吸附到墙边最近的可达格 —— Unity 的 PathPartial。
+        Check(agent->SetDestination(Vector3(0.f, -5.f, 0.f)), "AT50",
+              "a destination inside the wall still yields a path (to the nearest reachable cell)");
+        Check(agent->GetPathStatus() == 1, "AT51", "and the status is PathPartial, not PathComplete");
+        Check(agent->IsPathComplete() == false, "AT52", "so IsPathComplete is false");
+        // 网格外的目标：一个可站立格都没有 => PathInvalid。
+        Check(!agent->SetDestination(Vector3(500.f, 500.f, 0.f)), "AT53",
+              "a destination far outside the grid finds no path");
+        Check(agent->GetPathStatus() == 2, "AT54", "and the status is PathInvalid");
+        Check(agent->HasDestination(), "AT55",
+              "but the destination is still recorded (so autoRepath can retry later)");
+
+        // --- Navigation 静态门面 -------------------------------------------
+        NavMeshPath* path = Navigation::CalculatePath(agent_start, agent_goal);
+        Check(path != nullptr, "AT56", "CalculatePath returns a path object");
+        Check(path->GetStatus() == 0, "AT57", "and it is complete");
+        Check(path->GetCornerCount() >= 2, "AT58", "with several corners (it bends around the wall)");
+        Check(Near(path->GetCorner(0), agent_start, 1.5f), "AT59", "the first corner is at the source");
+        Check(Near(path->GetCorner(path->GetCornerCount() - 1), agent_goal, 0.01f), "AT60",
+              "and the last one is the exact target (agents arrive on the target, not a cell centre)");
+        Check(path->GetCorner(-1) == Vector3::ZERO && path->GetCorner(999) == Vector3::ZERO, "AT61",
+              "an out-of-range corner is the zero vector, not a crash");
+        path->ClearCorners();
+        Check(path->GetCornerCount() == 0 && path->GetStatus() == 2, "AT62",
+              "ClearCorners empties it and invalidates the status");
+
+        NavMeshPath* partial = Navigation::CalculatePath(agent_start, Vector3(0.f, -5.f, 0.f));
+        Check(partial != nullptr && partial->GetStatus() == 1, "AT63",
+              "the facade reports PathPartial for a target inside the wall");
+
+        NavMeshHit* blocked = Navigation::Raycast(agent_start, agent_goal);
+        Check(blocked != nullptr && blocked->IsHit(), "AT64",
+              "Raycast across the wall reports blocked");
+        Check(blocked != nullptr && blocked->GetDistance() > 3.f && blocked->GetDistance() < 6.f, "AT65",
+              "and the blocking point is where the wall is (about 4 units along a 10-unit ray)");
+        NavMeshHit* open = Navigation::Raycast(Vector3(-5.f, 8.f, 0.f), Vector3(5.f, 8.f, 0.f));
+        Check(open != nullptr && !open->IsHit(), "AT66", "while a corridor clear of the wall is not blocked");
+
+        NavMeshHit* sampled = Navigation::SamplePosition(Vector3(0.f, -5.f, 0.f), 5.f);
+        Check(sampled != nullptr && sampled->IsHit(), "AT67", "SamplePosition inside a wall finds nearby floor");
+        Check(sampled != nullptr && sampled->GetDistance() > 0.f && sampled->GetDistance() <= 5.f, "AT68",
+              "and reports how far it had to move");
+        NavMeshHit* too_far = Navigation::SamplePosition(Vector3(0.f, -5.f, 0.f), 0.5f);
+        Check(too_far != nullptr && !too_far->IsHit(), "AT69",
+              "but not when the nearest walkable point is outside the radius");
+
+        // --- Resume 必须立刻重算 --------------------------------------------
+        //
+        // 停着的时候网格可能已经重建过，旧航点是按旧网格算的。只清 isStopped 而
+        // 不重算的话，Resume 之后会继续沿一条可能已经失效的路走。
+        agent->Warp(agent_start);
+        agent->SetDestination(agent_goal);
+        agent->ResetPath();  // 路没了，目标还在 —— 就是"网格重建过"那种情形
+        agent->Stop();
+        agent->Resume();
+        agent->Tick(dt);
+        Check(agent->HasPath(), "AT70",
+              "Resume forces an immediate repath when the path was dropped while stopped");
+
+        // --- 速度上限：把 speed 改小必须立刻生效 ----------------------------
+        //
+        // 不写这条的话 `if (velocity > speed) clamp` 是**死代码**（desired 本身已经
+        // 不超过 speed），删掉它测试照样全绿 —— 于是没人知道它到底在不在。
+        agent->Warp(agent_start);
+        agent->SetDestination(Vector3(-2.f, -5.f, 0.f));
+        // 45 帧 = 0.75s：还在匀速段（3 米的路约 1.23s 走完，过了 48 帧就开始制动了）。
+        for (int i = 0; i < 45; ++i)
+        {
+            agent->Tick(dt);
+        }
+        Check(agent->GetVelocity().length() > 3.f, "AT71", "(the agent is running at full speed)");
+        agent->SetSpeed(1.f);
+        agent->Tick(dt);
+        Check(agent->GetVelocity().length() <= 1.f + 1e-3f, "AT72",
+              "lowering speed clamps the velocity at once (it does not coast down)");
+        agent->SetSpeed(3.5f);
+
+        // --- remainingDistance 要扣掉 stoppingDistance ----------------------
+        //
+        // 只在"到达之后 == 0"上验是不够的：到达时路径已经清空，
+        // `ComputeRemainingDistance` 自己就返回 0，扣不扣都一样。必须在**走的过程
+        // 中**量一次。
+        agent->Warp(agent_start);
+        agent->SetDestination(Vector3(-2.f, -5.f, 0.f));
+        Check(agent->GetRemainingDistance() > 2.f && agent->GetRemainingDistance() < 3.f, "AT73",
+              "mid-walk remainingDistance is the path length minus the stopping distance "
+              "(a 3m path reads under 3m)");
+    }
+
+    // --------------------------------------------------------------- AU ----
+    void TestNavMeshAgentWiring()
+    {
+        const std::string header = ReadFile("Source/Runtime/Function/AI/Navigation/NavMeshAgentComponent.h");
+        Check(!header.empty(), "AU0", "NavMeshAgentComponent.h is readable");
+        // 接线门：Tick 必须是**重写**。忘了 override 的话编译能过、运行没人调，
+        // 代理一动不动而所有寻路断言依然全绿 —— 这是本切片最容易犯的错。
+        Check(CountOccurrences(header, "void Tick(float delta_time) override;") >= 1, "AU1",
+              "the agent overrides Component::Tick (otherwise it never runs)");
+        Check(CountOccurrences(header, "ZFUNCTION()") >= 20, "AU2",
+              "the agent publishes a real script surface");
+        Check(CountOccurrences(header, "ZPROPERTY()") >= 10, "AU3", "and every authored parameter is serializable");
+        Check(CountOccurrences(header, "ZSCRIPTPROPERTY(Name=\"destination\"") >= 1, "AU4",
+              "destination is a script property");
+        Check(CountOccurrences(header, "ZSCRIPTPROPERTY(Name=\"remainingDistance\"") >= 1, "AU5",
+              "and so is remainingDistance");
+
+        const std::string source = ReadFile("Source/Runtime/Function/AI/Navigation/NavMeshAgentComponent.cpp");
+        Check(!source.empty(), "AU6", "NavMeshAgentComponent.cpp is readable");
+        // 必须真的去问 NavigationSystem 要路，而不是自己沿直线走。
+        Check(CountOccurrences(source, "navigation_system->FindPath(") >= 1, "AU7",
+              "the agent asks NavigationSystem for a path");
+        // 转向必须走引擎自己的前向量约定（-Y），不是重新定义一个 yaw。
+        Check(CountOccurrences(source, "Vector3::NEGATIVE_UNIT_Y") >= 1, "AU8",
+              "facing uses the engine's -Y forward convention");
+        // 停止时不能一帧归零速度（会表现为撞墙 + 速度曲线断裂）。
+        Check(CountOccurrences(source, "m_Acceleration * delta_time") >= 2, "AU9",
+              "both accelerating and braking are rate-limited by acceleration");
+
+        const std::string facade = ReadFile("Source/Runtime/Scripting/ScriptNavigation/ScriptNavMesh.h");
+        Check(!facade.empty(), "AU10", "ScriptNavMesh.h is readable");
+        Check(CountOccurrences(facade, "ZENUM()") >= 1, "AU11", "the path status enum is published");
+        Check(CountOccurrences(facade, "class NavMeshPath :") >= 1, "AU12", "NavMeshPath exists");
+        Check(CountOccurrences(facade, "class NavMeshHit :") >= 1, "AU13", "and NavMeshHit");
+        Check(CountOccurrences(facade, "static NavMeshPath* CalculatePath(") >= 1, "AU14",
+              "Navigation.CalculatePath is declared");
+        Check(CountOccurrences(facade, "static NavMeshHit* SamplePosition(") >= 1, "AU15",
+              "and SamplePosition");
+        Check(CountOccurrences(facade, "static NavMeshHit* Raycast(") >= 1, "AU16", "and Raycast");
+
+        // `BuildWithSampler` 是"无头环境能建网格"的口子；没有它测试只能去伪造
+        // WorldManager。同时它也必须真的落到同一个 m_NavMesh 上。
+        const std::string nav_header = ReadFile("Source/Runtime/Function/AI/Navigation/NavigationSystem.h");
+        Check(CountOccurrences(nav_header, "BuildWithSampler") >= 1, "AU17",
+              "NavigationSystem exposes a sampler-based build");
+        const std::string nav_source = ReadFile("Source/Runtime/Function/AI/Navigation/NavigationSystem.cpp");
+        Check(CountOccurrences(nav_source, "m_NavMesh.Build(settings, raycast)") >= 1, "AU18",
+              "and it builds the system's own mesh (so FindPath sees it immediately)");
+    }
+
     // ---------------------------------------------------------------- B ----
     void TestWiringGate()
     {
@@ -5181,6 +5707,8 @@ int main()
     TestPhysicMaterialWiring();
     TestCameraExtras();
     TestCameraExtrasWiring();
+    TestNavMeshAgent();
+    TestNavMeshAgentWiring();
     TestWiringGate();
 
     std::printf("\n=== %d checks, %d failures ===\n", g_Checks, g_Failures);
