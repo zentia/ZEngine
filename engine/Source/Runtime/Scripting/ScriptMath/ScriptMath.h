@@ -315,4 +315,343 @@ public:
 
     ZFUNCTION()
     static float Pi() { return Math_PI; }
+
+    ZFUNCTION()
+    static float HalfPi() { return Math_HALF_PI; }
+
+    ZFUNCTION()
+    static float TwoPi() { return Math_TWO_PI; }
+
+    // =========================================================================
+    // 下面这一整块是"Unity 的 Mathf 里本引擎缺的那些"
+    // =========================================================================
+    //
+    // 补全前 Mathf 只有 8 个函数（Clamp / Clamp01 / Lerp / MoveTowards / Sign /
+    // Deg2Rad / Rad2Deg / Pi），而标量数学是脚本里最容易被顺手用到的东西 ——
+    // 缺一个 `SmoothStep` 或 `Repeat`，玩法代码就只能用裸的 `Math.sin` 之类现
+    // 拼，而拼出来的那一份和引擎里的其它部分不是同一个口径。
+
+    // ---- 常量 ----------------------------------------------------------
+    //
+    // ⚠️ Unity 里 `Epsilon` / `Infinity` / `NegativeInfinity` 是**静态只读字段**，
+    // 这里只能是**方法**。ZSCRIPTPROPERTY 的 getter 不允许 static（zht/parser.py
+    // 直接报错），所以静态属性在 ZFUNCTION 体系里做不出来 —— 脚本得写
+    // `Mathf.Infinity()`。这个偏差是有意的：宁可多一对括号，也不给一个"看起来
+    // 是字段其实是函数"的东西。
+
+    /// 1 附近的浮点分辨极限（`FLT_EPSILON`，≈1.19e-7）。
+    ///
+    /// ⚠️ 与 Unity 的 `Mathf.Epsilon` **不是同一个值**：Unity 给的是
+    /// `float.Epsilon` ≈ 1.4e-45（最小非正规数）。这里给 FLT_EPSILON，因为
+    /// `Approximately` 拿它当下限 —— 用 1.4e-45 的话那一项恒等于 0，
+    /// Approximately 会退化成纯相对比较，在 0 附近直接失效。
+    ZFUNCTION()
+    static float Epsilon() { return std::numeric_limits<float>::epsilon(); }
+
+    ZFUNCTION()
+    static float Infinity() { return std::numeric_limits<float>::infinity(); }
+
+    ZFUNCTION()
+    static float NegativeInfinity() { return -std::numeric_limits<float>::infinity(); }
+
+    // ---- 取整数 --------------------------------------------------------
+    //
+    // ⚠️ `Round` 的平局规则：**四舍六入五取偶**（Unity 的 Mathf.Round 同）。
+    // 不是"四舍五入" —— `Round(2.5)` 是 **2** 不是 3。用 std::rint 而不是
+    // std::round 就是为了这个：后者是"远离零取整"。
+    ZFUNCTION()
+    static float Abs(float value) { return Math::abs(value); }
+
+    ZFUNCTION()
+    static float Ceil(float value) { return std::ceil(value); }
+
+    ZFUNCTION()
+    static float Floor(float value) { return std::floor(value); }
+
+    ZFUNCTION()
+    static float Round(float value) { return std::rint(value); }
+
+    ZFUNCTION()
+    static int32_t CeilToInt(float value) { return static_cast<int32_t>(std::ceil(value)); }
+
+    ZFUNCTION()
+    static int32_t FloorToInt(float value) { return static_cast<int32_t>(std::floor(value)); }
+
+    /// 平局取偶，与 `Round` 同一规则（`(int)Mathf.Round(f)`，不是 lround）。
+    ZFUNCTION()
+    static int32_t RoundToInt(float value) { return static_cast<int32_t>(std::rint(value)); }
+
+    // ---- 三角 / 幂 -----------------------------------------------------
+    //
+    // 全部吃**弧度**、返回**弧度**，与 C 的 <cmath> 一致，也与引擎 Math 一致。
+    // 要角度就用 Deg2Rad / Rad2Deg 换，别猜。
+    ZFUNCTION()
+    static float Sin(float radians) { return std::sin(radians); }
+
+    ZFUNCTION()
+    static float Cos(float radians) { return std::cos(radians); }
+
+    ZFUNCTION()
+    static float Tan(float radians) { return std::tan(radians); }
+
+    ZFUNCTION()
+    static float Asin(float ratio) { return Math::asin(ratio).valueRadians(); }
+
+    ZFUNCTION()
+    static float Acos(float ratio) { return Math::acos(ratio).valueRadians(); }
+
+    ZFUNCTION()
+    static float Atan(float ratio) { return std::atan(ratio); }
+
+    /// `Atan2(y, x)` —— **y 在前**，与 C 的 `atan2` 和 Unity 同序。
+    /// 参数顺序写反是最常见的数学 bug 之一，而且它在两个象限里"看起来是对的"。
+    ZFUNCTION()
+    static float Atan2(float y, float x) { return std::atan2(y, x); }
+
+    ZFUNCTION()
+    static float Sqrt(float value) { return std::sqrt(value); }
+
+    ZFUNCTION()
+    static float Pow(float base, float exponent) { return std::pow(base, exponent); }
+
+    ZFUNCTION()
+    static float Exp(float power) { return std::exp(power); }
+
+    /// 自然对数（Unity 的 `Mathf.Log(f)`）。
+    ///
+    /// **没有 `Log(f, p)` 这个双参重载**：ZFUNCTION 体系里同名重载会被当成
+    /// 两个不同名字的绑定，脚本侧只能看到一个。要换底自己除：`Log(v)/Log(10)`。
+    ZFUNCTION()
+    static float Log(float value) { return std::log(value); }
+
+    ZFUNCTION()
+    static float Log10(float value) { return std::log10(value); }
+
+    // ---- 极值 ----
+    // 手写三元而不是 `Math::max`：这两个名字在 MSVC 的工程里可能已经被
+    // <windows.h> 的 min/max 宏占掉，而宏不看命名空间。
+    ZFUNCTION()
+    static float Max(float a, float b) { return (a > b) ? a : b; }
+
+    ZFUNCTION()
+    static float Min(float a, float b) { return (a < b) ? a : b; }
+
+    // ---- 环绕 / 摆动 ---------------------------------------------------
+
+    /// `t` 对 `length` 取模，但结果恒在 `[0, length)`（**负数也归正**）。
+    /// `fmod` 不行：`fmod(-1, 3)` 是 -1，而 Repeat 要给 2。角度插值少了这个
+    /// 差别，跨 0° 时会往反方向转一大圈。
+    ZFUNCTION()
+    static float Repeat(float t, float length)
+    {
+        return Clamp(t - std::floor(t / length) * length, 0.f, length);
+    }
+
+    /// 在 `[0, length]` 之间来回。t 是"时间"，length 是单程长度。
+    ZFUNCTION()
+    static float PingPong(float t, float length)
+    {
+        t = Repeat(t, length * 2.f);
+        return length - Math::abs(t - length);
+    }
+
+    /// 两个**角度**（度）之间的最短差，落在 `(-180, 180]`。
+    /// 直接 `target - current` 在 350° → 10° 时给 -340，而正确答案是 +20。
+    ZFUNCTION()
+    static float DeltaAngle(float current, float target)
+    {
+        float delta = Repeat(target - current, 360.f);
+        if (delta > 180.f)
+        {
+            delta -= 360.f;
+        }
+        return delta;
+    }
+
+    /// 角度插值（度），走**最短弧**。与 `Lerp` 的区别只在"先算最短差"。
+    /// t 夹取在 [0,1]，与 Unity 同。
+    ZFUNCTION()
+    static float LerpAngle(float a, float b, float t)
+    {
+        const float delta = DeltaAngle(a, b);
+        return a + delta * Clamp01(t);
+    }
+
+    /// 朝目标角走，单步不超过 max_delta（度），走最短弧。
+    ZFUNCTION()
+    static float MoveTowardsAngle(float current, float target, float max_delta)
+    {
+        const float delta_angle = DeltaAngle(current, target);
+        if (-max_delta < delta_angle && delta_angle < max_delta)
+        {
+            return target;
+        }
+        return MoveTowards(current, current + delta_angle, max_delta);
+    }
+
+    // ---- 插值 ----------------------------------------------------------
+
+    /// 与 `Lerp` 完全相同 —— 本引擎的 `Lerp` 本来就不夹取 alpha。
+    /// 提供它是为了**把这件事说清楚**：脚本里写 `Lerp(a, b, 1.5)` 得到外插值，
+    /// 而不是因为 Unity 有两个名字就以为这里有两种语义。
+    ZFUNCTION()
+    static float LerpUnclamped(float a, float b, float alpha) { return Lerp(a, b, alpha); }
+
+    /// `Lerp` 的反函数：`value` 在 [a, b] 里的归一化位置。
+    ///
+    /// ⚠️ a == b 时返回 0 —— 不是 NaN。除零会产出一个 NaN，而 NaN 会一路静默
+    /// 传下去（NaN 参与的任何比较都是 false），最后表现为"这个值莫名不动了"。
+    ZFUNCTION()
+    static float InverseLerp(float a, float b, float value)
+    {
+        if (a == b)
+        {
+            return 0.f;
+        }
+        return Clamp01((value - a) / (b - a));
+    }
+
+    /// 平滑阶跃：`t` 夹取到 [0,1]，再过一条 3t²-2t³ 的 S 曲线。
+    /// 与 `Lerp` 的区别是**两端导数为 0**（进出都平滑），直接 Lerp 在端点会
+    /// 有一个速度突变。
+    ZFUNCTION()
+    static float SmoothStep(float from, float to, float t)
+    {
+        t = Clamp01(t);
+        t = t * t * (3.f - 2.f * t);
+        return to * t + from * (1.f - t);
+    }
+
+    // ---- 杂项 ----------------------------------------------------------
+
+    /// 浮点"约等于"。相对 + 绝对双判据（Unity 同）：
+    /// 纯相对比较在 0 附近失效（任何两个极小数都"相等"），纯绝对比较在大数上
+    /// 失效（1e9 和 1e9+1 差得远却"相等"）。
+    ZFUNCTION()
+    static bool Approximately(float a, float b)
+    {
+        return Math::abs(b - a) < Max(1e-6f * Max(Math::abs(a), Math::abs(b)), Epsilon() * 8.f);
+    }
+
+    ZFUNCTION()
+    static bool IsPowerOfTwo(int32_t value) { return (value > 0) && ((value & (value - 1)) == 0); }
+
+    /// >= value 的最小的 2 的幂。位扩散法（`value--` 然后右移按位或）。
+    ZFUNCTION()
+    static int32_t NextPowerOfTwo(int32_t value)
+    {
+        value -= 1;
+        value |= value >> 16;
+        value |= value >> 8;
+        value |= value >> 4;
+        value |= value >> 2;
+        value |= value >> 1;
+        return value + 1;
+    }
+
+    /// 最近的 2 的幂（距离相等时取大的那个，与 Unity 同）。
+    ZFUNCTION()
+    static int32_t ClosestPowerOfTwo(int32_t value)
+    {
+        const int32_t next = NextPowerOfTwo(value);
+        const int32_t prev = next >> 1;
+        return ((next - value) > (value - prev)) ? prev : next;
+    }
+
+    /// 2D Perlin 噪声，返回 `[0, 1]`。
+    ///
+    /// ⚠️ **不是 Unity 的逐位实现**：Unity 的 `Mathf.PerlinNoise` 用它自己的
+    /// 排列表和渐变取法，这里是标准的 2D 梯度噪声。值域、确定性、连续性一致，
+    /// 但同一个 (x, y) 的**具体数值不同** —— 从 Unity 工程里搬一张"看起来一样"
+    /// 的噪声图是搬不过来的，只能搬"用噪声做这件事"的用法。
+    ZFUNCTION()
+    static float PerlinNoise(float x, float y)
+    {
+        // 整数哈希而不是置换表：常量表放在 header-only 的静态方法里每个 TU 一份。
+        auto hash = [](int32_t ix, int32_t iy) -> int32_t {
+            uint32_t h = static_cast<uint32_t>(ix * 374761393 + iy * 668265263);
+            h = (h ^ (h >> 13)) * 1274126177u;
+            return static_cast<int32_t>((h ^ (h >> 16)) % 8u);
+        };
+        // 8 个方向上的单位梯度（4 个轴向 + 4 个对角）。
+        static const float k_gradients[8][2] = {
+            {1.f, 0.f},  {-1.f, 0.f},  {0.f, 1.f},          {0.f, -1.f},
+            {0.70710678f, 0.70710678f}, {-0.70710678f, 0.70710678f},
+            {0.70710678f, -0.70710678f}, {-0.70710678f, -0.70710678f},
+        };
+        auto fade = [](float t) { return t * t * t * (t * (t * 6.f - 15.f) + 10.f); };
+        auto grad = [&](int32_t ix, int32_t iy, float dx, float dy) -> float {
+            const int32_t g = hash(ix, iy);
+            return k_gradients[g][0] * dx + k_gradients[g][1] * dy;
+        };
+
+        const int32_t x0 = static_cast<int32_t>(std::floor(x));
+        const int32_t y0 = static_cast<int32_t>(std::floor(y));
+        const float   fx = x - static_cast<float>(x0);
+        const float   fy = y - static_cast<float>(y0);
+        const float   u = fade(fx);
+        const float   v = fade(fy);
+
+        const float n00 = grad(x0, y0, fx, fy);
+        const float n10 = grad(x0 + 1, y0, fx - 1.f, fy);
+        const float n01 = grad(x0, y0 + 1, fx, fy - 1.f);
+        const float n11 = grad(x0 + 1, y0 + 1, fx - 1.f, fy - 1.f);
+        const float nx0 = n00 + u * (n10 - n00);
+        const float nx1 = n01 + u * (n11 - n01);
+        const float value = nx0 + v * (nx1 - nx0);
+
+        // 2D 梯度噪声的理论幅值约 ±0.7071，乘 1/0.7071 归一到 ±1 再映射到 [0,1]。
+        return 0.5f + 0.5f * Clamp(value * 1.41421356f, -1.f, 1.f);
+    }
+
+    // ---- 色彩空间 ------------------------------------------------------
+    //
+    // sRGB 的分段近似（低段是直线、高段是幂），不是纯 pow(x, 2.2)：
+    // 纯幂在 0 附近导数发散，暗部会被压成一团黑。
+
+    /// gamma 空间 -> 线性空间。
+    ZFUNCTION()
+    static float GammaToLinearSpace(float value)
+    {
+        if (value <= 0.04045f)
+        {
+            return value / 12.92f;
+        }
+        if (value < 1.f)
+        {
+            return std::pow((value + 0.055f) / 1.055f, 2.4f);
+        }
+        return std::pow(value, 2.2f);
+    }
+
+    /// 线性空间 -> gamma 空间。与上面互为逆运算（0..1 内往返）。
+    ZFUNCTION()
+    static float LinearToGammaSpace(float value)
+    {
+        if (value <= 0.f)
+        {
+            return 0.f;
+        }
+        if (value <= 0.0031308f)
+        {
+            return value * 12.92f;
+        }
+        if (value < 1.f)
+        {
+            return 1.055f * std::pow(value, 1.f / 2.4f) - 0.055f;
+        }
+        return std::pow(value, 1.f / 2.2f);
+    }
+
+    // =========================================================================
+    // 故意没有的
+    // =========================================================================
+    //
+    // * `SmoothDamp` / `SmoothDampAngle` —— Unity 的签名是
+    //   `SmoothDamp(current, target, ref currentVelocity, smoothTime)`，靠
+    //   `ref` 把速度带回给调用方。TS 没有 out/ref 参数（见 RaycastHit 为什么
+    //   自带 `valid` 字段），这个 API 搬不过来。要做阻尼就用
+    //   `MoveTowards` 或自己在脚本里存速度。
+    // * `Log(f, p)` / `CorrelatedColorTemperatureToRGB` —— 前者是重载（见上），
+    //   后者返回 Color 而本引擎没有 Color 值类型。
 };

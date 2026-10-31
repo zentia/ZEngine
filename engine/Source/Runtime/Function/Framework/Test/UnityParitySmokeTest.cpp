@@ -55,6 +55,7 @@
 #include "Runtime/Function/Render/RenderCamera.h"
 #include "Runtime/Function/Render/RenderSystem.h"
 #include "Runtime/Scripting/ScriptCamera/ScriptCamera.h"
+#include "Runtime/Scripting/ScriptMath/ScriptMath.h"
 #include "Runtime/Scripting/ScriptCollider/ScriptCollider.h"
 #include "Runtime/Scripting/ScriptPlayerPrefs/ScriptPlayerPrefs.h"
 #include "Runtime/Resource/UserPreferences/UserPreferences.h"
@@ -3984,6 +3985,202 @@ namespace
               "the plural query matches on IsBaseOf, not on string equality");
     }
 
+    // --------------------------------------------------------------- AI ----
+    /// `Mathf` 的标量函数补全。
+    ///
+    /// 补全前 Mathf 只有 8 个函数，而标量数学是脚本里最容易被顺手用到的东西 ——
+    /// 缺一个 `SmoothStep` 或 `Repeat`，玩法代码就只能拿裸的三角函数现拼，拼出来
+    /// 的那一份和引擎其它部分不是一个口径。
+    ///
+    /// 这些是纯函数，所以断言都挑**能区分实现**的点：平局取偶、负数取模归正、
+    /// 跨 0° 走最短弧、a==b 不产 NaN —— 而不是"代进去等于个值"。
+    void TestMathf()
+    {
+        // --- 取整：平局规则才是重点 -------------------------------------
+        Check(Near(Mathf::Abs(-3.5f), 3.5f, 0.0001f) && Near(Mathf::Abs(3.5f), 3.5f, 0.0001f) &&
+                  Mathf::Abs(0.f) == 0.f,
+              "AI0", "Abs is the magnitude");
+        Check(Near(Mathf::Ceil(1.2f), 2.f, 0.0001f) && Near(Mathf::Ceil(-1.2f), -1.f, 0.0001f), "AI1",
+              "Ceil goes toward +inf (not toward zero)");
+        Check(Near(Mathf::Floor(1.8f), 1.f, 0.0001f) && Near(Mathf::Floor(-1.2f), -2.f, 0.0001f), "AI2",
+              "Floor goes toward -inf");
+        // ⚠️ 平局取偶：Round(2.5) 是 2，不是 3。std::round 会给 3。
+        Check(Near(Mathf::Round(2.5f), 2.f, 0.0001f) && Near(Mathf::Round(1.5f), 2.f, 0.0001f) &&
+                  Near(Mathf::Round(-2.5f), -2.f, 0.0001f),
+              "AI3", "Round breaks ties to even (2.5 -> 2, not 3)");
+        Check(Near(Mathf::Round(1.4f), 1.f, 0.0001f), "AI4", "and rounds normally otherwise");
+        Check(Mathf::CeilToInt(1.2f) == 2 && Mathf::CeilToInt(-1.8f) == -1, "AI5", "CeilToInt truncates up");
+        Check(Mathf::FloorToInt(1.8f) == 1 && Mathf::FloorToInt(-1.2f) == -2, "AI6", "FloorToInt truncates down");
+        Check(Mathf::RoundToInt(2.5f) == 2, "AI7", "RoundToInt inherits the tie-to-even rule");
+
+        // --- 三角 / 幂 ---------------------------------------------------
+        Check(Near(Mathf::Sin(0.f), 0.f, 1e-5f) && Near(Mathf::Sin(Math_PI * 0.5f), 1.f, 1e-5f), "AI8",
+              "Sin takes radians");
+        Check(Near(Mathf::Cos(0.f), 1.f, 1e-5f) && Near(Mathf::Cos(Math_PI), -1.f, 1e-5f), "AI9",
+              "Cos takes radians");
+        Check(Near(Mathf::Tan(Math_PI * 0.25f), 1.f, 1e-5f), "AI10", "Tan takes radians");
+        Check(Near(Mathf::Asin(1.f), Math_PI * 0.5f, 1e-4f), "AI11", "Asin returns radians");
+        Check(Near(Mathf::Acos(1.f), 0.f, 1e-4f), "AI12", "Acos returns radians");
+        Check(Near(Mathf::Atan(1.f), Math_PI * 0.25f, 1e-5f), "AI13", "Atan returns radians");
+        // y 在前 —— 参数顺序写反在 I 象限里"看起来是对的"。
+        Check(Near(Mathf::Atan2(1.f, 0.f), Math_PI * 0.5f, 1e-5f) && Near(Mathf::Atan2(0.f, 1.f), 0.f, 1e-5f),
+              "AI14", "Atan2 is (y, x) like C and Unity");
+        Check(Near(Mathf::Sqrt(16.f), 4.f, 1e-5f), "AI15", "Sqrt");
+        Check(Near(Mathf::Pow(2.f, 10.f), 1024.f, 1e-3f), "AI16", "Pow");
+        Check(Near(Mathf::Exp(0.f), 1.f, 1e-5f), "AI17", "Exp(0) is 1");
+        // Log 是**自然对数** —— 拿 Log10 的实现顶替在这里必红。
+        Check(Near(Mathf::Log(std::exp(1.f)), 1.f, 1e-4f) && Near(Mathf::Log10(1000.f), 3.f, 1e-4f), "AI18",
+              "Log is the natural log and Log10 is base 10");
+        Check(Mathf::Max(3.f, 7.f) == 7.f && Mathf::Min(3.f, 7.f) == 3.f, "AI19", "Max / Min");
+        Check(Near(Mathf::HalfPi(), Math_PI * 0.5f, 1e-6f) && Near(Mathf::TwoPi(), Math_PI * 2.f, 1e-5f), "AI20",
+              "HalfPi / TwoPi");
+
+        // --- 环绕：负数必须归正 -----------------------------------------
+        // fmod 在这里是错的（fmod(-1,3) == -1），而"角度算出来是负的"是常态。
+        Check(Near(Mathf::Repeat(3.5f, 3.f), 0.5f, 1e-5f), "AI21", "Repeat wraps past the length");
+        Check(Near(Mathf::Repeat(-1.f, 3.f), 2.f, 1e-5f), "AI22",
+              "and maps negatives into [0, length) — fmod would give -1");
+        Check(Near(Mathf::PingPong(0.f, 3.f), 0.f, 1e-5f) && Near(Mathf::PingPong(3.f, 3.f), 3.f, 1e-5f) &&
+                  Near(Mathf::PingPong(4.f, 3.f), 2.f, 1e-5f),
+              "AI23", "PingPong bounces inside [0, length]");
+
+        // --- 角度：跨 0° 必须走短弧 -------------------------------------
+        // 直接相减给 -340，正确答案是 +20 —— 差的那一下就是"转一大圈"。
+        Check(Near(Mathf::DeltaAngle(350.f, 10.f), 20.f, 1e-4f), "AI24",
+              "DeltaAngle takes the short way across 0 degrees");
+        Check(Near(Mathf::DeltaAngle(10.f, 350.f), -20.f, 1e-4f), "AI25", "and is signed");
+        Check(Near(Mathf::LerpAngle(350.f, 10.f, 0.5f), 360.f, 1e-4f), "AI26",
+              "LerpAngle crosses 0 rather than sweeping backwards");
+        Check(Near(Mathf::LerpAngle(10.f, 350.f, 0.5f), 0.f, 1e-4f), "AI27", "and the other way too");
+        Check(Near(Mathf::MoveTowardsAngle(350.f, 10.f, 5.f), 355.f, 1e-4f), "AI28",
+              "MoveTowardsAngle steps forward across 0");
+        Check(Near(Mathf::MoveTowardsAngle(350.f, 10.f, 100.f), 10.f, 1e-4f), "AI29",
+              "and snaps to the target when the step is big enough");
+
+        // --- 插值 --------------------------------------------------------
+        Check(Near(Mathf::LerpUnclamped(0.f, 10.f, 1.5f), 15.f, 1e-4f), "AI30",
+              "LerpUnclamped extrapolates past 1");
+        Check(Near(Mathf::InverseLerp(0.f, 10.f, 2.5f), 0.25f, 1e-4f), "AI31",
+              "InverseLerp is Lerp's inverse");
+        Check(Near(Mathf::InverseLerp(10.f, 0.f, 2.5f), 0.75f, 1e-4f), "AI32", "and respects a > b");
+        // a == b 时必须给 0，不是 NaN —— NaN 参与的任何比较都是 false，会一路
+        // 静默传下去，最后表现为"这个值莫名不动了"。
+        Check(Mathf::InverseLerp(5.f, 5.f, 5.f) == 0.f, "AI33",
+              "InverseLerp on a zero-length range gives 0, not NaN");
+        Check(Near(Mathf::SmoothStep(0.f, 10.f, 0.5f), 5.f, 1e-4f), "AI34", "SmoothStep is symmetric");
+        Check(Near(Mathf::SmoothStep(0.f, 10.f, -5.f), 0.f, 1e-4f) &&
+                  Near(Mathf::SmoothStep(0.f, 10.f, 5.f), 10.f, 1e-4f),
+              "AI35", "and clamps t (unlike Lerp)");
+
+        // --- 比较 / 位 ---------------------------------------------------
+        Check(Mathf::Approximately(1.f, 1.f + 1e-7f) && !Mathf::Approximately(1.f, 1.001f), "AI36",
+              "Approximately is a relative+absolute test");
+        // 0 附近必须走绝对判据：纯相对比较会让 0 和 1e-9 "相等"。
+        Check(Mathf::Approximately(0.f, 0.f) && !Mathf::Approximately(0.f, 1e-3f), "AI37",
+              "and still discriminates near zero");
+        Check(Mathf::IsPowerOfTwo(8) && Mathf::IsPowerOfTwo(1) && !Mathf::IsPowerOfTwo(7) &&
+                  !Mathf::IsPowerOfTwo(0),
+              "AI38", "IsPowerOfTwo rejects 0 and non-powers");
+        Check(Mathf::NextPowerOfTwo(7) == 8 && Mathf::NextPowerOfTwo(8) == 8 &&
+                  Mathf::NextPowerOfTwo(1) == 1,
+              "AI39", "NextPowerOfTwo is inclusive of exact powers");
+        Check(Mathf::ClosestPowerOfTwo(7) == 8 && Mathf::ClosestPowerOfTwo(9) == 8 &&
+                  Mathf::ClosestPowerOfTwo(3) == 4,
+              "AI40", "ClosestPowerOfTwo picks the nearer one");
+
+        // --- Perlin ------------------------------------------------------
+        bool in_range = true;
+        bool varies = false;
+        for (int i = 0; i < 256; ++i)
+        {
+            const float n = Mathf::PerlinNoise(static_cast<float>(i) * 0.13f, static_cast<float>(i) * 0.29f);
+            if (n < 0.f || n > 1.f)
+            {
+                in_range = false;
+            }
+            if (std::fabs(n - 0.5f) > 0.01f)
+            {
+                varies = true;
+            }
+        }
+        Check(in_range, "AI41", "PerlinNoise stays inside [0, 1]");
+        Check(varies, "AI42", "and actually varies across the domain");
+        // 逐位相等，不是"接近" —— Near(x, x, 0) 是 `0 < 0`，恒假。
+        Check(Mathf::PerlinNoise(3.7f, -1.25f) == Mathf::PerlinNoise(3.7f, -1.25f), "AI43",
+              "and is deterministic (same input, bit-identical output)");
+        // 格点上梯度贡献为 0 ⇒ 值恒为 0.5。这条同时钉住了插值权重的实现。
+        Check(Near(Mathf::PerlinNoise(2.f, 5.f), 0.5f, 1e-5f), "AI44",
+              "PerlinNoise is 0.5 on lattice points");
+
+        // --- 色彩空间 ----------------------------------------------------
+        Check(Mathf::GammaToLinearSpace(0.f) == 0.f && Near(Mathf::GammaToLinearSpace(1.f), 1.f, 1e-5f), "AI45",
+              "GammaToLinearSpace fixes the endpoints");
+        // sRGB 0.5 ≈ 线性 0.214 —— 纯 pow(x, 2.2) 给 0.2176，差在这条能看出来。
+        Check(Near(Mathf::GammaToLinearSpace(0.5f), 0.2140f, 0.001f), "AI46",
+              "GammaToLinearSpace(0.5) is 0.214, not pow(0.5, 2.2)");
+        Check(Near(Mathf::LinearToGammaSpace(Mathf::GammaToLinearSpace(0.5f)), 0.5f, 1e-4f), "AI47",
+              "and LinearToGammaSpace round-trips it");
+        Check(Mathf::LinearToGammaSpace(0.f) == 0.f, "AI48", "LinearToGammaSpace(0) is 0");
+
+        // --- 常量 --------------------------------------------------------
+        Check(Mathf::Epsilon() > 0.f && Mathf::Epsilon() < 1e-3f, "AI49", "Epsilon is a tiny positive number");
+        Check(Mathf::Infinity() > 1e30f && Mathf::NegativeInfinity() < -1e30f, "AI50",
+              "Infinity / NegativeInfinity");
+    }
+
+    // --------------------------------------------------------------- AJ ----
+    /// Mathf 补全的接线门。
+    void TestMathfWiring()
+    {
+        const std::string math_header = ReadFile("Source/Runtime/Scripting/ScriptMath/ScriptMath.h");
+        Check(!math_header.empty(), "AJ0", "ScriptMath.h is readable");
+        // 48 是 VectorMath + QuaternionMath 原有的；Mathf 这一块是 49。
+        Check(CountOccurrences(math_header, "ZFUNCTION()") == 89, "AJ1",
+              "ScriptMath declares exactly 89 script methods (a dropped ZFUNCTION is a silent API loss)");
+        // Unity 的拼写，一个都不能少。
+        Check(CountOccurrences(math_header, "static float Abs(") >= 1 &&
+                  CountOccurrences(math_header, "static float Ceil(") >= 1 &&
+                  CountOccurrences(math_header, "static float Floor(") >= 1 &&
+                  CountOccurrences(math_header, "static float Round(") >= 1,
+              "AJ2", "Abs / Ceil / Floor / Round are declared");
+        Check(CountOccurrences(math_header, "static float Atan2(") >= 1 &&
+                  CountOccurrences(math_header, "static float Log10(") >= 1 &&
+                  CountOccurrences(math_header, "static float Pow(") >= 1,
+              "AJ3", "Atan2 / Log10 / Pow are declared");
+        Check(CountOccurrences(math_header, "static float Repeat(") >= 1 &&
+                  CountOccurrences(math_header, "static float PingPong(") >= 1 &&
+                  CountOccurrences(math_header, "static float DeltaAngle(") >= 1 &&
+                  CountOccurrences(math_header, "static float LerpAngle(") >= 1 &&
+                  CountOccurrences(math_header, "static float MoveTowardsAngle(") >= 1,
+              "AJ4", "the wrap-around family is declared");
+        Check(CountOccurrences(math_header, "static float InverseLerp(") >= 1 &&
+                  CountOccurrences(math_header, "static float SmoothStep(") >= 1 &&
+                  CountOccurrences(math_header, "static bool Approximately(") >= 1,
+              "AJ5", "InverseLerp / SmoothStep / Approximately are declared");
+        Check(CountOccurrences(math_header, "static bool IsPowerOfTwo(") >= 1 &&
+                  CountOccurrences(math_header, "static int32_t NextPowerOfTwo(") >= 1 &&
+                  CountOccurrences(math_header, "static int32_t ClosestPowerOfTwo(") >= 1 &&
+                  CountOccurrences(math_header, "static float PerlinNoise(") >= 1,
+              "AJ6", "the power-of-two family and PerlinNoise are declared");
+        // 数**声明本身**：函数名在注释里也出现，只数名字分不出"声明了"和"提到了"。
+        Check(CountOccurrences(math_header, "static float GammaToLinearSpace(") >= 1 &&
+                  CountOccurrences(math_header, "static float LinearToGammaSpace(") >= 1,
+              "AJ7", "both colour-space conversions are declared");
+        // 平局取偶这条规则必须写进源码，否则下一个人会"修好"它。
+        Check(CountOccurrences(math_header, "取偶") >= 1, "AJ8",
+              "the tie-to-even rule of Round is documented");
+        // 静态属性做不出来（getter 不允许 static）—— 这个偏差必须记录，
+        // 否则脚本会去写 `Mathf.Infinity` 然后拿到 undefined。
+        Check(CountOccurrences(math_header, "静态只读字段") >= 1, "AJ9",
+              "the header records that Epsilon/Infinity are methods, not fields");
+        // SmoothDamp 缺的是 TS 的 ref 参数，不是忘了写。
+        Check(CountOccurrences(math_header, "SmoothDamp") >= 1, "AJ10",
+              "the header records why SmoothDamp is absent (no out params in TS)");
+        // Perlin 不是 Unity 的逐位实现 —— 不写会被当成 bug。
+        Check(CountOccurrences(math_header, "不是 Unity 的逐位实现") >= 1, "AJ11",
+              "the header records that PerlinNoise is not bit-identical to Unity's");
+    }
+
     // ---------------------------------------------------------------- B ----
     void TestWiringGate()
     {
@@ -4113,6 +4310,8 @@ int main()
     TestPlayerPrefsWiring();
     TestComponentFacade();
     TestComponentFacadeWiring();
+    TestMathf();
+    TestMathfWiring();
     TestWiringGate();
 
     std::printf("\n=== %d checks, %d failures ===\n", g_Checks, g_Failures);
