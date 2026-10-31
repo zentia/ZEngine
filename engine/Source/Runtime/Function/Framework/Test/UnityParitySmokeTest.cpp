@@ -3765,6 +3765,225 @@ namespace
               "save() guards the empty path instead of throwing into a swallowed catch");
     }
 
+    // --------------------------------------------------------------- AG ----
+    /// `Component` 的 Unity 门面。
+    ///
+    /// Unity 里脚本 99% 的"我在哪 / 我身上有什么"都写在 Component 上，而本引擎的
+    /// Component 之前只有 3 个 ZFUNCTION —— TS 里 `this.GetComponent(...)` 压根
+    /// 不存在，只能绕成 `this.component.gameObject.GetComponent(...)`，而这两者
+    /// 在 Unity 里从来就是一句话。这一组钉两件事：
+    ///
+    ///   1. 转发**真的到了宿主**（不是空实现）—— 靠三级层级里 A/C 有刚体、
+    ///      B 没有，让"含自己"和"向上找"给出两个不同答案；
+    ///   2. **没有宿主时是空值而不是崩** —— `m_ParentObject == nullptr` 是组件
+    ///      生命周期里真实存在的一段窗口（New 出来到 PostLoadResource 之间）。
+    void TestComponentFacade()
+    {
+        ObjectManager* om = GET_SYSTEM(ObjectManager);
+        if (om == nullptr)
+        {
+            om = new ObjectManager();
+            SystemRegistry::GetInstance().RegisterSystem(om);
+            om->Initialize();
+        }
+        Check(om != nullptr, "AG0", "ObjectManager is reachable");
+        if (om == nullptr)
+        {
+            return;
+        }
+
+        // A(root) -> B(mid) -> C(leaf)。A 和 C 各挂一个 RigidBodyComponent，
+        // B 不挂：这样"InParent 含自己"和"向上找"是两个不同的答案，能分得清
+        // 实现到底是先查了自己还是直接跳到父级（后者在 Unity 里是错的）。
+        auto make_object = [om](const char* in_name) -> GameObject* {
+            GameObject* object = new GameObject();
+            om->AllocateAndAssignInstanceID(object);
+            Transform* transform = new Transform();
+            om->AllocateAndAssignInstanceID(transform);
+            object->addComponent(transform);
+            transform->PostLoadResource(object);
+            object->SetName(in_name);
+            return object;
+        };
+        auto add_rigidbody = [om](GameObject* in_object) -> RigidBodyComponent* {
+            RigidBodyComponent* rigidbody = new RigidBodyComponent();
+            om->AllocateAndAssignInstanceID(rigidbody);
+            in_object->addComponent(rigidbody);
+            rigidbody->PostLoadResource(in_object);
+            return rigidbody;
+        };
+
+        GameObject* object_a = make_object("A");
+        GameObject* object_b = make_object("B");
+        GameObject* object_c = make_object("C");
+        object_b->GetTransform()->SetParent(object_a->GetTransform(), false);
+        object_c->GetTransform()->SetParent(object_b->GetTransform(), false);
+        RigidBodyComponent* rigidbody_a = add_rigidbody(object_a);
+        RigidBodyComponent* rigidbody_c = add_rigidbody(object_c);
+
+        // --- 两个 Unity 属性 -------------------------------------------
+        Check(object_a->GetTransform()->GetParentObject() == object_a, "AG1",
+              "gameObject points back at the host object");
+        // Component.transform 同义于 gameObject.transform：拿自己的 Transform
+        // 当被测组件，返回它自己，这一条同时验了"转发"和"自洽"。
+        Check(object_c->GetTransform()->GetTransform() == object_c->GetTransform(), "AG2",
+              "transform on a Transform is itself");
+
+        // Unity 的 Component.name **就是 GameObject 的名字**，不是组件自己的
+        // Object::name（这里是空串）—— 少了转发的话这一条立刻红。
+        Check(object_a->GetTransform()->GetName() == "A", "AG3",
+              "name is the host GameObject's name, not the component's own (empty) field");
+        // 写必须穿透：只改自己那个字段的话，脚本 `this.name = "x"` 是句空话。
+        object_b->GetTransform()->SetName("B2");
+        Check(object_b->GetName() == "B2", "AG4", "SetName writes through to the GameObject");
+        Check(object_b->GetTransform()->GetName() == "B2", "AG5", "and reads back the same");
+
+        // --- tag -------------------------------------------------------
+        Check(object_a->GetTransform()->GetTag() == TagLayerManager::kUntagged, "AG6",
+              "tag forwards to the host (Untagged by default)");
+        Check(object_a->GetTransform()->CompareTagName("Untagged"), "AG7", "CompareTag agrees");
+        Check(object_a->GetTransform()->SetTagByName("Respawn"), "AG8",
+              "SetTag on a component renames the host's tag");
+        Check(object_a->GetTag() == "Respawn", "AG9", "and the host sees it");
+        Check(!object_a->GetTransform()->CompareTagName("Untagged"), "AG10",
+              "so the old tag no longer matches");
+        Check(!object_a->GetTransform()->SetTagByName("NoSuchTag"), "AG11",
+              "an unregistered tag is refused, not silently accepted");
+        object_a->SetTagByName(TagLayerManager::kUntagged);
+
+        // --- 查询：范围才是这些方法的全部区别 --------------------------
+        Check(object_c->GetTransform()->GetComponentByTypeName("RigidBodyComponent") == rigidbody_c,
+              "AG12", "GetComponent finds the host's own component");
+        Check(object_b->GetTransform()->GetComponentByTypeName("RigidBodyComponent") == nullptr,
+              "AG13", "and returns null where the host has none");
+        Check(object_b->GetTransform()->GetComponentInParentByTypeName("RigidBodyComponent") == rigidbody_a,
+              "AG14", "InParent walks up when the host has none");
+        // ⚠️ 含自己 —— 直接跳到父级的实现在这里会给出 A 的刚体，而 Unity 给 C 的。
+        Check(object_c->GetTransform()->GetComponentInParentByTypeName("RigidBodyComponent") == rigidbody_c,
+              "AG15", "InParent INCLUDES self (Unity's GetComponentInParent does)");
+        const std::vector<Component*> up_from_c =
+            object_c->GetTransform()->GetComponentsInParentByTypeName("RigidBodyComponent");
+        Check(up_from_c.size() == 2 && up_from_c[0] == rigidbody_c && up_from_c[1] == rigidbody_a,
+              "AG16", "GetComponentsInParent is nearest-first (self, then A)");
+        Check(object_a->GetTransform()->GetComponentsInParentByTypeName("RigidBodyComponent").size() == 1,
+              "AG17", "and stops at the root");
+
+        const std::vector<Component*> down_from_a =
+            object_a->GetTransform()->GetComponentsInChildrenByTypeName("RigidBodyComponent");
+        Check(down_from_a.size() == 2 && down_from_a[0] == rigidbody_a && down_from_a[1] == rigidbody_c,
+              "AG18", "GetComponentsInChildren is pre-order (parent before child)");
+        // GetComponents 只查自己 —— 与 InChildren 唯一的区别就是范围。
+        Check(object_a->GetTransform()->GetComponentsByTypeName("RigidBodyComponent").size() == 1,
+              "AG19", "GetComponents is self-only (it is NOT InChildren)");
+        Check(object_a->GetTransform()->GetComponentsByTypeName("Transform").size() == 1, "AG20",
+              "one Transform on the host");
+        Check(object_a->GetTransform()->GetComponentsByTypeName("NoSuchType").empty(), "AG21",
+              "an unknown type name yields an empty list (not a crash, not null)");
+        // 基类也要能查：`GetComponents("Component")` 得捞到所有组件。
+        Check(object_a->GetComponentsByTypeName("Component").size() == 2, "AG22",
+              "the plural query matches base types too (Component finds every component)");
+
+        // --- GameObject 一侧的复数查询 ---------------------------------
+        Check(object_a->GetComponentsInParentByTypeName("Transform").size() == 1, "AG23",
+              "GetComponentsInParent on the root is just itself");
+        Check(object_c->GetComponentsInParentByTypeName("Transform").size() == 3, "AG24",
+              "and walks the whole chain up (C, B, A)");
+
+        // --- 消息：只验"路由到宿主"，投递本身在 F 组 --------------------
+        Check(object_a->GetTransform()->SendMessageByName("OnNothing") == 0, "AG25",
+              "SendMessage routes through the host");
+        Check(object_a->GetTransform()->BroadcastMessageByName("OnNothing") == 0, "AG26",
+              "BroadcastMessage routes through the host");
+        Check(object_a->GetTransform()->SendMessageUpwardsByName("OnNothing") == 0, "AG27",
+              "SendMessageUpwards routes through the host");
+
+        // --- 没有宿主的组件：必须是空值，不能是崩 ----------------------
+        // 这段窗口是真实存在的（MemoryManager 造出来 → PostLoadResource 挂上），
+        // 脚本没理由知道它，但撞上时必须拿到合法空值。
+        Component orphan;
+        Check(orphan.GetTransform() == nullptr, "AG28", "a hostless component has no transform");
+        Check(orphan.GetName().empty(), "AG29", "and falls back to its own (empty) Object::name");
+        Check(orphan.GetTag() == TagLayerManager::kUntagged, "AG30",
+              "its tag is Untagged — not an empty string (an empty tag makes CompareTag(\"\") match everything)");
+        // 与 GetTag 必须自洽：返回 "Untagged" 却说不匹配就是自相矛盾的 API。
+        Check(orphan.CompareTagName("Untagged"), "AG31", "CompareTag agrees with GetTag when hostless");
+        Check(!orphan.CompareTagName("Respawn"), "AG32", "and does not match anything else");
+        Check(!orphan.SetTagByName("Respawn"), "AG33",
+              "SetTag reports false rather than promising a tag it cannot keep");
+        Check(orphan.GetComponentByTypeName("Transform") == nullptr, "AG34", "no component to find");
+        Check(orphan.GetComponentsByTypeName("Transform").empty(), "AG35", "and the plural form is empty");
+        Check(orphan.GetComponentInChildrenByTypeName("Transform") == nullptr, "AG36", "no children either");
+        Check(orphan.GetComponentsInChildrenByTypeName("Transform").empty(), "AG37", "still empty");
+        Check(orphan.GetComponentInParentByTypeName("Transform") == nullptr, "AG38", "no parent either");
+        Check(orphan.GetComponentsInParentByTypeName("Transform").empty(), "AG39", "still empty");
+        Check(orphan.SendMessageByName("X") == 0 && orphan.BroadcastMessageByName("X") == 0 &&
+                  orphan.SendMessageUpwardsByName("X") == 0,
+              "AG40", "and every message reports 'nobody received it'");
+    }
+
+    // --------------------------------------------------------------- AH ----
+    /// Component 门面的接线门。
+    ///
+    /// 这里的每个方法都是"转发一行"，所以门要守的不是算法而是**有没有被发布** ——
+    /// 少一个 ZFUNCTION 在 C++ 侧毫无症状（编译过、跑得过），只是 TS 里那个名字
+    /// 不存在。这类丢失只能靠源码级计数拦。
+    void TestComponentFacadeWiring()
+    {
+        const std::string component_header =
+            ReadFile("Source/Runtime/Function/Framework/Component/Component.h");
+        Check(!component_header.empty(), "AH0", "Component.h is readable");
+        // 18 = 3 个原有的（GetParentObject / isEnabled / SetEnabled）+ 本切片的 15 个。
+        Check(CountOccurrences(component_header, "ZFUNCTION(") == 18, "AH1",
+              "Component exposes exactly 18 script methods");
+        Check(CountOccurrences(component_header, "ZSCRIPTPROPERTY(") == 4, "AH2",
+              "and exactly 4 script properties (name / tag / transform / gameObject)");
+        // Unity 的拼写，一个都不能少。
+        Check(CountOccurrences(component_header, "\"GetComponents\"") >= 1 &&
+                  CountOccurrences(component_header, "\"GetComponentsInParent\"") >= 1 &&
+                  CountOccurrences(component_header, "\"GetComponentInChildren\"") >= 1 &&
+                  CountOccurrences(component_header, "\"GetComponentsInChildren\"") >= 1 &&
+                  CountOccurrences(component_header, "\"GetComponentInParent\"") >= 1,
+              "AH3", "the Unity query spellings are all published");
+        Check(CountOccurrences(component_header, "\"transform\"") >= 1 &&
+                  CountOccurrences(component_header, "\"gameObject\"") >= 1 &&
+                  CountOccurrences(component_header, "\"CompareTag\"") >= 1,
+              "AH4", "transform / gameObject / CompareTag are published");
+        // Component.h 只能前向声明 Transform —— 谁把 include 加进去谁就会撞上
+        // 循环依赖，这条注释是给下一个人的。
+        Check(CountOccurrences(component_header, "class Transform;") >= 1, "AH5",
+              "Transform is forward-declared (including it would be a cycle)");
+
+        const std::string component_source =
+            ReadFile("Source/Runtime/Function/Framework/Component/Component.cpp");
+        Check(!component_source.empty(), "AH6", "Component.cpp is readable");
+        // 每个入口一处判空。少一处就是一个崩溃，而且是在"组件刚造出来还没挂上"
+        // 这种最难复现的时序上崩。
+        Check(CountOccurrences(component_source, "m_ParentObject != nullptr") >= 15, "AH7",
+              "every forwarded entry point guards the hostless window");
+        Check(CountOccurrences(component_source, "GameObject.h") >= 1 &&
+                  CountOccurrences(component_source, "Transform/Transform.h") >= 1,
+              "AH8", "the .cpp is where the host's full definition becomes reachable");
+
+        const std::string go_header = ReadFile("Source/Runtime/BaseClasses/GameObject.h");
+        Check(!go_header.empty(), "AH9", "GameObject.h is readable");
+        Check(CountOccurrences(go_header, "\"GetComponents\"") >= 1 &&
+                  CountOccurrences(go_header, "\"GetComponentsInParent\"") >= 1,
+              "AH10", "GameObject publishes the two new plural queries");
+
+        const std::string go_source = ReadFile("Source/Runtime/BaseClasses/GameObject.cpp");
+        Check(!go_source.empty(), "AH11", "GameObject.cpp is readable");
+        // 3 = 定义 1 + GetComponentsInParent 里的两处调用（自己、每个祖先）。
+        // ⚠️ 数**不带类名限定**的调用：那个复数查询是通过 `this->` 调的，限定名
+        // 只出现在定义处，数 "GameObject::" 前缀会永远停在 1。
+        Check(CountOccurrences(go_source, "GetComponentsByTypeName(") >= 3, "AH12",
+              "GetComponents is both defined and called (GetComponentsInParent funnels through it)");
+        Check(CountOccurrences(go_source, "GameObject::GetComponentsInParentByTypeName") >= 1, "AH13",
+              "GetComponentsInParent is defined");
+        // 基类匹配：名字相等的实现会让 GetComponents("Component") 返回空。
+        Check(CountOccurrences(go_source, "wanted->IsBaseOf") >= 2, "AH14",
+              "the plural query matches on IsBaseOf, not on string equality");
+    }
+
     // ---------------------------------------------------------------- B ----
     void TestWiringGate()
     {
@@ -3892,6 +4111,8 @@ int main()
     TestColliderWiring();
     TestPlayerPrefs();
     TestPlayerPrefsWiring();
+    TestComponentFacade();
+    TestComponentFacadeWiring();
     TestWiringGate();
 
     std::printf("\n=== %d checks, %d failures ===\n", g_Checks, g_Failures);

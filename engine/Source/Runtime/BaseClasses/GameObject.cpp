@@ -573,6 +573,61 @@ Component* GameObject::GetComponentInParentByTypeName(const std::string& compone
     return nullptr;
 }
 
+std::vector<Component*> GameObject::GetComponentsByTypeName(const std::string& component_type_name) const
+{
+    const Type* wanted = TypeManager::GetInstance().ClassNameToType(component_type_name.c_str());
+    if (wanted == nullptr)
+        return {};
+
+    std::vector<Component*> found;
+    for (const auto& component : m_Components)
+    {
+        Component* candidate = static_cast<Component*>(component);
+        if (candidate == nullptr)
+            continue;
+        const Type* runtime_type = candidate->GetMostDerivedType();
+        // IsBaseOf 而不是名字相等：`GetComponents("Component")` 必须能捞到所有
+        // 组件，否则脚本只能按具体类型一个个查（与 GetComponentByTypeName 同源）。
+        if (runtime_type != nullptr && wanted->IsBaseOf(runtime_type->GetRuntimeTypeIndex()))
+            found.push_back(candidate);
+    }
+    return found;
+}
+
+std::vector<Component*> GameObject::GetComponentsInParentByTypeName(
+    const std::string& component_type_name) const
+{
+    // 与 GetComponentInParent 同一条先序遍历（含自己、由近及远），只是中途
+    // 不提前返回 —— 两个方法必须走**同一条路径**，否则"第一个"可能不是"全部
+    // 里的第一个"，那种不一致比查不到更难查。
+    std::vector<Component*> found;
+    for (Component* own : GetComponentsByTypeName(component_type_name))
+    {
+        found.push_back(own);
+    }
+
+    const Transform* self_transform = GetTransform();
+    if (self_transform == nullptr)
+    {
+        return found;
+    }
+
+    for (Transform* parent = self_transform->GetParent(); parent != nullptr;
+         parent = parent->GetParent())
+    {
+        GameObject* parent_object = parent->GetParentObject();
+        if (parent_object == nullptr)
+        {
+            continue;
+        }
+        for (Component* hit : parent_object->GetComponentsByTypeName(component_type_name))
+        {
+            found.push_back(hit);
+        }
+    }
+    return found;
+}
+
 int GameObject::DeliverMessageToSelfComponents(const eastl::string& method_name)
 {
     return DeliverMessageToSelfComponents(method_name, nullptr);

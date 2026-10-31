@@ -2,7 +2,17 @@
 #include "Runtime/BaseClasses/ImmediatePtr.h"
 #include "Runtime/BaseClasses/Object.h"
 #include "Runtime/Core/Serialize/SerializeUtility.h"
+
+#include <EASTL/string.h>
+
+#include <string>
+#include <vector>
+
 #include "Component.generated.h"
+
+// Forward-declared: Transform.h includes Component.h, so the real type is only
+// reachable from the .cpp (same reason GameObject.h forward-declares it).
+class Transform;
 class GameObject;
 // Component
 ZCLASS()
@@ -103,6 +113,97 @@ public:
     virtual void SetEnabled(bool enabled) { m_Enabled = enabled; }
 
     bool m_TickInEditorMode {false};
+
+    // =========================================================================
+    // Unity 的 Component 门面
+    // =========================================================================
+    //
+    // Unity 的脚本 99% 的"我自己在哪 / 我身上有什么"入口都在 Component 上，
+    // 而这里原本只有 3 个 ZFUNCTION。补的不是新能力（都转发到宿主
+    // GameObject），是**脚本能不能用** —— 组件自己不存组件列表也不存名字，
+    // 脚本没有 `GetComponent` 就只能靠 `gameObject.GetComponent(...)`，
+    // 于是每个 TS behaviour 都要先写一行 `this.component.gameObject` 才能
+    // 开始干活，而 Unity 里这两者从来就是等价的。
+    //
+    // 全部方法对"没有宿主"都是安全的（返回 null / 空 / false），因为组件的
+    // 生命周期里确实存在 `m_ParentObject == nullptr` 的窗口：New 出来到
+    // PostLoadResource 之间。脚本没理由关心这个窗口，但它撞上时也不该崩。
+
+    /// TS 入口 `comp.transform`。等价于 `comp.gameObject.transform`。
+    ///
+    /// 定义在 .cpp：Transform.h 反向 include 了本文件（同 Component.h 顶部
+    /// 的前向声明）。
+    ZFUNCTION()
+    Transform* GetTransform() const;
+
+    /// TS 入口 `comp.name`。
+    ///
+    /// **返回宿主 GameObject 的名字，不是 `Object::name`** —— Unity 的
+    /// `Component.name` 与游戏对象及其所有组件共享同一个名字，脚本里
+    /// `this.name` 拿到的应该是 "Player" 而不是组件自己的空串。
+    /// 没有宿主时退回 `Object::name`（此时它是唯一可信的来源）。
+    ZFUNCTION()
+    const eastl::string& GetName() const;
+
+    ZFUNCTION()
+    void SetName(const eastl::string& new_name);
+
+    /// TS 入口 `comp.tag` / `comp.CompareTag(t)`。转发到宿主；无宿主时
+    /// 返回 `"Untagged"`（TagLayerManager 的默认）—— 不返回空串，理由同
+    /// GameObject::GetTag：空串会让 `CompareTag("")` 恒真。
+    ///
+    /// 按值返回（GameObject::GetTag 是按引用）：无宿主时那个默认值是
+    /// `TagLayerManager::kUntagged`，一个 `constexpr const char*`，没有可
+    /// 以取引用的 eastl::string 存储。
+    ZFUNCTION()
+    eastl::string GetTag() const;
+
+    ZFUNCTION(Name="SetTag")
+    bool SetTagByName(const eastl::string& tag);
+
+    ZFUNCTION(Name="CompareTag")
+    bool CompareTagName(const eastl::string& tag) const;
+
+    /// TS 入口 `comp.GetComponent(type)`：宿主身上的第一个匹配组件。
+    /// 无宿主或类型名没注册时返回 nullptr。
+    ZFUNCTION(Name="GetComponent")
+    Component* GetComponentByTypeName(const std::string& component_type_name) const;
+
+    /// TS 入口 `comp.GetComponents(type)`：宿主身上的全部匹配组件。
+    ZFUNCTION(Name="GetComponents")
+    std::vector<Component*> GetComponentsByTypeName(const std::string& component_type_name) const;
+
+    /// TS 入口 `comp.GetComponentInChildren(type)`：宿主**及其后代**里的第一个。
+    ZFUNCTION(Name="GetComponentInChildren")
+    Component* GetComponentInChildrenByTypeName(const std::string& component_type_name) const;
+
+    ZFUNCTION(Name="GetComponentsInChildren")
+    std::vector<Component*> GetComponentsInChildrenByTypeName(const std::string& component_type_name) const;
+
+    /// TS 入口 `comp.GetComponentInParent(type)`：宿主**及其祖先**里的第一个。
+    ZFUNCTION(Name="GetComponentInParent")
+    Component* GetComponentInParentByTypeName(const std::string& component_type_name) const;
+
+    ZFUNCTION(Name="GetComponentsInParent")
+    std::vector<Component*> GetComponentsInParentByTypeName(const std::string& component_type_name) const;
+
+    /// TS 入口 `comp.SendMessage(name)`。返回真正收到消息的组件数（0 = 拼错了
+    /// 方法名），语义与 GameObject.SendMessage 完全一致。
+    ZFUNCTION(Name="SendMessage")
+    int SendMessageByName(const eastl::string& method_name);
+
+    ZFUNCTION(Name="BroadcastMessage")
+    int BroadcastMessageByName(const eastl::string& method_name);
+
+    ZFUNCTION(Name="SendMessageUpwards")
+    int SendMessageUpwardsByName(const eastl::string& method_name);
+
+    ZSCRIPTPROPERTY(Name="name", Getter="GetName", Setter="SetName")
+    ZSCRIPTPROPERTY(Name="tag", Getter="GetTag", Setter="SetTagByName")
+    ZSCRIPTPROPERTY(Name="transform", Getter="GetTransform")
+    ZSCRIPTPROPERTY(Name="gameObject", Getter="GetParentObject")
+    // `enabled` 不在这里：`m_Enabled` 本身就是 ZPROPERTY()，ZHeaderTool 已经
+    // 把它发布成 `enabled` 了（再挂一条会撞名，工具会直接报错）。
 };
 
 class ComponentDefinitionRes

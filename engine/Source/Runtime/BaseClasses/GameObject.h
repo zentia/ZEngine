@@ -230,6 +230,22 @@ public:
     ZFUNCTION(Name="GetComponentInParent")
     Component* GetComponentInParentByTypeName(const std::string& component_type_name) const;
 
+    /// TS 入口 `go.GetComponents(type)`：**只查自己身上**的全部匹配组件。
+    ///
+    /// 与 `GetComponentsInChildren` 的区别只在范围，不在顺序 —— 两者都是
+    /// m_Components 的挂接顺序。自己身上一个都没有时返回空数组（不是 null），
+    /// 脚本侧 `for (const c of go.GetComponents("X"))` 不用判空。
+    ///
+    /// Unity 的 `GetComponents<T>()` 就是这个语义（不含子对象），补它是因为
+    /// Component.GetComponents 要转发到这里 —— 组件自己不存组件列表。
+    ZFUNCTION(Name="GetComponents")
+    std::vector<Component*> GetComponentsByTypeName(const std::string& component_type_name) const;
+
+    /// TS 入口 `go.GetComponentsInParent(type)`：自己 + 所有祖先里的全部，
+    /// 由近及远（自己、父、祖父……），与 Unity 一致。
+    ZFUNCTION(Name="GetComponentsInParent")
+    std::vector<Component*> GetComponentsInParentByTypeName(const std::string& component_type_name) const;
+
     // ---- 消息（Unity：SendMessage / BroadcastMessage / SendMessageUpwards）---
     //
     // 按名字调用脚本方法。只投递给 TypeScriptComponent（脚本是唯一能用字符串
