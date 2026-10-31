@@ -594,6 +594,23 @@ int main()
             "var a = Color.red; a.r = 0.25;\n"
             "globalThis.__zResult = String(Color.red.r);\n",
             "1");
+    // ⚠️ 通道必须**按名字**对上，不能按位置。这里的样本三个通道互不相等
+    // （0.1 / 0.2 / 0.4）：此前所有样例都是灰的或 g == b，于是 FromJs 把 g、b
+    // 读反了也全绿 —— 只有非对称样本才分得出来。t = 0 让 Lerp 原样返回 a。
+    CheckJs("I14", "JS 字面量按名字映射到通道（g/b 不互换）", script_env,
+            "var c = Color.Lerp({r: 0.1, g: 0.2, b: 0.4}, Color.white, 0);\n"
+            "globalThis.__zResult = c.r.toFixed(3) + ',' + c.g.toFixed(3) + ',' + c.b.toFixed(3) + ',' + c.a.toFixed(3);\n",
+            "0.100,0.200,0.400,1.000");
+    // 色相环绕：负的、且跨过 -1 的 h（见 UnityParitySmokeTest 的 AZ28 —— 只测
+    // -0.25 分不出 floor 有没有生效）。
+    CheckJs("I16", "h = -1.25 与 h = 0.75 同色（floor 环绕）", script_env,
+            "function f(c){ return c.r.toFixed(2) + ',' + c.g.toFixed(2) + ',' + c.b.toFixed(2); }\n"
+            "globalThis.__zResult = f(Color.HSVToRGB(-1.25, 1, 1));\n",
+            "0.50,0.00,1.00");
+    // 字面量里给了 a 就得用它（上面的缺省分支不能反过来把显式值盖掉）。
+    CheckJs("I15", "字面量显式给出的 alpha 被保留", script_env,
+            "globalThis.__zResult = Color.Lerp({r: 0, g: 0, b: 0, a: 0.25}, Color.white, 0).a.toFixed(3);\n",
+            "0.250");
 
     std::printf("\n========================================\n");
     std::printf("总计 %d 项检查，失败 %d 项\n", g_Checks, g_Failed);

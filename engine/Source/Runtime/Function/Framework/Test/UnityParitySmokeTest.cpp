@@ -6161,6 +6161,12 @@ namespace
               "AZ21", "hue wraps: h = 1.25 is the same colour as h = 0.25");
         Check(SameColor(Runtime::Color::HSVToRGB(-0.25f, 1.0f, 1.0f), Runtime::Color::HSVToRGB(0.75f, 1.0f, 1.0f)),
               "AZ22", "and a negative hue wraps the other way");
+        // ⚠️ 只测 -0.25 分不出对错：`hue < 0 就 +1` 这一句自己就能把它救回来，
+        // 于是 `h - std::floor(h)` 那一步是死代码也没人发现。跨过 -1 才是真正
+        // 需要 floor 的地方（floor(-1.25) == -2，不是 -1）。变异测试里
+        // "去掉 floor" 曾经全绿 —— 这条是它的回归门。
+        Check(SameColor(Runtime::Color::HSVToRGB(-1.25f, 1.0f, 1.0f), Runtime::Color::HSVToRGB(0.75f, 1.0f, 1.0f)),
+              "AZ28", "a hue below -1 wraps too (std::floor, not a bare +1)");
 
         // 往返：RGB -> HSV -> RGB 必须闭合，否则"取色 -> 改饱和 -> 写回"会把
         // 颜色慢慢漂掉（每次往返丢一点，几十帧后肉眼可见）。

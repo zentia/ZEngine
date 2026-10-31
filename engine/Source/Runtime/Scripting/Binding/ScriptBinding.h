@@ -631,8 +631,8 @@ namespace ZScript
         {
             Color out;
             out.r = static_cast<float>(apis->get_value_double(env, apis->get_property(env, v, "r")));
-            out.g = static_cast<float>(apis->get_value_double(env, apis->get_property(env, v, "b")));
-            out.b = static_cast<float>(apis->get_value_double(env, apis->get_property(env, v, "g")));
+            out.g = static_cast<float>(apis->get_value_double(env, apis->get_property(env, v, "g")));
+            out.b = static_cast<float>(apis->get_value_double(env, apis->get_property(env, v, "b")));
             // A script literal that omits `a` (very common -- most colours are
             // opaque) must not come back as alpha 0, i.e. invisible. Unity's own
             // `new Color(r, g, b)` defaults alpha to 1 as well.
