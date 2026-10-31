@@ -24,9 +24,11 @@
 //      that catches that.
 // =============================================================================
 
+#include "Runtime/Application/Application.h"
 #include "Runtime/BaseClasses/GameObject.h"
 #include "Runtime/Core/Base/SystemRegistry.h"
 #include "Runtime/Core/Math/UnityRandom.h"
+#include "Runtime/Function/Command/CommandSystem.h"
 #include "Runtime/Function/Framework/Component/Behaviour.h"
 #include "Runtime/Function/Framework/Coroutine/Coroutine.h"
 #include "Runtime/Function/Framework/TagLayer/TagLayerManager.h"
@@ -34,6 +36,12 @@
 #include "Runtime/Function/Physics/Physics.h"
 #include "Runtime/Function/Physics/PhysicsManager.h"
 #include "Runtime/Function/Physics/PhysicsScene.h"
+#include "Runtime/Function/PlayerSettings/PlayerSettings.h"
+#include "Runtime/Function/Render/WindowSystem.h"
+#include "Runtime/Project/ProjectInfo.h"
+#include "Runtime/Resource/Config/ConfigManager.h"
+#include "Runtime/Scripting/ScriptDebug/ScriptDebug.h"
+#include "Runtime/Scripting/ScriptScreen/ScriptScreen.h"
 
 #include "Jolt/Jolt.h"
 #include "Jolt/Physics/Body/Body.h"
@@ -44,6 +52,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <memory>
 #include <sstream>
@@ -1216,6 +1225,263 @@ namespace
               "K11", "the scheduler is registered, so GET_SYSTEM finds it");
     }
 
+    // ---------------------------------------------------------------- L ----
+    void TestApplicationFacade()
+    {
+        // 搭一个"最小工程"：ConfigManager 读一份临时 ini，ProjectInfo 只填字段不
+        // Initialize（Initialize 要真的 .zproject 与 CommandSystem 的命令行）。
+        // 这样下面每个 getter 的期望值都是确定的，而不是"取决于谁在跑测试"。
+        std::error_code ec;
+        const std::filesystem::path root =
+            std::filesystem::temp_directory_path() / "zengine_unity_parity_app";
+        std::filesystem::create_directories(root, ec);
+        {
+            std::ofstream ini(root / "ZEditor.ini", std::ios::binary);
+            ini << "BinaryRootFolder=.\nAssetFolder=Assets\n";
+        }
+
+        CommandSystem* commands = new CommandSystem();
+        commands->getConfigFilePath() = root / "ZEditor.ini";
+        SystemRegistry::GetInstance().RegisterSystem(commands);
+
+        ConfigManager* config = new ConfigManager();
+        SystemRegistry::GetInstance().RegisterSystem(config);
+        Check(config->Initialize(), "L0", "ConfigManager reads the temp ini");
+
+        ProjectInfo* project = new ProjectInfo();
+        project->project_path = root;
+        project->name = "ParityTest";
+        project->version = "1.2.3";
+        project->engine_version = "0.9.0";
+        SystemRegistry::GetInstance().RegisterSystem(project);
+
+        PlayerSettings* settings = new PlayerSettings();
+        SystemRegistry::GetInstance().RegisterSystem(settings);
+        Check(settings->Initialize(), "L1", "PlayerSettings picks up the project defaults");
+
+        SystemRegistry::GetInstance().RegisterSystem(new Application());
+        Check(GET_SYSTEM(Application) != nullptr, "L2", "the application is reachable via GET_SYSTEM");
+
+        // --- 路径 ---
+        const std::string data_path = Application::GetDataPath();
+        Check(!data_path.empty(), "L3", "GetDataPath is not empty");
+        Check(std::filesystem::path(data_path).filename() == "Assets",
+              "L4", "GetDataPath points at the asset folder");
+        const std::string streaming = Application::GetStreamingAssetsPath();
+        Check(std::filesystem::path(streaming).filename() == "StreamingAssets",
+              "L5", "GetStreamingAssetsPath is dataPath/StreamingAssets");
+        Check(streaming.size() > data_path.size() && streaming.compare(0, data_path.size(), data_path) == 0,
+              "L6", "and is actually nested under it");
+        Check(std::filesystem::path(Application::GetProjectPath()) ==
+                  std::filesystem::weakly_canonical(root),
+              "L7", "GetProjectPath is the project root");
+
+        // --- 身份 ---
+        Check(Application::GetProductName() == "ParityTest", "L8", "GetProductName follows the project");
+        Check(Application::GetVersion() == "1.2.3", "L9", "GetVersion follows the project");
+        Check(Application::GetEngineVersion() == "0.9.0", "L10", "GetEngineVersion reads ProjectInfo");
+        Check(!Application::GetCompanyName().empty(), "L11", "GetCompanyName has a default");
+        Check(Application::GetPersistentDataPath().find("ParityTest") != std::string::npos,
+              "L12", "the persistent folder is per-product (not a shared 'ZEngine' one)");
+
+        // --- 状态位 ---
+        Check(!Application::GetIsPlaying(), "L13", "GetIsPlaying is false by default");
+        g_isPlaying = true;
+        Check(Application::GetIsPlaying(), "L14", "and follows g_isPlaying");
+        g_isPlaying = false;
+        Check(!Application::GetIsEditor(), "L15", "GetIsEditor is false in a runtime-only process");
+
+        // Editor/Player 的取值是相邻的（1/2, 3/4, 5/6），所以"编辑器态一定是奇数"
+        // 这条在任何桌面平台上都成立 —— 比硬编码 WindowsEditor 可移植。
+        const int player_platform = static_cast<int>(Application::GetPlatform());
+        Check(player_platform % 2 == 0, "L16", "a player's platform value is even");
+        g_isEditor = true;
+        Check(static_cast<int>(Application::GetPlatform()) == player_platform - 1,
+              "L17", "the editor variant is the preceding value");
+        g_isEditor = false;
+        Check(Application::GetPlatform() != RuntimePlatform::Unknown, "L18", "the platform resolves");
+        Check(!Application::GetPlatformName().empty() && Application::GetPlatformName() != "Unknown",
+              "L19", "and has a printable name");
+
+        // --- 限帧 / 后台 ---
+        Check(Application::GetTargetFrameRate() == -1, "L20", "the default is 'unlimited' (-1)");
+        Application::SetTargetFrameRate(30);
+        Check(Application::GetTargetFrameRate() == 30, "L21", "SetTargetFrameRate sticks");
+        Application::SetTargetFrameRate(0);
+        Check(Application::GetTargetFrameRate() == 0, "L22", "0 means no limit");
+
+        Check(Application::GetRunInBackground(), "L23", "runInBackground defaults to true");
+        Application::SetRunInBackground(false);
+        Check(!Application::GetRunInBackground(), "L24", "and can be turned off");
+        Application::SetRunInBackground(true);
+
+        // --- 退出 ---
+        Check(!GET_SYSTEM(Application)->IsQuit(), "L25", "not quitting before Quit()");
+        Application::Quit();
+        Check(GET_SYSTEM(Application)->IsQuit(), "L26", "Quit() sets the quit flag");
+    }
+
+    // ---------------------------------------------------------------- M ----
+    // 必须**先于**任何注册 WindowSystem 的组跑：M0 断言的是"根本没注册"这一支。
+    void TestScreenFacade()
+    {
+        Check(Screen::GetWidth() == 0, "M0", "no WindowSystem at all: documented 0, not the fallback");
+
+        WindowSystem* window_system = new WindowSystem();
+        SystemRegistry::GetInstance().RegisterSystem(window_system);
+
+        // 有系统但没有窗口（无头 / 尚未创建）：1280x720 是 WindowSystem 的兜底。
+        // 与 M0 的 0 必须分得开 —— 两个不同的失败模式。
+        Check(Screen::GetWidth() == 1280, "M1", "registered but windowless: the 1280x720 fallback");
+        Check(Screen::GetHeight() == 720, "M2", "and 720 high");
+        Check(std::fabs(Screen::GetDpi() - 1.0f) < 1.0e-5f, "M3", "dpi is 1 with no DPI info");
+        Check(Screen::GetMonitorCount() == 0, "M4", "no monitor info without a platform application");
+        Check(Screen::GetPrimaryMonitorWidth() == 0, "M5", "and the work area is all zeroes");
+        Check(Screen::GetPrimaryMonitorHeight() == 0, "M6", "...");
+        Check(Screen::GetPrimaryMonitorX() == 0 && Screen::GetPrimaryMonitorY() == 0, "M7", "...");
+
+        // 宿主表面那一支（移动端 / Web）：尺寸由宿主推入，Screen 要照着报。
+        window_system->SetHostWindowSize(1920, 1080);
+        Check(Screen::GetWidth() == 1920, "M8", "the host surface size is reported");
+        Check(Screen::GetHeight() == 1080, "M9", "...");
+        Check(Screen::GetFramebufferWidth() == 1920, "M10", "and so is the framebuffer size");
+        Check(Screen::GetFramebufferHeight() == 1080, "M11", "...");
+        Check(std::fabs(Screen::GetDpi() - 1.0f) < 1.0e-5f, "M12", "dpi derives from buffer/window = 1");
+
+        // SetResolution 在没有主窗口时是空操作（宿主拥有尺寸，引擎改了也会被
+        // 下一次 surfaceChanged 覆盖）。要的是"不崩、也不偷偷改状态"。
+        Screen::SetResolution(800, 600);
+        Check(Screen::GetWidth() == 1920, "M13", "SetResolution is a no-op without a real window");
+
+        window_system->SetHostWindowSize(0, 0);
+        Check(Screen::GetWidth() == 1280, "M14", "clearing the host size falls back again");
+    }
+
+    // ---------------------------------------------------------------- N ----
+    void TestApplicationScreenWiring()
+    {
+        const std::string app_header = ReadFile("Source/Runtime/Application/Application.h");
+        Check(!app_header.empty(), "N0", "Application.h is readable");
+        Check(CountOccurrences(app_header, "ZENUM()") >= 1, "N1", "RuntimePlatform is published to scripts");
+        Check(CountOccurrences(app_header, "enum class RuntimePlatform") >= 1,
+              "N2", "as a real enum, not a bag of ints");
+        Check(CountOccurrences(app_header, "ZFUNCTION()") >= 15,
+              "N3", "the whole Application facade is published");
+
+        const std::string app_source = ReadFile("Source/Runtime/Application/Application.cpp");
+        Check(!app_source.empty(), "N4", "Application.cpp is readable");
+        // Quit() 只置 m_Isquit 的话主循环永远不退出 —— 它看的是
+        // WindowSystem::ShouldClose()。这是个"看起来生效了"的死门。
+        Check(CountOccurrences(app_source, "RequestClose") >= 1,
+              "N5", "Quit() also asks the window to close");
+        Check(CountOccurrences(app_source, "IsWindowFocused") >= 1,
+              "N6", "runInBackground is enforced against real OS focus");
+        Check(CountOccurrences(app_source, "PollEvents") >= 2,
+              "N7", "and the background branch still pumps messages (no 'not responding')");
+        Check(CountOccurrences(app_source, "LimitFrameRate") >= 2,
+              "N8", "the frame limiter is defined AND called");
+        Check(CountOccurrences(app_source, "Z_PLATFORM_IS_") >= 5,
+              "N9", "the platform switch uses the engine's own macros (iOS is not macOS)");
+
+        const std::string window_header = ReadFile("Source/Runtime/Function/Render/WindowSystem.h");
+        Check(CountOccurrences(window_header, "IsWindowFocused") >= 1,
+              "N10", "WindowSystem exposes focus");
+        const std::string window_source = ReadFile("Source/Runtime/Function/Render/WindowSystem.cpp");
+        Check(CountOccurrences(window_source, "m_IsWindowFocused") >= 1,
+              "N11", "focus is STORED, not just forwarded (the callback fires once)");
+
+        const std::string editor_source = ReadFile("Source/Editor/EditorApplication/EditorApplication.cpp");
+        Check(!editor_source.empty(), "N12", "EditorApplication.cpp is readable");
+        Check(CountOccurrences(editor_source, "g_isEditor = true") >= 1,
+              "N13", "the editor actually sets g_isEditor");
+        // 顺序断言，不是计数：编辑模式下 TS 组件也 Tick（[ExecuteAlways]），
+        // 所以这个量必须在 Initialize 读任何东西之前就写好，而不是"在某处写了"。
+        const std::string::size_type set_pos = editor_source.find("g_isEditor = true");
+        const std::string::size_type first_read = editor_source.find("GetProjectPath()");
+        Check(set_pos != std::string::npos && first_read != std::string::npos && set_pos < first_read,
+              "N14", "and before Initialize reads anything");
+
+        const std::string screen_header = ReadFile("Source/Runtime/Scripting/ScriptScreen/ScriptScreen.h");
+        Check(!screen_header.empty(), "N15", "ScriptScreen.h is readable");
+        Check(CountOccurrences(screen_header, "ZCLASS()") >= 1, "N16", "Screen is a script class");
+        Check(CountOccurrences(screen_header, "SetSize") >= 1,
+              "N17", "SetResolution really resizes the window");
+        Check(CountOccurrences(screen_header, "GetPrimaryMonitorWorkArea") >= 1,
+              "N18", "monitor info comes from GenericApplication");
+        // 屏幕坐标与像素是两件事（DPI 缩放）。无头测试里两者恰好同值，所以行为
+        // 断言分不出对错 —— 只能从源码上钉住各取各的源。
+        // 精确个数不是吹毛求疵：3 = width / height / dpi 各一处。把 GetWidth
+        // 改成读 GetFramebufferSize 之后总数仍然是 2，>= 2 的阈值放它过去 ——
+        // 而无头测试里两者恰好同值，行为断言也放它过去。
+        Check(CountOccurrences(screen_header, "GetWindowSize()") == 3,
+              "N19", "GetWidth/GetHeight read the WINDOW size, not the framebuffer");
+        Check(CountOccurrences(screen_header, "GetFramebufferSize()") == 3,
+              "N20", "and the framebuffer accessors read the framebuffer (dpi uses it too)");
+        Check(CountOccurrences(screen_header, "GetDpiScale") >= 1,
+              "N21", "dpi prefers the platform window's own scale");
+    }
+
+    // ---------------------------------------------------------------- P ----
+    void TestDebugFacade()
+    {
+        // 期望值用**另一套**宏算：MSVC 的 Debug 定义 _DEBUG（不是 NDEBUG），
+        // 所以用 _DEBUG 反推。两条独立的判据互相印证 —— 直接拿 `!defined(NDEBUG)`
+        // 比就变成同义反复，把 IsDebugBuild 改成 `return false` 也抓不到。
+#if defined(_MSC_VER)
+        const bool expected_debug_build =
+#if defined(_DEBUG)
+            true;
+#else
+            false;
+#endif
+#else
+        const bool expected_debug_build =
+#if defined(NDEBUG)
+            false;
+#else
+            true;
+#endif
+#endif
+        Check(ScriptDebug::IsDebugBuild() == expected_debug_build,
+              "P0", "IsDebugBuild agrees with the compiler's own build macros");
+
+        // 没有调试器时 Break 必须只记日志然后返回 —— CI 上无条件 __debugbreak
+        // 会让测试进程以 0x80000003 死掉，连日志都来不及刷。
+        ScriptDebug::Break("UnityParitySmokeTest::TestDebugFacade");
+        Check(true, "P1", "Break() with no debugger attached returns instead of killing the process");
+
+        const std::string debug_source = ReadFile("Source/Runtime/Scripting/ScriptDebug/ScriptDebug.cpp");
+        Check(!debug_source.empty(), "P2", "ScriptDebug.cpp is readable");
+        Check(CountOccurrences(debug_source, "IsDebuggerAttached") >= 2,
+              "P3", "Break() really checks for a debugger (declared AND used)");
+        Check(CountOccurrences(debug_source, "ZEngineForceFlushLogs") >= 1,
+              "P4", "and flushes the async log before it might break");
+
+        const std::string env_source = ReadFile("Source/Runtime/Scripting/Wrapper/ScriptEnv.cpp");
+        Check(CountOccurrences(env_source, "LogException:") >= 1,
+              "P5", "the shim exposes Debug.LogException");
+        Check(CountOccurrences(env_source, "Assert: function") >= 1,
+              "P6", "and Debug.Assert");
+        Check(CountOccurrences(env_source, "IsDebugBuild: g.__zdebug_native_is_debug_build") >= 1,
+              "P7", "and Debug.IsDebugBuild (bound to the native sink, not a JS constant)");
+        Check(CountOccurrences(env_source, "Break:        g.__zdebug_native_break") >= 1,
+              "P8", "and Debug.Break");
+
+        const std::string binding_source = ReadFile("Source/Runtime/Scripting/Binding/ScriptBinding.cpp");
+        Check(CountOccurrences(binding_source, "function LogException(e: any): void;") >= 1,
+              "P9", "the .d.ts declares LogException");
+        Check(CountOccurrences(binding_source, "function Assert(condition: boolean") >= 1,
+              "P10", "and Assert");
+        Check(CountOccurrences(binding_source, "function IsDebugBuild(): boolean;") >= 1,
+              "P11", "and IsDebugBuild");
+        Check(CountOccurrences(binding_source, "function Break(message?: string): void;") >= 1,
+              "P12", "and Break");
+        // `Debug` 一旦变成 ZCLASS：绑定类的全局是构造器，会把 shim 装的那个
+        // JS 对象整个覆盖掉，而且 `Log(...args)` 的多参也没了。
+        Check(CountOccurrences(binding_source, "declare namespace Debug") >= 1,
+              "P13", "Debug stays a namespace (a bound class would clobber the JS object)");
+    }
+
     // ---------------------------------------------------------------- B ----
     void TestWiringGate()
     {
@@ -1319,6 +1585,12 @@ int main()
     TestPhysicsWiring();
     TestInvokes();
     TestInvokeWiring();
+    // 顺序有讲究：TestScreenFacade 的 M0 断言"WindowSystem 还没注册"，所以它
+    // 必须跑在 TestApplicationFacade（会注册一堆系统）之前。
+    TestScreenFacade();
+    TestApplicationFacade();
+    TestApplicationScreenWiring();
+    TestDebugFacade();
     TestWiringGate();
 
     std::printf("\n=== %d checks, %d failures ===\n", g_Checks, g_Failures);

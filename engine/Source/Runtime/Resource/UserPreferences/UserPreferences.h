@@ -122,14 +122,18 @@ public:
      */
     std::filesystem::path GetPreferencesFilePath() const;
 
-private:
-    std::filesystem::path m_PreferencesFilePath;
-    bool m_Dirty {false};
-    rapidjson::Document m_Preferences;
     /**
      * @brief Get the user preferences directory path
      * @param app_name Application name
      * @return Path to preferences directory
+     *
+     * public：`Application.GetPersistentDataPath()` 就是它 —— 脚本的存档目录
+     * 和偏好设置文件必须在同一个地方，否则一个游戏会在磁盘上留两个目录。
      */
     static std::filesystem::path GetUserPreferencesDirectory(const std::string& app_name);
+
+private:
+    std::filesystem::path m_PreferencesFilePath;
+    bool m_Dirty {false};
+    rapidjson::Document m_Preferences;
 };

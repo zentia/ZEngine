@@ -129,6 +129,14 @@ public:
 
     void SetFocusMode(bool mode);
 
+    /// 主窗口当前是否有焦点。
+    ///
+    /// 与 `GetFocusMode()` 完全无关：那个是"光标锁定 / 输入直通"的编辑期模式，
+    /// 这个是 OS 焦点。`Application::Run()` 的 runInBackground 判定用这个。
+    ///
+    /// 没有引擎窗口时恒 true（移动端 / Web / 外部宿主 —— 那里不存在失焦）。
+    bool IsWindowFocused() const { return m_Application == nullptr || m_IsWindowFocused; }
+
 private:
     // 回调转发（由 GenericWindow 回调调用）
     void OnReset();
@@ -147,6 +155,7 @@ private:
 
     std::unique_ptr<GenericApplication> m_Application;
     bool                                   m_IsFocusMode{false};
+    bool                                   m_IsWindowFocused{true};
     SplashScreen*                          m_SplashScreen{nullptr};
 
     /// 宿主推入的绘制表面（移动端）。引擎不拥有它，也不负责释放。

@@ -5,6 +5,7 @@
 #include "Runtime/Scripting/Backend.h"
 #include "Runtime/Scripting/Binding/ScriptBinding.h"
 #include "Runtime/Scripting/Native/PuertsNative.h"
+#include "Runtime/Scripting/ScriptDebug/ScriptDebug.h"
 #include "Runtime/Scripting/Wrapper/ObjectPool.h"
 #include "Runtime/Scripting/Wrapper/Puerts.h"
 
@@ -120,6 +121,41 @@ namespace
             }
         }
         zEmit(level, joined.c_str());
+    }
+
+    // `Debug.IsDebugBuild()`。无参，返回编译期常量 —— 这个值必须来自 C++，
+    // JS 侧没有"当前二进制是不是 Release"的任何线索。
+    void zNativeIsDebugBuildCallback(struct pesapi_ffi* apis, pesapi_callback_info info)
+    {
+        auto env = pesapi_get_env(apis, info);
+        pesapi_value result = pesapi_create_boolean(apis, env, ScriptDebug::IsDebugBuild());
+        pesapi_add_return(apis, info, result);
+    }
+
+    // `Debug.Break(msg)`。参数已经在 JS 侧拼成单个字符串。
+    void zNativeBreakCallback(struct pesapi_ffi* apis, pesapi_callback_info info)
+    {
+        auto env = pesapi_get_env(apis, info);
+        const int argc = pesapi_get_args_len(apis, info);
+        std::string joined;
+        for (int i = 0; i < argc; ++i)
+        {
+            pesapi_value v = pesapi_get_arg(apis, info, i);
+            if (i > 0)
+            {
+                joined.push_back(' ');
+            }
+            char stack_buf[512];
+            size_t len = sizeof(stack_buf) - 1;
+            if (v && pesapi_is_string(apis, env, v))
+            {
+                if (const char* s = pesapi_get_value_string_utf8(apis, env, v, stack_buf, &len))
+                {
+                    joined.append(s, len);
+                }
+            }
+        }
+        ScriptDebug::Break(joined.c_str());
     }
 }  // namespace
 
@@ -244,6 +280,18 @@ void ScriptEnv::InstallConsoleAndDebugGlobals()
     installSink("__zlog_native_warning", LogLevel::Warning);
     installSink("__zlog_native_error", LogLevel::Error);
 
+    // `Debug` 的两个"JS 做不了"的口子：编译期事实（isDebugBuild）与调试器
+    // 附着状态（Break）。见 ScriptDebug.h 关于为什么 `Debug` 不是绑定类。
+    {
+        pesapi_value is_debug_build = pesapi_create_function(
+            m_Papis, env, zNativeIsDebugBuildCallback, nullptr, /*finalize=*/nullptr);
+        pesapi_set_property(m_Papis, env, global, "__zdebug_native_is_debug_build", is_debug_build);
+
+        pesapi_value script_break = pesapi_create_function(
+            m_Papis, env, zNativeBreakCallback, nullptr, /*finalize=*/nullptr);
+        pesapi_set_property(m_Papis, env, global, "__zdebug_native_break", script_break);
+    }
+
     // 2) JS-side shim. Stringify each argument (so callers can pass numbers,
     //    objects, etc.) and forward to the native sink as a single joined
     //    string. We deliberately avoid a real `JSON.stringify` for objects
@@ -276,7 +324,23 @@ void ScriptEnv::InstallConsoleAndDebugGlobals()
         "  g.Debug = {"
         "    Log:        makeFwd(g.__zlog_native_info),"
         "    LogWarning: makeFwd(g.__zlog_native_warning),"
-        "    LogError:   makeFwd(g.__zlog_native_error)"
+        "    LogError:   makeFwd(g.__zlog_native_error),"
+        // Unity 的 Debug.LogException：优先打 stack，退化为 String(e)。
+        // stack 才是"异常从哪儿抛出来"的答案，只打 message 等于没打。
+        "    LogException: function(e) {"
+        "      var s = (e && e.stack) ? e.stack : String(e);"
+        "      g.__zlog_native_error('[Exception] ' + s);"
+        "    },"
+        // Unity 的 Debug.Assert(condition, message)。条件为假时记一条 error
+        // —— 与 C++ 的 assert 不同，**不中断**：脚本的一条断言不该把整个
+        // 进程带走（Unity 也是只打日志，除非 BuildOptions 开了 halt）。
+        "    Assert: function(cond, msg) {"
+        "      if (!cond) {"
+        "        g.__zlog_native_error('[Assert] ' + (msg === undefined ? '(no message)' : String(msg)));"
+        "      }"
+        "    },"
+        "    IsDebugBuild: g.__zdebug_native_is_debug_build,"
+        "    Break:        g.__zdebug_native_break"
         "  };"
         "  g.print = makeFwd(g.__zlog_native_info);"
         // P5: pesapi has no 'new' operator, so we synthesize one. C++ side

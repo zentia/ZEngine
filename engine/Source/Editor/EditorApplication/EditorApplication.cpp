@@ -61,6 +61,11 @@ std::vector<std::type_index> Editor::GetDependencies() const
 
 bool Editor::Initialize()
 {
+    // 必须在**任何**可能读它的代码之前：脚本侧 `Application.GetIsEditor()` /
+    // `Application.GetPlatform()` 都吃这个量，而 TS 组件在编辑模式下也 Tick
+    // （[ExecuteAlways] 那一支），Initialize 回来之前就可能已经跑过一轮。
+    g_isEditor = true;
+
     auto&& projectPath = GET_SYSTEM(CommandSystem)->GetProjectPath();
     if (projectPath.empty())
     {

@@ -313,6 +313,12 @@ void WindowSystem::OnWindowSize(int width, int height)
 
 void WindowSystem::OnWindowFocus(int focused)
 {
+    // 焦点状态必须存在这里 —— `Application::Run()` 的 runInBackground 分支要
+    // 查它，而回调只在焦点**变化**的那一帧触发一次，事后问不到。
+    //
+    // 初值 true：无引擎窗口的那一支（移动端 / Web / 外部宿主）根本没有失焦这
+    // 回事，恒 true 才不会让整个世界一上来就不推进。
+    m_IsWindowFocused = (focused != 0);
     for (auto& func : m_OnWindowFocusFunc) func(focused);
 }
 

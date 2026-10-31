@@ -207,10 +207,22 @@ namespace
         "}\n"
         "\n"
         "/** Engine-side logging facade. Routes to the [ZScripting] log category. */\n"
+        // 注意：`Debug` 是 namespace 而不是 class —— 它是一个纯 JS 对象
+        // （ScriptEnv 的 shim），支持 `Debug.Log("a", 1, obj)` 任意个参数，
+        // 而 ZFUNCTION 的签名是固定的。改成绑定类会同时丢掉多参和覆盖掉
+        // 那个 JS 对象。见 Runtime/Scripting/ScriptDebug/ScriptDebug.h。
         "declare namespace Debug {\n"
         "    function Log(...args: any[]): void;\n"
         "    function LogWarning(...args: any[]): void;\n"
         "    function LogError(...args: any[]): void;\n"
+        "    /** 打异常的 stack（没有就退化为 String(e)）。 */\n"
+        "    function LogException(e: any): void;\n"
+        "    /** 条件为假时记一条 error。与 C++ assert 不同，不中断进程。 */\n"
+        "    function Assert(condition: boolean, message?: string): void;\n"
+        "    /** 当前二进制是不是开发构建（判据是 NDEBUG）。 */\n"
+        "    function IsDebugBuild(): boolean;\n"
+        "    /** 日志留痕并挂住调试器；没有调试器时只记日志，不中断。 */\n"
+        "    function Break(message?: string): void;\n"
         "}\n"
         "\n"
         "/** Standard browser-style console, also routed into [ZScripting]. */\n"

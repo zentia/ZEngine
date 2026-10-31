@@ -1,6 +1,7 @@
 #include "Application.h"
 
 #include "Runtime/Core/Base/Macro.h"
+#include "Runtime/Core/Base/Platform.h"
 #include "Runtime/Core/Base/ScopedAutoreleasePool.h"
 #include "Runtime/Core/Memory/MemoryManager.h"
 #include "Runtime/Core/Time/TimeState.h"
@@ -11,6 +12,8 @@
 #include "Runtime/Function/Particle/ParticleManager.h"
 #include "Runtime/Function/Physics/PhysicsManager.h"
 #include "Runtime/Function/PlayerSettings/PlayerSettings.h"
+#include "Runtime/Project/ProjectInfo.h"
+#include "Runtime/Resource/Config/ConfigManager.h"
 #include "Runtime/Function/Render/DebugDraw/DebugDrawManager.h"
 #include "Runtime/Function/Render/RenderSystem.h"
 #include "Runtime/Function/Render/WindowSystem.h"
@@ -29,7 +32,10 @@
     #include <mach-o/dyld.h>
 #endif
 
+#include <thread>
+
 bool g_isPlaying {false};
+bool g_isEditor {false};
 
 std::unordered_set<std::string> g_editorTickComponentTypes {};
 
@@ -84,11 +90,50 @@ void Application::Run()
 {
     while (!GET_SYSTEM(WindowSystem)->ShouldClose())
     {
+        // runInBackground == false：失焦就停世界，但**必须继续泵消息**。
+        //
+        // 不泵消息的后果不是"卡住"而是"未响应"—— OS 检测到窗口几秒没取
+        // 事件就把标题栏变灰、弹"程序未响应"。所以这里 continue 之前先
+        // PollEvents。
+        //
+        // 时间也不能不推进：CalculateDeltaTime 已经更新了 m_LastTickTimePoint
+        // （下一行就调用），所以恢复焦点那一帧的 delta 是"失焦了多久"——
+        // 一个巨大的值。逻辑侧看到的就表现为角色瞬移。这里先把这一帧吃掉
+        // 再 continue，让返回的那一帧 delta 是正常的一帧。
+        if (!m_RunInBackground && !GET_SYSTEM(WindowSystem)->IsWindowFocused())
+        {
+            GET_SYSTEM(WindowSystem)->PollEvents();
+            CalculateDeltaTime();
+            continue;
+        }
+
+        const std::chrono::steady_clock::time_point frame_start = std::chrono::steady_clock::now();
         const float delta_time = CalculateDeltaTime();
         if (!TickOneFrame(delta_time))
         {
             break;
         }
+
+        LimitFrameRate(frame_start);
+    }
+}
+
+void Application::LimitFrameRate(std::chrono::steady_clock::time_point frame_start)
+{
+    if (m_TargetFrameRate <= 0)
+    {
+        return;
+    }
+
+    // 预算按目标帧率算，减掉本帧已经花掉的时间。超预算就不睡（负值 sleep_for
+    // 直接返回，不用自己 clamp）。
+    const std::chrono::duration<float> budget {1.0f / static_cast<float>(m_TargetFrameRate)};
+    const auto elapsed = std::chrono::steady_clock::now() - frame_start;
+    const auto remaining = std::chrono::duration_cast<std::chrono::nanoseconds>(budget) -
+                           std::chrono::duration_cast<std::chrono::nanoseconds>(elapsed);
+    if (remaining > std::chrono::nanoseconds::zero())
+    {
+        std::this_thread::sleep_for(remaining);
     }
 }
 
@@ -260,6 +305,196 @@ bool Application::RendererTick(float delta_time)
 }
 
 const float Application::s_Fpsalpha = 1.f / 100;
+
+// =============================================================================
+// 脚本门面实现
+// =============================================================================
+//
+// 这些全是 static，靠 GET_SYSTEM() 拿当前进程里的那一个系统实例。每个 getter
+// 都先判空：无工程启动、独立工具、单测里只注册了部分系统，都是合法状态，
+// 返回空串比崩溃好（脚本侧拿到空串至少能自己判）。
+
+namespace
+{
+    Application* App()
+    {
+        return SystemRegistry::GetInstance().GetSystem<Application>();
+    }
+
+    std::filesystem::path Normalize(const std::filesystem::path& path)
+    {
+        std::error_code ec;
+        const std::filesystem::path weakly = std::filesystem::weakly_canonical(path, ec);
+        return ec ? path : weakly;
+    }
+}  // namespace
+
+void Application::Quit()
+{
+    if (Application* self = App())
+    {
+        self->RequestQuit();
+    }
+    // RequestQuit 只置 m_Isquit —— 主循环看的是 WindowSystem::ShouldClose()，
+    // 所以这里必须同时通知窗口系统，否则 Quit() 是个空操作。
+    if (auto* window_system = GET_SYSTEM(WindowSystem))
+    {
+        window_system->RequestClose();
+    }
+}
+
+std::string Application::GetDataPath()
+{
+    if (auto* config = GET_SYSTEM(ConfigManager))
+    {
+        return Normalize(config->GetAssetFolder()).string();
+    }
+    return {};
+}
+
+std::string Application::GetProjectPath()
+{
+    if (auto* project = GET_SYSTEM(ProjectInfo))
+    {
+        return Normalize(project->GetProjectRoot()).string();
+    }
+    return {};
+}
+
+std::string Application::GetStreamingAssetsPath()
+{
+    if (auto* config = GET_SYSTEM(ConfigManager))
+    {
+        return Normalize(config->GetAssetFolder() / "StreamingAssets").string();
+    }
+    return {};
+}
+
+std::string Application::GetPersistentDataPath()
+{
+    auto* settings = GET_SYSTEM(PlayerSettings);
+    if (settings == nullptr)
+    {
+        return {};
+    }
+    return Normalize(UserPreferences::GetUserPreferencesDirectory(settings->m_ProductName)).string();
+}
+
+std::string Application::GetProductName()
+{
+    if (auto* settings = GET_SYSTEM(PlayerSettings))
+    {
+        return settings->m_ProductName;
+    }
+    return {};
+}
+
+std::string Application::GetCompanyName()
+{
+    if (auto* settings = GET_SYSTEM(PlayerSettings))
+    {
+        return settings->m_CompanyName;
+    }
+    return {};
+}
+
+std::string Application::GetVersion()
+{
+    if (auto* settings = GET_SYSTEM(PlayerSettings))
+    {
+        return settings->m_Version;
+    }
+    return {};
+}
+
+std::string Application::GetEngineVersion()
+{
+    if (auto* project = GET_SYSTEM(ProjectInfo))
+    {
+        return project->engine_version;
+    }
+    return {};
+}
+
+RuntimePlatform Application::GetPlatform()
+{
+    // 用 Z_PLATFORM_IS_*（Platform.h 保证 CMake 侧恰好定义一个），不要自己拼
+    // __APPLE__ / __linux__ —— iOS 与 macOS 在 clang 下都满足 __APPLE__，
+    // 拿它当 macOS 会让真机上报成 OSXPlayer。
+#if defined(__EMSCRIPTEN__)
+    return RuntimePlatform::WebGLPlayer;
+#elif Z_PLATFORM_IS_WINDOWS
+    return g_isEditor ? RuntimePlatform::WindowsEditor : RuntimePlatform::WindowsPlayer;
+#elif Z_PLATFORM_IS_IOS
+    return RuntimePlatform::IPhonePlayer;
+#elif Z_PLATFORM_IS_MACOS
+    return g_isEditor ? RuntimePlatform::OSXEditor : RuntimePlatform::OSXPlayer;
+#elif Z_PLATFORM_IS_ANDROID
+    return RuntimePlatform::Android;
+#elif Z_PLATFORM_IS_LINUX
+    return g_isEditor ? RuntimePlatform::LinuxEditor : RuntimePlatform::LinuxPlayer;
+#elif Z_PLATFORM_IS_OHOS
+    return RuntimePlatform::HarmonyOSPlayer;
+#else
+    return RuntimePlatform::Unknown;
+#endif
+}
+
+std::string Application::GetPlatformName()
+{
+    switch (GetPlatform())
+    {
+        case RuntimePlatform::WindowsEditor:
+        case RuntimePlatform::WindowsPlayer:
+            return "Windows";
+        case RuntimePlatform::OSXEditor:
+        case RuntimePlatform::OSXPlayer:
+            return "MacOS";
+        case RuntimePlatform::LinuxEditor:
+        case RuntimePlatform::LinuxPlayer:
+            return "Linux";
+        case RuntimePlatform::Android:
+            return "Android";
+        case RuntimePlatform::IPhonePlayer:
+            return "iOS";
+        case RuntimePlatform::HarmonyOSPlayer:
+            return "HarmonyOS";
+        case RuntimePlatform::WebGLPlayer:
+            return "Web";
+        case RuntimePlatform::Unknown:
+        default:
+            return "Unknown";
+    }
+}
+
+int Application::GetTargetFrameRate()
+{
+    const Application* self = App();
+    return self != nullptr ? self->m_TargetFrameRate : -1;
+}
+
+void Application::SetTargetFrameRate(int frame_rate)
+{
+    if (Application* self = App())
+    {
+        self->m_TargetFrameRate = frame_rate;
+    }
+}
+
+bool Application::GetRunInBackground()
+{
+    const Application* self = App();
+    return self != nullptr ? self->m_RunInBackground : true;
+}
+
+void Application::SetRunInBackground(bool run)
+{
+    if (Application* self = App())
+    {
+        self->m_RunInBackground = run;
+    }
+}
+
 void Application::CalculateFPS(float delta_time)
 {
     m_FrameCount++;

@@ -255,17 +255,28 @@ std::filesystem::path UserPreferences::GetPreferencesFilePath() const
 std::filesystem::path UserPreferences::GetUserPreferencesDirectory(const std::string& app_name)
 {
     // Unity-style per-user folder (same tree as LogSystem: LocalLow/ZEngine on Windows).
+    //
+    // 结构一律是 `<company>/<product>`：
+    //   Windows  %USERPROFILE%/AppData/LocalLow/ZEngine/<Product>
+    //   macOS    ~/Library/Application Support/<Product>
+    //   Linux    ~/.config/<Product>
+    //
+    // ⚠️ Windows 这一支以前直接以 kCompanyFolder 结尾、完全忽略 app_name，
+    // 于是**每个工程都共用同一个 ZEngine 目录** —— 与 PlayerSettings.h 开头
+    // 记的那个坑是同一件事（那里已经靠 m_ProductName 修好了产品名，这里却没
+    // 用它）。表现是两个工程互相覆盖 preferences.json，而
+    // Application.GetPersistentDataPath() 给出的"存档目录"也是共享的。
     static constexpr const char* kCompanyFolder = "ZEngine";
     const std::string folder_name = app_name.empty() ? kCompanyFolder : app_name;
 
 #ifdef _WIN32
     if (const char* user_profile = std::getenv("USERPROFILE"))
     {
-        return std::filesystem::path(user_profile) / "AppData" / "LocalLow" / kCompanyFolder;
+        return std::filesystem::path(user_profile) / "AppData" / "LocalLow" / kCompanyFolder / folder_name;
     }
     if (const char* local_app_data = std::getenv("LOCALAPPDATA"))
     {
-        return std::filesystem::path(local_app_data).parent_path() / "LocalLow" / kCompanyFolder;
+        return std::filesystem::path(local_app_data).parent_path() / "LocalLow" / kCompanyFolder / folder_name;
     }
     return std::filesystem::current_path() / folder_name;
 #elif defined(__APPLE__)
