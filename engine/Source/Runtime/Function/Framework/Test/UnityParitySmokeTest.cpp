@@ -4135,8 +4135,8 @@ namespace
         const std::string math_header = ReadFile("Source/Runtime/Scripting/ScriptMath/ScriptMath.h");
         Check(!math_header.empty(), "AJ0", "ScriptMath.h is readable");
         // 48 是 VectorMath + QuaternionMath 原有的；Mathf 这一块是 49。
-        Check(CountOccurrences(math_header, "ZFUNCTION()") == 89, "AJ1",
-              "ScriptMath declares exactly 89 script methods (a dropped ZFUNCTION is a silent API loss)");
+        Check(CountOccurrences(math_header, "ZFUNCTION()") == 98, "AJ1",
+              "ScriptMath declares exactly 98 script methods (a dropped ZFUNCTION is a silent API loss)");
         // Unity 的拼写，一个都不能少。
         Check(CountOccurrences(math_header, "static float Abs(") >= 1 &&
                   CountOccurrences(math_header, "static float Ceil(") >= 1 &&
@@ -4179,6 +4179,157 @@ namespace
         // Perlin 不是 Unity 的逐位实现 —— 不写会被当成 bug。
         Check(CountOccurrences(math_header, "不是 Unity 的逐位实现") >= 1, "AJ11",
               "the header records that PerlinNoise is not bit-identical to Unity's");
+    }
+
+    // --------------------------------------------------------------- AK ----
+    /// `VectorMath` / `QuaternionMath` 补齐 Unity 的 Vector3 / Quaternion 静态面。
+    ///
+    /// 断言都挑**能区分实现**的点：Slerp 与 Lerp 的路径差别（长度塌不塌）、
+    /// 反向插值会不会产 NaN、RotateTowards 的角度单位、Project 与
+    /// ProjectOnPlane 差一个减法 —— 而不是"代进去等于个值"。
+    void TestVectorQuaternionExtras()
+    {
+        const Vector3 unit_x = Vector3::UNIT_X;
+        const Vector3 unit_y = Vector3::UNIT_Y;
+        const Vector3 unit_z = Vector3::UNIT_Z;
+
+        // --- LerpUnclamped ---------------------------------------------
+        Check(Near(VectorMath::LerpUnclamped(Vector3::ZERO, unit_x * 10.f, 1.5f), unit_x * 15.f, 1e-4f),
+              "AK0", "LerpUnclamped extrapolates past 1");
+
+        // --- Slerp ------------------------------------------------------
+        // 路径差别就是这一条：Lerp 走弦，中点长度塌到 cos45 ≈ 0.707；
+        // Slerp 走弧，长度全程是 1。
+        Check(Near(VectorMath::Magnitude(VectorMath::Slerp(unit_x, unit_y, 0.5f)), 1.f, 1e-3f), "AK1",
+              "Slerp keeps the magnitude (it walks the arc, not the chord)");
+        Check(Near(VectorMath::Magnitude(VectorMath::Lerp(unit_x, unit_y, 0.5f)), 0.7071f, 1e-3f), "AK2",
+              "while Lerp collapses it to cos(45) -- that is the whole difference");
+        Check(Near(VectorMath::Slerp(unit_x, unit_y, 0.f), unit_x, 1e-4f) &&
+                  Near(VectorMath::Slerp(unit_x, unit_y, 1.f), unit_y, 1e-4f),
+              "AK3", "Slerp hits both endpoints");
+        Check(Near(VectorMath::Slerp(unit_x, unit_y, -1.f), unit_x, 1e-4f) &&
+                  Near(VectorMath::Slerp(unit_x, unit_y, 3.f), unit_y, 1e-4f),
+              "AK4", "and clamps t");
+        // 长度单独插值：2 与 4 的中点必须是 3。
+        Check(Near(VectorMath::Magnitude(VectorMath::Slerp(unit_x * 2.f, unit_y * 4.f, 0.5f)), 3.f, 1e-3f),
+              "AK5", "Slerp interpolates the magnitude separately");
+        // 退化：同向时旋转轴是零向量，必须退回 Lerp 而不是归一化出 NaN。
+        Check(Near(VectorMath::Slerp(unit_x, unit_x * 3.f, 0.5f), unit_x * 2.f, 1e-4f), "AK6",
+              "Slerp on parallel vectors falls back to Lerp");
+        const Vector3 zero_slerp = VectorMath::Slerp(Vector3::ZERO, unit_x * 2.f, 0.5f);
+        Check(Near(zero_slerp, unit_x, 1e-4f) && !std::isnan(zero_slerp.x), "AK7",
+              "Slerp from a zero vector is a Lerp, not a NaN");
+        // 反向：旋转轴不唯一，必须给 fallback 轴，否则 getRotationTo 出 NaN。
+        const Vector3 flipped = VectorMath::Slerp(unit_x, unit_x * -1.f, 0.5f);
+        Check(!std::isnan(flipped.x) && !std::isnan(flipped.y) && !std::isnan(flipped.z) &&
+                  Near(VectorMath::Magnitude(flipped), 1.f, 1e-3f),
+              "AK8", "Slerp between opposite vectors stays on the unit sphere (no NaN)");
+
+        // --- RotateTowards ----------------------------------------------
+        // ⚠️ 弧度。0.1 rad ≈ 5.7°，不是 0.1°。
+        const Vector3 rotated = VectorMath::RotateTowards(unit_x, unit_y, 0.1f, 0.f);
+        Check(Near(VectorMath::AngleRad(unit_x, rotated), 0.1f, 1e-3f), "AK9",
+              "RotateTowards advances by max_radians_delta (radians, not degrees)");
+        Check(Near(VectorMath::Angle(unit_x, rotated), 5.7296f, 0.01f), "AK10", "and 0.1 rad really is 5.73 deg");
+        // 一步够大就直接到位，不在目标附近抖。
+        Check(Near(VectorMath::RotateTowards(unit_x, unit_y, 10.f, 0.f), unit_y, 1e-4f), "AK11",
+              "RotateTowards snaps to the target when the step is big enough");
+        // 长度是**另一个**参数管的，与转多少无关。
+        Check(Near(VectorMath::Magnitude(VectorMath::RotateTowards(unit_x, unit_y * 2.f, 0.1f, 0.5f)), 1.5f,
+                   1e-3f),
+              "AK12", "RotateTowards moves the magnitude by its own budget");
+        // 零向量没有方向可转，退到 MoveTowards。
+        Check(Near(VectorMath::RotateTowards(Vector3::ZERO, unit_y * 2.f, 0.1f, 10.f), unit_y * 2.f, 1e-4f),
+              "AK13", "RotateTowards from a zero vector degenerates to MoveTowards");
+
+        // --- ProjectOnPlane ---------------------------------------------
+        const Vector3 some(1.f, 2.f, 3.f);
+        Check(Near(VectorMath::ProjectOnPlane(some, unit_z), Vector3(1.f, 2.f, 0.f), 1e-4f), "AK14",
+              "ProjectOnPlane drops the component along the normal");
+        // Project + ProjectOnPlane 必须**加起来等于原向量** —— 这正是"差一个减法"。
+        Check(Near(VectorMath::Project(some, unit_z) + VectorMath::ProjectOnPlane(some, unit_z), some, 1e-4f),
+              "AK15", "Project + ProjectOnPlane is the original vector");
+        Check(Near(VectorMath::ProjectOnPlane(some, unit_z * 5.f), Vector3(1.f, 2.f, 0.f), 1e-4f), "AK16",
+              "and the normal need not be unit length");
+
+        // --- SignedAngle -------------------------------------------------
+        Check(Near(VectorMath::SignedAngle(unit_x, unit_y, unit_z), 90.f, 1e-3f), "AK17",
+              "SignedAngle is positive one way round the axis");
+        Check(Near(VectorMath::SignedAngle(unit_y, unit_x, unit_z), -90.f, 1e-3f), "AK18",
+              "and negative the other way");
+        Check(Near(VectorMath::SignedAngle(unit_x, unit_y, unit_z * -1.f), -90.f, 1e-3f), "AK19",
+              "flipping the axis flips the sign");
+        Check(Near(std::fabs(VectorMath::SignedAngle(unit_x, unit_y, unit_z)),
+                   VectorMath::Angle(unit_x, unit_y), 1e-3f),
+              "AK20", "and its magnitude is the unsigned Angle");
+
+        // --- QuaternionMath ----------------------------------------------
+        Check(Near(QuaternionMath::Dot(Quaternion::IDENTITY, Quaternion::IDENTITY), 1.f, 1e-5f), "AK21",
+              "Quaternion Dot(identity, identity) is 1");
+        // q 与 -q 是同一个朝向，但点积是 -1 —— 判"是否同朝向"必须用绝对值。
+        const Quaternion half_turn = QuaternionMath::AngleAxis(90.f, unit_z);
+        // 旋转四元数是单位的，所以 Dot(q, q) == 1（不是 Dot(q, q⁻¹)：逆是共轭，
+        // w 不变而 xyz 反号，点积是 w² - |v|²，对 90° 旋转等于 0）。
+        Check(Near(QuaternionMath::Dot(half_turn, half_turn), 1.f, 1e-4f), "AK22",
+              "Dot(q, q) is 1 for a rotation quaternion");
+        Check(Near(QuaternionMath::Dot(half_turn, Quaternion(half_turn.w * -1.f, half_turn.x * -1.f,
+                                                             half_turn.y * -1.f, half_turn.z * -1.f)),
+                   -1.f, 1e-4f),
+              "AK23", "while Dot(q, -q) is -1 even though they are the same orientation");
+        const Quaternion normalized = QuaternionMath::Normalize(Quaternion(2.f, 0.f, 0.f, 0.f));
+        Check(Near(QuaternionMath::Dot(normalized, Quaternion::IDENTITY), 1.f, 1e-4f), "AK24",
+              "Normalize scales a non-unit quaternion down to unit length");
+        const Quaternion zero_normalized = QuaternionMath::Normalize(Quaternion(0.f, 0.f, 0.f, 0.f));
+        Check(!std::isnan(zero_normalized.w) && Near(zero_normalized.w, 1.f, 1e-5f), "AK25",
+              "Normalize of a zero quaternion gives the identity, not NaN");
+
+        const Quaternion quarter = QuaternionMath::AngleAxis(90.f, unit_z);
+        const Quaternion stepped = QuaternionMath::RotateTowards(Quaternion::IDENTITY, quarter, 10.f);
+        Check(Near(QuaternionMath::Angle(Quaternion::IDENTITY, stepped), 10.f, 0.01f), "AK26",
+              "Quaternion RotateTowards advances by max_degrees_delta (degrees)");
+        Check(QuaternionMath::Angle(QuaternionMath::RotateTowards(Quaternion::IDENTITY, quarter, 500.f),
+                                    quarter) < 1e-3f,
+              "AK27", "and reaches the target when the step is big enough");
+        Check(QuaternionMath::Angle(QuaternionMath::RotateTowards(quarter, quarter, 10.f), quarter) < 1e-5f,
+              "AK28", "RotateTowards from the target returns the target (no jitter, no NaN)");
+        Check(Near(QuaternionMath::Rotate(QuaternionMath::FromToRotation(unit_x, unit_y), unit_x), unit_y,
+                   1e-4f),
+              "AK29", "QuaternionMath.FromToRotation actually rotates one onto the other");
+        Check(Near(QuaternionMath::Dot(QuaternionMath::FromToRotation(unit_x, unit_y),
+                                       VectorMath::FromToRotation(unit_x, unit_y)),
+                   1.f, 1e-4f),
+              "AK30", "and is the same rotation VectorMath.FromToRotation returns");
+    }
+
+    // --------------------------------------------------------------- AL ----
+    void TestVectorQuaternionExtrasWiring()
+    {
+        const std::string math_header = ReadFile("Source/Runtime/Scripting/ScriptMath/ScriptMath.h");
+        Check(!math_header.empty(), "AL0", "ScriptMath.h is readable");
+        Check(CountOccurrences(math_header, "ZFUNCTION()") == 98, "AL1",
+              "ScriptMath declares exactly 98 script methods");
+        Check(CountOccurrences(math_header, "static Vector3 Slerp(") >= 1 &&
+                  CountOccurrences(math_header, "static Vector3 LerpUnclamped(") >= 1 &&
+                  CountOccurrences(math_header, "static Vector3 RotateTowards(") >= 1 &&
+                  CountOccurrences(math_header, "static Vector3 ProjectOnPlane(") >= 1 &&
+                  CountOccurrences(math_header, "static float SignedAngle(") >= 1,
+              "AL2", "the new VectorMath methods are all declared");
+        Check(CountOccurrences(math_header, "static float Dot(const Quaternion&") >= 1 &&
+                  CountOccurrences(math_header, "static Quaternion Normalize(") >= 1 &&
+                  CountOccurrences(math_header, "static Quaternion RotateTowards(") >= 1 &&
+                  CountOccurrences(math_header, "static Quaternion FromToRotation(") >= 1,
+              "AL3", "the new QuaternionMath methods are all declared");
+        // ⚠️ 两个 RotateTowards 的**单位不一样**（弧度 vs 度）。这是 Unity 自己的
+        // 不一致，照搬比统一安全，但必须写在源码里，否则会被"修好"。
+        Check(CountOccurrences(math_header, "max_radians_delta") >= 1 &&
+                  CountOccurrences(math_header, "max_degrees_delta") >= 1,
+              "AL4", "both RotateTowards parameter units are present (radians vs degrees)");
+        // 反向插值的 fallback 轴：不给的话 getRotationTo 出 NaN。
+        Check(CountOccurrences(math_header, "fallback") >= 1, "AL5",
+              "the antiparallel fallback axis is there");
+        // 零长度 / 零向量必须显式守卫，且理由要写下来。
+        Check(CountOccurrences(math_header, "NaN") >= 3, "AL6",
+              "the degenerate-case guards are documented as NaN avoidance");
     }
 
     // ---------------------------------------------------------------- B ----
@@ -4312,6 +4463,8 @@ int main()
     TestComponentFacadeWiring();
     TestMathf();
     TestMathfWiring();
+    TestVectorQuaternionExtras();
+    TestVectorQuaternionExtrasWiring();
     TestWiringGate();
 
     std::printf("\n=== %d checks, %d failures ===\n", g_Checks, g_Failures);

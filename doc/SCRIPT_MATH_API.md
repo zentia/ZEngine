@@ -45,7 +45,7 @@ zht/parser.py:739:  ZCLASS '%s' must derive from an Object-based class
 
 ## 2. 导出的 API
 
-`VectorMath`（30 个）
+`VectorMath`（35 个）
 
 ```
 Create(x, y, z) / Zero() / One() / UnitX() / UnitY() / UnitZ()
@@ -53,18 +53,22 @@ Add(a, b) / Sub(a, b) / Mul(a, b) / Scale(v, s) / Negate(v)
 Magnitude(v) / SqrMagnitude(v) / Distance(a, b) / SqrDistance(a, b)
 Dot(a, b) / Cross(a, b) / Normalize(v)
 Angle(a, b) —— 度        AngleRad(a, b) —— 弧度
-Lerp(a, b, t) / MoveTowards(a, b, maxDistance) / ClampMagnitude(v, max)
+Lerp(a, b, t) / LerpUnclamped(a, b, t) / Slerp(a, b, t)
+MoveTowards(a, b, maxDistance) / ClampMagnitude(v, max)
 Clamp(v, min, max) / Min(a, b) / Max(a, b)
-IsZero(v) / Reflect(v, normal) / Project(v, onNormal)
-FromToRotation(a, b)
+IsZero(v) / Reflect(v, normal)
+Project(v, onNormal) / ProjectOnPlane(v, planeNormal)
+RotateTowards(current, target, maxRadiansDelta, maxMagnitudeDelta)
+SignedAngle(from, to, axis) / FromToRotation(a, b)
 ```
 
-`QuaternionMath`（10 个）
+`QuaternionMath`（14 个）
 
 ```
 Identity() / AngleAxis(degrees, axis) / LookRotation(forward, up)
-Mul(a, b) / Rotate(q, v) / Inverse(q)
-Slerp(a, b, t) / Nlerp(a, b, t) / Angle(a, b) / ToEuler(q)
+Mul(a, b) / Rotate(q, v) / Inverse(q) / Dot(a, b) / Normalize(q)
+Slerp(a, b, t) / Nlerp(a, b, t) / RotateTowards(from, to, maxDegreesDelta)
+Angle(a, b) / ToEuler(q) / FromToRotation(a, b)
 ```
 
 `Mathf`（49 个）
@@ -125,6 +129,40 @@ Pi() / HalfPi() / TwoPi() / Epsilon() / Infinity() / NegativeInfinity()
 | `Log(f, p)` | 双参重载 | **不提供** | ZFUNCTION 体系里同名重载会被当成两个绑定的名字，脚本侧只看到一个。换底自己除：`Log(v) / Log(10)`。 |
 | `PerlinNoise(x, y)` | Unity 自己的排列表 | 标准 2D 梯度噪声 | 值域、确定性、连续性一致，但**同一 (x, y) 的具体数值不同** —— 想从 Unity 工程搬一张"看起来一样"的噪声图搬不过来。 |
 | `CorrelatedColorTemperatureToRGB` | 返回 `Color` | **不提供** | 本引擎没有 `Color` 值类型。 |
+
+## 2.2 `Project` 的语义改过（行为变更）
+
+`VectorMath.Project(v, onNormal)` 原本直接转发引擎的 `Vector3::project`，而那份是
+Ogre 血统，算的是 `v - (v·n)n` —— **投到平面**。Unity 的 `Vector3.Project` 恰恰
+相反：它保留**沿法线**的那一份。
+
+一个叫 `Project` 的门面给出与 Unity 相反的结果，比没有这个方法更危险（调用方拿到
+一个"看起来合理"的向量，只是方向差 90°）。所以现在：
+
+| 方法 | 语义 |
+| --- | --- |
+| `Project(v, onNormal)` | 沿法线的分量（Unity 的 `Vector3.Project`），`onNormal * (v·n)/|n|²` |
+| `ProjectOnPlane(v, planeNormal)` | 面内分量，`v - Project(v, planeNormal)` |
+
+两者相加恒等于原向量。`onNormal` 不必是单位向量；零向量返回零向量，不除零。
+
+⚠️ 谁在 2026-10-31 之前用过 `VectorMath.Project`，行为是反的。改的是
+`ScriptMathSmokeTest` 的 V11b（原来断言的就是平面语义），没有 TS 调用方。
+
+## 2.3 两个 `RotateTowards` 的单位不一样
+
+| 方法 | 角度单位 |
+| --- | --- |
+| `VectorMath.RotateTowards(current, target, maxRadiansDelta, maxMagnitudeDelta)` | **弧度** |
+| `QuaternionMath.RotateTowards(from, to, maxDegreesDelta)` | **度** |
+
+这是 Unity 自己的不一致（`maxRadiansDelta` vs `maxDegreesDelta`），照搬比统一更
+安全 —— 搬 Unity 代码时不会因为"看起来统一了"而静默差 57 倍。但搬的时候要看清
+是哪个。
+
+`VectorMath.RotateTowards` 的**长度和方向是两个独立的预算**：转多少由
+`maxRadiansDelta` 管，长度每步最多走 `maxMagnitudeDelta`。方向先按角度转，再单独
+把长度朝目标长度挪 —— 不是"朝目标点走一步"。
 
 ## 3. 刻意没做的两类 API
 

@@ -180,13 +180,152 @@ public:
     ZFUNCTION()
     static Vector3 Reflect(const Vector3& v, const Vector3& normal) { return v.reflect(normal); }
 
-    /// 投影到以 normal 为法线的平面上。
+    /// 投影到 on_normal **方向**上（Unity 的 Vector3.Project）。
+    ///
+    /// ⚠️ **这里改过语义**。原来是直接转发 `Vector3::project`，而引擎那份
+    /// （Ogre 血统）算的是 `v - (v·n)n`，也就是**投到平面**上 —— 与 Unity 的
+    /// `Vector3.Project`（投到方向、保留沿法线的那一份）正好相反。一个叫
+    /// `Project` 的门面给出与 Unity 相反的结果，比没有这个方法更危险，所以按
+    /// Unity 校正，平面语义由 `ProjectOnPlane` 承担。
+    ///
+    /// on_normal 不必是单位向量（除以它的平方长）。零向量返回零向量，不除零。
     ZFUNCTION()
-    static Vector3 Project(const Vector3& v, const Vector3& on_normal) { return v.project(on_normal); }
+    static Vector3 Project(const Vector3& v, const Vector3& on_normal)
+    {
+        const float squared_length = on_normal.squaredLength();
+        if (squared_length < 1e-12f)
+        {
+            return Vector3::ZERO;
+        }
+        return on_normal * (v.dotProduct(on_normal) / squared_length);
+    }
 
     /// 从 a 转到 b 的最短旋转（Unity 的 Quaternion.FromToRotation）。
     ZFUNCTION()
     static Quaternion FromToRotation(const Vector3& a, const Vector3& b) { return a.getRotationTo(b); }
+
+    // ---- Unity 里 Vector3 有、这里原本缺的几个 --------------------------
+
+    /// 与 `Lerp` 完全相同 —— 本引擎的 `Lerp` 本来就不夹取 alpha。
+    /// 提供它是为了**把这件事说清楚**（同 Mathf.LerpUnclamped）。
+    ZFUNCTION()
+    static Vector3 LerpUnclamped(const Vector3& a, const Vector3& b, float alpha)
+    {
+        return Vector3::Lerp(a, b, alpha);
+    }
+
+    /// 球面插值：**方向走圆弧，长度单独插值**（Unity 的 Vector3.Slerp）。
+    ///
+    /// 与 `Lerp` 的区别只在路径：两个等长向量之间，Lerp 走弦、中间会"缩"下去
+    /// （长度塌到 cos），Slerp 走弧、长度全程不变。绕着某个中心转（环绕镜头、
+    /// 轨道运动）要的是后者。
+    ///
+    /// 退化时退回 Lerp，且必须退：
+    ///   * 任一向量接近零 —— 方向没有定义；
+    ///   * 两者近乎同向 —— 旋转轴接近零向量，归一化会产 NaN。
+    ZFUNCTION()
+    static Vector3 Slerp(const Vector3& a, const Vector3& b, float t)
+    {
+        t = Math::Clamp(t, 0.f, 1.f);
+
+        const float magnitude_a = a.length();
+        const float magnitude_b = b.length();
+        if (magnitude_a < 1e-5f || magnitude_b < 1e-5f)
+        {
+            return Vector3::Lerp(a, b, t);
+        }
+
+        const Vector3 direction_a = a / magnitude_a;
+        const Vector3 direction_b = b / magnitude_b;
+        const float   dot = Math::Clamp(direction_a.dotProduct(direction_b), -1.f, 1.f);
+        if (dot > 0.9995f)
+        {
+            return Vector3::Lerp(a, b, t);
+        }
+
+        // 近乎反向时旋转轴不唯一（getRotationTo 要一个 fallback 轴才不产 NaN）。
+        const Vector3 fallback = (std::fabs(direction_a.dotProduct(Vector3::UNIT_X)) < 0.9f)
+                                     ? Vector3::UNIT_X
+                                     : Vector3::UNIT_Y;
+        const Quaternion rotation = direction_a.getRotationTo(direction_b, fallback);
+        const Quaternion partial = Quaternion::SLerp(t, Quaternion::IDENTITY, rotation, true);
+        const Vector3    direction = partial * direction_a;
+        return direction * (magnitude_a + t * (magnitude_b - magnitude_a));
+    }
+
+    /// 朝 target 转，**单步不超过 max_radians_delta**（弧度），同时长度朝
+    /// target 的长度每步最多走 max_magnitude_delta（Unity 的 RotateTowards）。
+    ///
+    /// ⚠️ 角度参数是**弧度**，不是度 —— 与 `AngleRad` 一致，与 `Angle` / `QuaternionMath.Angle`
+    /// 相反。这个不一致是 Unity 自己的（它那边也叫 maxRadiansDelta），保留原样
+    /// 比"统一成度"更不容易踩坑：搬 Unity 代码时不会静默差 57 倍。
+    ZFUNCTION()
+    static Vector3 RotateTowards(const Vector3& current, const Vector3& target, float max_radians_delta,
+                                 float max_magnitude_delta)
+    {
+        const float magnitude_current = current.length();
+        const float magnitude_target = target.length();
+        if (magnitude_current < 1e-5f || magnitude_target < 1e-5f)
+        {
+            return MoveTowards(current, target, max_magnitude_delta);
+        }
+
+        const Vector3 direction_current = current / magnitude_current;
+        const Vector3 direction_target = target / magnitude_target;
+        const float   dot = Math::Clamp(direction_current.dotProduct(direction_target), -1.f, 1.f);
+        const float   angle = std::acos(dot);
+
+        Vector3 direction = direction_target;
+        if (angle > max_radians_delta && angle > 1e-6f)
+        {
+            // 近乎反向时旋转轴不唯一（getRotationTo 要一个 fallback 轴才不产 NaN）。
+            const Vector3 fallback = (std::fabs(direction_current.dotProduct(Vector3::UNIT_X)) < 0.9f)
+                                         ? Vector3::UNIT_X
+                                         : Vector3::UNIT_Y;
+            const Quaternion rotation = direction_current.getRotationTo(direction_target, fallback);
+            const Quaternion partial =
+                Quaternion::SLerp(max_radians_delta / angle, Quaternion::IDENTITY, rotation, true);
+            direction = partial * direction_current;
+        }
+        // 长度**单独**按 max_magnitude_delta 走。这里不能用 MoveTowards(current, target, ...)
+        // —— 那份会把方向和长度一起走，max_magnitude_delta 为 0 时等于一步没动。
+        return direction * MoveTowardsScalar(magnitude_current, magnitude_target, max_magnitude_delta);
+    }
+
+    /// 投影到**平面**上（Unity 的 Vector3.ProjectOnPlane）。
+    /// 就是 `v - Project(v, plane_normal)`：去掉沿法线的那一份，剩下的都在面内。
+    /// plane_normal 不必是单位向量。
+    ZFUNCTION()
+    static Vector3 ProjectOnPlane(const Vector3& v, const Vector3& plane_normal)
+    {
+        return v - Project(v, plane_normal);
+    }
+
+    /// 带符号的夹角，**度**：绕 axis 看，from 转到 to 是正是负。
+    ///
+    /// 符号取 `axis · (from × to)`。`Angle` 永远给 0..180，而"要往左转还是往右
+    /// 转"必须有个符号 —— 少了它，转向逻辑只能靠试。
+    ZFUNCTION()
+    static float SignedAngle(const Vector3& from, const Vector3& to, const Vector3& axis)
+    {
+        const float unsigned_angle = Angle(from, to);
+        const float projected = axis.dotProduct(Cross(from, to));
+        // 自己写 Sign：Mathf 声明在后面，这里还看不见它。
+        const float sign = (projected > 0.f) ? 1.f : ((projected < 0.f) ? -1.f : 0.f);
+        return unsigned_angle * sign;
+    }
+
+    /// RotateTowards 内部用：标量版的 MoveTowards（Mathf 在后面才声明，这里
+    /// 不能直接用 —— C++ 里类的声明顺序就是可见性顺序）。
+    static float MoveTowardsScalar(float a, float b, float max_delta)
+    {
+        const float delta = b - a;
+        if (Math::abs(delta) <= max_delta)
+        {
+            return b;
+        }
+        return a + ((delta > 0.f) ? max_delta : -max_delta);
+    }
 };
 
 // ---- 旋转 ----------------------------------------------------------------
@@ -271,6 +410,54 @@ public:
     {
         return Vector3(q.GetPitch().valueDegrees(), q.GetYaw().valueDegrees(), q.GetRoll().valueDegrees());
     }
+
+    // ---- Unity 里 Quaternion 有、这里原本缺的几个 ------------------------
+
+    /// 四元数点积。四元数取反表示同一个旋转，所以 `Dot(a, b)` 的**绝对值**
+    /// 才说明两个朝向有多接近 —— 直接用它判"是否同向"会在 a 与 -a 上翻车。
+    ZFUNCTION()
+    static float Dot(const Quaternion& a, const Quaternion& b)
+    {
+        return a.w * b.w + a.x * b.x + a.y * b.y + a.z * b.z;
+    }
+
+    /// 归一化。长度接近 0 时**返回单位四元数**而不是 NaN：NaN 会一路静默传下去
+    /// （NaN 参与的任何比较都是 false），最后表现为"这个物体莫名不转了"。
+    ZFUNCTION()
+    static Quaternion Normalize(const Quaternion& q)
+    {
+        const float squared = q.w * q.w + q.x * q.x + q.y * q.y + q.z * q.z;
+        if (squared < 1e-12f)
+        {
+            return Quaternion::IDENTITY;
+        }
+        const float inverse = 1.f / std::sqrt(squared);
+        return Quaternion(q.w * inverse, q.x * inverse, q.y * inverse, q.z * inverse);
+    }
+
+    /// 朝 to 转，单步不超过 max_degrees_delta **度**（Unity 的
+    /// Quaternion.RotateTowards）。够近时直接给 to，不会在目标附近抖。
+    ///
+    /// ⚠️ 与 `VectorMath.RotateTowards` 的单位**不同**：那个是弧度、这个是度。
+    /// 这是 Unity 自己的不一致（maxRadiansDelta vs maxDegreesDelta），照搬比
+    /// 统一更不容易踩坑 —— 但搬代码时要看清是哪个。
+    ZFUNCTION()
+    static Quaternion RotateTowards(const Quaternion& from, const Quaternion& to, float max_degrees_delta)
+    {
+        const float angle = Angle(from, to);
+        if (angle <= 1e-5f)
+        {
+            return to;
+        }
+        const float step = (max_degrees_delta < angle) ? max_degrees_delta : angle;
+        return Slerp(from, to, step / angle);
+    }
+
+    /// 从 a 转到 b 的最短旋转（Unity 的 Quaternion.FromToRotation）。
+    /// `VectorMath.FromToRotation` 是同一个实现 —— 两边都给，因为脚本会按
+    /// Unity 的拼写分别在 `Vector3` 和 `Quaternion` 下找它。
+    ZFUNCTION()
+    static Quaternion FromToRotation(const Vector3& a, const Vector3& b) { return a.getRotationTo(b); }
 };
 
 // ---- 标量 ----------------------------------------------------------------

@@ -168,9 +168,16 @@ int main()
         // 竖直向下打到水平面（法线 = +Z，Z-up）→ 反射回竖直向上。
         const Vector3 down = VectorMath::Create(0.f, 0.f, -1.f);
         Check(Nearly(VectorMath::Reflect(down, z_axis), z_axis), "V11 Reflect off a +Z plane");
-        // 斜向量投影到水平面上 → 竖直分量归零。
+        // 斜向量：Project 保留**沿法线**的那一份（Unity 的 Vector3.Project），
+        // ProjectOnPlane 留下平面内的那一份。两者相加是原向量。
+        //
+        // ⚠️ 这里改过语义：原来 Project 直接转发引擎的 Vector3::project，那份
+        // （Ogre 血统）算的是"投到平面"，与 Unity 相反。现在按 Unity 校正。
         const Vector3 slant = VectorMath::Create(3.f, 4.f, 5.f);
-        Check(Nearly(VectorMath::Project(slant, z_axis), Vector3(3.f, 4.f, 0.f)), "V11b Project onto a +Z plane");
+        Check(Nearly(VectorMath::Project(slant, z_axis), Vector3(0.f, 0.f, 5.f)),
+              "V11b Project keeps the component ALONG the normal");
+        Check(Nearly(VectorMath::ProjectOnPlane(slant, z_axis), Vector3(3.f, 4.f, 0.f)),
+              "V11c ProjectOnPlane keeps the in-plane component");
     }
 
     Check(VectorMath::IsZero(VectorMath::Zero()) && !VectorMath::IsZero(x_axis), "V12 IsZero");
