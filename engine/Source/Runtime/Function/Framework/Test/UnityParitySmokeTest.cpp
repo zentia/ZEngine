@@ -73,6 +73,7 @@
 // `Runtime::Color` 是 Color 的脚本门面（值类型仍是全局的 `::Color`），所以本文件
 // 里凡指值类型一律写 `::Color`，避免与门面混淆。
 #include "Runtime/Scripting/ScriptColor/ScriptColor.h"
+#include "Runtime/Scripting/ScriptVector/ScriptVector.h"
 #include "Runtime/Resource/Asset/RuntimeAssetManager.h"
 #include "Runtime/File/FileSystem.h"
 #include "Runtime/Scripting/ScriptScreen/ScriptScreen.h"
@@ -6341,6 +6342,52 @@ namespace
               "Vector3.Lerp clamps t like Unity's (LerpUnclamped is the other one)");
     }
 
+    // --------------------------------------------------------------- BD ----
+    // `Vector3.right` 与 `transform.right` 必须是同一边。
+    //
+    // 这两处约定是**分别**写下来的（`Transform.h` 的轴向注释 vs
+    // `ScriptVector.h` 的轴向表），任一边改了另一边不会知道。左/右写反尤其阴：
+    // 两边都还是单位向量、都还是互相垂直，所有"是不是单位向量"的断言全绿，只有
+    // "把两边放在一起比"才分得出来。（本切片第一版就是 `Vector3.right = +X`
+    // 而 `Transform::GetRight() = -X`。）
+    void TestAxisConventionAgreement()
+    {
+        ObjectManager* om = GET_SYSTEM(ObjectManager);
+        if (om == nullptr)
+        {
+            om = new ObjectManager();
+            SystemRegistry::GetInstance().RegisterSystem(om);
+            om->Initialize();
+        }
+        GameObject* owner = nullptr;
+        Transform* t = MakeTransform(*om, owner);
+        Check(t != nullptr, "BD0", "a Transform is reachable for the axis cross-check");
+
+        // 未旋转：transform 的方向就是世界轴。
+        Check(Near(Runtime::Vector3::GetUp(), t->GetUp()), "BD1",
+              "Vector3.up == transform.up (identity)");
+        Check(Near(Runtime::Vector3::GetForward(), t->GetForward()), "BD2",
+              "Vector3.forward == transform.forward (identity)");
+        Check(Near(Runtime::Vector3::GetRight(), t->GetRight()), "BD3",
+              "Vector3.right == transform.right (identity) -- +X is LEFT here");
+        Check(Near(Runtime::Vector3::GetLeft(), t->GetLeft()), "BD4",
+              "Vector3.left == transform.left (identity)");
+        Check(Near(Runtime::Vector3::GetDown(), t->GetDown()), "BD5",
+              "Vector3.down == transform.down (identity)");
+        Check(Near(Runtime::Vector3::GetBack(), t->GetBack()), "BD6",
+              "Vector3.back == transform.back (identity)");
+
+        // 六个方向两两互补：不能有两个常量落到同一根轴上。
+        Check(Near(Runtime::Vector3::GetRight(), Runtime::Vector3::GetLeft()) == false &&
+                  Near(Runtime::Vector3::GetUp(), Runtime::Vector3::GetDown()) == false &&
+                  Near(Runtime::Vector3::GetForward(), Runtime::Vector3::GetBack()) == false,
+              "BD7", "the six axis constants are three distinct pairs, not three copies");
+        // 右手系：up × right = forward（与 Transform 那边的 S13 同一条）。
+        Check(Near(Runtime::Vector3::GetUp().crossProduct(Runtime::Vector3::GetRight()),
+                   Runtime::Vector3::GetForward()),
+              "BD8", "up x right == forward (right-handed, same as transform)");
+    }
+
     // ---------------------------------------------------------------- B ----
     void TestWiringGate()
     {
@@ -6496,6 +6543,7 @@ int main()
     TestColorWiring();
     TestStaticFieldWiring();
     TestVectorFacadeWiring();
+    TestAxisConventionAgreement();
     TestWiringGate();
 
     std::printf("\n=== %d checks, %d failures ===\n", g_Checks, g_Failures);

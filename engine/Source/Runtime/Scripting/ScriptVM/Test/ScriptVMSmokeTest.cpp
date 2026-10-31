@@ -678,17 +678,18 @@ int main()
             "var p = function(v){ return __fx(v.x)+','+__fx(v.y)+','+__fx(v.z); };\n"
             "globalThis.__zResult = p(Vector3.zero) + '|' + p(Vector3.one);",
             "0.0000,0.0000,0.0000|1.0000,1.0000,1.0000");
-    // K2/K3：轴向。⚠️ Z-up：up 是 +Z、forward 是 -Y（Unity 是 up=+Y、
-    // forward=+Z）。名字对的是语义轴，不是分量 —— 这条同时钉住"别照抄 Unity 的
-    // 数字"。三个方向互不相等，互换会被发现。
-    CheckJs("K2", "Z-up：up=(0,0,1) / forward=(0,-1,0) / right=(1,0,0)", script_env,
+    // K2/K3：轴向。⚠️ Z-up **且 +X 是左**：up=+Z、forward=-Y、right=-X（Unity 是
+    // up=+Y、forward=+Z、right=+X）。名字对的是语义轴，不是分量 —— 这条同时钉住
+    // "别照抄 Unity 的数字"。三个方向互不相等，互换会被发现。
+    // `Vector3.right` 必须与 `transform.right` 同一边（UnityParitySmokeTest BD3）。
+    CheckJs("K2", "Z-up：up=(0,0,1) / forward=(0,-1,0) / right=(-1,0,0)", script_env,
             "var q = function(v){ return v.x+','+v.y+','+v.z; };\n"
             "globalThis.__zResult = q(Vector3.up)+'|'+q(Vector3.forward)+'|'+q(Vector3.right);",
-            "0,0,1|0,-1,0|1,0,0");
+            "0,0,1|0,-1,0|-1,0,0");
     CheckJs("K3", "down / back / left 是它们的反向", script_env,
             "var q = function(v){ return v.x+','+v.y+','+v.z; };\n"
             "globalThis.__zResult = q(Vector3.down)+'|'+q(Vector3.back)+'|'+q(Vector3.left);",
-            "0,0,-1|0,1,0|-1,0,0");
+            "0,0,-1|0,1,0|1,0,0");
     CheckJs("K4", "positiveInfinity / negativeInfinity", script_env,
             "globalThis.__zResult = String(Vector3.positiveInfinity.x === Infinity) + '/' +\n"
             "                       String(Vector3.negativeInfinity.z === -Infinity);",
@@ -726,10 +727,11 @@ int main()
             "globalThis.__zResult = Quaternion.Angle(Quaternion.identity,\n"
             "                                        Quaternion.AngleAxis(45, Vector3.up)).toFixed(2);",
             "45.00");
-    // K10：绕 up(+Z) 转 +90°，right(+X) 落 back(+Y) —— 右手系里 X 绕 Z 正转
-    // 就是到 +Y。这条把"正向旋转往哪边"钉死：以后谁改了四元数的手性，这里会红。
-    CheckJs("K10", "绕 up 转 +90°：right(+X) -> back(+Y)", script_env,
-            "var r = Quaternion.Rotate(Quaternion.AngleAxis(90, Vector3.up), {x:1,y:0,z:0});\n"
+    // K10：绕 up(+Z) 转 +90°，left(+X) 落到 back(+Y) —— 右手系里 X 绕 Z 正转就是
+    // 到 +Y。这条把"正向旋转往哪边"钉死：以后谁改了四元数的手性，这里会红。
+    // （转的是 +X，也就是 **left** —— 见 K2/K3。）
+    CheckJs("K10", "绕 up 转 +90°：left(+X) -> back(+Y)", script_env,
+            "var r = Quaternion.Rotate(Quaternion.AngleAxis(90, Vector3.up), Vector3.left);\n"
             "globalThis.__zResult = __fx(r.x)+','+__fx(r.y)+','+__fx(r.z);",
             "0.0000,1.0000,0.0000");
     // K11：VectorMath / QuaternionMath 仍然在（老名字没被这次改名拿掉）。

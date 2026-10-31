@@ -25,20 +25,28 @@
 // `declare class Vector3` 与 `declare interface Vector3` **同名合并** —— 合起来
 // 正是 Unity 的形状：既是值类型，又是常量与工具函数的命名空间。
 //
-// ⚠️ 轴向：Z-up，不是 Unity 的 Y-up
-// ---------------------------------
-// Unity：Y 轴朝上，`Vector3.up` = (0,1,0)、`Vector3.forward` = (0,0,1)。
+// ⚠️ 轴向：Z-up、且 +X 是"左"，不是 Unity 的 Y-up / +X=右
+// ------------------------------------------------------
+// Unity：Y 轴朝上，`Vector3.up` = (0,1,0)、`Vector3.forward` = (0,0,1)、
+// `Vector3.right` = (1,0,0)。
+//
 // ZEngine：**Z 轴朝上**，相机默认 forward 是 `NEGATIVE_UNIT_Y`
-// （`CameraComponent.cpp`）。所以：
+// （`CameraComponent.cpp`），而 right = forward × up = (-Y) × (+Z) = **-X** ——
+// 也就是"local +X 是左"。所以：
 //
 //     up      = (0, 0, 1)        down  = (0, 0, -1)
 //     forward = (0, -1, 0)       back  = (0, 1, 0)
-//     right   = (1, 0, 0)        left  = (-1, 0, 0)
+//     right   = (-1, 0, 0)       left  = (1, 0, 0)
 //
-// 这里的名字对的是**语义轴**（"上"、"前"），不是坐标分量。从 Unity 搬过来的
-// `transform.position = Vector3.up * 2` 因此仍然把物体举到引擎的天花板方向 ——
-// 这正是要的效果；照搬 Unity 的数字才会把物体平推到墙里。`UnitX/Y/Z` 那种纯
-// 轴向的写法留给 `VectorMath`。
+// 这里的名字对的是**语义轴**（"上"、"前"、"右"），不是坐标分量。从 Unity 搬
+// 过来的 `transform.position = Vector3.up * 2` 因此仍然把物体举到引擎的天花板
+// 方向 —— 这正是要的效果；照搬 Unity 的数字才会把物体平推到墙里。
+//
+// ⚠️ 与 `Transform::GetUp/Forward/Right` **必须一对一对上**：脚本里
+// `Vector3.right` 和 `transform.right` 指的是同一边。UnityParitySmokeTest 的
+// S4/S5 钉 transform 那半个约定，本文件的 `TestAxisConventionAgreement`
+// （UnityParitySmokeTest）把两边放在一起比。`UnitX/Y/Z` 那种纯轴向的写法留给
+// `VectorMath`。
 //
 // 与 `VectorMath` / `QuaternionMath` 的关系
 // -----------------------------------------
@@ -92,12 +100,15 @@ namespace Runtime
         static ::Vector3 GetBack();
         ZSCRIPTPROPERTY(Name = "back", Getter = "GetBack")
 
-        /// 右 = +X。Unity 的 `Vector3.right` 也是 +X。
+        /// 右 = **-X**。⚠️ 本引擎 local +X 是"左"（right = forward × up =
+        /// (-Y) × (+Z) = -X），与 `Transform::GetRight()` 同一个约定 —— 两边必须
+        /// 指同一边，否则脚本里 `Vector3.right` 和 `transform.right` 会互相打架，
+        /// 而且谁都不报错。Unity 的 `Vector3.right` 是 +X，因为它的 +X 就是右。
         ZFUNCTION()
         static ::Vector3 GetRight();
         ZSCRIPTPROPERTY(Name = "right", Getter = "GetRight")
 
-        /// 左 = -X。
+        /// 左 = +X（同理，与 `Transform::GetLeft()` 一致）。
         ZFUNCTION()
         static ::Vector3 GetLeft();
         ZSCRIPTPROPERTY(Name = "left", Getter = "GetLeft")

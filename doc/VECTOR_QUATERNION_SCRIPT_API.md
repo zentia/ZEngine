@@ -41,24 +41,31 @@ transform.rotation = Quaternion.identity;     // 不是 QuaternionMath.Identity(
 
 ## 2. ⚠️ 轴向：Z-up，不是 Unity 的 Y-up
 
-| 名字 | 这里（Z-up） | Unity（Y-up） |
+| 名字 | 这里（Z-up，+X 是左） | Unity（Y-up，+X 是右） |
 | --- | --- | --- |
 | `up` | **(0, 0, 1)** | (0, 1, 0) |
 | `down` | (0, 0, -1) | (0, -1, 0) |
 | `forward` | **(0, -1, 0)** | (0, 0, 1) |
 | `back` | (0, 1, 0) | (0, 0, -1) |
-| `right` | (1, 0, 0) | (1, 0, 0) |
-| `left` | (-1, 0, 0) | (-1, 0, 0) |
+| `right` | **(-1, 0, 0)** | (1, 0, 0) |
+| `left` | (1, 0, 0) | (-1, 0, 0) |
 
 `forward` 取 -Y 的依据是相机默认朝向（`CameraComponent.cpp` 里的
-`NEGATIVE_UNIT_Y`）。
+`NEGATIVE_UNIT_Y`）。`right` 取 **-X** 的依据是 right = forward × up =
+(-Y) × (+Z) = -X —— 也就是说本引擎里 **local +X 是"左"**。
 
 **名字对的是语义轴，不是分量。** 从 Unity 搬过来的
 `transform.position = Vector3.up * 2` 因此仍然把物体举到引擎的天花板方向；
 照抄 Unity 的 `(0,1,0)` 才会把物体平推到墙里，而且不报错。想写纯轴向用
 `VectorMath.UnitX/Y/Z`。
 
-旋转方向（右手系）：绕 `up`(+Z) 转 +90°，`right`(+X) 落到 `back`(+Y)。
+⚠️ **`Vector3.right` 必须与 `transform.right` 指同一边。** 这两处约定是分开
+写下来的（`Transform.h` 的注释 vs 本文件），改一边另一边不会知道；而左右写反
+**所有"是不是单位向量"的断言都还是绿的**（两边都还是单位向量、还是互相垂直），
+只有把两边放在一起比才分得出来 —— 第一版就是这里写成了 `+X`（照 Unity 抄）。
+`UnityParitySmokeTest` 的 BD1–BD8 干的就是这件事，S4/S5 钉 transform 那半个约定。
+
+旋转方向（右手系）：绕 `up`(+Z) 转 +90°，`left`(+X) 落到 `back`(+Y)。
 `ScriptVMSmokeTest` 的 K10 钉的就是这条。
 
 ## 3. 与 `VectorMath` 唯一的语义差别：`Lerp` 夹不夹 t

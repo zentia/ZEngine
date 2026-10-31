@@ -51,14 +51,18 @@ namespace Runtime
         return Make(0.0f, 1.0f, 0.0f);
     }
 
+    // ⚠️ right 是 **-X**，left 是 +X：本引擎 local +X 是"左"（right = forward × up
+    // = (-Y) × (+Z) = -X），和 `Transform::GetRight()` 同一个约定
+    // （UnityParitySmokeTest 的 S4/S5）。照 Unity 写成 right = +X，脚本里
+    // `Vector3.right` 与 `transform.right` 就会指相反的两边，而且两边都"对"。
     ::Vector3 Vector3::GetRight()
     {
-        return Make(1.0f, 0.0f, 0.0f);
+        return Make(-1.0f, 0.0f, 0.0f);
     }
 
     ::Vector3 Vector3::GetLeft()
     {
-        return Make(-1.0f, 0.0f, 0.0f);
+        return Make(1.0f, 0.0f, 0.0f);
     }
 
     ::Vector3 Vector3::GetPositiveInfinity()
