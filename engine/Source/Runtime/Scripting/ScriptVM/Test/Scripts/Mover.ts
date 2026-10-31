@@ -82,6 +82,13 @@ class Mover extends Behaviour {
         this.routineDone = true;
     }
 
+    /// 走 **JS shim** 的那条停止路径（`g.Behaviour.prototype.StopAllCoroutines`）。
+    /// C++ 直接调 comp.StopAllCoroutines() 是测不到 shim 的 —— 少一行转发
+    /// 照样全绿（变异 SC16 就是这么漏的）。
+    StopMyRoutine(): void {
+        this.StopAllCoroutines();
+    }
+
     routineSnapshot(): string {
         this.lastRoutineSnapshot = [
             String(this.routineSteps),

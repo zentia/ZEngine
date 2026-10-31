@@ -615,6 +615,12 @@ int main(int argc, char** argv)
         // WaitForSeconds(0.2)：先给 0.1，不够。
         scheduler->TickUpdate(0.1f, 0.1f);
         CheckEq("H4", "0.1s 时 WaitForSeconds 还没到期", mover_value("routineSteps"), "1");
+        // 世界暂停（缩放 0、墙钟 0.5）：WaitForSeconds 必须停住。少了这条，
+        // "shim 把 WaitForSeconds 标记成了 secondsRealtime" 完全看不出来 ——
+        // 之前的用例 scaled 和 unscaled 一直相等，两者无从分辨（变异 SC12）。
+        scheduler->TickUpdate(0.f, 0.5f);
+        CheckEq("H4b", "timeScale=0 时 WaitForSeconds 冻结（不吃墙钟）",
+                mover_value("routineSteps"), "1");
         scheduler->TickUpdate(0.1f, 0.1f);
         CheckEq("H5", "0.2s 时进入第二段", mover_value("routineSteps"), "3");
 
@@ -651,6 +657,19 @@ int main(int argc, char** argv)
         scheduler->TickEndOfFrame();
         CheckEq("H13", "停掉之后不再推进", mover_value("routineSteps"), "1");
         CheckEq("H14", "也不影响实例本身", mover_value("routineHandleOk"), "true");
+
+        // 第三次：走 **JS shim** 停（`this.StopAllCoroutines()` 转发到
+        // component）。C++ 直接调只能证明 Behaviour 那半边是对的。
+        CheckTrue("H15", "第三次启动协程", comp2->InvokeMethod("StartMyRoutine"));
+        CheckEq("H16", "又同步跑了第一段", mover_value("routineSteps"), "1");
+        CheckTrue("H17", "StopMyRoutine 送到了 JS 侧", comp2->InvokeMethod("StopMyRoutine"));
+        CheckEq("H17b", "shim 转发之后调度器也空了",
+                std::to_string(scheduler->GetRunningCount()), "0");
+        scheduler->TickUpdate(0.1f, 0.1f);
+        scheduler->TickUpdate(0.1f, 0.1f);
+        scheduler->TickEndOfFrame();
+        CheckEq("H18", "shim 转发之后确实停了", mover_value("routineSteps"), "1");
+        scheduler->StopAll();
     }
 
     // ---- G. 卸载：OnDestroy -> 不再有活实例 -------------------------------

@@ -6581,6 +6581,24 @@ namespace
             Check(probe.steps == 2, "BE18", "and resumes once the scaled time elapsed");
         }
 
+        // --- WaitForSeconds is frozen by timeScale -------------------------
+        // 与下面 BE19/BE20 是互补的一对：同样的 delta（缩放 0、墙钟 0.1），
+        // realtime 必须走、WaitForSeconds 必须停。只写其中一组的话，
+        // "把 WaitForSeconds 实现成 WaitForSecondsRealtime" 这个变异全绿 ——
+        // 试过一次，SC4 就是这么漏掉的。
+        {
+            CoroutineProbe probe;
+            ScriptYield wait {};
+            wait.kind = ScriptYieldKind::kSeconds;
+            wait.seconds = 0.2f;
+            ScriptYield null_yield {};
+            probe.body = {wait, null_yield};
+
+            probe.StartCoroutine("Paused");
+            AdvanceUpdate(4, 0.f, 0.5f);
+            Check(probe.steps == 1, "BE18b", "WaitForSeconds does not advance while timeScale is 0");
+        }
+
         // --- WaitForSecondsRealtime: the unscaled clock -------------------
         {
             CoroutineProbe probe;
