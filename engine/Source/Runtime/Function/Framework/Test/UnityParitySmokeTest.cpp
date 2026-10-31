@@ -4332,6 +4332,220 @@ namespace
               "the degenerate-case guards are documented as NaN avoidance");
     }
 
+    // --------------------------------------------------------------- AM ----
+    /// 对象生命周期：`Destroy(obj, delay)` / `DestroyImmediate` / 按类型全场查找。
+    ///
+    /// 这一组能测，靠的是把逻辑放进**吃一张明确 Level** 的入口
+    /// （`GameObject::CollectComponentsOfTypeIn` / `Level::QueueDestroy(id, delay)`）。
+    /// 活动关卡只能经 `WorldManager::getCurrentActiveLevel()` 拿到，而它没有
+    /// setter，headless 下恒为 null —— 只测 ZFUNCTION 那层壳的话，等于什么也没测。
+    void TestObjectLifecycle()
+    {
+        ObjectManager* om = GET_SYSTEM(ObjectManager);
+        if (om == nullptr)
+        {
+            om = new ObjectManager();
+            SystemRegistry::GetInstance().RegisterSystem(om);
+            om->Initialize();
+        }
+        Check(om != nullptr, "AM0", "ObjectManager is reachable");
+
+        // 壳层那条"没有活动关卡"的分支必须是真的，否则下面的降级断言是空的。
+        WorldManager* world = GET_SYSTEM(WorldManager);
+        Check(world == nullptr || world->getCurrentActiveLevel() == nullptr, "AM1",
+              "(there is no active level in this process, so the null-level path is the real one)");
+
+        Level level;
+        level.setLevelResUrl("Assets/Scenes/Lifecycle.level");
+
+        // 空对象 / 空关卡：必须是安全的空操作。这两条在壳上是**测不到**的
+        // （关卡检查先返回），所以只能在这儿测。
+        GameObject::DestroyIn(&level, nullptr, 1.f, false);
+        Transform* transform_h = nullptr;
+        GameObject* object_h = MakeRuntimeObject(*om, level, &transform_h);
+        GameObject::DestroyIn(nullptr, object_h, 1.f, false);
+        Check(object_h != nullptr && level.FindRuntimeGObject(object_h->GetID()) == object_h, "AM1d",
+              "DestroyIn tolerates a null object and a null level (neither is touched)");
+
+        // --- 销毁：真实行为走 DestroyIn（吃一张明确的 Level）-------------
+        // 壳（DestroyObject / DestroyObjectImmediate）在 headless 下永远走"没有
+        // 活动关卡"那条路，测不到任何行为；所以行为在这里测，壳只测"不崩"。
+        Transform* transform_f = nullptr;
+        GameObject* object_f = MakeRuntimeObject(*om, level, &transform_f);
+        if (object_f != nullptr)
+        {
+            // ⚠️ id 必须在销毁**之前**存下来：FlushPendingDestroys 会真的 delete
+            // 掉这个对象，之后再碰 `object_f->` 任何东西都是 use-after-free。
+            // 它通常"能跑"（mimalloc 不立刻把页还回去），于是崩溃只在某次堆布局
+            // 下才出现 —— 这正是最难查的那类 bug。
+            const GObjectID id_f = object_f->GetID();
+            GameObject::DestroyIn(&level, object_f, 1.f, false);
+            Check(level.GetDelayedDestroyCount() == 1, "AM1a",
+                  "Destroy(obj, t) parks the object on a timer instead of killing it now");
+            level.TickDestroyTimers(1.1f);
+            level.FlushPendingDestroys();
+            Check(level.FindRuntimeGObject(id_f) == nullptr, "AM1b",
+                  "and it dies once the timer runs out and the frame flushes");
+        }
+
+        // DestroyImmediate：**当场**就没了（同一条调用里，不需要等 Tick）。
+        Transform* transform_g = nullptr;
+        GameObject* object_g = MakeRuntimeObject(*om, level, &transform_g);
+        if (object_g != nullptr)
+        {
+            const GObjectID id_g = object_g->GetID();  // 同上：销毁前存
+            GameObject::DestroyIn(&level, object_g, 0.f, true);
+            Check(level.FindRuntimeGObject(id_g) == nullptr, "AM1c",
+                  "DestroyImmediate is immediate -- no Tick, no flush by the caller");
+        }
+
+        // --- 延迟销毁：倒计时 -------------------------------------------
+        Transform* transform_a = nullptr;
+        GameObject* object_a = MakeRuntimeObject(*om, level, &transform_a);
+        Check(object_a != nullptr, "AM2", "a runtime object can be registered on the level");
+        if (object_a == nullptr)
+        {
+            return;
+        }
+        const GObjectID id_a = object_a->GetID();
+
+        level.QueueDestroy(id_a, 1.f);
+        Check(level.GetDelayedDestroyCount() == 1, "AM3", "Destroy(obj, t) parks the object on a timer");
+        level.TickDestroyTimers(0.4f);
+        Check(level.GetDelayedDestroyCount() == 1 && level.FindRuntimeGObject(id_a) != nullptr, "AM4",
+              "and it survives a partial tick (0.4 of 1.0)");
+        level.TickDestroyTimers(0.4f);
+        Check(level.GetDelayedDestroyCount() == 1, "AM5", "and still at 0.8");
+        // 到点只是"移进帧末队列"，**不等于**已经销毁 —— 销毁仍然统一在帧末做，
+        // 否则在 Tick 中途销毁会让遍历的迭代器失效。
+        level.TickDestroyTimers(0.3f);
+        Check(level.GetDelayedDestroyCount() == 0 && level.FindRuntimeGObject(id_a) != nullptr, "AM6",
+              "crossing the deadline only moves it to the end-of-frame queue");
+        level.FlushPendingDestroys();
+        Check(level.FindRuntimeGObject(id_a) == nullptr, "AM7", "and the frame-end flush actually destroys it");
+
+        // --- delay <= 0 就是原来的"这一帧末" -----------------------------
+        Transform* transform_b = nullptr;
+        GameObject* object_b = MakeRuntimeObject(*om, level, &transform_b);
+        const GObjectID id_b = (object_b != nullptr) ? object_b->GetID() : k_invalid_gobject_id;
+        level.QueueDestroy(id_b, 0.f);
+        Check(level.GetDelayedDestroyCount() == 0, "AM8",
+              "Destroy(obj, 0) skips the timer entirely (same path as before)");
+        level.FlushPendingDestroys();
+        Check(level.FindRuntimeGObject(id_b) == nullptr, "AM9", "and dies at the end of this frame");
+
+        // --- 重复请求：保留更早的时间点 ----------------------------------
+        // 覆盖成更晚的时间会让对象比第一次请求的时刻活得更久 —— 那不是"再请求
+        // 一次"的意思。
+        Transform* transform_c = nullptr;
+        GameObject* object_c = MakeRuntimeObject(*om, level, &transform_c);
+        const GObjectID id_c = (object_c != nullptr) ? object_c->GetID() : k_invalid_gobject_id;
+        level.QueueDestroy(id_c, 2.f);
+        level.QueueDestroy(id_c, 5.f);
+        level.TickDestroyTimers(2.1f);
+        Check(level.GetDelayedDestroyCount() == 0, "AM10",
+              "a second, later request does not push the deadline out");
+        level.FlushPendingDestroys();
+        Check(level.FindRuntimeGObject(id_c) == nullptr, "AM11", "and it dies on the first deadline");
+
+        // --- 按类型全场查找 ----------------------------------------------
+        Transform* transform_d = nullptr;
+        GameObject* object_d = MakeRuntimeObject(*om, level, &transform_d);
+        Transform* transform_e = nullptr;
+        GameObject* object_e = MakeRuntimeObject(*om, level, &transform_e);
+        RigidBodyComponent* rigidbody_e = new RigidBodyComponent();
+        om->AllocateAndAssignInstanceID(rigidbody_e);
+        object_e->addComponent(rigidbody_e);
+        rigidbody_e->PostLoadResource(object_e);
+
+        const std::vector<Component*> bodies =
+            GameObject::CollectComponentsOfTypeIn(&level, "RigidBodyComponent");
+        Check(bodies.size() == 1 && bodies[0] == rigidbody_e, "AM12",
+              "FindObjectsOfType finds the one component of that type in the whole level");
+        // 数**相对于关卡里活着的对象数**，不写死数字：上面几段会往同一张表里
+        // 加加减减，写死的话任何一处顺序变动都会让这两条红，而红的原因和被测的
+        // 东西无关。
+        const size_t live_objects = level.GetRuntimeGObjects().size();
+        Check(GameObject::CollectComponentsOfTypeIn(&level, "Transform").size() == live_objects, "AM13",
+              "and one transform per live object");
+        // 基类也要算命中 —— 与 GameObject.GetComponents 同一个判据。
+        Check(GameObject::CollectComponentsOfTypeIn(&level, "Component").size() == live_objects + 1, "AM14",
+              "a base type matches every component (one per object, plus the rigidbody)");
+        Check(GameObject::CollectComponentsOfTypeIn(&level, "NoSuchType").empty(), "AM15",
+              "an unknown type name is empty, not a crash");
+        Check(GameObject::CollectComponentsOfTypeIn(nullptr, "Transform").empty(), "AM16",
+              "a null level is empty too (the shells pass one every time there is no active level)");
+        Check(object_d != nullptr && object_e != nullptr, "AM17", "(both search fixture objects are alive)");
+
+        // --- 壳层：没有活动关卡时必须安全 --------------------------------
+        // 这里测的是"不崩"，不是"有用" —— 真正的行为在上面用明确的 Level 测过了。
+        GameObject::DestroyObject(object_d, 1.f);
+        GameObject::DestroyObjectImmediate(object_e);
+        Check(true, "AM18", "the Destroy shells degrade to a no-op instead of crashing with no level");
+        Check(GameObject::FindFirstComponentOfType("Transform") == nullptr, "AM19",
+              "FindObjectOfType returns null with no active level");
+        Check(GameObject::FindAllComponentsOfType("Transform").empty(), "AM20",
+              "and FindObjectsOfType returns an empty list");
+        GameObject::DestroyObject(nullptr, 1.f);
+        GameObject::DestroyObjectImmediate(nullptr);
+        Check(true, "AM21", "and both accept a null object");
+    }
+
+    // --------------------------------------------------------------- AN ----
+    void TestObjectLifecycleWiring()
+    {
+        const std::string go_header = ReadFile("Source/Runtime/BaseClasses/GameObject.h");
+        Check(!go_header.empty(), "AN0", "GameObject.h is readable");
+        Check(CountOccurrences(go_header, "ZFUNCTION(") == 32, "AN1",
+              "GameObject exposes exactly 32 script methods");
+        // Unity 的拼写。
+        Check(CountOccurrences(go_header, "\"DestroyImmediate\"") >= 1 &&
+                  CountOccurrences(go_header, "\"FindObjectOfType\"") >= 1 &&
+                  CountOccurrences(go_header, "\"FindObjectsOfType\"") >= 1,
+              "AN2", "DestroyImmediate / FindObject(s)OfType are published");
+        // ⚠️ delay 是必填的：ZFUNCTION 没有可选参数，这条必须写在头文件里，
+        // 否则下一个人会以为 Destroy(obj) 还成立。
+        Check(CountOccurrences(go_header, "static void DestroyObject(GameObject* gobject, float delay = 0.f)") >= 1,
+              "AN3", "Destroy takes an explicit delay (there are no optional script parameters)");
+        // 逻辑必须在"给一张 Level"的版本里，否则 headless 测不到。
+        Check(CountOccurrences(go_header, "CollectComponentsOfTypeIn") >= 1, "AN4",
+              "the type search has a level-explicit core");
+        Check(CountOccurrences(go_header, "static void DestroyIn(Level* level") >= 1, "AN4b",
+              "and so does destruction");
+
+        const std::string go_source = ReadFile("Source/Runtime/BaseClasses/GameObject.cpp");
+        Check(!go_source.empty(), "AN5", "GameObject.cpp is readable");
+        // 两个外壳 + 定义本身；数**不带类名限定**的名字（调用是 `CollectComponentsOfTypeIn(`）。
+        Check(CountOccurrences(go_source, "CollectComponentsOfTypeIn(") >= 3, "AN6",
+              "both type-search shells funnel through the level-explicit core");
+        Check(CountOccurrences(go_source, "level->QueueDestroy(gobject->GetID(), delay)") >= 1, "AN7",
+              "Destroy(obj, t) really forwards the delay to the level");
+        // DestroyImmediate 必须复用队列，不能另写一套销毁。
+        Check(CountOccurrences(go_source, "level->FlushPendingDestroys()") >= 1, "AN8",
+              "DestroyImmediate reuses the frame-end path instead of reimplementing destruction");
+        // 两个壳 + 定义本身。
+        Check(CountOccurrences(go_source, "DestroyIn(") >= 3, "AN8b",
+              "both Destroy shells funnel through DestroyIn");
+
+        const std::string level_header = ReadFile("Source/Runtime/Function/Framework/Level/Level.h");
+        Check(!level_header.empty(), "AN9", "Level.h is readable");
+        Check(CountOccurrences(level_header, "void QueueDestroy(GObjectID go_id, float delay_seconds);") >= 1,
+              "AN10", "Level has the delayed QueueDestroy");
+        Check(CountOccurrences(level_header, "void TickDestroyTimers(float delta_time);") >= 1, "AN11",
+              "and a separately drivable timer tick");
+        Check(CountOccurrences(level_header, "m_DelayedDestroys") >= 1, "AN12",
+              "backed by its own timer list (not mixed into m_PendingDestroys)");
+
+        const std::string level_source = ReadFile("Source/Runtime/Function/Framework/Level/Level.cpp");
+        Check(!level_source.empty(), "AN13", "Level.cpp is readable");
+        // 接线门：计时器必须**真的被 Tick 驱动**，不然延迟销毁永远不会发生。
+        Check(CountOccurrences(level_source, "TickDestroyTimers(delta_time);") >= 1, "AN14",
+              "Level::Tick drives the destroy timers (an undriven timer is a silent no-op)");
+        // 游戏内时间而不是挂钟，这条要写下来。
+        Check(CountOccurrences(level_source, "游戏内") >= 1, "AN15",
+              "the delay is documented as scaled game time, not wall-clock");
+    }
+
     // ---------------------------------------------------------------- B ----
     void TestWiringGate()
     {
@@ -4465,6 +4679,8 @@ int main()
     TestMathfWiring();
     TestVectorQuaternionExtras();
     TestVectorQuaternionExtrasWiring();
+    TestObjectLifecycle();
+    TestObjectLifecycleWiring();
     TestWiringGate();
 
     std::printf("\n=== %d checks, %d failures ===\n", g_Checks, g_Failures);

@@ -129,6 +129,25 @@ public:
     /// 会让 Level::Tick 手里正在用的迭代器 / 指针当场失效。
     void QueueDestroy(GObjectID go_id);
 
+    /// Unity 的 `Destroy(obj, t)`：`t` 秒后销毁。
+    ///
+    /// delay <= 0 等价于上一个重载（这一帧末）。
+    ///
+    /// 倒计时走 `TickDestroyTimers`，而它吃的是 Level::Tick 的**帧间隔**（已按
+    /// timeScale 缩放），所以 2 秒是 2 秒**游戏内**时间 —— 慢动作里对象该多活
+    /// 一会儿，这与 WaitForSeconds 同一个口径。
+    void QueueDestroy(GObjectID go_id, float delay_seconds);
+
+    /// 推进延迟销毁的倒计时，到点的落进帧末队列。**不执行**销毁 —— 销毁仍然
+    /// 由 FlushPendingDestroys 统一做，理由同上（遍历安全）。
+    ///
+    /// 单独成一个方法而不是塞进 Tick 内部：Tick 在未加载的关卡上直接返回，
+    /// 而这条计时逻辑要能被单独驱动（测试、暂停后恢复）。
+    void TickDestroyTimers(float delta_time);
+
+    /// 还有多少个对象在等延迟销毁到点。测试与诊断用。
+    int GetDelayedDestroyCount() const { return static_cast<int>(m_DelayedDestroys.size()); }
+
     /// 执行 QueueDestroy 攒下的销毁。由 Level::Tick 末尾调用。
     void FlushPendingDestroys();
     std::weak_ptr<Character> getCurrentActiveCharacter() const { return m_CurrentActiveCharacter; }
@@ -176,6 +195,10 @@ protected:
 
     // Destroy requests, drained by FlushPendingDestroys() at end of Tick.
     std::vector<GObjectID> m_PendingDestroys;
+
+    // Unity's Destroy(obj, t): (id, remaining seconds). Counted down by
+    // TickDestroyTimers, which hands due entries to m_PendingDestroys.
+    std::vector<std::pair<GObjectID, float>> m_DelayedDestroys;
 
     std::shared_ptr<Character> m_CurrentActiveCharacter;
     /// Id of the character's object after DeleteGObjectByID unbound it, so

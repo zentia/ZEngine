@@ -21,6 +21,9 @@
 // only available in the .cpp. A forward declaration is enough for the
 // `Transform* GetTransform()` return type below.
 class Transform;
+// Same reason: Level.h includes GameObject.h, so the type only exists in the
+// .cpp. Enough for the `Level*` parameter of CollectComponentsOfTypeIn below.
+class Level;
 
 ZCLASS(CustomTransfer)
 class GameObject : public Object
@@ -297,8 +300,63 @@ public:
     /// 是连整棵子树一起销毁；这里是刻意的选择，改动前先想清楚谁会依赖它。）
     ///
     /// 同一帧重复销毁同一个对象是安全的（内部去重）。
+    ///
+    /// ⚠️ `delay` 是**必填**的（脚本侧 `Destroy(obj, 0)` 表示"这一帧末"）。
+    /// ZFUNCTION 层没有可选参数的概念（同 PlayerPrefs 的默认值），而 Unity 的
+    /// `Destroy(obj, t = 0)` 靠的是 C# 的默认实参。宁可多写一个 0，也不要一个
+    /// "看起来只传一个参数也行"的绑定 —— 那会在运行时才炸。
+    ///
+    /// delay > 0 时是**游戏内**时间（受 timeScale，同 WaitForSeconds）。
+    ///
+    /// 只是壳：真正的实现在 `DestroyIn`，理由见 `CollectComponentsOfTypeIn`
+    /// 那条注释（活动关卡 headless 下恒为 null，只测壳等于什么也没测）。
     ZFUNCTION(Name="Destroy")
-    static void DestroyObject(GameObject* gobject);
+    static void DestroyObject(GameObject* gobject, float delay = 0.f);
+
+    /// TS 入口：`GameObject.DestroyImmediate(obj)`。
+    ///
+    /// 与 `Destroy` 的区别只有"等不等帧末"。Unity 把它标成"别在运行时用"是有
+    /// 原因的：**它会当场执行销毁**，所以在一个对象的 Tick / OnUpdate 里调用它
+    /// 去销毁别的对象，正在遍历对象表的那个迭代器会当场失效。运行时一律用
+    /// `Destroy(obj, 0)`；这个入口是给编辑器脚本和确实知道自己在做什么的地方
+    /// 用的（比如在两个 Tick 之间、或者销毁刚自己 new 出来的东西）。
+    ZFUNCTION(Name="DestroyImmediate")
+    static void DestroyObjectImmediate(GameObject* gobject);
+
+    /// 上面两个销毁入口的**真实实现**，吃一张明确的 Level。
+    ///
+    /// `flush_now` = true 就是 DestroyImmediate：入队后立刻冲刷，不等帧末。
+    /// 仍然走"入队 + 冲刷"而不是自己删一遍 —— FlushPendingDestroys 里主表对象
+    /// 与运行时对象两条路径不能混，重复实现迟早漏。
+    static void DestroyIn(Level* level, GameObject* gobject, float delay, bool flush_now);
+
+    // ---- 按类型全场查找（Unity：FindObjectOfType / FindObjectsOfType）------
+    //
+    // GameObject.Find 按**名字**找对象，这两个按**组件类型**找组件。Unity 里
+    // 后者是"我不管它在场景哪个角落，给我那个唯一的东西"的标准写法（找主相机、
+    // 找 GameManager），而缺了它脚本只能从根开始自己遍历整棵树。
+
+    /// TS 入口 `GameObject.FindObjectsOfType(type)`：全场（关卡对象 + 运行时
+    /// 生成的对象）所有匹配 `type` 的组件。
+    ///
+    /// ⚠️ 顺序**不保证**：底层两张表都是哈希表，而 Unity 的 FindObjectsOfType
+    /// 也没保证顺序。要稳定顺序自己排。
+    ZFUNCTION(Name="FindObjectsOfType")
+    static std::vector<Component*> FindAllComponentsOfType(const std::string& component_type_name);
+
+    /// TS 入口 `GameObject.FindObjectOfType(type)`：上面的第一个，没有则 nullptr。
+    ZFUNCTION(Name="FindObjectOfType")
+    static Component* FindFirstComponentOfType(const std::string& component_type_name);
+
+    /// 上面两个的**真实实现**，吃一张明确的 Level。
+    ///
+    /// 为什么要拆出这个：活动关卡只能经 `WorldManager::getCurrentActiveLevel()`
+    /// 拿到，而它没有 setter —— headless 下永远是 nullptr，于是这两个 ZFUNCTION
+    /// 在无关卡时什么也测不了。把逻辑放进"给一张 Level"的版本，脚本入口退化成
+    /// 一层壳，逻辑就既能被真实关卡驱动、也能被测试直接驱动（同 CharacterController
+    /// / MotorComponent 那套）。
+    static std::vector<Component*> CollectComponentsOfTypeIn(Level* level,
+                                                            const std::string& component_type_name);
 
     // ---- 激活状态 ----------------------------------------------------------
     //

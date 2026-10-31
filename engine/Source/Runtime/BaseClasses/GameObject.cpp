@@ -786,19 +786,100 @@ std::vector<GameObject*> GameObject::FindAllWithTagName(const eastl::string& tag
     return out;
 }
 
-void GameObject::DestroyObject(GameObject* gobject)
+void GameObject::DestroyIn(Level* level, GameObject* gobject, float delay, bool flush_now)
 {
     if (gobject == nullptr)
     {
         return;
     }
-
-    Level* level = GetActiveLevel("GameObject.Destroy");
     if (level == nullptr)
     {
         return;
     }
-    level->QueueDestroy(gobject->GetID());
+
+    if (delay > 0.f)
+    {
+        level->QueueDestroy(gobject->GetID(), delay);
+    }
+    else
+    {
+        level->QueueDestroy(gobject->GetID());
+    }
+
+    // 仍然走"入队 + 立刻冲刷"而不是绕开队列自己删：FlushPendingDestroys 里
+    // 那两条路径（主表对象 erase / 运行时对象 ObjectManager::Destroy）不能混，
+    // 重复实现一遍迟早漏。这里只把"等帧末"这一步拿掉。
+    if (flush_now)
+    {
+        level->FlushPendingDestroys();
+    }
+}
+
+void GameObject::DestroyObject(GameObject* gobject, float delay)
+{
+    DestroyIn(GetActiveLevel("GameObject.Destroy"), gobject, delay, false);
+}
+
+void GameObject::DestroyObjectImmediate(GameObject* gobject)
+{
+    DestroyIn(GetActiveLevel("GameObject.DestroyImmediate"), gobject, 0.f, true);
+}
+
+std::vector<Component*> GameObject::CollectComponentsOfTypeIn(Level* level,
+                                                             const std::string& component_type_name)
+{
+    std::vector<Component*> found;
+    if (level == nullptr)
+    {
+        return found;
+    }
+
+    const Type* wanted = TypeManager::GetInstance().ClassNameToType(component_type_name.c_str());
+    if (wanted == nullptr)
+    {
+        LOG_WARNING(ZObject, "FindObjectsOfType: '{}' is not a registered reflected type",
+                    component_type_name.c_str());
+        return found;
+    }
+
+    // 复用 GetComponentsByTypeName 而不是在这里重写一遍匹配：那是"基类也算命中"
+    // 的唯一实现处（GetComponents("Component") 能捞到全部），重写的版本迟早和它
+    // 分叉。
+    auto collect_from = [&](GameObject* object) {
+        if (object == nullptr)
+        {
+            return;
+        }
+        for (Component* component : object->GetComponentsByTypeName(component_type_name))
+        {
+            found.push_back(component);
+        }
+    };
+
+    // 先主表（关卡对象），再运行时表（Instantiate 产物）—— 与
+    // Level::FindGObjectByName 同一个顺序。两张表都是哈希表，**顺序不保证**
+    // （Unity 的 FindObjectsOfType 同样不保证），要稳定顺序自己排。
+    for (const auto& id_object_pair : level->getAllGObjects())
+    {
+        collect_from(id_object_pair.second.get());
+    }
+    for (const auto& id_object_pair : level->GetRuntimeGObjects())
+    {
+        collect_from(id_object_pair.second);
+    }
+    return found;
+}
+
+Component* GameObject::FindFirstComponentOfType(const std::string& component_type_name)
+{
+    std::vector<Component*> found =
+        CollectComponentsOfTypeIn(GetActiveLevel("GameObject.FindObjectOfType"), component_type_name);
+    return found.empty() ? nullptr : found.front();
+}
+
+std::vector<Component*> GameObject::FindAllComponentsOfType(const std::string& component_type_name)
+{
+    return CollectComponentsOfTypeIn(GetActiveLevel("GameObject.FindObjectsOfType"), component_type_name);
 }
 
 Component* GameObject::AddComponentByTypeName(const std::string& component_type_name)

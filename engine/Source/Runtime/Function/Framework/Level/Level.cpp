@@ -486,6 +486,9 @@ void Level::Tick(float delta_time)
         m_CurrentActiveCharacter->Tick(delta_time);
     }
 
+    // Unity 的 `Destroy(obj, t)`：到点的那些落进帧末队列。
+    TickDestroyTimers(delta_time);
+
     // 所有 Tick 走完才销毁。脚本在某个对象的 OnUpdate 里 Destroy 另一个对象时，
     // 上面的遍历手里正好拿着那张表的迭代器 —— 立即销毁会让它们当场失效。
     FlushPendingDestroys();
@@ -708,6 +711,66 @@ void Level::QueueDestroy(GObjectID go_id)
         return;
     }
     m_PendingDestroys.push_back(go_id);
+}
+
+void Level::QueueDestroy(GObjectID go_id, float delay_seconds)
+{
+    if (go_id == k_invalid_gobject_id)
+    {
+        return;
+    }
+    // delay <= 0 就是"这一帧末"，直接走原来的队列 —— 不进定时器，免得
+    // Destroy(obj, 0) 比 Destroy(obj) 多绕一圈（也少一处浮点比较）。
+    if (delay_seconds <= 0.f)
+    {
+        QueueDestroy(go_id);
+        return;
+    }
+
+    // 同一个对象再请求一次：保留**更早**的那个时间点，不是后来者覆盖。
+    // Unity 的语义是"t 秒后销毁"，重复调用不该把已经等了 0.9 秒的那个重新
+    // 按回 1 秒 —— 那会让它比第一次请求的时刻活得更久。
+    for (auto& entry : m_DelayedDestroys)
+    {
+        if (entry.first == go_id)
+        {
+            if (delay_seconds < entry.second)
+            {
+                entry.second = delay_seconds;
+            }
+            return;
+        }
+    }
+    m_DelayedDestroys.emplace_back(go_id, delay_seconds);
+}
+
+void Level::TickDestroyTimers(float delta_time)
+{
+    if (m_DelayedDestroys.empty())
+    {
+        return;
+    }
+
+    // 倒计时用**帧间隔**而不是挂钟：`Destroy(obj, 2)` 在 timeScale 下应该是
+    // 2 秒**游戏内**时间，慢动作里它就该多活一会儿。Level::Tick 拿到的
+    // delta_time 已经是缩放过的（同 WaitForSeconds 的口径）。
+    for (auto& entry : m_DelayedDestroys)
+    {
+        entry.second -= delta_time;
+    }
+
+    // 倒着扫，顺手把到点的从定时器表里摘掉，再交给帧末队列 —— 销毁本身仍然
+    // 是延迟的，这里只决定"谁该在这一帧末死"。
+    for (int i = static_cast<int>(m_DelayedDestroys.size()) - 1; i >= 0; --i)
+    {
+        if (m_DelayedDestroys[static_cast<size_t>(i)].second > 0.f)
+        {
+            continue;
+        }
+        const GObjectID go_id = m_DelayedDestroys[static_cast<size_t>(i)].first;
+        m_DelayedDestroys.erase(m_DelayedDestroys.begin() + i);
+        QueueDestroy(go_id);
+    }
 }
 
 void Level::FlushPendingDestroys()
