@@ -880,10 +880,14 @@ int main()
             "var c = Color32.Lerp({r:0,g:0,b:0,a:255}, {r:255,g:255,b:255,a:255}, 0.5);"
             "globalThis.__zResult = String(c.r);",
             "127");
+    // ⚠️ 端点必须是 200/100 而不是 0/255：0/255 时 t 越界的外推值一定撞上字节
+    // 饱和，夹不夹都是同一个数 —— 那样这条等于没写（变异 BD18 就是这么漏的）。
     CheckJs("M19", "Color32.Lerp 夹住 t，LerpUnclamped 不夹", script_env,
-            "var a = {r:0,g:0,b:0,a:255}; var b = {r:255,g:255,b:255,a:255};"
-            "globalThis.__zResult = Color32.Lerp(a, b, 2).r + '|' + Color32.LerpUnclamped(a, b, 2).r;",
-            "255|255");
+            "var hi = {r:200,g:200,b:200,a:255}; var lo = {r:100,g:100,b:100,a:255};"
+            "globalThis.__zResult = Color32.Lerp(hi, lo, 2).r + '|'"
+            " + Color32.LerpUnclamped(hi, lo, 2).r + '|'"
+            " + Color32.Lerp(hi, lo, -1).r;",
+            "100|0|200");
     CheckJs("M20", "Color32.ToString 是 Unity 的格式", script_env,
             "globalThis.__zResult = Color32.ToString({r:255,g:0,b:0,a:255});",
             "RGBA(255, 0, 0, 255)");

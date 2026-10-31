@@ -114,9 +114,14 @@ MUTATIONS = [
      "        return min.x < other_max.x && max.x > other_min.x && min.y < other_max.y && max.y > other_min.y &&\n"
      "               min.z < other_max.z && max.z > other_min.z;"),
 
-    ("BD6 ClosestPoint never clamps", BOUNDS_H,
-     "        if (out.x < min.x)\n            out.x = min.x;",
-     "        if (false)\n            out.x = min.x;"),
+    # ⚠️ 必须把 X 轴的**两个**夹取一起关掉。只关 min 那一半的话，max 那一半
+    # 仍然会把超出去了的值拉回 max —— 对于"点在 +X 面外"的样本，结果与正确实现
+    # 完全相同，于是这是一个等价变异（第一版就是这么白跑一趟的）。
+    ("BD6 ClosestPoint stops clamping X", BOUNDS_H,
+     "        if (out.x < min.x)\n            out.x = min.x;\n"
+     "        if (out.x > max.x)\n            out.x = max.x;",
+     "        if (false)\n            out.x = min.x;\n"
+     "        if (false)\n            out.x = max.x;"),
 
     # 用"曼哈顿距离"当替身而不是 sqrt：sqrt 要 <cmath>，而加不加这个 include
     # 会让变异体变成"编译不过"——那是无效变异，不是被抓住。曼哈顿在 (7,0,0)

@@ -6713,6 +6713,23 @@ namespace
         Check(::Color32::LerpUnclamped(black_bytes, white_bytes, 2.0f).r == 255, "BC41",
               "LerpUnclamped does not clamp t, but still saturates at 255 (float->uint8 out of range is UB)");
 
+        // ⚠️ BC39/BC40 **分辨不出**"Lerp 到底夹没夹 t"：端点是 0 和 255 时，
+        // t 越界的外推值一定撞上字节值域的饱和，夹不夹都是同一个 255 / 0。
+        // 要分出来得挑一对**外推之后仍落在 0..255 之内**的端点：
+        //   t=2  夹住 -> 100（就是 b）  不夹 -> 200 + (100-200)*2 = 0
+        //   t=-1 夹住 -> 200（就是 a）  不夹 -> 200 + (100-200)*(-1) = 300 -> 255
+        // 于是 BC39b/BC39c 与 BC39d/BC39e 各是一对互补的断言。
+        const ::Color32 two_hundred {200, 200, 200, 255};
+        const ::Color32 one_hundred {100, 100, 100, 255};
+        Check(::Color32::Lerp(two_hundred, one_hundred, 2.0f).r == 100, "BC39b",
+              "Lerp clamps t: t=2 gives exactly b (100), not the extrapolated 0");
+        Check(::Color32::LerpUnclamped(two_hundred, one_hundred, 2.0f).r == 0, "BC39c",
+              "LerpUnclamped does not clamp t: the same call extrapolates to 0");
+        Check(::Color32::Lerp(two_hundred, one_hundred, -1.0f).r == 200, "BC39d",
+              "Lerp clamps t: t=-1 gives exactly a (200)");
+        Check(::Color32::LerpUnclamped(two_hundred, one_hundred, -1.0f).r == 255, "BC39e",
+              "LerpUnclamped extrapolates past a and saturates (200 -> 300 -> 255)");
+
         // --- 门面 ----------------------------------------------------------
         const ::Bounds via_facade = Runtime::Bounds::Create(::Vector3(1.0f, 2.0f, 3.0f), ::Vector3(4.0f, 6.0f, 8.0f));
         Check(Near(via_facade.extents, ::Vector3(2.0f, 3.0f, 4.0f)), "BC42",
