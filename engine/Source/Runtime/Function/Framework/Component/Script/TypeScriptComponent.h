@@ -83,6 +83,31 @@ public:
     /// 在掉帧时重复触发、高帧率时漏触发 —— 那种逻辑属于 OnUpdate。
     void FixedTick(float fixed_delta_time) override;
 
+    /// 转发到 JS 侧的 `OnLateUpdate(deltaTime)`。
+    ///
+    /// Unity 的 `LateUpdate`：每帧一次，在所有 Update 之后。典型用途是相机
+    /// 跟随 —— 写在 Update 里的话跟随的永远是目标上一帧的位置。
+    ///
+    /// ⚠️ 与 OnUpdate 的判据必须一致（见 GameObject::LateTick）：这里不需要
+    /// 额外判 enabled / 层级激活，因为 GameObject 那一层已经判过了。
+    void LateTick(float delta_time) override;
+
+    /// Unity 的 `OnEnable` / `OnDisable`。
+    ///
+    /// 触发条件是**合取**：`enabled && activeInHierarchy`（Unity 里
+    /// `Behaviour.isActiveAndEnabled` 就是这个合取）。单独 `enabled = true`
+    /// 但对象在层级里被关着时不该 OnEnable —— 那正是 Unity 里"设了 enabled
+    /// 没反应"最常见的误判来源。
+    ///
+    /// 两条路都会走到这里：组件自己的 `SetEnabled`（Unity 的
+    /// `Behaviour.enabled`）和宿主对象层级激活变化（Unity 的
+    /// `SetActive` / 父级停用）。两边都只做"重算合取值、变了才派发"，所以
+    /// 顺序无关、重复调用无害。
+    void SetEnabled(bool enabled) override;
+
+    /// 宿主 `activeInHierarchy` 变化（GameObject::SetActive 推下来的）。
+    void OnOwnerActiveChanged(bool active) override;
+
     // Authoring hooks --------------------------------------------------
     /// 32-char lowercase hex GUID of the source ScriptAsset. Empty until
     /// the component is bound (e.g. by Inspector drag-drop in P5+).
@@ -206,6 +231,11 @@ private:
     bool m_AwakeCalled = false;
     bool m_StartCalled = false;
 
+    /// 上一次派发过的 `enabled && activeInHierarchy`。初值 false，于是首次
+    /// BindAndAwake 会（在对象确实开着时）补一次 OnEnable —— 与 Unity 里
+    /// "OnEnable 紧跟 OnAwake、在 OnStart 之前"的顺序一致。
+    bool m_LastEnabledAndActive {false};
+
     // Live JS generators backing the coroutines this behaviour started.
     //
     // Indexed by `script_id - 1`. Slots are nulled on release rather than
@@ -249,6 +279,13 @@ private:
     /// Phase-7 helper: locate the index of `key` in m_SerializedFields,
     /// or SIZE_MAX if not present. Even-indexed entries only.
     size_t FindSerializedFieldIndex(const eastl::string& key) const;
+
+    /// OnEnable / OnDisable 的唯一派发点：重算 `enabled && activeInHierarchy`，
+    /// 与 m_LastEnabledAndActive 不同才发，并记住新值。
+    ///
+    /// `SetEnabled` 与 `OnOwnerActiveChanged` 都只调它 —— 两条路各自去判
+    /// "是不是自己那条变了"就会漏掉"两个条件同时满足不同方向变化"的组合。
+    void RefreshEnabledState();
 
 public:
     /// Phase-7: expose the live JS instance's enumerable own properties

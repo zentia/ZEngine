@@ -82,6 +82,19 @@ public:
     /// 默认空实现，与 Tick 一致：绝大多数组件不需要固定步。
     virtual void FixedTick(float fixed_delta_time) { (void)fixed_delta_time; }
 
+    /// Unity 的 `LateUpdate`：每帧一次，在所有组件的 `Tick` **之后**。
+    ///
+    /// 存在的理由就是"我必须在别人都 Update 完之后再动" —— 相机跟随是最典型的
+    /// 一个：写在 Update 里的话，它追随的目标可能在这一帧的 Update 里才刚移动，
+    /// 于是相机永远追的是上一帧的位置，表现为抖动或滞后一帧。
+    ///
+    /// 顺序（Unity 同）：FixedTick（0..n 次）→ Tick → LateTick → 帧末。
+    ///
+    /// 默认空实现，与 Tick 一致。⚠️ 三个 Tick 的**启用判定必须完全一致**
+    /// （见 GameObject::LateTick）：出现"Update 跑了但 LateUpdate 没跑"时，
+    /// 组件状态会静默地在两套节奏之间错位，而且只在特定帧率下复现。
+    virtual void LateTick(float delta_time) { (void)delta_time; }
+
     virtual void OnSerializedFieldsUpdated() {}
 
     /// 宿主 GameObject 的**层级激活状态**（activeInHierarchy）刚发生变化时的通知。

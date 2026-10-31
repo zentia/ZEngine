@@ -540,6 +540,42 @@ void Level::FixedTick(float fixed_delta_time)
     GetTransformChangeDispatch().DispatchChanges();
 }
 
+void Level::LateTick(float delta_time)
+{
+    if (!m_IsLoaded)
+    {
+        return;
+    }
+
+    for (const auto& id_object_pair : m_Gobjects)
+    {
+        assert(id_object_pair.second);
+        if (id_object_pair.second)
+        {
+            id_object_pair.second->LateTick(delta_time);
+        }
+    }
+
+    for (const auto& id_object_pair : m_RuntimeGObjects)
+    {
+        if (id_object_pair.second != nullptr)
+        {
+            id_object_pair.second->LateTick(delta_time);
+        }
+    }
+
+    // 有意的省略（与 Tick 的三处差异，见头文件注释）：
+    //   * 不调 Character::Tick —— 那是每帧一次的相机跟随 / 输入快照，在
+    //     Tick 里已经跑过，LateUpdate 再跑一次就是一帧动两遍；
+    //   * 不调 FlushPendingDestroys / TickDestroyTimers —— 销毁在帧末统一收口；
+    //   * 不推进物理。
+    //
+    // 但变换变更**要**派发：相机在 LateUpdate 里改了自己的位置，帧末派发
+    // 才能让渲染这一帧看到新位姿，否则跟随相机永远慢一帧 —— 而"慢一帧的
+    // 跟随"正是 LateUpdate 被发明出来要消灭的那个抖动。
+    GetTransformChangeDispatch().DispatchChanges();
+}
+
 void Level::RebuildAllTransformHierarchies()
 {
     m_TransformSceneRoots.Clear();

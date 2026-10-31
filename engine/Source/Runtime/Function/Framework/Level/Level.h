@@ -85,6 +85,17 @@ public:
     /// 固定步之后物理以恒定步长推进，与渲染帧率无关。
     void FixedTick(float fixed_delta_time);
 
+    /// 每帧一次，在 Tick **之后**：跑组件 LateUpdate（帧间隔）。
+    ///
+    /// 与 Tick 的区别（除了时机）：
+    ///   * 不推进物理（物理只在 FixedTick 里，见那里的说明）；
+    ///   * **不做延迟销毁**。销毁统一由帧末的 Tick 收口 —— LateTick 属于
+    ///     "Update 之后、帧末之前"这一段，Lua/TS 脚本在这个窗口里 Destroy
+    ///     另一个对象是合法的，但真正摘除必须等到那一刻，否则 Level::Tick
+    ///     手里正握着的迭代器会在它自己还没走完时失效。
+    ///   * 不推进销毁倒计时（TickDestroyTimers 吃的是帧间隔，一帧一次才对）。
+    void LateTick(float delta_time);
+
     const eastl::string& getLevelResUrl() const { return m_LevelResUrl; }
     void setLevelResUrl(const eastl::string& level_res_url) { m_LevelResUrl = level_res_url; }
 

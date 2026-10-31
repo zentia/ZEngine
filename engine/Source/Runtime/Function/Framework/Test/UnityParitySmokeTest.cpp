@@ -7283,6 +7283,330 @@ namespace
               "BF32", "and the Coroutine handle");
     }
 
+    // ---------------------------------------------------------------- LU ---
+    // Unity 的 `LateUpdate` 阶段。
+
+    /// 记录自己被哪一趟 Tick 打到了。
+    ///
+    /// ⚠️ 故意**不**写 `REGISTER_CLASS(LateTickProbe)`：本 exe 不编 .gen.cpp，
+    /// 一个没注册过的类型 `GetTypeName()` 会拿 `Type::DefaultTypeIndex`
+    /// (0x80000000) 去索引 `RuntimeTypeArray::types[1024]` —— 不是返回空串，
+    /// 是越界读。不带 REGISTER_CLASS 时 `GetTypeVirtualInternal()` 走基类
+    /// `Component` 的那份，于是 `GetTypeName()` == "Component"，而 Component
+    /// 是 `RegisterRuntimeTypesForTest()` 显式注册过的，索引有效。
+    ///
+    /// 代价：白名单按类型名判，所以这个探针和 Component 共享同一条白名单项。
+    class LateTickProbe : public Component
+    {
+    public:
+        LateTickProbe(std::string* shared_log, char tag) : m_Log(shared_log), m_Tag(tag) {}
+
+        int updates = 0;
+        int late = 0;
+        int fixed = 0;
+
+        /// Unity 的 `Behaviour.enabled` 语义：Component 基类上没有 setter（Unity
+        /// 也一样，`enabled` 挂在 Behaviour 上），这里自己记一个再重写判据，
+        /// 免得为了让测试跑起来去改引擎的公开头。
+        void SetProbeEnabled(bool on) { m_ProbeEnabled = on; }
+        bool isEnabled() const override { return m_ProbeEnabled; }
+
+        void Reset()
+        {
+            updates = 0;
+            late = 0;
+            fixed = 0;
+        }
+
+        void Tick(float) override
+        {
+            ++updates;
+            Append('u');
+        }
+        void FixedTick(float) override
+        {
+            ++fixed;
+            Append('f');
+        }
+        void LateTick(float) override
+        {
+            ++late;
+            Append('l');
+        }
+
+    private:
+        void Append(char phase)
+        {
+            if (m_Log != nullptr)
+            {
+                m_Log->push_back(m_Tag);
+                m_Log->push_back(phase);
+            }
+        }
+
+        std::string* m_Log;
+        char m_Tag;
+        bool m_ProbeEnabled {true};
+    };
+
+    void TestLateUpdate()
+    {
+        // 编辑态下 `shouldComponentTick` 认白名单，而探针报出来的类型名是
+        // "Component"，所以白名单项就是它。测完必须撤掉：白名单是全局的，
+        // 留着会静默地让后面每一组的 Component 都开始被 Tick。
+        const bool had_component_whitelisted =
+            g_editorTickComponentTypes.find("Component") != g_editorTickComponentTypes.end();
+        g_editorTickComponentTypes.insert("Component");
+
+        ObjectManager* om = GET_SYSTEM(ObjectManager);
+        Check(om != nullptr, "LU0", "ObjectManager is reachable");
+        if (om == nullptr)
+        {
+            if (!had_component_whitelisted) { g_editorTickComponentTypes.erase("Component"); }
+            return;
+        }
+
+        Check(TypeManager::GetInstance().ClassNameToType("Component") != nullptr,
+              "LU1", "Component is a registered type (the probe reports that name)");
+
+        Level level;
+        level.setLevelResUrl("Assets/Scenes/LateUpdate.level");
+        level.LoadObjectGraph({}, false);
+        Check(level.IsLoaded(), "LU2", "the synthetic level is loaded");
+
+        GameObject* go = new GameObject(ObjectIDAllocator::Alloc());
+        om->AllocateAndAssignInstanceID(go);
+        Transform* transform = new Transform();
+        om->AllocateAndAssignInstanceID(transform);
+        go->addComponent(transform);
+        transform->PostLoadResource(go);
+
+        std::string log;
+        LateTickProbe* a = new LateTickProbe(&log, 'a');
+        LateTickProbe* b = new LateTickProbe(&log, 'b');
+        // 必须在 AllocateAndAssignInstanceID 之前：它会把 m_InstanceID 归零。
+        a->InitializeRuntimeTypeInfo();
+        b->InitializeRuntimeTypeInfo();
+        om->AllocateAndAssignInstanceID(a);
+        om->AllocateAndAssignInstanceID(b);
+        go->addComponent(a);
+        go->addComponent(b);
+        Check(a->GetTypeName() == std::string("Component"), "LU3",
+              "the probe reports a registered type name (not an out-of-range index)");
+        Check(level.RegisterRuntimeGObject(go), "LU4", "the object is in the level's runtime table");
+
+        // --- 每帧一次，且在 Update 之后 ------------------------------------
+        go->Tick(0.016f);
+        go->LateTick(0.016f);
+        Check(a->updates == 1 && a->late == 1, "LU5", "one Update and one LateUpdate per frame");
+        // 关键的顺序断言：所有 Update 都跑完才轮到任何 LateUpdate。写在 Update
+        // 里的相机跟随之所以抖，就是因为缺这一趟；而"在 Tick 的循环里顺手调
+        // LateTick"这种实现会给出 aualbubl 而不是 aubualbl。
+        Check(log == "aubualbl", "LU6", "every Update runs before any LateUpdate");
+
+        // --- 与 FixedUpdate 的分工：按帧，不按步 ----------------------------
+        log.clear();
+        a->Reset();
+        b->Reset();
+        go->FixedTick(0.02f);
+        go->FixedTick(0.02f);
+        go->FixedTick(0.02f);
+        go->Tick(0.016f);
+        go->LateTick(0.016f);
+        Check(a->fixed == 3, "LU7", "three fixed steps reach the component three times");
+        Check(a->updates == 1, "LU8", "but Update still runs once");
+        Check(a->late == 1, "LU9", "and LateUpdate runs once -- it is per frame, not per step");
+
+        // --- 三个 Tick 的启用判据必须逐字一致 ------------------------------
+        log.clear();
+        a->Reset();
+        b->Reset();
+        a->SetProbeEnabled(false);
+        go->Tick(0.016f);
+        go->LateTick(0.016f);
+        Check(a->updates == 0, "LU10", "a disabled component gets no Update");
+        // 互补的另一半：只判了 Update 而漏了 LateUpdate 的实现会在这里给出
+        // late == 1 —— 相机于是"对象还在、跟随没了"，且只在禁用窗口内出现。
+        Check(a->late == 0, "LU11", "and no LateUpdate either (the two gates agree)");
+        Check(b->updates == 1 && b->late == 1, "LU12", "while the enabled one still gets both");
+        a->SetProbeEnabled(true);
+
+        log.clear();
+        a->Reset();
+        b->Reset();
+        go->SetActive(false);
+        Check(!go->IsActiveInHierarchy(), "LU13", "SetActive(false) really deactivates it");
+        go->Tick(0.016f);
+        go->LateTick(0.016f);
+        Check(a->updates == 0 && a->late == 0, "LU14", "an inactive object gets neither Update nor LateUpdate");
+        go->SetActive(true);
+        log.clear();
+        a->Reset();
+        b->Reset();
+        go->Tick(0.016f);
+        go->LateTick(0.016f);
+        Check(a->updates == 1 && a->late == 1, "LU15", "and reactivating restores both");
+
+        // --- 编辑态白名单同样管 LateUpdate ----------------------------------
+        log.clear();
+        a->Reset();
+        b->Reset();
+        g_editorTickComponentTypes.erase("Component");
+        go->Tick(0.016f);
+        go->LateTick(0.016f);
+        Check(a->updates == 0 && a->late == 0, "LU16",
+              "the edit-mode whitelist gates LateUpdate too (not just Update)");
+        g_editorTickComponentTypes.insert("Component");
+
+        // --- Level 那一层 ---------------------------------------------------
+        log.clear();
+        a->Reset();
+        b->Reset();
+        level.LateTick(0.016f);
+        Check(a->late == 1, "LU17", "Level::LateTick reaches runtime-registered objects");
+        Check(a->updates == 0, "LU18", "and does not re-run Update");
+
+        // LateTick 不做销毁：销毁统一在帧末收口。这里要能查到"还在"。
+        GameObject* doomed = new GameObject(ObjectIDAllocator::Alloc());
+        om->AllocateAndAssignInstanceID(doomed);
+        Transform* doomed_transform = new Transform();
+        om->AllocateAndAssignInstanceID(doomed_transform);
+        doomed->addComponent(doomed_transform);
+        doomed_transform->PostLoadResource(doomed);
+        Check(level.RegisterRuntimeGObject(doomed), "LU19", "a second runtime object is registered");
+        level.QueueDestroy(doomed->GetID());
+        level.LateTick(0.016f);
+        Check(level.FindRuntimeGObject(doomed->GetID()) != nullptr, "LU20",
+              "LateUpdate does not destroy (the queue survives it)");
+        level.FlushPendingDestroys();
+        Check(level.FindRuntimeGObject(doomed->GetID()) == nullptr, "LU21",
+              "the frame-end flush does (so the check above was not vacuous)");
+
+        level.UnregisterRuntimeGObject(go->GetID());
+        delete a;
+        delete b;
+        delete go;
+        if (!had_component_whitelisted) { g_editorTickComponentTypes.erase("Component"); }
+    }
+
+    // ---------------------------------------------------------------- LUW --
+    void TestLateUpdateWiring()
+    {
+        const std::string app = ReadFile("Source/Runtime/Application/Application.cpp");
+        Check(!app.empty(), "LUW0", "Application.cpp is readable");
+        // 接线门：Level / WorldManager / Component 都实现了 LateTick，但只要
+        // 主循环不调，整个阶段就不存在 —— 而且没有任何报错可循。
+        Check(CountOccurrences(app, "WorldManager)->LateTick(delta_time)") >= 1,
+              "LUW1", "the frame loop drives WorldManager::LateTick");
+        // 顺序：必须在 Update 之后、WaitForLateUpdate 之前。
+        const std::size_t at_update = app.find("WorldManager)->Tick(delta_time)");
+        const std::size_t at_late = app.find("WorldManager)->LateTick(delta_time)");
+        // ⚠️ 必须带 `coroutines->`：注释里也提到了 TickLateUpdate 这个名字，不带
+        // 限定符的 find 会命中注释（比调用点更靠前），把这条判成"顺序反了"。
+        const std::size_t at_late_coroutines = app.find("coroutines->TickLateUpdate");
+        Check(at_update != std::string::npos && at_late != std::string::npos && at_update < at_late,
+              "LUW2", "LateTick is called after the Update tick");
+        Check(at_late_coroutines != std::string::npos && at_late < at_late_coroutines,
+              "LUW3", "and before the LateUpdate coroutine phase");
+
+        const std::string world_source = ReadFile("Source/Runtime/Function/Framework/World/WorldManager.cpp");
+        Check(!world_source.empty(), "LUW4", "WorldManager.cpp is readable");
+        Check(CountOccurrences(world_source, "void WorldManager::LateTick") >= 1,
+              "LUW5", "WorldManager::LateTick is implemented");
+        Check(CountOccurrences(world_source, "LateTickLoadedLevels") >= 2,
+              "LUW6", "and world-partition levels are late-ticked too (declared + called)");
+        // 转发必须是 LateTick 而不是 Tick：写成 Tick 的话一帧会跑两遍 Update，
+        // 而且因为没有别的调用点，症状只有"逻辑莫名快一倍"。
+        Check(CountOccurrences(world_source, "m_CurrentActiveLevel->LateTick(delta_time)") >= 1,
+              "LUW6a", "the single-level path forwards to Level::LateTick (not Level::Tick)");
+        Check(CountOccurrences(world_source, "level->LateTick(delta_time)") >= 1,
+              "LUW6b", "and so does the world-partition path");
+
+        const std::string level_source = ReadFile("Source/Runtime/Function/Framework/Level/Level.cpp");
+        Check(!level_source.empty(), "LUW7", "Level.cpp is readable");
+        // 两处遍历：主表 + 运行时表。写成 `LateTick(float` 会把实现的签名漏掉，
+        // 写成 `LateTick(` 又会被 Level.h 的声明之类干扰 —— 这里两条一起判。
+        Check(CountOccurrences(level_source, "->LateTick(delta_time)") >= 2,
+              "LUW8", "Level::LateTick walks both the level table and the runtime table");
+        Check(CountOccurrences(level_source, "void Level::LateTick") >= 1,
+              "LUW8a", "Level::LateTick is implemented");
+        // LateTick 里出现物理推进或销毁收口就说明它把 FixedTick / 帧末的活干了。
+        Check(CountOccurrences(level_source, "physics_scene->Tick") == 1,
+              "LUW9", "physics is stepped in exactly one place (FixedTick)");
+
+        const std::string go_source = ReadFile("Source/Runtime/BaseClasses/GameObject.cpp");
+        Check(!go_source.empty(), "LUW10", "GameObject.cpp is readable");
+        // 三趟 Tick 的判据必须逐条相同。数 IsActiveInHierarchy / shouldComponentTick
+        // 出现 3 次是这个不变式的机器可读形式。
+        Check(CountOccurrences(go_source, "IsActiveInHierarchy()") >= 3,
+              "LUW11", "all three tick passes gate on activeInHierarchy");
+        Check(CountOccurrences(go_source, "shouldComponentTick(") >= 4,
+              "LUW12", "and on the edit-mode whitelist (3 call sites + the definition)");
+
+        const std::string ts_source =
+            ReadFile("Source/Runtime/Function/Framework/Component/Script/TypeScriptComponent.cpp");
+        Check(!ts_source.empty(), "LUW13", "TypeScriptComponent.cpp is readable");
+        Check(CountOccurrences(ts_source, "OnLateUpdate") >= 1,
+              "LUW14", "the script component forwards to the JS OnLateUpdate");
+
+        const std::string binding_source =
+            ReadFile("Source/Runtime/Scripting/Binding/ScriptBinding.cpp");
+        Check(CountOccurrences(binding_source, "OnLateUpdate(delta_time: number): void;") >= 1,
+              "LUW15", "the .d.ts declares OnLateUpdate on Behaviour");
+
+        const std::string env_source = ReadFile("Source/Runtime/Scripting/Wrapper/ScriptEnv.cpp");
+        Check(!env_source.empty(), "LUW16", "ScriptEnv.cpp is readable");
+        Check(CountOccurrences(env_source, "g.Behaviour.prototype.OnLateUpdate") >= 1,
+              "LUW17", "the JS Behaviour prototype has an OnLateUpdate default");
+    }
+
+    // ---------------------------------------------------------------- EN ---
+    // Unity 的 `OnEnable` / `OnDisable`。
+    //
+    // 行为那一半在 ScriptComponentSmokeTest（要真的 JS 实例才能数回调）；这里
+    // 只守接线：三个声明点少任何一个，用户写 `OnEnable()` 都要么编译不过、要么
+    // 编译过了永远不触发。
+    void TestEnabledCallbacksWiring()
+    {
+        const std::string ts_source =
+            ReadFile("Source/Runtime/Function/Framework/Component/Script/TypeScriptComponent.cpp");
+        Check(!ts_source.empty(), "EN0", "TypeScriptComponent.cpp is readable");
+        Check(CountOccurrences(ts_source, "\"OnEnable\"") >= 1, "EN1",
+              "the C++ side can dispatch OnEnable");
+        Check(CountOccurrences(ts_source, "\"OnDisable\"") >= 1, "EN2",
+              "and OnDisable");
+        // 合取而不是"某个条件变了就发"：IsActiveInHierarchy 必须出现在同一个
+        // 判定式里。写成只看 isEnabled() 的实现会在父对象停用时漏掉 OnDisable。
+        Check(CountOccurrences(ts_source, "IsActiveInHierarchy()") >= 1, "EN3",
+              "the gate is the conjunction with activeInHierarchy (Unity's isActiveAndEnabled)");
+        Check(CountOccurrences(ts_source, "isEnabled()") >= 1, "EN4",
+              "and with the component's own enabled flag");
+        // 销毁前必须先 OnDisable：Unity 的顺序是 OnDisable -> OnDestroy。
+        Check(CountOccurrences(ts_source, "OnDisable") >= 2, "EN5",
+              "OnDisable fires both on transition and before OnDestroy");
+
+        const std::string ts_header =
+            ReadFile("Source/Runtime/Function/Framework/Component/Script/TypeScriptComponent.h");
+        Check(!ts_header.empty(), "EN6", "TypeScriptComponent.h is readable");
+        Check(CountOccurrences(ts_header, "void SetEnabled(bool enabled) override;") >= 1, "EN7",
+              "the component hooks its own enabled setter");
+        Check(CountOccurrences(ts_header, "void OnOwnerActiveChanged(bool active) override;") >= 1,
+              "EN8", "and the host's activeInHierarchy change");
+
+        const std::string binding_source =
+            ReadFile("Source/Runtime/Scripting/Binding/ScriptBinding.cpp");
+        Check(CountOccurrences(binding_source, "OnEnable(): void;") >= 1, "EN9",
+              "the .d.ts declares OnEnable on Behaviour");
+        Check(CountOccurrences(binding_source, "OnDisable(): void;") >= 1, "EN10",
+              "and OnDisable");
+
+        const std::string env_source = ReadFile("Source/Runtime/Scripting/Wrapper/ScriptEnv.cpp");
+        Check(CountOccurrences(env_source, "g.Behaviour.prototype.OnEnable") >= 1, "EN11",
+              "the JS Behaviour prototype has an OnEnable default");
+        Check(CountOccurrences(env_source, "g.Behaviour.prototype.OnDisable") >= 1, "EN12",
+              "and an OnDisable default (a missing one is a per-object TypeError)");
+    }
+
     // ---------------------------------------------------------------- B ----
     void TestWiringGate()
     {
@@ -7452,6 +7776,9 @@ int main()
     TestBoundsAndColor32Wiring();
     TestScriptCoroutines();
     TestScriptCoroutineWiring();
+    TestLateUpdate();
+    TestLateUpdateWiring();
+    TestEnabledCallbacksWiring();
     TestWiringGate();
 
     std::printf("\n=== %d checks, %d failures ===\n", g_Checks, g_Failures);

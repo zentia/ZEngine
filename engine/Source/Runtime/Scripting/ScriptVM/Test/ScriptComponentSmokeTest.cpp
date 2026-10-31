@@ -211,6 +211,16 @@ namespace
                             "globalThis.__hostedDestroyCount);");
     }
 
+    /// globalThis.__hostedDisableCount（HostedMover.OnDisable 写的地方）。
+    /// 和 Destroy 计数同一个写法：跨得过实例销毁。
+    std::string ReadDisableCount(ScriptEnv& env)
+    {
+        return EvalToResult(env,
+                            "globalThis.__zResult = String("
+                            "globalThis.__hostedDisableCount == null ? 'null' : "
+                            "globalThis.__hostedDisableCount);");
+    }
+
     /// 从活实例上读一个字段的字符串值。
     std::string FieldValue(ScriptingManager* sm, pesapi_value_ref inst, const char* key)
     {
@@ -529,6 +539,65 @@ int main(int argc, char** argv)
     CheckEq("C3", "speed=2 * dt=0.5 * 2 帧 => originX=2", live_value("lastSnapshot"),
             "2.0000,2,0.5");
 
+    // ---- C2 组：LateUpdate ------------------------------------------------
+    // Component::LateTick 是新的，TypeScriptComponent::LateTick 转发到 JS 的
+    // OnLateUpdate。这一段钉两件事：真的转到了，且排在同一帧 Update **之后**。
+    CheckEq("C2b", "还没 LateTick 时 lateCount 是 0", live_value("lateCount"), "0");
+    comp->Tick(0.5f);
+    comp->LateTick(0.5f);
+    live_fields = comp->EnumerateLiveFields();
+    CheckEq("C2c", "OnLateUpdate 被调了一次", live_value("lateCount"), "1");
+    // 顺序探针：本帧 updateCount 已经是 3（前面两帧 2 次 + 这一帧 1 次）。
+    // LateUpdate 若被排到 Update 之前，这里会是 2。
+    CheckEq("C2d", "LateUpdate 看到的是本帧 Update 之后的 updateCount（3，不是 2）",
+            live_value("lateSawUpdateCount"), "3");
+    CheckEq("C2e", "LateUpdate 拿的是帧间隔（0.5），不是固定步长", live_value("lateDt"), "0.5");
+    // 反向的一半：只 LateTick 不该顺带又跑一次 Update。
+    comp->LateTick(0.5f);
+    live_fields = comp->EnumerateLiveFields();
+    CheckEq("C2f", "只 LateTick 不会再跑一次 Update", live_value("updateCount"), "3");
+    CheckEq("C2g", "而 LateUpdate 又走了一次", live_value("lateCount"), "2");
+
+    // ---- C3 组：OnEnable / OnDisable --------------------------------------
+    // Unity 的触发条件是 `enabled && activeInHierarchy` 的**合取**，不是某一
+    // 个条件自己变了就发。下面每条都是成对测的：能触发的那次 + 不该触发的那次。
+    CheckEq("C2h", "绑上的时候（开着 + enabled）收过一次 OnEnable",
+            live_value("enableCount"), "1");
+    CheckEq("C2i", "还没禁用过", live_value("disableCount"), "0");
+
+    comp->SetEnabled(false);
+    live_fields = comp->EnumerateLiveFields();
+    CheckEq("C2j", "enabled=false 触发 OnDisable", live_value("disableCount"), "1");
+    comp->SetEnabled(true);
+    live_fields = comp->EnumerateLiveFields();
+    CheckEq("C2k", "enabled=true 触发 OnEnable", live_value("enableCount"), "2");
+    comp->SetEnabled(true);
+    live_fields = comp->EnumerateLiveFields();
+    CheckEq("C2l", "重复设成同一个值不再触发（不是每帧一次）", live_value("enableCount"), "2");
+
+    go->SetActive(false);
+    live_fields = comp->EnumerateLiveFields();
+    CheckEq("C2m", "SetActive(false) 也触发 OnDisable", live_value("disableCount"), "2");
+    // 互补的一半：对象关着时把 enabled 来回拨，不该有任何 OnEnable —— 少了这条，
+    // "只判 enabled 不判 activeInHierarchy"的实现是绿的。
+    comp->SetEnabled(false);
+    comp->SetEnabled(true);
+    live_fields = comp->EnumerateLiveFields();
+    CheckEq("C2n", "关着的时候 enabled 来回拨不触发 OnEnable（是合取，不是或）",
+            live_value("enableCount"), "2");
+    go->SetActive(true);
+    live_fields = comp->EnumerateLiveFields();
+    CheckEq("C2o", "重新激活触发 OnEnable", live_value("enableCount"), "3");
+    // 反过来的一半：对象开着但组件 disabled 时激活不该发。
+    comp->SetEnabled(false);
+    go->SetActive(false);
+    go->SetActive(true);
+    live_fields = comp->EnumerateLiveFields();
+    CheckEq("C2p", "组件 disabled 时激活对象不触发 OnEnable", live_value("enableCount"), "3");
+    comp->SetEnabled(true);
+    live_fields = comp->EnumerateLiveFields();
+    CheckEq("C2q", "再把 enabled 打开就触发了", live_value("enableCount"), "4");
+
     // ---- D. 字段覆盖（Phase 7）-------------------------------------------
     std::printf("\n--- D. Inspector 字段覆盖 ---\n");
     CheckTrue("D1", "LiveSetField(speed=10) 成功", comp->LiveSetField("speed", "10"));
@@ -536,7 +605,8 @@ int main(int argc, char** argv)
     CheckEq("D2", "speed 立刻变成 10", live_value("speed"), "10");
     comp->Tick(0.5f);
     live_fields = comp->EnumerateLiveFields();
-    CheckEq("D3", "这一帧走了 5（2 -> 7）", live_value("lastSnapshot"), "7.0000,3,0.5");
+    // 3 -> 8：C2 组多跑了一帧 Update（originX 2 -> 3），所以这里起点是 3。
+    CheckEq("D3", "这一帧走了 5（3 -> 8）", live_value("lastSnapshot"), "8.0000,4,0.5");
 
     // ---- E. 热重载：OnDestroy -> 重建（状态不保留，但 override 保留）-------
     std::printf("\n--- E. 热重载 ---\n");
@@ -764,9 +834,17 @@ int main(int argc, char** argv)
 
     // 解绑（SetScriptGuid 传空）走的是 TearDown，这是唯一能观察到"活实例真的没了"
     // 的时机 —— 组件析构之后指针就废了。
+    // 4 = C3 组里 3 次（enabled=false / SetActive(false) / enabled=false）
+    //   + 热重载那次 TearDown 的 1 次。这条是"销毁前的 OnDisable"的基线。
+    CheckEq("G1b", "销毁前已经发过 4 次 OnDisable", ReadDisableCount(*sm->GetEnv()), "4");
+
     comp->SetScriptGuid(eastl::string(""));
     CheckTrue("G2", "解绑后不再有活实例", !comp->HasLiveInstance());
     CheckEq("G3", "解绑把 HostedMover 的 OnDestroy 补上了", ReadDestroyCount(*sm->GetEnv()), "2");
+    // Unity 的顺序是 OnDisable -> OnDestroy。少了前者，任何"在 OnDisable 里退订
+    // / 还池"的脚本都会漏，而它不报错、不崩溃，只是资源慢慢攒着。
+    CheckEq("G3b", "解绑前先发了 OnDisable（顺序是 OnDisable -> OnDestroy）",
+            ReadDisableCount(*sm->GetEnv()), "5");
 
     // 负向验证：已经解绑过一次，析构里的 TearDown 不能再触发第二次 OnDestroy。
     // 同样先销毁宿主再销毁组件（顺序反了会在宿主的组件表里留下已释放的指针）。

@@ -87,6 +87,56 @@ void TypeScriptComponent::FixedTick(float fixed_delta_time)
     sm->InvokeInstanceMethodNumber(ref, "OnFixedUpdate", static_cast<double>(fixed_delta_time));
 }
 
+void TypeScriptComponent::LateTick(float delta_time)
+{
+    if (m_JsInstance == nullptr)
+        return;
+
+    auto* sm = GET_SYSTEM(ScriptingManager);
+    if (sm == nullptr)
+        return;
+
+    auto ref = static_cast<pesapi_value_ref>(m_JsInstance);
+    sm->InvokeInstanceMethodNumber(ref, "OnLateUpdate", static_cast<double>(delta_time));
+}
+
+void TypeScriptComponent::SetEnabled(bool enabled)
+{
+    Super::SetEnabled(enabled);
+    RefreshEnabledState();
+}
+
+void TypeScriptComponent::OnOwnerActiveChanged(bool active)
+{
+    (void)active;
+    Super::OnOwnerActiveChanged(active);
+    RefreshEnabledState();
+}
+
+void TypeScriptComponent::RefreshEnabledState()
+{
+    const GameObject* host = GetParentObject();
+    // 没有宿主时按"不在层级里"处理：构造期 / 反序列化期 OnOwnerActiveChanged
+    // 会先于 PostLoadResource 到达，那时既不该发 OnEnable 也没有可发的实例。
+    const bool now = isEnabled() && (host != nullptr) && host->IsActiveInHierarchy();
+
+    if (now == m_LastEnabledAndActive)
+    {
+        return;
+    }
+    m_LastEnabledAndActive = now;
+
+    // 还没绑上（或已解绑）时只记状态：等 BindAndAwake 走到 OnAwake 之后自己
+    // 补那一次。这里发的话实例是 null，InvokeMethod 静默无事发生，但
+    // m_LastEnabledAndActive 已经被写过了 —— 真正该发的那一次反而被吞掉。
+    if (m_JsInstance == nullptr)
+    {
+        return;
+    }
+
+    InvokeMethod(now ? "OnEnable" : "OnDisable");
+}
+
 // -----------------------------------------------------------------------------
 // Authoring hooks
 // -----------------------------------------------------------------------------
@@ -385,6 +435,17 @@ bool TypeScriptComponent::BindAndAwake()
     // isn't a function), so user scripts can implement only what they need.
     sm->InvokeInstanceMethod(instance, "OnAwake");
     m_AwakeCalled = true;
+
+    // Unity 的顺序是 Awake -> OnEnable -> Start。这里显式把上一次的状态归零
+    // 再重算，于是"绑上时就开着"的对象在这一刻收到 OnEnable；而"绑上时是关
+    // 着的"不会收到，等 SetActive(true) 时才收。
+    //
+    // 归零这一步不能省：热重载走的是 TearDown + BindAndAwake，而 TearDown
+    // 已经把状态记成 false 了 —— 但失败重试那条路（模块没编译好）进过
+    // RefreshEnabledState，状态可能是 true。不归零就会静默吞掉这次 OnEnable。
+    m_LastEnabledAndActive = false;
+    RefreshEnabledState();
+
     sm->InvokeInstanceMethod(instance, "OnStart");
     m_StartCalled = true;
 
@@ -432,6 +493,16 @@ void TypeScriptComponent::TearDown()
     m_CoroutineGenerators.clear();
 
     auto ref = static_cast<pesapi_value_ref>(m_JsInstance);
+
+    // Unity 的顺序是 OnDisable -> OnDestroy。销毁中的对象在脚本看来"已经不
+    // -enabled 了"，所以任何在 OnDisable 里做的清理（注销事件、还回对象池）
+    // 都发生在还能安全访问 this 的最后时刻。
+    if (sm && m_AwakeCalled && m_LastEnabledAndActive)
+    {
+        m_LastEnabledAndActive = false;
+        sm->InvokeInstanceMethod(ref, "OnDisable");
+    }
+    m_LastEnabledAndActive = false;
 
     // Only fire OnDestroy if we actually got past OnAwake. Mirrors Unity's
     // contract -- OnDestroy is paired with OnAwake, not with construction.

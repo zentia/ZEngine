@@ -88,8 +88,16 @@ namespace
     // shim), so they are plain .d.ts lines with no C++ counterpart.
     const char* const kBehaviourMethodLines[] = {
         "    OnAwake(): void;",
+        // Unity 的启用 / 停用回调。触发条件是 `enabled && activeInHierarchy`
+        // 这个合取（isActiveAndEnabled），不是单独某一个 —— 声明在这里，实现在
+        // TypeScriptComponent::RefreshEnabledState。
+        "    OnEnable(): void;",
+        "    OnDisable(): void;",
         "    OnStart(): void;",
         "    OnUpdate(delta_time: number): void;",
+        // Unity 的 LateUpdate。每帧一次，在所有 OnUpdate 之后。C++ 侧拿的
+        // 是帧间隔（与 OnUpdate 同一个 deltaTime），不是固定步长。
+        "    OnLateUpdate(delta_time: number): void;",
         "    OnDestroy(): void;",
         // Unity 的 Invoke 家族。签名必须与 ScriptEnv 里
         // `g.Behaviour.prototype.*` 的转发一致；实现在 TypeScriptComponent 上

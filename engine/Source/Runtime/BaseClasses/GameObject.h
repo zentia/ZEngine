@@ -76,6 +76,10 @@ public:
     /// 说明）。与 Tick 走同一套激活 / enabled / 白名单判据。
     virtual void FixedTick(float fixed_delta_time);
 
+    /// Unity 的 `LateUpdate` 那一趟：分发给 m_Components（见
+    /// Component::LateTick）。判据与 Tick / FixedTick 逐一相同。
+    virtual void LateTick(float delta_time);
+
     bool load(const GameObject& object_instance_res);
     void save(GameObject& out_object_instance_res);
 

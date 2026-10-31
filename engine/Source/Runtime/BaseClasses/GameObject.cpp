@@ -98,6 +98,33 @@ void GameObject::FixedTick(float fixed_delta_time)
     }
 }
 
+void GameObject::LateTick(float delta_time)
+{
+    // 三趟 Tick 的判据必须**逐字一致**：层级激活、enabled、白名单。
+    // 少判任何一条的后果不是"少调一次"，而是"Update 跑了、LateUpdate 没跑"
+    // —— 相机跟随这类逻辑于是只在对象处于某种状态时生效，而它看起来只是
+    // "偶尔抖一下"。
+    if (!IsActiveInHierarchy())
+    {
+        return;
+    }
+
+    for (auto& component : m_Components)
+    {
+        if (component == nullptr || !component->isEnabled())
+        {
+            continue;
+        }
+
+        if (!shouldComponentTick(component->GetTypeName()))
+        {
+            continue;
+        }
+
+        component->LateTick(delta_time);
+    }
+}
+
 // Both lookups go through TypeManager::ClassNameToType + Type::IsBaseOf rather
 // than `GetTypeName() == name`: the latter reads Object::GetType(), i.e.
 // m_CachedTypeIndex, which is only meaningful after InitializeRuntimeTypeInfo()

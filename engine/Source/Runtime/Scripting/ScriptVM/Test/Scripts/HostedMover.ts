@@ -37,6 +37,20 @@ export class HostedMover extends Behaviour {
     lastDt: number = 0;
     originX: number = 0;
 
+    // LateUpdate 那一趟。lateSawUpdateCount 是**顺序探针**：它记的是
+    // OnLateUpdate 执行那一刻的 updateCount。LateUpdate 排在同一帧所有
+    // Update 之后，所以它必然等于本帧的 updateCount（少 1 就说明 LateUpdate
+    // 被排到了 Update 之前，或与 Update 交错）。
+    lateCount: number = 0;
+    lateDt: number = 0;
+    lateSawUpdateCount: number = -1;
+
+    // OnEnable / OnDisable。计数而不是布尔：Unity 的触发条件是
+    // `enabled && activeInHierarchy` 的合取，两个条件可以各自来回变，只有计数
+    // 才能区分"发了一次"和"发了三次"。
+    enableCount: number = 0;
+    disableCount: number = 0;
+
     // OnAwake 里一次性验完的三个宿主对象。false 说明注入没生效。
     gotGameObject: boolean = false;
     gotTransform: boolean = false;
@@ -56,6 +70,19 @@ export class HostedMover extends Behaviour {
         }
     }
 
+    OnEnable(): void {
+        this.enableCount = this.enableCount + 1;
+    }
+
+    OnDisable(): void {
+        this.disableCount = this.disableCount + 1;
+        // 也往 globalThis 上记一份：销毁会把整个实例丢掉，写在实例上的计数随
+        // 实例一起消失，"销毁前有没有发 OnDisable"就无从证明了。
+        const g: any = globalThis as any;
+        const prev: number = (g.__hostedDisableCount == null) ? 0 : g.__hostedDisableCount;
+        g.__hostedDisableCount = prev + 1;
+    }
+
     OnStart(): void {
         this.startCount = this.startCount + 1;
     }
@@ -69,6 +96,12 @@ export class HostedMover extends Behaviour {
             String(this.updateCount),
             String(this.lastDt)
         ].join(",");
+    }
+
+    OnLateUpdate(delta_time: number): void {
+        this.lateCount = this.lateCount + 1;
+        this.lateDt = delta_time;
+        this.lateSawUpdateCount = this.updateCount;
     }
 
     OnDestroy(): void {

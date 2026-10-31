@@ -43,6 +43,13 @@ public:
     /// 事情，跟帧率走是对的。
     void FixedTick(float fixed_delta_time);
 
+    /// 每帧一次，在 Tick 之后：跑组件 LateUpdate。
+    ///
+    /// 与 FixedTick 同样的取舍 —— 只做"组件 LateUpdate"这一件事，不做流式
+    /// 加载、不做 GPU-Spine 存活标记。世界分区的流式加载按帧走（在 Tick 里），
+    /// LateTick 单独再判一次 IsEnabled 反而会漏掉本帧刚加载进来的格子。
+    void LateTick(float delta_time);
+
     Level* getCurrentActiveLevel() const { return m_CurrentActiveLevel; }
 
     bool IsWorldLoaded() const { return m_IsWorldLoaded; }
@@ -115,6 +122,7 @@ private:
     void FlushPendingRigidBodies(Level* level);
 
     void TickLoadedLevels(float delta_time);
+    void LateTickLoadedLevels(float delta_time);
     void UpdateWorldPartitionStreaming();
 
     bool m_IsWorldLoaded {false};

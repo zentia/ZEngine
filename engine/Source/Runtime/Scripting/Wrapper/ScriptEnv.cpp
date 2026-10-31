@@ -423,8 +423,16 @@ void ScriptEnv::InstallConsoleAndDebugGlobals()
         // subset -- exactly like Unity's MonoBehaviour.
         "  g.Behaviour = function() {};"
         "  g.Behaviour.prototype.OnAwake = function() {};"
+        "  g.Behaviour.prototype.OnEnable = function() {};"
+        "  g.Behaviour.prototype.OnDisable = function() {};"
         "  g.Behaviour.prototype.OnStart = function() {};"
         "  g.Behaviour.prototype.OnUpdate = function(dt) {};"
+        // Unity 的 LateUpdate。空实现是**必需的**：TypeScriptComponent::LateTick
+        // 每帧无条件调 OnLateUpdate，而 InvokeInstanceMethodNumber 对"方法不
+        // 存在"是静默无事发生的 —— 但 TS 编译期有 kBehaviourMethodLines 的声明
+        // 保证，运行期如果这里没有兜底，用户没写 OnLateUpdate 的类每帧都会走
+        // 一次属性查找失败路径。
+        "  g.Behaviour.prototype.OnLateUpdate = function(dt) {};"
         "  g.Behaviour.prototype.OnDestroy = function() {};"
         // Unity 的 `Invoke` 家族：TS 侧写 `this.Invoke(...)`，这里转发到
         // `component`（TypeScriptComponent 上绑定的原生方法）。

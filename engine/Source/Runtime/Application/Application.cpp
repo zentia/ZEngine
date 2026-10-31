@@ -295,10 +295,24 @@ void Application::LogicalTick(float delta_time)
     // Coroutines: Update phase. `GetDeltaTime()` is the scaled step (a
     // timeScale of 0 must freeze WaitForSeconds) and `GetUnscaledDeltaTime()`
     // is wall clock, which is what WaitForSecondsRealtime asked for.
+    //
+    // 顺序（Unity 同）：Update 协程先恢复，才是 LateUpdate，最后
+    // WaitForEndOfFrame。把 TickLateUpdate 挪到 WorldManager::LateTick
+    // **前面**会让"等 LateUpdate 之后再继续"的协程事实上早于组件的
+    // LateUpdate —— 那种协程通常是读相机位姿（刚在 LateUpdate 里更新），
+    // 于是拿到的是上一帧的值。
     if (auto* coroutines = GET_SYSTEM(CoroutineScheduler))
     {
         TimeState& ts = TimeState::Get();
         coroutines->TickUpdate(ts.GetDeltaTime(), ts.GetUnscaledDeltaTime());
+    }
+
+    // Unity 的 `LateUpdate`：所有 Update 都跑完之后的一趟。相机跟随、骨骼
+    // 朝向修正这类"必须看到别人这一帧的最终位姿"的逻辑挂在这里。
+    GET_SYSTEM(WorldManager)->LateTick(delta_time);
+
+    if (auto* coroutines = GET_SYSTEM(CoroutineScheduler))
+    {
         coroutines->TickLateUpdate();
     }
     // The runtime UI (UMG on ZSlate) is event-driven (input via GLFW callbacks)

@@ -115,6 +115,26 @@ void WorldManager::FixedTick(float fixed_delta_time)
     }
 }
 
+void WorldManager::LateTick(float delta_time)
+{
+    if (!m_IsWorldLoaded)
+    {
+        // 与 Tick 不同：这里**不**尝试 LoadWorld。加载属于帧的开始（Tick 里
+        // 那一次），LateTick 已经在帧的后半段，此时才开始加载世界的话，本帧
+        // 剩下的渲染会用上一个世界的资源 —— 表现为加载那一帧闪一下旧场景。
+        return;
+    }
+
+    if (m_WorldPartition.IsEnabled())
+    {
+        LateTickLoadedLevels(delta_time);
+    }
+    else if (m_CurrentActiveLevel != nullptr)
+    {
+        m_CurrentActiveLevel->LateTick(delta_time);
+    }
+}
+
 eastl::vector<eastl::string> WorldManager::GetLoadedLevelUrls() const
 {
     eastl::vector<eastl::string> urls;
@@ -141,6 +161,22 @@ void WorldManager::TickLoadedLevels(float delta_time)
     if (m_CurrentActiveLevel != nullptr)
     {
         m_LevelDebugger->Tick(m_CurrentActiveLevel);
+    }
+}
+
+void WorldManager::LateTickLoadedLevels(float delta_time)
+{
+    // 与 TickLoadedLevels 的两个差别（都对应 Level::LateTick 相对 Level::Tick
+    // 的差别）：只跑 LateTick，且不再 Tick LevelDebugger（调试绘制是编辑器
+    // 表现层，跟帧走一次就够）。
+    for (auto& level_pair : m_LoadedLevels)
+    {
+        Level* level = level_pair.second;
+        if (level == nullptr)
+        {
+            continue;
+        }
+        level->LateTick(delta_time);
     }
 }
 
