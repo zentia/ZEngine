@@ -26,12 +26,17 @@
 
 #include "Runtime/Application/Application.h"
 #include "Runtime/BaseClasses/GameObject.h"
+#include "Runtime/BaseClasses/ObjectDefines.h"
 #include "Runtime/BaseClasses/ObjectManager.h"
 #include "Runtime/BaseClasses/Type.h"
+#include "Runtime/BaseClasses/TypeManager.h"
 #include "Runtime/Core/Base/SystemRegistry.h"
 #include "Runtime/Core/Math/UnityRandom.h"
 #include "Runtime/Function/Command/CommandSystem.h"
 #include "Runtime/Function/Framework/Component/Behaviour.h"
+#include "Runtime/Function/Framework/Level/Level.h"
+#include "Runtime/Function/Framework/Object/ObjectIdAllocator.h"
+#include "Runtime/Function/Framework/World/WorldManager.h"
 #include "Runtime/Function/Framework/Component/Transform/Transform.h"
 #include "Runtime/Function/Framework/Coroutine/Coroutine.h"
 #include "Runtime/Function/Framework/TagLayer/TagLayerManager.h"
@@ -44,6 +49,7 @@
 #include "Runtime/Project/ProjectInfo.h"
 #include "Runtime/Resource/Config/ConfigManager.h"
 #include "Runtime/Scripting/ScriptDebug/ScriptDebug.h"
+#include "Runtime/Scripting/ScriptScene/ScriptScene.h"
 #include "Runtime/Scripting/ScriptScreen/ScriptScreen.h"
 
 #include "Jolt/Jolt.h"
@@ -51,6 +57,18 @@
 #include "Jolt/Physics/Body/BodyCreationSettings.h"
 #include "Jolt/Physics/Collision/Shape/BoxShape.h"
 #include "Jolt/Physics/PhysicsSystem.h"
+
+// 本 exe 不编任何 `*.gen.cpp`（编了会拿到第二份 `TypeContainer<T>::m_Type`），
+// 于是 Transform / GameObject 的 Type 一直是"未注册"的占位：
+// `Cast<Transform>()` 恒为 nullptr，`GameObject::GetTransform()` 因此永远返回
+// nullptr —— 哪怕 Transform 明明挂在对象上。
+//
+// 但注册函数本身在镜像里：ZHeaderTool 把 `IMPLEMENT_REGISTER_CLASS` 写进了
+// `<Name>.gen.cpp`，而 /WHOLEARCHIVE 把那个 .obj 拖进了 exe。显式声明之后可以
+// 直接调用，不必（也不能）去编译 gen.cpp。
+template<> void RegisterKlass<Component>();
+template<> void RegisterKlass<Transform>();
+template<> void RegisterKlass<GameObject>();
 
 #include <cmath>
 #include <cstdio>
@@ -1900,6 +1918,190 @@ namespace
         Check(sibling2->GetParent() == nullptr, "S36", "including the last one");
     }
 
+    // ---------------------------------------------------------------- U ----
+    /// 造一个挂在关卡运行时表上的 GameObject（Instantiate 产物的同款登记方式）。
+    /// 手工 `new GameObject()` 的 m_Id 是 0，两个对象的 id 会撞，登记进不去。
+    GameObject* MakeRuntimeObject(ObjectManager& om, Level& level, Transform** out_transform)
+    {
+        // GObjectID 必须在构造时给（GameObject 只有带 id 的构造函数），不能事后
+        // 设：运行时表按 id 建索引，两个 id=0 的对象会互相覆盖。
+        GameObject* go = new GameObject(ObjectIDAllocator::Alloc());
+        Transform* transform = new Transform();
+        om.AllocateAndAssignInstanceID(go);
+        om.AllocateAndAssignInstanceID(transform);
+        go->addComponent(transform);
+        transform->PostLoadResource(go);
+        if (!level.RegisterRuntimeGObject(go))
+        {
+            return nullptr;
+        }
+        if (out_transform != nullptr)
+        {
+            *out_transform = transform;
+        }
+        return go;
+    }
+
+    /// 把要用到的类型注册进 TypeManager。没有它 `Cast<Transform>()` 恒为 nullptr，
+    /// 于是 `GameObject::GetTransform()` 返回 nullptr，任何依赖"对象上有
+    /// Transform"的断言都不成立 —— 而且失败方式是段错误，不是断言红。
+    void RegisterRuntimeTypesForTest()
+    {
+        TypeManager& type_manager = TypeManager::GetInstance();
+        type_manager.Initialize();
+        RegisterKlass<Component>();
+        RegisterKlass<Transform>();
+        RegisterKlass<GameObject>();
+        type_manager.InitializeAllTypes();
+    }
+
+    void TestScenes()
+    {
+        RegisterRuntimeTypesForTest();
+        // --- 没有 WorldManager 时的降级：必须返回空 / false，不能崩 --------
+        Check(GET_SYSTEM(WorldManager) == nullptr, "U0", "(the fixture starts with no WorldManager)");
+        Check(SceneManager::GetSceneCount() == 0, "U1", "no world -> zero scenes, not a crash");
+        Check(SceneManager::GetActiveScene() == nullptr, "U2", "and no active scene");
+        Check(SceneManager::GetSceneAt(0) == nullptr, "U3", "GetSceneAt is null");
+        Check(SceneManager::GetSceneByName("Main") == nullptr, "U4", "GetSceneByName is null");
+        Check(SceneManager::GetSceneByPath("any/where") == nullptr, "U5", "GetSceneByPath is null");
+        Check(!SceneManager::IsSceneLoaded("any/where"), "U6", "IsSceneLoaded is false");
+        Check(!SceneManager::LoadScene("any/where"), "U7", "LoadScene reports failure");
+        Check(!SceneManager::LoadSceneAdditive("any/where"), "U8", "LoadSceneAdditive reports failure");
+        Check(!SceneManager::UnloadScene("any/where"), "U9", "UnloadScene reports failure");
+        Check(!SceneManager::ReloadActiveScene(), "U10", "ReloadActiveScene reports failure");
+
+        // --- Scene 本身：绑一张真实的 Level --------------------------------
+        ObjectManager* om = GET_SYSTEM(ObjectManager);
+        Check(om != nullptr, "U11", "ObjectManager is reachable");
+
+        Level level;
+        level.setLevelResUrl("Assets/Scenes/Main.level");
+
+        Scene scene;
+        Check(!scene.IsValid(), "U12", "an unbound Scene is not valid");
+        Check(scene.GetName().empty(), "U13", "and has an empty name (not a crash)");
+        Check(scene.GetPath().empty(), "U14", "and an empty path");
+        Check(!scene.IsLoaded(), "U15", "and is not loaded");
+        Check(scene.GetRootCount() == 0, "U16", "and has no roots");
+        Check(scene.GetRootGameObjects().empty(), "U17", "and an empty root list");
+
+        scene.Bind(&level);
+        Check(scene.IsValid(), "U18", "binding makes it valid");
+        Check(scene.GetName() == "Main", "U19", "the name is the URL stem without the extension");
+        Check(scene.GetPath() == "Assets/Scenes/Main.level", "U20", "and the path is the URL");
+        Check(!scene.IsLoaded(), "U21", "a Level that was never loaded is not loaded");
+
+        Check(level.LoadObjectGraph({}, false), "U22", "an empty object graph builds");
+        Check(scene.IsLoaded(), "U23", "and then the Scene reports loaded");
+
+        // --- 根对象：两张表都要看 ------------------------------------------
+        Transform* transform_a = nullptr;
+        Transform* transform_b = nullptr;
+        GameObject* object_a = MakeRuntimeObject(*om, level, &transform_a);
+        GameObject* object_b = MakeRuntimeObject(*om, level, &transform_b);
+        Check(object_a != nullptr && object_b != nullptr && transform_a != nullptr && transform_b != nullptr,
+              "U24", "two runtime objects are registered");
+        if (object_a == nullptr || object_b == nullptr)
+        {
+            return;
+        }
+
+        Check(scene.GetRootCount() == 2, "U25", "both are roots (no parent)");
+        Check(scene.GetRootGameObjects().size() == 2, "U26", "and the list agrees with the count");
+
+        object_b->GetTransform()->SetParent(transform_a, false);
+        Check(scene.GetRootCount() == 1, "U27", "parenting one under the other leaves one root");
+        // 反过来再验一次：只数了"没有父节点"的对象，而不是"表里的对象数"。
+        Check(scene.GetRootGameObjects().size() == 1 && scene.GetRootGameObjects().front() == object_a,
+              "U28", "and the remaining root is the parent");
+
+        // --- 名字解析的边界 ------------------------------------------------
+        Level no_extension;
+        no_extension.setLevelResUrl("Assets/Scenes/Boss");
+        Scene plain;
+        plain.Bind(&no_extension);
+        Check(plain.GetName() == "Boss", "U29", "a URL with no extension keeps its stem");
+
+        Level windows_path;
+        windows_path.setLevelResUrl("Assets\\Scenes\\Dungeon.level");
+        Scene backslash;
+        backslash.Bind(&windows_path);
+        Check(backslash.GetName() == "Dungeon", "U30", "a backslash separator is handled too");
+
+        // --- SceneManager：装一个 WorldManager ----------------------------
+        WorldManager* world = new WorldManager();
+        SystemRegistry::GetInstance().RegisterSystem(world);
+        Check(world->Initialize(), "U31", "WorldManager initializes");
+        Check(SceneManager::GetSceneCount() == 0, "U32", "a fresh world has no loaded scenes");
+        Check(SceneManager::GetActiveScene() == nullptr, "U33", "and no active scene");
+        Check(SceneManager::GetSceneAt(-1) == nullptr, "U34", "GetSceneAt(-1) is null, not clamped to 0");
+        Check(!SceneManager::UnloadScene("Assets/Scenes/Main.level"),
+              "U35", "unloading a scene that was never loaded fails");
+    }
+
+    // ---------------------------------------------------------------- V ----
+    void TestSceneWiring()
+    {
+        const std::string header = ReadFile("Source/Runtime/Scripting/ScriptScene/ScriptScene.h");
+        Check(!header.empty(), "V0", "ScriptScene.h is readable");
+        Check(CountOccurrences(header, "class Scene :") >= 1, "V1", "Scene is declared");
+        Check(CountOccurrences(header, "class SceneManager :") >= 1, "V2", "SceneManager is declared");
+        // Unity 里 name / path / rootCount / isLoaded 是属性。
+        Check(CountOccurrences(header, "ZSCRIPTPROPERTY(Name=\"rootCount\"") >= 1,
+              "V3", "rootCount is a script property");
+        Check(CountOccurrences(header, "ZSCRIPTPROPERTY(Name=\"isLoaded\"") >= 1,
+              "V4", "isLoaded is a script property");
+        // 没有 buildIndex：ZEngine 没有 Build Settings 场景列表，编一个下标出来
+        // 会让脚本依赖上一个语义不同的数字。这条断言守的是"别手滑加上"——
+        // 注意头文件**会**在注释里提到 buildIndex（说明为什么没有），所以判的是
+        // "没发布"而不是"没出现"。
+        Check(CountOccurrences(header, "GetBuildIndex") == 0 &&
+                  CountOccurrences(header, "ZSCRIPTPROPERTY(Name=\"buildIndex\"") == 0,
+              "V5", "buildIndex is deliberately NOT published");
+        // 说明必须有：不加注释的话下一个人会当成遗漏直接补上（然后给个假值）。
+        Check(CountOccurrences(header, "Build Settings") >= 1,
+              "V6", "and the omission is documented");
+
+        const std::string source = ReadFile("Source/Runtime/Scripting/ScriptScene/ScriptScene.cpp");
+        Check(!source.empty(), "V7", "ScriptScene.cpp is readable");
+        // 缓存按 Level* 而不是 URL：Level 会被重载，按 URL 缓存会让脚本手里的
+        // Scene 一直指向旧的那张。
+        Check(CountOccurrences(source, "eastl::unordered_map<Level*, std::unique_ptr<Scene>>") >= 1,
+              "V8", "Scene instances are cached per Level*, not per URL");
+        // 根对象必须同时看关卡对象表和运行时表 —— 只看前者会漏掉 Instantiate 产物。
+        Check(CountOccurrences(source, "getAllGObjects()") >= 1 &&
+                  CountOccurrences(source, "GetRuntimeGObjects()") >= 1,
+              "V9", "root enumeration looks at BOTH object tables");
+        // 卸载活动场景必须被拒绝：那会让引擎进入"没有活动关卡"的状态。
+        Check(CountOccurrences(source, "getCurrentActiveLevel()") >= 2,
+              "V10", "unloading the ACTIVE scene is refused");
+
+        const std::string world_header = ReadFile("Source/Runtime/Function/Framework/World/WorldManager.h");
+        Check(CountOccurrences(world_header, "GetLoadedLevels() const") >= 1,
+              "V11", "WorldManager exposes the loaded Level list");
+        Check(CountOccurrences(world_header, "GetLoadedLevelByUrl") >= 1,
+              "V12", "and a by-URL lookup");
+
+        // 下面两条 headless **行为级测不到**：没有真实关卡文件就永远加载不出
+        // 场景，于是 GetSceneAt 的越界分支和 UnloadScene 的"活动场景"分支都进不
+        // 去（U34 / U35 只覆盖了"还没有场景"那条早退）。所以退到源码级，但判得
+        // 很窄 —— 不是"出现了某个字符串"，而是"禁止的那种写法没出现"。
+        //
+        // 越界夹紧到第 0 张是最阴的一类：脚本里 `for (i=0..sceneCount)` 写错时
+        // 它会让"我以为有 3 张其实只有 1 张"悄悄变成"又拿到第 0 张"。
+        Check(CountOccurrences(source, "index >= static_cast<int>(levels.size())") >= 1 &&
+                  CountOccurrences(source, "index = 0;") == 0,
+              "V14", "GetSceneAt out of range returns null instead of clamping to 0");
+        // 卸载活动场景会让引擎进入"没有活动关卡"的状态。
+        Check(CountOccurrences(source, "target == world->getCurrentActiveLevel()") >= 1,
+              "V15", "UnloadScene refuses the ACTIVE scene");
+
+        const std::string level_header = ReadFile("Source/Runtime/Function/Framework/Level/Level.h");
+        Check(CountOccurrences(level_header, "bool IsLoaded() const") >= 1,
+              "V13", "Level exposes IsLoaded (Scene.isLoaded reads it)");
+    }
+
     // ---------------------------------------------------------------- T ----
     void TestTransformWiring()
     {
@@ -2063,6 +2265,8 @@ int main()
     TestContactEventWiring();
     TestTransformDirections();
     TestTransformWiring();
+    TestScenes();
+    TestSceneWiring();
     TestWiringGate();
 
     std::printf("\n=== %d checks, %d failures ===\n", g_Checks, g_Failures);

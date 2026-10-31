@@ -67,6 +67,11 @@ public:
     bool save();
 
     bool IsDirty() const { return m_IsDirty; }
+
+    /// 这张 Level 是否已经加载完成。脚本面 `Scene.isLoaded` 用它；之前
+    /// `m_IsLoaded` 只有 load()/Unload() 内部改，外部无从判断一张 Level
+    /// 是"加载好了"还是"空壳"。
+    bool IsLoaded() const { return m_IsLoaded; }
     void MarkDirty() { m_IsDirty = true; }
     void ClearDirty() { m_IsDirty = false; }
 

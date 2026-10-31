@@ -53,6 +53,14 @@ public:
     Vector3 GetWorldPartitionStreamingSource() const;
     eastl::vector<eastl::string> GetLoadedLevelUrls() const;
 
+    /// 已加载的 Level 实例（与 `GetLoadedLevelUrls()` 同一套顺序：unordered_map
+    /// 的遍历序，因此**不确定**，但在一次会话内是稳定的 —— 与 Unity 的
+    /// `SceneManager.GetSceneAt` 给的保证同级）。脚本面 SceneManager 用它。
+    eastl::vector<Level*> GetLoadedLevels() const;
+
+    /// 按 URL 取一张已加载的 Level，没加载过返回 nullptr。
+    Level* GetLoadedLevelByUrl(const eastl::string& level_url) const;
+
     std::weak_ptr<PhysicsScene> GetCurrentActivePhysicsScene() const;
 
     // Used by WorldPartition to stream cells (one Level instance per loaded cell).

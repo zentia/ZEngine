@@ -894,3 +894,22 @@ bool WorldManager::OpenScene(const eastl::string& level_url)
     LOG_INFO(ZWorld, "OpenScene: loaded {}", level_url.c_str());
     return true;
 }
+eastl::vector<Level*> WorldManager::GetLoadedLevels() const
+{
+    eastl::vector<Level*> levels;
+    levels.reserve(m_LoadedLevels.size());
+    for (const auto& level_pair : m_LoadedLevels)
+    {
+        if (level_pair.second != nullptr)
+        {
+            levels.push_back(level_pair.second);
+        }
+    }
+    return levels;
+}
+
+Level* WorldManager::GetLoadedLevelByUrl(const eastl::string& level_url) const
+{
+    const auto found = m_LoadedLevels.find(level_url);
+    return (found != m_LoadedLevels.end()) ? found->second : nullptr;
+}
