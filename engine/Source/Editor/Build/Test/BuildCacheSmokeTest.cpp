@@ -54,6 +54,40 @@ namespace
         }
     }
 
+    /// 一个**只看得见本进程**的、严格递增的时间基准。
+    ///
+    /// 为什么不能靠 `WriteFile` 之后 OS 自己给的 mtime：实测 Windows/NTFS 的
+    /// last_write_time 粒度约 1ms，而下面两次 WriteFile 只相隔几十微秒 ——
+    /// 两次改写落在同一个 tick 上时 stamp **完全不变**，ContentHash 于是复用缓存
+    /// 里的旧 hash，C3 / C4 随机红（实测 10%~40%）。
+    ///
+    /// 也不能用 `TouchNewer`：它算的是 `当前值 + 2s`，而"当前值"正是那个可能
+    /// 没变的 tick —— 于是相继两次 TouchNewer 会得到**同一个**目标时间，反而
+    /// 把 C4 变成必红。
+    ///
+    /// 构建缓存的设计本来就只信 (size, mtime)：stamp 没变而内容变了的那种情况
+    /// 它按定义发现不了。所以测试必须自己把 mtime 设成一个**保证互不相同**的
+    /// 值，而不是赌 OS 的时间戳粒度。
+    std::filesystem::file_time_type NextStampTime()
+    {
+        static int s_tick = 0;
+        const auto base =
+            std::chrono::time_point_cast<std::chrono::seconds>(std::filesystem::file_time_type::clock::now());
+        return base + std::chrono::seconds(++s_tick * 3);
+    }
+
+    /// 写内容 + 把 mtime 明确钉到下一个保证不同的值。
+    void WriteFileAt(const std::filesystem::path& path, const std::string& text)
+    {
+        WriteFile(path, text);
+        std::error_code ec;
+        std::filesystem::last_write_time(path, NextStampTime(), ec);
+        if (ec)
+        {
+            Check(false, "fixture: the mtime of a scratch file can be set");
+        }
+    }
+
     void TestHashing()
     {
         BuildHasher empty;
@@ -109,7 +143,7 @@ namespace
         cache.Reset();
 
         const std::filesystem::path file = g_root / "asset.zasset";
-        WriteFile(file, "payload-one");
+        WriteFileAt(file, "payload-one");
 
         bool ok = false;
         const std::string first = cache.ContentHash("k", file, ok);
@@ -125,7 +159,8 @@ namespace
               "C2: an unchanged stamp reuses the cached hash instead of reading");
 
         // Bytes changed => the hash has to change even if the size did not.
-        WriteFile(file, "payload-two");
+        // 同长度、不同内容 + 一个**保证不同**的 stamp（见 NextStampTime 的说明）。
+        WriteFileAt(file, "payload-two");
         bool changed_ok = false;
         const std::string changed = cache.ContentHash("k", file, changed_ok);
         Check(changed_ok && changed != first, "C3: changed bytes change the hash (same length, different content)");
@@ -133,8 +168,7 @@ namespace
         // Content back to the original => back to the original hash. This is the
         // whole point of hashing instead of comparing timestamps: a checkout
         // that only moved mtimes must NOT rebuild.
-        WriteFile(file, "payload-one");
-        TouchNewer(file);
+        WriteFileAt(file, "payload-one");
         bool restored_ok = false;
         Check(cache.ContentHash("k", file, restored_ok) == first && restored_ok,
               "C4: identical bytes hash identically even after the mtime moved");
