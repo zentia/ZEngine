@@ -2,13 +2,31 @@
 
 #include "Runtime/Core/Math/LargeWorldCoordinates.h"
 #include "Runtime/Core/Math/Rect.h"
+#include "Runtime/Function/Render/WindowSystem.h"
 
 #include <algorithm>
+#include <array>
 
 static inline Rectf GetCameraTargetRect(const RenderCamera& camera)
 {
     RenderTexture* target = camera.GetTargetTexture();
-    return Rectf(0, 0, target->GetWidth(), target->GetHeight());
+    if (target != nullptr)
+    {
+        return Rectf(0, 0, target->GetWidth(), target->GetHeight());
+    }
+
+    // 没有 RenderTexture 时渲染目标就是**屏幕** —— 也就是绝大多数相机。原来这里
+    // 直接解引用 target，于是 `GetCameraRect()` / `ResetAspect()` 在任何没设
+    // targetTexture 的相机上都是段错误，而不是退回屏幕尺寸。
+    if (auto* window_system = GET_SYSTEM(WindowSystem))
+    {
+        const std::array<int, 2> size = window_system->GetWindowSize();
+        return Rectf(0.f, 0.f, static_cast<float>(size[0]), static_cast<float>(size[1]));
+    }
+
+    // 连 WindowSystem 都没有（headless / 编辑器批处理）：回一个空矩形，让调用方
+    // 走它自己的"尺寸为 0"分支，而不是拿一个假的尺寸去算 aspect。
+    return Rectf();
 }
 
 
@@ -312,10 +330,11 @@ Rectf RenderCamera::GetCameraRect() const
 void RenderCamera::ResetAspect()
 {
     Rectf r = GetCameraRect();
-    if (r.height != 0)
-        m_State.aspect = r.width / r.height;
-    else
-        m_State.aspect = 1.0f;
+
+    // 走 SetAspect()，不是直接写 m_State.aspect：投影矩阵读的是 **m_Aspect**，
+    // 写 m_State.aspect 的话 `GetAspect()` 和画面都纹丝不动 —— ResetAspect 就成
+    // 了一个"调用成功但什么都没发生"的空操作，而这正是最难查的那类错。
+    SetAspect((r.height > 0.f) ? (r.width / r.height) : 1.0f);
 
     m_State.dirtyProjectionMatrix = true;
     m_State.dirtySkyboxProjectionMatrix = true;

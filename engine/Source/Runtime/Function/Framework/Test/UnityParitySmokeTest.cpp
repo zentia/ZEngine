@@ -1755,6 +1755,29 @@ namespace
 
     bool Near(float a, float b, float tolerance = 1.0e-3f) { return std::fabs(a - b) < tolerance; }
 
+    bool Near(const Vector4& a, const Vector4& b, float tolerance = 1.0e-3f)
+    {
+        return std::fabs(a.x - b.x) < tolerance && std::fabs(a.y - b.y) < tolerance &&
+               std::fabs(a.z - b.z) < tolerance && std::fabs(a.w - b.w) < tolerance;
+    }
+
+    /// 矩阵按元素比。逐元素而不是先合成一个范数：范数相近但某一项符号反了的矩阵
+    /// （例如 y 翻了）会被"整体大小差不多"放过去，而那正是这里要抓的错。
+    bool Near(const Matrix4x4& a, const Matrix4x4& b, float tolerance = 1.0e-3f)
+    {
+        for (int row = 0; row < 4; ++row)
+        {
+            for (int column = 0; column < 4; ++column)
+            {
+                if (std::fabs(a.m_Mat[row][column] - b.m_Mat[row][column]) >= tolerance)
+                {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
     /// 造一个带 Transform 的 GameObject。
     ///
     /// 两处都不能想当然：
@@ -2659,8 +2682,14 @@ namespace
                   CountOccurrences(source, "index = 0;") == 0,
               "Z9", "GetCameraAt out of range returns null instead of clamping to 0");
         // 必须走 NoJitter：TAA 抖动会让拾取射线每帧偏半个像素。
+        //
+        // ⚠️ 后半句原来是 `->GetProjectionMatrix() == 0`（"门面里一次都不许出现
+        // 带抖动的投影"）。加了 `projectionMatrix` 访问器之后它必然出现一次，
+        // 所以改成"**恰好**一次，且就是那个访问器"。写成 `== 0` 的话这条门禁会
+        // 在每次新增任何投影相关 API 时误报，而写成"不判"就失去了意义 —— 判个数
+        // 才是既准确又仍能抓到"有人把坐标换算换成了带抖动的那张"的写法。
         Check(CountOccurrences(source, "GetProjectionMatrixNoJitter()") >= 2 &&
-                  CountOccurrences(source, "->GetProjectionMatrix()") == 0,
+                  CountOccurrences(source, "m_RenderCamera->GetProjectionMatrix()") == 1,
               "Z10", "conversion uses the un-jittered projection (picking must not wobble)");
         // w≈0 的守卫：漏了就是 NaN 顺着脚本的算术传遍整个 UI。
         Check(CountOccurrences(source, "std::fabs(clip.w) < 1.0e-6f") >= 2, "Z11",
@@ -4852,6 +4881,166 @@ namespace
               "AQ19", "and so is the friction combine mode");
     }
 
+    // --------------------------------------------------------------- AR ----
+    /// Camera 门面补全：屏幕 <-> 视口、三张矩阵、ResetAspect、pixelRect、朝向。
+    ///
+    /// 之前 Unity 的六个坐标互转里**只有穿过相机的四条**，屏幕与视口之间得先绕道
+    /// 世界（一次额外的矩阵求逆 + 白带的浮点误差）；而 `worldToCameraMatrix` /
+    /// `cameraToWorldMatrix` / `projectionMatrix` 完全不存在 —— 自定义渲染、把世界
+    /// 点投到 UI、手算视锥都要它们。
+    void TestCameraExtras()
+    {
+        // --- 未绑定的 Camera：返回"空"，不是未定义 -----------------------
+        Camera unbound;
+        Check(Near(unbound.GetWorldToCameraMatrix(), Matrix4x4::IDENTITY), "AR0",
+              "an unbound Camera reads an identity world-to-camera matrix (not garbage)");
+        Check(Near(unbound.GetCameraToWorldMatrix(), Matrix4x4::IDENTITY), "AR1", "and an identity inverse");
+        Check(Near(unbound.GetProjectionMatrix(), Matrix4x4::IDENTITY), "AR2", "and an identity projection");
+        Check(Near(unbound.GetPixelRect(), Vector4(0.f, 0.f, 0.f, 0.f)), "AR3", "and an empty pixel rect");
+        // 屏幕 <-> 视口只依赖**屏幕尺寸**、不依赖相机，所以未绑定时照样是一次真
+        // 换算。断言"返回 ZERO"是错的（那等于把一次坐标转换静默变成没做），
+        // 这里要的是"有结果且不出现 NaN"。
+        const Vector3 unbound_viewport = unbound.ScreenToViewportPoint(Vector3(1.f, 2.f, 3.f));
+        Check(std::isfinite(unbound_viewport.x) && std::isfinite(unbound_viewport.y) &&
+                  Near(unbound_viewport.z, 3.f, 1e-6f),
+              "AR4", "screen<->viewport needs no camera, so an unbound Camera still converts (no NaN)");
+        Check(unbound.GetPosition() == Vector3::ZERO, "AR5", "and the position is the origin");
+
+        // --- 绑上一台真实相机 -------------------------------------------
+        RenderCamera rc;
+        MakeRenderCamera(rc);
+        Camera cam;
+        cam.Bind(&rc);
+        Check(cam.IsValid(), "AR6", "the Camera is bound");
+
+        const float width = static_cast<float>(cam.GetPixelWidth());
+        const float height = static_cast<float>(cam.GetPixelHeight());
+        Check(width > 0.f && height > 0.f, "AR7", "(the screen has a pixel size)");
+
+        // --- 屏幕 <-> 视口 ----------------------------------------------
+        const Vector3 screen_point(width * 0.25f, height * 0.75f, 12.f);
+        const Vector3 viewport = cam.ScreenToViewportPoint(screen_point);
+        Check(Near(viewport.x, 0.25f, 1e-4f) && Near(viewport.y, 0.75f, 1e-4f), "AR8",
+              "ScreenToViewportPoint divides by the pixel size");
+        // z 是**深度**，不是第三个坐标：除以屏幕高度的话 ScreenToWorldPoint 拿到
+        // 的深度会整体缩到 1/height，来回一趟就不再回到原点（而且只在乎深的地方
+        // 才明显）。
+        Check(Near(viewport.z, 12.f, 1e-4f), "AR9", "and leaves the depth alone (it is not a coordinate)");
+        Check(Near(cam.ViewportToScreenPoint(viewport), screen_point, 1e-3f), "AR10",
+              "ViewportToScreenPoint is its inverse");
+
+        // 交叉验证：屏幕/视口这两条转换必须和已有的世界 <-> 屏幕 / 世界 <-> 视口
+        // 是同一套缩放。各自单独测的话，"屏幕->视口" 用了 width/height 反过来也
+        // 能通过自己的往返测试（它是自洽的错）。
+        const Vector3 world_probe(3.f, 14.f, 2.f);
+        const Vector3 probe_screen = cam.WorldToScreenPoint(world_probe);
+        const Vector3 probe_viewport = cam.WorldToViewportPoint(world_probe);
+        Check(Near(cam.ScreenToViewportPoint(probe_screen), probe_viewport, 1e-3f), "AR11",
+              "screen->viewport agrees with world->viewport for the same world point");
+        Check(Near(cam.ViewportToScreenPoint(probe_viewport), probe_screen, 1e-3f), "AR12",
+              "and viewport->screen agrees with world->screen");
+
+        // --- 矩阵 --------------------------------------------------------
+        const Matrix4x4 world_to_camera = cam.GetWorldToCameraMatrix();
+        const Matrix4x4 camera_to_world = cam.GetCameraToWorldMatrix();
+        Check(!Near(world_to_camera, Matrix4x4::IDENTITY), "AR13", "the world-to-camera matrix is a real view matrix");
+        // 必须**真的互为逆**，不只是"两个都不是单位阵"。用矩阵乘法验，而不是各
+        // 自看点：一个只差平移的实现也能让两条"不是单位阵"的断言全绿。
+        Check(Near(world_to_camera * camera_to_world, Matrix4x4::IDENTITY, 1e-3f), "AR14",
+              "cameraToWorldMatrix really is the inverse of worldToCameraMatrix");
+        // 顺带验一次"点变换回去还是自己"：纯矩阵相等有数值巧合的可能，点没有。
+        const Vector4 world_h(world_probe.x, world_probe.y, world_probe.z, 1.f);
+        const Vector4 round_tripped = camera_to_world * (world_to_camera * world_h);
+        Check(Near(round_tripped, world_h, 1e-3f), "AR15",
+              "so a world point survives world->camera->world unchanged");
+
+        Check(!Near(cam.GetProjectionMatrix(), Matrix4x4::IDENTITY), "AR16", "the projection matrix is a real one");
+        // TAA 关着的时候两张必须一样：那正是"没有抖动"的意思。
+        Check(!rc.IsTaaEnabled(), "AR17", "(TAA is off on this camera)");
+        Check(Near(cam.GetProjectionMatrix(), cam.GetNonJitteredProjectionMatrix(), 1e-6f), "AR18",
+              "with TAA off the jittered and non-jittered projections are the same matrix");
+
+        // 正交 + 开 TAA + 有抖动时，两张必须**不一样** —— 否则"非抖动"这一路根本
+        // 没实现，而拾取会因为每帧差半个像素而点不中小物体。
+        //
+        // 用正交相机而不是透视相机来验：引擎当前只在正交分支里调了
+        // ApplyTaaJitter（透视分支没调），拿透视相机会得到"两张相同"的假绿。
+        // 那处不一致是渲染侧既有的，不在这个切片里改，但它决定了这条断言只能用
+        // 正交相机写 —— 所以写下来了。
+        RenderCamera taa_rc;
+        MakeRenderCamera(taa_rc);
+        taa_rc.SetOrthographic(true);
+        taa_rc.SetTaaEnabled(true);
+        taa_rc.SetTaaJitter(Vector2(0.01f, -0.01f));
+        Camera taa_cam;
+        taa_cam.Bind(&taa_rc);
+        Check(!Near(taa_cam.GetProjectionMatrix(), taa_cam.GetNonJitteredProjectionMatrix(), 1e-6f), "AR19",
+              "with TAA on, the non-jittered projection really differs from the jittered one");
+
+        // --- ResetAspect --------------------------------------------------
+        cam.SetAspect(1.0f);
+        Check(Near(cam.GetAspect(), 1.0f, 1e-4f), "AR20", "SetAspect(1) sticks");
+        cam.ResetAspect();
+        // 回到**屏幕**宽高比：只把 aspect 清成 0 的话，下一次 GetProjectionMatrix
+        // 会走 GetPersProjMatrix（用 m_Fovy），和 SetAspect 之前的表现又不一样。
+        Check(Near(cam.GetAspect(), width / height, 1e-3f), "AR21",
+              "ResetAspect goes back to the screen aspect ratio");
+
+        // --- pixelRect ----------------------------------------------------
+        const Vector4 rect = cam.GetPixelRect();
+        Check(rect.z > 0.f && rect.w > 0.f, "AR22", "pixelRect has a positive size");
+        // 一台占满渲染目标的相机，矩形就该是整块屏。宽高用反了的话这条会红。
+        Check(Near(rect.z, width, 1.f) && Near(rect.w, height, 1.f), "AR23",
+              "and for a full-target camera it is the whole screen");
+
+        // --- 朝向 ---------------------------------------------------------
+        Check(Near(cam.GetForward().length(), 1.f, 1e-3f) && Near(cam.GetUp().length(), 1.f, 1e-3f) &&
+                  Near(cam.GetRight().length(), 1.f, 1e-3f),
+              "AR24", "forward / up / right are unit vectors");
+        // 三者必须两两正交：LookAt 的 up 与视线不垂直时，右手系会歪，"贴着相机右
+        // 方向偏移 N 米"就会偏到别的方向上去。
+        Check(std::fabs(cam.GetForward().dotProduct(cam.GetUp())) < 1e-3f &&
+                  std::fabs(cam.GetForward().dotProduct(cam.GetRight())) < 1e-3f &&
+                  std::fabs(cam.GetUp().dotProduct(cam.GetRight())) < 1e-3f,
+              "AR25", "and mutually orthogonal (a real right-handed basis)");
+        // 只验"单位 + 两两正交"是不够的：把 forward 和 up 换一下三者仍然全部通过，
+        // 而"沿视线往前 5 米"就变成了"往上 5 米"。所以还要对上 LookAt 的目标。
+        Check(Near(cam.GetForward(), Vector3(0.f, 1.f, 0.f), 1e-3f), "AR26",
+              "forward really is the direction of the LookAt target");
+        Check(Near(cam.GetUp(), Vector3(0.f, 0.f, 1.f), 1e-3f), "AR27",
+              "and up is the up that LookAt was given (Z-up)");
+    }
+
+    void TestCameraExtrasWiring()
+    {
+        const std::string header = ReadFile("Source/Runtime/Scripting/ScriptCamera/ScriptCamera.h");
+        Check(!header.empty(), "AS0", "ScriptCamera.h is readable");
+        // 接线门：矩阵必须是**方法声明**，不是只在 .cpp 里写了个函数。脚本只看
+        // ZFUNCTION，漏一个就整条 API 不存在，而且不报错。
+        Check(CountOccurrences(header, "Matrix4x4 GetWorldToCameraMatrix() const;") >= 1, "AS1",
+              "worldToCameraMatrix is declared on the facade");
+        Check(CountOccurrences(header, "Matrix4x4 GetCameraToWorldMatrix() const;") >= 1, "AS2",
+              "and cameraToWorldMatrix");
+        Check(CountOccurrences(header, "Matrix4x4 GetProjectionMatrix() const;") >= 1, "AS3",
+              "and projectionMatrix");
+        Check(CountOccurrences(header, "Vector3 ScreenToViewportPoint(") >= 1, "AS4",
+              "ScreenToViewportPoint is declared");
+        Check(CountOccurrences(header, "Vector3 ViewportToScreenPoint(") >= 1, "AS5",
+              "ViewportToScreenPoint is declared");
+
+        const std::string source = ReadFile("Source/Runtime/Scripting/ScriptCamera/ScriptCamera.cpp");
+        Check(!source.empty(), "AS6", "ScriptCamera.cpp is readable");
+        // cameraToWorld 必须**求逆**而不是用 position+rotation 现组装：LWC 下 view
+        // 矩阵还带一块相对当前 tile 的平移，组装出来的和渲染用的不是同一张。
+        Check(CountOccurrences(source, "GetViewMatrix().inverse()") >= 1, "AS7",
+              "cameraToWorldMatrix is the inverse of the view matrix, not a re-assembled one");
+        // 屏幕 -> 视口不能顺手把 z 也除了：z 是深度。
+        Check(CountOccurrences(source, "screen_point.x / width, screen_point.y / height, screen_point.z") >= 1,
+              "AS8", "ScreenToViewportPoint leaves the depth untouched");
+        Check(CountOccurrences(source, "m_RenderCamera->ResetAspect();") >= 1, "AS9",
+              "ResetAspect reaches the render camera (it is not a no-op)");
+    }
+
     // ---------------------------------------------------------------- B ----
     void TestWiringGate()
     {
@@ -4990,6 +5179,8 @@ int main()
     TestPhysicMaterialCombine();
     TestPhysicMaterial();
     TestPhysicMaterialWiring();
+    TestCameraExtras();
+    TestCameraExtrasWiring();
     TestWiringGate();
 
     std::printf("\n=== %d checks, %d failures ===\n", g_Checks, g_Failures);

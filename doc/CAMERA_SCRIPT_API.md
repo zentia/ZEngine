@@ -5,6 +5,7 @@
 代码：`Source/Runtime/Scripting/ScriptCamera/ScriptCamera.{h,cpp}`（门面）
 宿主：`Source/Runtime/Function/Render/RenderCamera.{h,cpp}`
 门禁：`UnityParitySmokeTest` 的 **Y 组**（行为）与 **Z 组**（接线）。
+补全部分见第 7 节（**AR 组** 行为 / **AS 组** 接线）。
 
 ---
 
@@ -136,3 +137,92 @@ label.y = cam.pixelHeight - s.y;
 const ray = cam.ScreenPointToRay(mousePos);   // mousePos 必须是左下原点
 const hit = Physics.Raycast(ray.origin, ray.direction, 1000);
 ```
+
+---
+
+## 7. 补全：屏幕 <-> 视口、三张矩阵、`ResetAspect`、`pixelRect`、朝向
+
+（后加的一节。前面六节描述的是第一版门面；这一节是补的那一半。）
+
+### 7.1 为什么补
+
+Unity 的六个互转里原来只有**穿过相机的四条**，屏幕与视口之间得**先绕道世界**：
+一次额外的矩阵求逆，还把浮点误差带进去。而 `worldToCameraMatrix` /
+`cameraToWorldMatrix` / `projectionMatrix` 完全不存在 —— 自定义渲染、手算视锥、
+把世界点投到 UI 都要它们。
+
+### 7.2 新增 API
+
+```ts
+camera.ScreenToViewportPoint(p: Vector3): Vector3   // 像素（左下原点）-> 0..1
+camera.ViewportToScreenPoint(p: Vector3): Vector3   // 0..1 -> 像素
+
+camera.worldToCameraMatrix      // 只读，Matrix4x4
+camera.cameraToWorldMatrix      // 只读
+camera.projectionMatrix         // 只读
+camera.GetNonJitteredProjectionMatrix(): Matrix4x4  // Unity 的 nonJitteredProjectionMatrix
+camera.ResetAspect(): void
+camera.pixelRect                // 只读，Vector4(x, y, w, h)，像素、左下原点
+camera.position / forward / up / right   // 只读
+```
+
+### 7.3 `cameraToWorldMatrix` 必须**求逆**，不能组装
+
+`RenderCamera` 的 view 矩阵在 LWC 下还含一块相对当前 tile 的平移。用
+`position + rotation` 现组装一个"相机到世界"矩阵，得到的和渲染用的**不是同一张**
+—— 脚本拿它变换出来的坐标会和画面差一整个 tile 的偏移，而且只在相机走远之后才
+看得出来。所以直接 `GetViewMatrix().inverse()`（AR14 用矩阵相乘验，AR15 再拿一
+个点来回一趟）。
+
+### 7.4 `nonJitteredProjectionMatrix`
+
+TAA 靠逐帧改变投影的亚像素偏移工作，所以带抖动的那张矩阵**每帧都不一样**。
+拾取、UI 跟随这类"必须和画面严格对齐"的计算要用去掉抖动的那张，否则每帧差半个
+像素，表现为"点不中静止的小物体"。门面内部的坐标转换一直用的是
+`GetProjectionMatrixNoJitter()`（Z10 是这条的门禁）。
+
+### 7.5 `pixelRect` 的形状差异
+
+Unity 返回 `Rect`，ZEngine 没有能过脚本边界的 `Rect` 值类型，所以按
+`(x, y, width, height)` 塞进 `Vector4`。形状差异，不是语义差异。
+
+### 7.6 顺带修掉的三处真 bug（都是新 API 直接撞上的）
+
+1. **`GetCameraTargetRect()` 无条件解引用 `targetTexture`**。没设 `targetTexture`
+   的相机 —— 也就是绝大多数相机 —— 调 `GetCameraRect()` / `ResetAspect()` 是
+   **段错误**。现在没有 RenderTexture 时退回屏幕尺寸（`WindowSystem::GetWindowSize()`），
+   再没有就回空矩形。
+2. **`normalizedViewPortRect` 恒为零值**。全仓只有一处读、没有任何一处写，所以它
+   永远是 `Rectf()` 的 `0,0,0,0` ⇒ `pixelRect` 恒为 0×0、`ResetAspect()` 恒走
+   `height == 0` 分支。现在默认给成 Unity 的 `(0,0,1,1)`（占满渲染目标）。
+3. **`ResetAspect()` 写的是另一个成员**。`SetAspect()` 写 `m_Aspect`（投影矩阵读
+   的是它），`ResetAspect()` 写 `m_State.aspect` ⇒ 一个"调用成功但什么都没发生"的
+   空操作。现在 `ResetAspect()` 走 `SetAspect()`，只保留脏标记。
+
+这三处都不是"为了让新测试过"而调的：它们让 `pixelRect` / `ResetAspect` 这两个
+Unity API 在 ZEngine 里根本没法用。
+
+### 7.7 已知不一致（本切片**没有**改）
+
+`RenderCamera::GetProjectionMatrixForAspect()` 只在**正交**分支里调了
+`ApplyTaaJitter`，透视分支没调 ⇒ 一台普通的透视相机即便开了 TAA 也拿不到抖动，
+TAA 对它等于没开。改它会动到每一个画面的每一个像素，不在这里碰。
+
+但它决定了 AR19（"开了 TAA 时两张投影必须不同"）**只能用正交相机写** —— 拿透视
+相机会得到"两张相同"的假绿。注释写在测试里了。
+
+### 7.8 测试
+
+| 组 | 测什么 |
+|---|---|
+| AR | 未绑定降级；换算与往返；**交叉验证**（屏幕→视口 必须和 世界→视口 是同一套缩放 —— 各自单独测的话 width/height 用反了也能自洽）；两张 view 矩阵真的互为逆；TAA 开/关下去抖矩阵与抖动矩阵的关系；`ResetAspect` 回到屏幕宽高比；`pixelRect` 尺寸；朝向的单位性、正交性、**以及真的对上 `LookAt` 的方向**。 |
+| AS | 源码级接线门：方法在门面上声明；`cameraToWorldMatrix` 是求逆不是组装；屏幕→视口没顺手把深度也除了；`ResetAspect` 真的到了 `RenderCamera`。 |
+
+> ⚠️ 朝向只验"单位 + 两两正交"**不够**：把 `forward` 和 `up` 换一下三者仍然全部
+> 通过，而"沿视线往前 5 米"就变成了"往上 5 米"。所以 AR26 / AR27 还对着
+> `LookAt` 的目标与 up 验了一次。
+
+> ⚠️ Z10 这条门禁原来是 `->GetProjectionMatrix() == 0`（"门面里一次都不许出现带
+> 抖动的投影"）。加了 `projectionMatrix` 访问器后它必然出现一次，所以改成"**恰好
+> 一次**"。写成 `== 0` 会在每次新增任何投影相关 API 时误报，写成"不判"就失去了
+> 意义 —— 判个数才既准确又仍能抓到"有人把坐标换算换成了带抖动的那张"。

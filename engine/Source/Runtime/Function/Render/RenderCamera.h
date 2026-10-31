@@ -172,7 +172,13 @@ private:
     struct CopiableState
     {
         PPtr<RenderTexture> targetTexture;
-        Rectf normalizedViewPortRect;
+        /// 相机在渲染目标上占的那块区域，**归一化**（Unity 的 `camera.rect`，
+        /// 默认 (0,0,1,1) = 占满）。
+        ///
+        /// ⚠️ 默认必须是"占满"而不是 Rectf 的零值：它只有在 `GetCameraRect()`
+        /// 里被读过一次，而没人写过 —— 零值会让 pixelRect 恒为 0x0、
+        /// `ResetAspect()` 恒走 height==0 那条分支。
+        Rectf normalizedViewPortRect {0.f, 0.f, 1.f, 1.f};
         float aspect;
         bool dirtyProjectionMatrix;
         bool dirtySkyboxProjectionMatrix;

@@ -418,3 +418,98 @@ Ray* Camera::ViewportPointToRay(const Vector2& viewport_point) const
     it->second->SetDirection(direction);
     return it->second.get();
 }
+
+// ---------------------------------------------------------------------------
+// 屏幕 <-> 视口
+// ---------------------------------------------------------------------------
+Vector3 Camera::ScreenToViewportPoint(const Vector3& screen_point) const
+{
+    const float width = static_cast<float>(GetPixelWidth());
+    const float height = static_cast<float>(GetPixelHeight());
+    if (width <= 0.0f || height <= 0.0f)
+    {
+        return Vector3::ZERO;
+    }
+    // z 原样带过去：它是"沿视线的深度"，不是第三个坐标，除以屏幕尺寸是没有意
+    // 义的（而且会让 ScreenToWorldPoint 的深度整体缩小到原来的 1/height）。
+    return Vector3(screen_point.x / width, screen_point.y / height, screen_point.z);
+}
+
+Vector3 Camera::ViewportToScreenPoint(const Vector3& viewport_point) const
+{
+    const float width = static_cast<float>(GetPixelWidth());
+    const float height = static_cast<float>(GetPixelHeight());
+    return Vector3(viewport_point.x * width, viewport_point.y * height, viewport_point.z);
+}
+
+// ---------------------------------------------------------------------------
+// 矩阵
+// ---------------------------------------------------------------------------
+Matrix4x4 Camera::GetWorldToCameraMatrix() const
+{
+    return (m_RenderCamera != nullptr) ? m_RenderCamera->GetViewMatrix() : Matrix4x4::IDENTITY;
+}
+
+Matrix4x4 Camera::GetCameraToWorldMatrix() const
+{
+    if (m_RenderCamera == nullptr)
+    {
+        return Matrix4x4::IDENTITY;
+    }
+    // 求逆，而不是"用 position + rotation 现组装一个"。RenderCamera 的 view 矩
+    // 阵在 LWC 下还含一块相对当前 tile 的平移，组装出来的矩阵与渲染用的不是同
+    // 一张 —— 脚本拿它变换出来的坐标会和画面差一整个 tile 的偏移，而且只在相机
+    // 走远之后才看得出来。
+    return m_RenderCamera->GetViewMatrix().inverse();
+}
+
+Matrix4x4 Camera::GetProjectionMatrix() const
+{
+    return (m_RenderCamera != nullptr) ? m_RenderCamera->GetProjectionMatrix() : Matrix4x4::IDENTITY;
+}
+
+Matrix4x4 Camera::GetNonJitteredProjectionMatrix() const
+{
+    return (m_RenderCamera != nullptr) ? m_RenderCamera->GetProjectionMatrixNoJitter() : Matrix4x4::IDENTITY;
+}
+
+void Camera::ResetAspect()
+{
+    if (m_RenderCamera != nullptr)
+    {
+        m_RenderCamera->ResetAspect();
+    }
+}
+
+Vector4 Camera::GetPixelRect() const
+{
+    if (m_RenderCamera == nullptr)
+    {
+        return Vector4(0.0f, 0.0f, 0.0f, 0.0f);
+    }
+    const Rectf rect = m_RenderCamera->GetCameraRect();
+    return Vector4(rect.x, rect.y, rect.width, rect.height);
+}
+
+// ---------------------------------------------------------------------------
+// 朝向
+// ---------------------------------------------------------------------------
+Vector3 Camera::GetPosition() const
+{
+    return (m_RenderCamera != nullptr) ? m_RenderCamera->position() : Vector3::ZERO;
+}
+
+Vector3 Camera::GetForward() const
+{
+    return (m_RenderCamera != nullptr) ? m_RenderCamera->forward() : Vector3::UNIT_Y;
+}
+
+Vector3 Camera::GetUp() const
+{
+    return (m_RenderCamera != nullptr) ? m_RenderCamera->up() : Vector3::UNIT_Z;
+}
+
+Vector3 Camera::GetRight() const
+{
+    return (m_RenderCamera != nullptr) ? m_RenderCamera->right() : Vector3::UNIT_X;
+}

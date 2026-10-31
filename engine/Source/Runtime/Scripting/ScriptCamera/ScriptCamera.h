@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Runtime/BaseClasses/Object.h"
+#include "Runtime/Core/Math/Matrix4.h"
 #include "Runtime/Core/Math/Vector2.h"
 #include "Runtime/Core/Math/Vector3.h"
 #include "Runtime/Core/Math/Vector4.h"
@@ -192,6 +193,72 @@ public:
     ZFUNCTION()
     Ray* ViewportPointToRay(const Vector2& viewport_point) const;
 
+    // ---- 屏幕 <-> 视口 ---------------------------------------------------
+    //
+    // Unity 有四个互转（World/Screen/Viewport 各两个方向），之前只有穿过相机的
+    // 那四条，屏幕与视口之间得先绕道世界 —— 一次额外的反投影，白花一次矩阵求
+    // 逆，还把误差带进去。
+
+    /// 屏幕（像素，左下原点）→ 视口（0..1）。z 原样带过去（它是深度，不是坐标）。
+    ZFUNCTION()
+    Vector3 ScreenToViewportPoint(const Vector3& screen_point) const;
+
+    /// 视口（0..1）→ 屏幕（像素，左下原点）。与上式互为逆运算。
+    ZFUNCTION()
+    Vector3 ViewportToScreenPoint(const Vector3& viewport_point) const;
+
+    // ---- 矩阵（Unity 的 `worldToCameraMatrix` / `cameraToWorldMatrix` /
+    //      `projectionMatrix`）---------------------------------------------
+
+    /// 世界 → 相机空间。Unity 的 `camera.worldToCameraMatrix`。
+    ZFUNCTION()
+    Matrix4x4 GetWorldToCameraMatrix() const;
+
+    /// 相机空间 → 世界，即上式的逆。Unity 的 `camera.cameraToWorldMatrix`。
+    ///
+    /// 手写一个"由 position + rotation 组装"的版本是**错**的：LWC 下 view 矩阵
+    /// 里还带一块相对当前 tile 的平移，组装出来的矩阵和渲染用的不是同一张，
+    /// 脚本拿它做坐标变换会和画面对不上。所以直接求逆。
+    ZFUNCTION()
+    Matrix4x4 GetCameraToWorldMatrix() const;
+
+    /// 投影矩阵（含 TAA 抖动，如果开了的话）。
+    ZFUNCTION()
+    Matrix4x4 GetProjectionMatrix() const;
+
+    /// 去掉 TAA 抖动的那张投影矩阵。Unity 里对应的是
+    /// `nonJitteredProjectionMatrix`：拾取、UI 跟随这类"必须和画面严格对齐"的
+    /// 计算要用它，否则每帧差半个像素。
+    ZFUNCTION()
+    Matrix4x4 GetNonJitteredProjectionMatrix() const;
+
+    /// Unity 的 `ResetAspect()`：aspect 回到当前渲染目标的宽高比（之前
+    /// `SetAspect()` 设进去的自定义值作废）。
+    ZFUNCTION()
+    void ResetAspect();
+
+    /// Unity 的 `pixelRect`：这台相机在渲染目标上占的那块像素区域。
+    ///
+    /// ⚠️ Unity 返回 `Rect`，ZEngine 没有 `Rect` 值类型可以过脚本边界，所以按
+    /// `(x, y, width, height)` 塞进 `Vector4`（左下原点，像素）。这是与 Unity 的
+    /// 形状差异，不是语义差异。
+    ZFUNCTION()
+    Vector4 GetPixelRect() const;
+
+    // ---- 朝向 ------------------------------------------------------------
+    //
+    // Unity 里这些是 `camera.transform.position/forward/up/right`。Camera 门面
+    // 本身不是组件、拿不到 Transform，所以按 RenderCamera 自己的状态给。
+
+    ZFUNCTION()
+    Vector3 GetPosition() const;
+    ZFUNCTION()
+    Vector3 GetForward() const;
+    ZFUNCTION()
+    Vector3 GetUp() const;
+    ZFUNCTION()
+    Vector3 GetRight() const;
+
     ZSCRIPTPROPERTY(Name="fieldOfView", Getter="GetFieldOfView", Setter="SetFieldOfView")
     ZSCRIPTPROPERTY(Name="nearClipPlane", Getter="GetNearClipPlane", Setter="SetNearClipPlane")
     ZSCRIPTPROPERTY(Name="farClipPlane", Getter="GetFarClipPlane", Setter="SetFarClipPlane")
@@ -200,6 +267,17 @@ public:
     ZSCRIPTPROPERTY(Name="orthographicSize", Getter="GetOrthographicSize", Setter="SetOrthographicSize")
     ZSCRIPTPROPERTY(Name="pixelWidth", Getter="GetPixelWidth")
     ZSCRIPTPROPERTY(Name="pixelHeight", Getter="GetPixelHeight")
+    // 只读：写入要动 RenderCamera 的 implicitWorldToCameraMatrix /
+    // implicitAspect 那套"谁最后写谁算"的状态机，照 Unity 开放一个 setter 却只
+    // 改到一半比不给 setter 更糟。
+    ZSCRIPTPROPERTY(Name="worldToCameraMatrix", Getter="GetWorldToCameraMatrix")
+    ZSCRIPTPROPERTY(Name="cameraToWorldMatrix", Getter="GetCameraToWorldMatrix")
+    ZSCRIPTPROPERTY(Name="projectionMatrix", Getter="GetProjectionMatrix")
+    ZSCRIPTPROPERTY(Name="pixelRect", Getter="GetPixelRect")
+    ZSCRIPTPROPERTY(Name="position", Getter="GetPosition")
+    ZSCRIPTPROPERTY(Name="forward", Getter="GetForward")
+    ZSCRIPTPROPERTY(Name="up", Getter="GetUp")
+    ZSCRIPTPROPERTY(Name="right", Getter="GetRight")
 
 private:
     /// 世界 → 裁剪空间（齐次），未除以 w。
