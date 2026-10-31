@@ -117,6 +117,14 @@ public:
     bool HasKey(const std::string& key) const;
 
     /**
+     * @brief Remove every preference (Unity's `PlayerPrefs.DeleteAll`).
+     *
+     * 只清内存里的文档并标脏 —— 落盘由 `save()` 负责。清完不自动存盘是有意的：
+     * DeleteAll 紧跟一次全量重写（改名、重置设置）时，中间那次写盘是白写的。
+     */
+    void DeleteAll();
+
+    /**
      * @brief Get the preferences file path
      * @return Path to preferences file
      */

@@ -56,6 +56,8 @@
 #include "Runtime/Function/Render/RenderSystem.h"
 #include "Runtime/Scripting/ScriptCamera/ScriptCamera.h"
 #include "Runtime/Scripting/ScriptCollider/ScriptCollider.h"
+#include "Runtime/Scripting/ScriptPlayerPrefs/ScriptPlayerPrefs.h"
+#include "Runtime/Resource/UserPreferences/UserPreferences.h"
 #include "Runtime/Resource/ResType/Data/BasicShape.h"
 #include "Runtime/Scripting/ScriptDebug/ScriptDebug.h"
 #include "Runtime/Scripting/ScriptRandom/ScriptRandom.h"
@@ -95,6 +97,7 @@ template<> void RegisterKlass<Geometry>();
 template<> void RegisterKlass<RigidBodyShape>();
 template<> void RegisterKlass<RigidBodyComponent>();
 template<> void RegisterKlass<Collider>();
+template<> void RegisterKlass<PlayerPrefs>();
 
 #include <cmath>
 #include <cstdio>
@@ -2001,6 +2004,7 @@ namespace
         RegisterKlass<RigidBodyShape>();
         RegisterKlass<RigidBodyComponent>();
         RegisterKlass<Collider>();
+        RegisterKlass<PlayerPrefs>();
         type_manager.InitializeAllTypes();
     }
 
@@ -3624,6 +3628,143 @@ namespace
               "the AABB (not exact-geometry) nature of ClosestPoint is documented");
     }
 
+    // --------------------------------------------------------------- AE ----
+    /// `PlayerPrefs`（Unity 同名静态类）。
+    ///
+    /// `UserPreferences` 早就实现完整了（int/float/string/bool + 落盘），但它是
+    /// IEngineSystem 而不是 ZCLASS，脚本一个字都碰不到 —— 想存个最高分只能自己
+    /// 写文件。这一组先测"没有偏好系统时的降级"（默认分支），再注册一台**不调
+    /// Initialize** 的实例测真实读写。
+    ///
+    /// 为什么不 Initialize
+    /// -------------------
+    /// `Initialize()` 需要 `GET_SYSTEM(PlayerSettings)` 且会真的在用户目录下建目录
+    /// 读文件。不 Initialize 的话 `m_PreferencesFilePath` 是空的，所有读写都在内存
+    /// 里跑 —— 行为完全一致，且不碰磁盘。这也正好顺带验证了 `save()` 的空路径守卫。
+    void TestPlayerPrefs()
+    {
+        // --- 降级：还没有 UserPreferences -------------------------------
+        Check(GET_SYSTEM(UserPreferences) == nullptr, "AE0", "(the fixture starts with no UserPreferences)");
+        Check(PlayerPrefs::GetInt("nope", 42) == 42, "AE1",
+              "GetInt falls back to the default when there is no preference system");
+        Check(Near(PlayerPrefs::GetFloat("nope", 1.5f), 1.5f, 0.0001f), "AE2", "and so does GetFloat");
+        Check(PlayerPrefs::GetString("nope", "fallback") == "fallback", "AE3", "and GetString");
+        Check(PlayerPrefs::GetBool("nope", true), "AE4", "and GetBool");
+        Check(!PlayerPrefs::HasKey("nope"), "AE5",
+              "HasKey reports false (saying true would make a script think it can read)");
+        // 写必须是安全的空操作，不是崩。
+        PlayerPrefs::SetInt("k", 1);
+        PlayerPrefs::SetFloat("k", 1.f);
+        PlayerPrefs::SetString("k", "v");
+        PlayerPrefs::SetBool("k", true);
+        PlayerPrefs::DeleteKey("k");
+        PlayerPrefs::DeleteAll();
+        PlayerPrefs::Save();
+        Check(true, "AE6", "every write degrades to a no-op instead of crashing");
+
+        // --- 装一台真的（不 Initialize，纯内存）--------------------------
+        UserPreferences* prefs = new UserPreferences();
+        SystemRegistry::GetInstance().RegisterSystem(prefs);
+        Check(GET_SYSTEM(UserPreferences) == prefs, "AE7", "a UserPreferences can be registered");
+
+        // 往返
+        PlayerPrefs::SetInt("score", 1234);
+        Check(PlayerPrefs::GetInt("score", 0) == 1234, "AE8", "an int round-trips");
+        PlayerPrefs::SetFloat("volume", 0.75f);
+        Check(Near(PlayerPrefs::GetFloat("volume", 0.f), 0.75f, 0.0001f), "AE9", "a float round-trips");
+        PlayerPrefs::SetString("name", "zing");
+        Check(PlayerPrefs::GetString("name", "") == "zing", "AE10", "a string round-trips");
+        PlayerPrefs::SetBool("muted", true);
+        Check(PlayerPrefs::GetBool("muted", false), "AE11", "a bool round-trips");
+
+        // 默认值：键不存在时**必须**返回传入的默认值。返回 0 / "" 的话"第一次进
+        // 游戏"这个分支永远走不到 —— 那是 PlayerPrefs 最经典的用法。
+        Check(PlayerPrefs::GetInt("missing", 7) == 7, "AE12", "a missing int returns the given default");
+        Check(Near(PlayerPrefs::GetFloat("missing", 2.5f), 2.5f, 0.0001f), "AE13", "and so does a float");
+        Check(PlayerPrefs::GetString("missing", "def") == "def", "AE14", "and a string");
+        Check(PlayerPrefs::GetBool("missing", true), "AE15", "and a bool");
+
+        // HasKey 必须区分"没存过"和"存了个默认值"。
+        Check(PlayerPrefs::HasKey("score"), "AE16", "HasKey is true for a stored key");
+        Check(!PlayerPrefs::HasKey("missing"), "AE17", "and false for one that was never set");
+        PlayerPrefs::SetInt("zero", 0);
+        Check(PlayerPrefs::HasKey("zero"), "AE18",
+              "a key stored as 0 still exists (GetInt == 0 is not the same question)");
+
+        // 类型串味：写 int 读 float 不该崩，也不该返回垃圾。
+        Check(Near(PlayerPrefs::GetFloat("score", -1.f), 1234.0f, 0.0001f), "AE19",
+              "reading an int as a float widens it, it does not return garbage");
+
+        // 删除
+        PlayerPrefs::DeleteKey("score");
+        Check(!PlayerPrefs::HasKey("score"), "AE20", "DeleteKey removes just that key");
+        Check(PlayerPrefs::HasKey("name"), "AE21", "and leaves the others alone");
+
+        // Save 在路径为空时必须安静地什么都不做（不 Initialize 的状态），否则
+        // create_directories("") 抛异常被 catch 吞掉 —— 一个静默的失败。
+        PlayerPrefs::Save();
+        Check(PlayerPrefs::HasKey("name"), "AE22", "Save with no path is a no-op, not a wipe");
+
+        PlayerPrefs::DeleteAll();
+        Check(!PlayerPrefs::HasKey("name") && !PlayerPrefs::HasKey("volume") && !PlayerPrefs::HasKey("zero"),
+              "AE23", "DeleteAll clears every key");
+        // 删完还能继续写 —— SetObject 之后 allocator 必须还可用。
+        PlayerPrefs::SetInt("after", 5);
+        Check(PlayerPrefs::GetInt("after", 0) == 5, "AE24",
+              "the document still accepts writes after DeleteAll");
+
+        // 不析构也不注销：SystemRegistry 没有 UnregisterSystem，而进程马上就退出。
+        // 与同文件其它夹具（new ObjectManager / new PhysicsManager）同样的取舍。
+    }
+
+    // --------------------------------------------------------------- AF ----
+    /// PlayerPrefs 的接线门。
+    void TestPlayerPrefsWiring()
+    {
+        const std::string prefs_header = ReadFile("Source/Runtime/Scripting/ScriptPlayerPrefs/ScriptPlayerPrefs.h");
+        Check(!prefs_header.empty(), "AF0", "ScriptPlayerPrefs.h is readable");
+        Check(CountOccurrences(prefs_header, "ZFUNCTION()") == 12, "AF1",
+              "PlayerPrefs exposes exactly 12 script methods (a dropped ZFUNCTION is a silent API loss)");
+        // Unity 的拼写，一个都不能少。
+        Check(CountOccurrences(prefs_header, "static void SetInt(") >= 1 &&
+                  CountOccurrences(prefs_header, "static int GetInt(") >= 1,
+              "AF2", "SetInt / GetInt are declared");
+        Check(CountOccurrences(prefs_header, "static void SetFloat(") >= 1 &&
+                  CountOccurrences(prefs_header, "static float GetFloat(") >= 1,
+              "AF3", "SetFloat / GetFloat are declared");
+        Check(CountOccurrences(prefs_header, "static void SetString(") >= 1 &&
+                  CountOccurrences(prefs_header, "static eastl::string GetString(") >= 1,
+              "AF4", "SetString / GetString are declared");
+        Check(CountOccurrences(prefs_header, "static bool HasKey(") >= 1 &&
+                  CountOccurrences(prefs_header, "static void DeleteKey(") >= 1 &&
+                  CountOccurrences(prefs_header, "static void DeleteAll(") >= 1 &&
+                  CountOccurrences(prefs_header, "static void Save(") >= 1,
+              "AF5", "HasKey / DeleteKey / DeleteAll / Save are all declared");
+        // 默认值参数是 PlayerPrefs 的一半意义所在（"第一次进游戏"）。
+        Check(CountOccurrences(prefs_header, "int default_value = 0") >= 1, "AF6",
+              "GetInt takes a default value parameter");
+        // 明文存储这件事必须写在门面文件里 —— 拿它存令牌是常见误用。
+        Check(CountOccurrences(prefs_header, "明文") >= 1, "AF7",
+              "the header warns that this is plaintext storage");
+
+        const std::string prefs_source = ReadFile("Source/Runtime/Scripting/ScriptPlayerPrefs/ScriptPlayerPrefs.cpp");
+        Check(!prefs_source.empty(), "AF8", "ScriptPlayerPrefs.cpp is readable");
+        // 每一个入口都必须先解析系统再判空 —— 少一处就是一个崩溃，而不是"读不到"。
+        Check(CountOccurrences(prefs_source, "ResolvePreferences()") >= 13, "AF9",
+              "every entry point resolves the system (no unguarded GET_SYSTEM deref)");
+
+        const std::string user_header = ReadFile("Source/Runtime/Resource/UserPreferences/UserPreferences.h");
+        Check(!user_header.empty(), "AF10", "UserPreferences.h is readable");
+        Check(CountOccurrences(user_header, "void DeleteAll();") >= 1, "AF11",
+              "UserPreferences grew DeleteAll (it did not exist before this slice)");
+
+        const std::string user_source = ReadFile("Source/Runtime/Resource/UserPreferences/UserPreferences.cpp");
+        Check(!user_source.empty(), "AF12", "UserPreferences.cpp is readable");
+        // 空路径守卫：没 Initialize 时 save() 不该去 create_directories("")。
+        Check(CountOccurrences(user_source, "m_PreferencesFilePath.empty()") >= 1, "AF13",
+              "save() guards the empty path instead of throwing into a swallowed catch");
+    }
+
     // ---------------------------------------------------------------- B ----
     void TestWiringGate()
     {
@@ -3749,6 +3890,8 @@ int main()
     TestCharacterControllerWiring();
     TestCollider();
     TestColliderWiring();
+    TestPlayerPrefs();
+    TestPlayerPrefsWiring();
     TestWiringGate();
 
     std::printf("\n=== %d checks, %d failures ===\n", g_Checks, g_Failures);

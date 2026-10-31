@@ -82,6 +82,13 @@ void UserPreferences::Shutdown()
 
 void UserPreferences::save()
 {
+    // 路径为空 = 还没 Initialize（只有内存里的那份）。此时写盘既无处可写，也会
+    // 在 create_directories("") 上抛出被 catch 吞掉的异常 —— 不如直接说清楚。
+    if (m_PreferencesFilePath.empty())
+    {
+        return;
+    }
+
     try
     {
         // Create directory if it doesn't exist
@@ -225,6 +232,14 @@ bool UserPreferences::GetBool(const std::string& key, bool default_value) const
 void UserPreferences::SetBool(const std::string& key, bool value)
 {
     upsertPreferenceValue(m_Preferences, key).SetBool(value);
+    m_Dirty = true;
+}
+
+void UserPreferences::DeleteAll()
+{
+    m_Preferences.SetObject();
+    // SetObject 会丢掉 allocator 里已分配的一切，但文档本身还留着原来的 allocator，
+    // 所以后面的 upsert 依然正常。
     m_Dirty = true;
 }
 
