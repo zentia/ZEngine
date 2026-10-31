@@ -82,6 +82,17 @@ class Mover extends Behaviour {
         this.routineDone = true;
     }
 
+    /// 从 TypeScript 里画 gizmo。C++ 侧的 GZ 组断言的是"画出了什么"，
+    /// ScriptVMSmokeTest 的 L 组断言的是"脚本看不看得见 Gizmos" —— 只有这里
+    /// 证明 `Gizmos.DrawLine(...)` 在 **.ts 里也能通过类型检查**（d.ts 里那
+    /// 个 `declare class Gizmos` 是真的能用的，不只是一串字符串）。
+    DrawGizmo(): void {
+        Gizmos.color = { r: 1, g: 0, b: 0, a: 1 };
+        Gizmos.DrawLine({ x: 0, y: 0, z: 0 }, { x: 1, y: 0, z: 0 });
+        Gizmos.DrawWireSphere({ x: 0, y: 0, z: 0 }, 1);
+        Gizmos.color = { r: 1, g: 1, b: 1, a: 1 };
+    }
+
     /// 走 **JS shim** 的那条停止路径（`g.Behaviour.prototype.StopAllCoroutines`）。
     /// C++ 直接调 comp.StopAllCoroutines() 是测不到 shim 的 —— 少一行转发
     /// 照样全绿（变异 SC16 就是这么漏的）。

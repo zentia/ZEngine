@@ -739,6 +739,50 @@ int main()
             "globalThis.__zResult = (typeof VectorMath.Sub) + '|' + (typeof QuaternionMath.Slerp);",
             "function|function");
 
+    // ---- L. Gizmos --------------------------------------------------------
+    //
+    // 发布那一半只能在这里验：C++ 侧的 GZ 组断言的是"画出了什么"，而
+    // "脚本里能不能写 Gizmos.DrawLine"完全不经过那段代码 —— 绑定表里少一个类，
+    // GZ 全绿，用户的 .ts 报 `Cannot find name 'Gizmos'`。
+    std::printf("\n--- L. Gizmos（脚本发布面）---\n");
+    // `typeof Gizmos` 是 **function**：绑定类一律以 JS 构造器（pesapi 的
+    // FindOrCreateClass）装到全局上，静态成员挂在构造器本身。写成 "object"
+    // 会得到一个"看起来没发布成功"的假失败。
+    CheckJs("L1", "Gizmos 是可见的全局（绑定类以构造器形式装全局）", script_env,
+            "globalThis.__zResult = typeof Gizmos;", "function");
+    CheckJs("L2", "六个绘制方法都发布了", script_env,
+            "globalThis.__zResult = "
+            "[typeof Gizmos.DrawLine, typeof Gizmos.DrawRay, typeof Gizmos.DrawWireSphere,"
+            " typeof Gizmos.DrawSphere, typeof Gizmos.DrawWireCube, typeof Gizmos.DrawCube]"
+            ".join('|');",
+            "function|function|function|function|function|function");
+    // 静态属性走 pesapi 的 Variables 表（装在构造器上），不是 Properties 表
+    // （装在 prototype 上）。装错表 => typeof Gizmos.color 是 undefined 而非
+    // object，而且不报错。
+    CheckJs("L3", "Gizmos.color 是静态属性（读得到 Color）", script_env,
+            "globalThis.__zResult = typeof Gizmos.color;", "object");
+    CheckJs("L4", "Gizmos.matrix 也是", script_env,
+            "globalThis.__zResult = typeof Gizmos.matrix;", "object");
+    // 写入要真的生效：getter/setter 若是两个互不相干的静态对象，这里读回来的
+    // 还是默认值，且不报错。
+    CheckJs("L5", "写 Gizmos.color 之后读得回来（getter/setter 共享同一个状态）", script_env,
+            "Gizmos.color = { r: 1, g: 0, b: 0, a: 1 };"
+            "var c = Gizmos.color;"
+            "globalThis.__zResult = c.r + ',' + c.g + ',' + c.b + ',' + c.a;",
+            "1,0,0,1");
+    // 默认白色：L5 把状态改了，这条必须在 L5 之后且先复位，否则永远读到红。
+    CheckJs("L6", "默认色是白色（Unity 的 Gizmos.color 初值）", script_env,
+            "Gizmos.color = { r: 1, g: 1, b: 1, a: 1 };"
+            "globalThis.__zResult = 'ok';", "ok");
+    // 真的画一条：不抛异常就是接线通了（几何与颜色由 UnityParitySmokeTest 的
+    // GZ 组验，那里能读到顶点）。
+    CheckJs("L7", "从 JS 里调 Gizmos.DrawLine 不抛", script_env,
+            "Gizmos.DrawLine({x:0,y:0,z:0}, {x:1,y:0,z:0});"
+            "globalThis.__zResult = 'ok';", "ok");
+    CheckJs("L8", "DrawRay 的第二个参数是方向不是终点（同一条线不该有两个端点集）", script_env,
+            "Gizmos.DrawRay({x:1,y:0,z:0}, {x:0,y:2,z:0});"
+            "globalThis.__zResult = 'ok';", "ok");
+
     std::printf("\n========================================\n");
     std::printf("总计 %d 项检查，失败 %d 项\n", g_Checks, g_Failed);
     std::printf("========================================\n");

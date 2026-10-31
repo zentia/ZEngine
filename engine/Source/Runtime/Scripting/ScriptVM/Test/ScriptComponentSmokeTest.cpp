@@ -63,6 +63,7 @@
 #include "Runtime/Function/Framework/Coroutine/Coroutine.h"
 #include "Runtime/Function/Framework/Component/Script/TypeScriptComponent.h"
 #include "Runtime/Function/Framework/Component/Transform/Transform.h"
+#include "Runtime/Function/Render/DebugDraw/DebugDrawManager.h"
 #include "Runtime/Project/ProjectInfo.h"
 #include "Runtime/Scripting/Native/PuertsNative.h"
 #include "Runtime/Scripting/ScriptRegistry.h"
@@ -350,6 +351,16 @@ int main(int argc, char** argv)
         std::printf("FATAL: SystemRegistry::InitializeAll(false) 失败。\n");
         return 77;
     }
+
+    // Gizmos 走 GET_SYSTEM(DebugDrawManager)。不注册的话整套是 no-op，而
+    // "画不出来"和"没画"看起来一模一样。
+    //
+    // ⚠️ 必须放在 InitializeAll **之后**：`DebugDrawManager::Initialize()` 要
+    // Vulkan 与 RenderSystem（GetDependencies 里就写着），而这里两个都没有 ——
+    // 让它进 InitializeAll 会直接把整个进程挂死（踩过一次，卡了 10 分钟没输出）。
+    // Gizmos 只需要它手上的 DebugDrawGroup（DebugDrawContext 是纯 CPU 的 map），
+    // 所以注册但不 Initialize 就够了。
+    REGISTER_SYSTEM(DebugDrawManager);
 
     auto* sm = GET_SYSTEM(ScriptingManager);
     auto* registry = GET_SYSTEM(ScriptRegistry);
@@ -670,6 +681,40 @@ int main(int argc, char** argv)
         scheduler->TickEndOfFrame();
         CheckEq("H18", "shim 转发之后确实停了", mover_value("routineSteps"), "1");
         scheduler->StopAll();
+    }
+
+    // ---- F3. Gizmos：从 TypeScript 里画 -----------------------------------
+    //
+    // UnityParitySmokeTest 的 GZ 组断言"画出了什么"（从 C++ 直接调），
+    // ScriptVMSmokeTest 的 L 组断言"脚本看不看得见 Gizmos"（从 JS 直接调），
+    // 只有这一段同时经过 **tsc 的类型检查** 和 **引擎后端**：`Mover.ts` 里那
+    // 三行 `Gizmos.*` 编译不过的话，整个 TS 链是红的。
+    std::printf("\n--- F3. Gizmos（TypeScript -> DebugDraw）---\n");
+    auto* gizmo_group = GET_SYSTEM(DebugDrawManager)
+                            ? GET_SYSTEM(DebugDrawManager)->TryGetOrCreateDebugDrawGroup("gizmos")
+                            : nullptr;
+#if defined(Z_HAS_VULKAN)
+    CheckTrue("I0", "gizmo group 拿得到", gizmo_group != nullptr);
+#else
+    // 非 Vulkan 构建下 DebugDrawManager 是空实现（见 DebugDrawManager.cpp 顶部），
+    // 拿不到 group 是这一层的正确行为。
+    CheckTrue("I0", "非 Vulkan 构建：gizmo 后端被编译掉了", gizmo_group == nullptr);
+#endif
+    if (gizmo_group != nullptr)
+    {
+        gizmo_group->ClearData();
+        CheckTrue("I1", "DrawGizmo 送到了 JS 侧", comp2->InvokeMethod("DrawGizmo"));
+        CheckEq("I2", "一条线 + 一个球（后端真的收到了）",
+                std::to_string(gizmo_group->GetLineCount(false)) + "/" +
+                    std::to_string(gizmo_group->GetUniformDynamicDataCount()),
+                "1/1");
+        gizmo_group->ClearData();
+    }
+    else
+    {
+        // 没有后端时也不能炸 —— 走到这里本身就是证明。
+        CheckTrue("I1", "没有后端时 DrawGizmo 仍然是 no-op 而不是崩",
+                  comp2->InvokeMethod("DrawGizmo"));
     }
 
     // ---- G. 卸载：OnDestroy -> 不再有活实例 -------------------------------

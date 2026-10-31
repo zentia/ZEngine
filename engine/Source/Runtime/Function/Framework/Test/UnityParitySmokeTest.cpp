@@ -31,7 +31,12 @@
 #include "Runtime/BaseClasses/Type.h"
 #include "Runtime/BaseClasses/TypeManager.h"
 #include "Runtime/Core/Base/SystemRegistry.h"
+#include "Runtime/Core/Math/Matrix4.h"
 #include "Runtime/Core/Math/UnityRandom.h"
+#include "Runtime/Core/Math/Vector4.h"
+#include "Runtime/Function/Render/DebugDraw/DebugDrawGroup.h"
+#include "Runtime/Function/Render/DebugDraw/DebugDrawManager.h"
+#include "Runtime/Scripting/ScriptGizmos/ScriptGizmos.h"
 #include "Runtime/Function/AI/Navigation/NavMeshAgentComponent.h"
 #include "Runtime/Function/AI/Navigation/NavigationSystem.h"
 #include "Runtime/Function/Audio/AudioDecoder.h"
@@ -6388,6 +6393,183 @@ namespace
               "BD8", "up x right == forward (right-handed, same as transform)");
     }
 
+    // ---------------------------------------------------------------- GZ ---
+    // Gizmos (Unity's `UnityEngine.Gizmos` static face).
+    //
+    // The backend is `DebugDrawGroup`, whose primitive counts are readable
+    // without a GPU -- so this group asserts real geometry (positions and
+    // colours), not just "something was added".
+
+    void TestGizmos()
+    {
+        auto* manager = GET_SYSTEM(DebugDrawManager);
+        Check(manager != nullptr, "GZ0", "DebugDrawManager is reachable");
+        if (manager == nullptr)
+        {
+            return;
+        }
+
+        auto* group = manager->TryGetOrCreateDebugDrawGroup("gizmos");
+        // 非 Vulkan 构建（__APPLE__ / !Z_HAS_VULKAN）下这个调用恒返回 nullptr：
+        // DebugDrawManager.cpp 顶部是一整段空实现。所以"拿不到 group"在那一层
+        // 是**正确行为**，不是缺陷 —— 两个平台各断言各的真值，谁都不是空测试。
+#if defined(Z_HAS_VULKAN)
+        Check(group != nullptr, "GZ1", "the gizmo group exists");
+#else
+        Check(group == nullptr, "GZ1", "no debug-draw backend: the group is absent by design");
+#endif
+        if (group == nullptr)
+        {
+            // 没有后端时整套 API 必须是 no-op 而不是崩 —— 走完这七行本身就是
+            // 证明（崩了进程根本到不了下一行）。一个只在 macOS 上炸的
+            // Gizmos.DrawLine 是最难查的那类 bug。
+            Runtime::Gizmos::SetColor(::Color(1.0f, 0.0f, 0.0f, 1.0f));
+            Runtime::Gizmos::SetMatrix(Matrix4x4::IDENTITY);
+            Runtime::Gizmos::DrawLine(::Vector3(0.0f, 0.0f, 0.0f), ::Vector3(1.0f, 0.0f, 0.0f));
+            Runtime::Gizmos::DrawRay(::Vector3(1.0f, 0.0f, 0.0f), ::Vector3(0.0f, 2.0f, 0.0f));
+            Runtime::Gizmos::DrawWireSphere(::Vector3(0.0f, 0.0f, 0.0f), 1.0f);
+            Runtime::Gizmos::DrawSphere(::Vector3(0.0f, 0.0f, 0.0f), 1.0f);
+            Runtime::Gizmos::DrawWireCube(::Vector3(0.0f, 0.0f, 0.0f), ::Vector3(1.0f, 1.0f, 1.0f));
+            Runtime::Gizmos::DrawCube(::Vector3(0.0f, 0.0f, 0.0f), ::Vector3(1.0f, 1.0f, 1.0f));
+            Check(true, "GZ2", "every Gizmos entry survives a missing backend");
+            return;
+        }
+
+        // Gizmos.color / Gizmos.matrix 是**进程级**状态，复位是必须的：漏了会把
+        // 这一组跑歪，而且跑歪的是后面那些看起来不相干的断言。
+        Runtime::Gizmos::SetColor(::Color(1.0f, 1.0f, 1.0f, 1.0f));
+        Runtime::Gizmos::SetMatrix(Matrix4x4::IDENTITY);
+        group->ClearData();
+        Check(group->GetLineCount(false) == 0, "GZ2b", "a cleared group is empty");
+
+        // --- DrawLine ----------------------------------------------------
+        Runtime::Gizmos::DrawLine(::Vector3(0.0f, 0.0f, 0.0f), ::Vector3(1.0f, 0.0f, 0.0f));
+        Check(group->GetLineCount(false) == 1, "GZ3", "DrawLine adds one depth-tested line");
+        Check(group->GetLineCount(true) == 0, "GZ4",
+              "and it is NOT in the always-on-top bucket (Unity's Gizmos are depth tested)");
+
+        std::vector<DebugDrawVertex> verts;
+        group->WriteLineData(verts, false);
+        Check(verts.size() == 2, "GZ5", "a line is two vertices");
+        if (verts.size() == 2)
+        {
+            Check(Near(verts[0].pos, ::Vector3(0.0f, 0.0f, 0.0f)) &&
+                      Near(verts[1].pos, ::Vector3(1.0f, 0.0f, 0.0f)),
+                  "GZ6", "the line runs from `from` to `to`");
+            Check(Near(verts[0].color, ::Vector4(1.0f, 1.0f, 1.0f, 1.0f)), "GZ7",
+                  "default Gizmos.color is white, like Unity");
+        }
+
+        // --- DrawRay: `direction` is a direction, not an endpoint ---------
+        // 故意让 from 与 direction 完全不同（(1,0,0) 与 (0,2,0)）：如果传的是
+        // 终点，verts[1] 会是 (0,2,0) 而不是 (1,2,0)。两者相等的话这条断言等于
+        // 没写。
+        group->ClearData();
+        Runtime::Gizmos::DrawRay(::Vector3(1.0f, 0.0f, 0.0f), ::Vector3(0.0f, 2.0f, 0.0f));
+        verts.clear();
+        group->WriteLineData(verts, false);
+        Check(verts.size() == 2, "GZ8", "DrawRay adds one line");
+        if (verts.size() == 2)
+        {
+            Check(Near(verts[1].pos, ::Vector3(1.0f, 2.0f, 0.0f)), "GZ9",
+                  "DrawRay's far point is from + direction");
+        }
+
+        // --- colour --------------------------------------------------------
+        // 红色 (1,0,0,1)：通道互换在灰色样本下看不出来。
+        group->ClearData();
+        Runtime::Gizmos::SetColor(::Color(1.0f, 0.0f, 0.0f, 1.0f));
+        Runtime::Gizmos::DrawLine(::Vector3(0.0f, 0.0f, 0.0f), ::Vector3(1.0f, 0.0f, 0.0f));
+        verts.clear();
+        group->WriteLineData(verts, false);
+        Check(verts.size() == 2 && Near(verts[0].color, ::Vector4(1.0f, 0.0f, 0.0f, 1.0f)),
+              "GZ10", "Gizmos.color reaches the vertex");
+        Runtime::Gizmos::SetColor(::Color(1.0f, 1.0f, 1.0f, 1.0f));
+
+        // --- matrix --------------------------------------------------------
+        group->ClearData();
+        Matrix4x4 translate = Matrix4x4::IDENTITY;
+        translate.makeTrans(::Vector3(0.0f, 0.0f, 5.0f));
+        Runtime::Gizmos::SetMatrix(translate);
+        Runtime::Gizmos::DrawLine(::Vector3(1.0f, 0.0f, 0.0f), ::Vector3(2.0f, 0.0f, 0.0f));
+        verts.clear();
+        group->WriteLineData(verts, false);
+        Check(verts.size() == 2 && Near(verts[0].pos.z, 5.0f) && Near(verts[1].pos.z, 5.0f),
+              "GZ11", "Gizmos.matrix moves both endpoints");
+
+        Runtime::Gizmos::SetMatrix(Matrix4x4::IDENTITY);
+        group->ClearData();
+        Runtime::Gizmos::DrawLine(::Vector3(1.0f, 0.0f, 0.0f), ::Vector3(2.0f, 0.0f, 0.0f));
+        verts.clear();
+        group->WriteLineData(verts, false);
+        Check(verts.size() == 2 && Near(verts[0].pos.z, 0.0f), "GZ12",
+              "restoring the identity matrix restores identity behaviour");
+
+        // --- wire cube vs solid cube are different primitives --------------
+        // 互补的一对：只写其中一条的话，"DrawCube 直接调 DrawWireCube" 全绿。
+        group->ClearData();
+        Runtime::Gizmos::DrawWireCube(::Vector3(0.0f, 0.0f, 0.0f), ::Vector3(2.0f, 2.0f, 2.0f));
+        Check(group->GetLineCount(false) == 12, "GZ13",
+              "DrawWireCube lands in the box bucket (12 wire edges)");
+        Check(group->GetTriangleCount(false) == 0, "GZ14", "and adds no solid triangles");
+
+        group->ClearData();
+        Runtime::Gizmos::DrawCube(::Vector3(0.0f, 0.0f, 0.0f), ::Vector3(2.0f, 2.0f, 2.0f));
+        Check(group->GetTriangleCount(false) == 12, "GZ15",
+              "DrawCube is 12 solid triangles (6 faces x 2)");
+        Check(group->GetLineCount(false) == 0, "GZ16", "and adds no wire lines");
+
+        // --- spheres -------------------------------------------------------
+        group->ClearData();
+        Runtime::Gizmos::DrawWireSphere(::Vector3(0.0f, 0.0f, 0.0f), 1.5f);
+        Check(group->GetUniformDynamicDataCount() == 1, "GZ17", "DrawWireSphere adds a sphere");
+        Runtime::Gizmos::DrawSphere(::Vector3(0.0f, 0.0f, 0.0f), 1.5f);
+        // 后端没有实心球体图元，所以 DrawSphere 目前就是 DrawWireSphere；这个
+        // 数字是"它至少画了东西"，不是"它画成了实心"。
+        Check(group->GetUniformDynamicDataCount() == 2, "GZ18", "DrawSphere adds one too");
+
+        group->ClearData();
+    }
+
+    void TestGizmosWiring()
+    {
+        const std::string header =
+            ReadFile("Source/Runtime/Scripting/ScriptGizmos/ScriptGizmos.h");
+        Check(!header.empty(), "GW0", "ScriptGizmos.h is readable");
+        Check(CountOccurrences(header, "static void DrawLine(") >= 1, "GW1", "DrawLine is declared");
+        Check(CountOccurrences(header, "static void DrawRay(") >= 1, "GW2", "DrawRay is declared");
+        Check(CountOccurrences(header, "DrawWireSphere") >= 1, "GW3", "DrawWireSphere is declared");
+        Check(CountOccurrences(header, "DrawWireCube") >= 1, "GW4", "DrawWireCube is declared");
+
+        const std::string source =
+            ReadFile("Source/Runtime/Scripting/ScriptGizmos/ScriptGizmos.cpp");
+        Check(!source.empty(), "GW5", "ScriptGizmos.cpp is readable");
+        // 每个入口都得判空：非 Vulkan 构建下 TryGetOrCreateDebugDrawGroup 恒返
+        // 回 nullptr，漏一个就是"只在 macOS 上炸"。
+        Check(CountOccurrences(source, "group == nullptr") >= 5, "GW6",
+              "every draw entry degrades to a no-op without a backend");
+        // Gizmos.color / Gizmos.matrix 必须是**文件级**静态。写成函数内 static
+        // 局部变量的话 getter 与 setter 各持一个对象 —— 编译能过、运行不崩，
+        // 只是 `Gizmos.color = Color.red` 永远不生效。
+        Check(CountOccurrences(source, "static ::Color s_Color") == 0, "GW7",
+              "the colour is not a function-local static (getter/setter would diverge)");
+        Check(CountOccurrences(source, "::Color s_Color") >= 1, "GW8",
+              "it is a file-scope static shared by getter and setter");
+        // 后端只写 m_Triangles：`AddQuad(_FillMode_solid)` 画不出任何东西。
+        //
+        // 计数器必须带 `group->`：源码注释里也会提到 AddQuad，不带前缀的 grep
+        // 会被解释性文字命中，报一个并不存在的违规（和 ZFUNCTION() 那个坑一样）。
+        Check(CountOccurrences(source, "group->AddQuad(") == 0, "GW9",
+              "DrawCube does not call AddQuad (the backend never writes solid quads)");
+        Check(CountOccurrences(source, "group->AddTriangle(") >= 2, "GW10",
+              "it emits solid triangles instead");
+
+        // "声明了"不等于"脚本看得见"。发布那一半（绑定表里真的有 `Gizmos`、
+        // 且是静态的）由 ScriptVMSmokeTest 的 L 组从 JS 里 `typeof Gizmos` 验
+        // —— 不去读 build/Generated 下的产物：那个路径取决于构建目录名，换
+        // 个 generator 就断，而门应该测引擎而不是测构建布局。
+    }
+
     // ---------------------------------------------------------------- BE ---
     // Script coroutines: StartCoroutine / StopCoroutine / StopAllCoroutines.
 
@@ -6912,6 +7094,13 @@ int main()
     SystemRegistry::GetInstance().RegisterSystem(invoke_scheduler);
     Check(invoke_scheduler->Initialize(), "A0d", "the registered coroutine scheduler is initialized");
 
+    // Gizmos 走 GET_SYSTEM(DebugDrawManager)。不注册的话整套是 no-op，而
+    // "画不出来"和"没画"看起来一模一样 —— 所以这里必须给一个真的。
+    // 不 Initialize：Initialize 要 Vulkan 与 RenderSystem，而 Gizmos 只需要
+    // 它手上的那个 DebugDrawGroup（DebugDrawContext 是纯 CPU 的 map）。
+    SystemRegistry::GetInstance().RegisterSystem(new DebugDrawManager());
+    Check(GET_SYSTEM(DebugDrawManager) != nullptr, "A0e", "the debug-draw manager is reachable");
+
 #if defined(_MSC_VER) && defined(_DEBUG)
     _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE | _CRTDBG_MODE_DEBUG);
     _CrtSetReportFile(_CRT_ASSERT, _CRTDBG_FILE_STDERR);
@@ -6996,6 +7185,8 @@ int main()
     TestStaticFieldWiring();
     TestVectorFacadeWiring();
     TestAxisConventionAgreement();
+    TestGizmos();
+    TestGizmosWiring();
     TestScriptCoroutines();
     TestScriptCoroutineWiring();
     TestWiringGate();
