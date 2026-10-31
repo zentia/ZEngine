@@ -37,6 +37,8 @@
 #include "Runtime/Function/Render/DebugDraw/DebugDrawGroup.h"
 #include "Runtime/Function/Render/DebugDraw/DebugDrawManager.h"
 #include "Runtime/Scripting/ScriptGizmos/ScriptGizmos.h"
+#include "Runtime/Scripting/ScriptBounds/ScriptBounds.h"
+#include "Runtime/Scripting/ScriptColor/ScriptColor.h"
 #include "Runtime/Function/AI/Navigation/NavMeshAgentComponent.h"
 #include "Runtime/Function/AI/Navigation/NavigationSystem.h"
 #include "Runtime/Function/Audio/AudioDecoder.h"
@@ -6570,6 +6572,248 @@ namespace
         // 个 generator 就断，而门应该测引擎而不是测构建布局。
     }
 
+    // ---------------------------------------------------------------- BC ---
+    // Bounds + Color32: Unity's two remaining value types that had zero hits
+    // in the whole Runtime tree before this slice.
+    //
+    // Both are *value* types (a POD that crosses the script boundary as a plain
+    // object), so unlike Gizmos there is nothing to reach for through a system
+    // registry -- the rules are pure arithmetic and are tested as such. The
+    // wiring half below then proves the arithmetic is actually published.
+
+    void TestBoundsAndColor32()
+    {
+        // --- ::Bounds: 默认盒 --------------------------------------------
+        // Unity 的 `default(Bounds)` 是原点上的零尺寸点盒（不是"无效盒"），
+        // 于是 `Contains(zero)` 为 true。两个事实一起断言，只写其中一个的话
+        // "默认成 AxisAlignedBox 那种反的 min/max" 也能过。
+        const ::Bounds zero_box;
+        Check(Near(zero_box.center, ::Vector3(0.0f, 0.0f, 0.0f)) && Near(zero_box.extents, ::Vector3(0.0f, 0.0f, 0.0f)),
+              "BC0", "default Bounds is a zero box at the origin (Unity's default(Bounds))");
+        Check(zero_box.Contains(::Vector3(0.0f, 0.0f, 0.0f)), "BC1",
+              "and it Contains the origin (Unity's default(Bounds).Contains(zero) is true)");
+        Check(!zero_box.Contains(::Vector3(0.001f, 0.0f, 0.0f)), "BC2", "but nothing else");
+
+        // --- size 是 extents 的两倍 ---------------------------------------
+        // 夹具刻意用**非对称**的 (4, 6, 8)：三个分量全相等的话
+        // "size 与 extents 搞混" 和 "顺序写错" 都看不出来。
+        const ::Bounds box = ::Bounds::FromCenterSize(::Vector3(1.0f, 2.0f, 3.0f), ::Vector3(4.0f, 6.0f, 8.0f));
+        Check(Near(box.extents, ::Vector3(2.0f, 3.0f, 4.0f)), "BC3", "extents is HALF of size");
+        Check(Near(box.GetSize(), ::Vector3(4.0f, 6.0f, 8.0f)), "BC4", "size is 2 x extents");
+        Check(Near(box.GetMin(), ::Vector3(-1.0f, -1.0f, -1.0f)), "BC5", "min is center - extents");
+        Check(Near(box.GetMax(), ::Vector3(3.0f, 5.0f, 7.0f)), "BC6", "max is center + extents");
+
+        // --- size 的 setter 保持中心不动 -----------------------------------
+        ::Bounds resized = box;
+        resized.SetSize(::Vector3(10.0f, 10.0f, 10.0f));
+        Check(Near(resized.center, ::Vector3(1.0f, 2.0f, 3.0f)), "BC7", "setting size leaves the centre alone");
+        Check(Near(resized.extents, ::Vector3(5.0f, 5.0f, 5.0f)), "BC8", "and sets extents to half of it");
+
+        // --- SetMinMax 反过来是会挪中心的 ----------------------------------
+        const ::Bounds from_corners = ::Bounds::FromMinMax(::Vector3(0.0f, 0.0f, 0.0f), ::Vector3(2.0f, 4.0f, 6.0f));
+        Check(Near(from_corners.center, ::Vector3(1.0f, 2.0f, 3.0f)), "BC9", "SetMinMax derives the centre");
+        Check(Near(from_corners.extents, ::Vector3(1.0f, 2.0f, 3.0f)), "BC10", "and half the diagonal");
+
+        // --- Contains：边界算包含 ------------------------------------------
+        Check(box.Contains(::Vector3(-1.0f, -1.0f, -1.0f)), "BC11", "a point exactly on min is contained");
+        Check(box.Contains(::Vector3(3.0f, 5.0f, 7.0f)), "BC12", "so is one exactly on max");
+        Check(box.Contains(::Vector3(1.0f, 2.0f, 3.0f)), "BC13", "the centre is contained");
+        Check(!box.Contains(::Vector3(3.5f, 5.0f, 7.0f)), "BC14", "just outside on one axis is not");
+
+        // --- Intersects：贴面算相交 ----------------------------------------
+        // 贴面：box 的 max.x 是 3，所以对方的 min.x 必须正好是 3 —— 它的
+        // extents.x 是 2，于是 center.x 是 5（写 7 就分开了，而"分开不相交"
+        // 由下一条断言，两条一起才钉得住"贴面算相交"）。
+        const ::Bounds touching = ::Bounds::FromCenterSize(::Vector3(5.0f, 2.0f, 3.0f), ::Vector3(4.0f, 6.0f, 8.0f));
+        Check(box.Intersects(touching), "BC15", "boxes that merely touch do intersect (Unity counts it)");
+        const ::Bounds apart = ::Bounds::FromCenterSize(::Vector3(20.0f, 2.0f, 3.0f), ::Vector3(1.0f, 1.0f, 1.0f));
+        Check(!box.Intersects(apart), "BC16", "a separated box does not");
+        const ::Bounds overlapping = ::Bounds::FromCenterSize(::Vector3(2.0f, 2.0f, 3.0f), ::Vector3(2.0f, 2.0f, 2.0f));
+        Check(box.Intersects(overlapping), "BC17", "an overlapping one does");
+
+        // --- ClosestPoint / SqrDistance ------------------------------------
+        Check(Near(box.ClosestPoint(::Vector3(10.0f, 2.0f, 3.0f)), ::Vector3(3.0f, 2.0f, 3.0f)), "BC18",
+              "ClosestPoint clamps onto the +X face");
+        Check(Near(box.ClosestPoint(::Vector3(1.0f, 2.0f, 3.0f)), ::Vector3(1.0f, 2.0f, 3.0f)), "BC19",
+              "a point inside is its own closest point");
+        Check(Near(box.SqrDistance(::Vector3(1.0f, 2.0f, 3.0f)), 0.0f), "BC20", "SqrDistance is 0 inside");
+        // (10,2,3) 到面 x=3 的距离是 7，平方是 49。用非对称的 7 而不是 1，
+        // 免得"忘了平方"也过。
+        Check(Near(box.SqrDistance(::Vector3(10.0f, 2.0f, 3.0f)), 49.0f), "BC21",
+              "SqrDistance is the SQUARE (7 -> 49, not 7)");
+
+        // --- Expand：只加一半 ----------------------------------------------
+        // Unity 的 Expand 先 `amount *= .5f` 再加到 extents 上。这条最容易写
+        // 错，而且写错之后 min/max/size 全都自洽 —— 只会让触发体积大一倍。
+        ::Bounds expanded = box;
+        expanded.Expand(2.0f);
+        Check(Near(expanded.GetSize(), ::Vector3(6.0f, 8.0f, 10.0f)), "BC22",
+              "Expand(2) grows size by 2 (not 4) -- Unity halves the amount first");
+        ::Bounds expanded_vector = box;
+        expanded_vector.Expand(::Vector3(2.0f, 0.0f, 4.0f));
+        Check(Near(expanded_vector.GetSize(), ::Vector3(6.0f, 6.0f, 12.0f)), "BC23",
+              "Expand(Vector3) halves per axis");
+
+        // --- Encapsulate ---------------------------------------------------
+        ::Bounds grown = box;
+        grown.Encapsulate(::Vector3(0.0f, 0.0f, 20.0f));
+        Check(Near(grown.GetMax().z, 20.0f), "BC24", "Encapsulate(point) stretches max");
+        Check(Near(grown.GetMin(), ::Vector3(-1.0f, -1.0f, -1.0f)), "BC25", "and leaves min alone");
+        Check(Near(grown.center, ::Vector3(1.0f, 2.0f, 9.5f)), "BC26", "so the centre moves");
+
+        // 互补的一条：必须包对方的**两个角**而不是它的 center。只包 center 会
+        // 漏掉对方比自己中心更远的那一半 —— 下面这个对方 x 跨 [-10, 10]，
+        // 而它自己的 center.x 是 0（落在 box 的 [-1, 3] 之内）：只包 center
+        // 的话 max.x 停在 3，包角才是 10。（零盒在这里分不出来：它的两个角
+        // 就是 center。）
+        ::Bounds grew_by_box = box;
+        grew_by_box.Encapsulate(::Bounds::FromCenterSize(::Vector3(0.0f, 2.0f, 3.0f), ::Vector3(20.0f, 6.0f, 8.0f)));
+        Check(Near(grew_by_box.GetMax().x, 10.0f), "BC27",
+              "Encapsulate(Bounds) uses the far CORNER (the other box's centre is already inside)");
+        Check(Near(grew_by_box.GetMin().x, -10.0f), "BC27b", "and the near corner too");
+
+        // --- IntersectRay --------------------------------------------------
+        float hit = -1.0f;
+        Check(box.IntersectRay(::Vector3(0.0f, 0.0f, -5.0f), ::Vector3(0.0f, 0.0f, 1.0f), hit) && Near(hit, 4.0f),
+              "BC28", "a ray from -Z hits the box's near face at t=4");
+        Check(box.IntersectRay(::Vector3(1.0f, 2.0f, 3.0f), ::Vector3(0.0f, 0.0f, 1.0f), hit) && Near(hit, 0.0f),
+              "BC29", "a ray starting inside hits at t=0 (Unity's answer, not a negative t)");
+        Check(!box.IntersectRay(::Vector3(0.0f, 0.0f, -5.0f), ::Vector3(0.0f, 0.0f, -1.0f), hit), "BC30",
+              "a ray pointing away misses");
+        // 平行且在板外：这里如果先除了零，NaN 参与 min/max 比较会把结果带成
+        // "命中"（NaN 的任何比较都是 false，于是 t_enter > t_exit 不成立）。
+        Check(!box.IntersectRay(::Vector3(100.0f, 0.0f, -5.0f), ::Vector3(0.0f, 0.0f, 1.0f), hit), "BC31",
+              "a ray parallel to a slab and outside it misses (no NaN false positive)");
+        Check(box.IntersectRay(::Vector3(1.0f, 2.0f, -5.0f), ::Vector3(0.0f, 0.0f, 1.0f), hit) && Near(hit, 4.0f),
+              "BC32", "a ray parallel to a slab but inside it still hits");
+
+        // --- ::Color32 <-> ::Color ----------------------------------------
+        const ::Color32 red = ::Color32(::Color(1.0f, 0.0f, 0.0f, 1.0f));
+        Check(red.r == 255 && red.g == 0 && red.b == 0 && red.a == 255, "BC33", "Color(1,0,0,1) -> RGBA(255,0,0,255)");
+        // 截断而不是四舍五入：0.5 * 255 = 127.5 -> 127（Unity 的 (byte)float）。
+        Check(::Color32(::Color(0.5f, 0.5f, 0.5f, 0.5f)).r == 127, "BC34",
+              "the conversion TRUNCATES (0.5 -> 127, not 128) -- Unity's (byte)float");
+        Check(Near(static_cast<::Color>(::Color32(255, 0, 0, 255)).r, 1.0f), "BC35", "255 -> 1.0 exactly");
+        // 来回一趟不保等，这是 Unity 的行为而不是 bug。
+        const ::Color half {0.5f, 0.5f, 0.5f, 1.0f};
+        Check(!Near(static_cast<::Color>(::Color32(half)).r, 0.5f), "BC36",
+              "Color -> Color32 -> Color is NOT the identity (truncation, same as Unity)");
+        Check(::Color32(::Color(2.0f, -1.0f, 0.0f, 1.0f)).r == 255 && ::Color32(::Color(2.0f, -1.0f, 0.0f, 1.0f)).g == 0,
+              "BC37", "out-of-range channels clamp to 0..255");
+
+        // --- Color32::Lerp -------------------------------------------------
+        const ::Color32 black_bytes {0, 0, 0, 255};
+        const ::Color32 white_bytes {255, 255, 255, 255};
+        Check(::Color32::Lerp(black_bytes, white_bytes, 0.5f).r == 127, "BC38",
+              "Lerp(0, 255, 0.5) truncates to 127");
+        Check(::Color32::Lerp(black_bytes, white_bytes, 2.0f).r == 255, "BC39", "Lerp clamps t to 1");
+        Check(::Color32::Lerp(black_bytes, white_bytes, -1.0f).r == 0, "BC40", "and to 0");
+        // Unclamped 的 "unclamped" 只针对 t：字节值域仍然夹（否则 float->uint8
+        // 是 UB，MSVC 给 254 而 clang 给 255）。
+        Check(::Color32::LerpUnclamped(black_bytes, white_bytes, 2.0f).r == 255, "BC41",
+              "LerpUnclamped does not clamp t, but still saturates at 255 (float->uint8 out of range is UB)");
+
+        // --- 门面 ----------------------------------------------------------
+        const ::Bounds via_facade = Runtime::Bounds::Create(::Vector3(1.0f, 2.0f, 3.0f), ::Vector3(4.0f, 6.0f, 8.0f));
+        Check(Near(via_facade.extents, ::Vector3(2.0f, 3.0f, 4.0f)), "BC42",
+              "Bounds.Create takes SIZE (not extents) -- the classic Unity mix-up");
+        Check(Near(Runtime::Bounds::GetSize(via_facade), ::Vector3(4.0f, 6.0f, 8.0f)), "BC43", "Bounds.GetSize");
+        Check(Near(Runtime::Bounds::GetMin(via_facade), ::Vector3(-1.0f, -1.0f, -1.0f)), "BC44", "Bounds.GetMin");
+        Check(Near(Runtime::Bounds::GetMax(via_facade), ::Vector3(3.0f, 5.0f, 7.0f)), "BC45", "Bounds.GetMax");
+        Check(Runtime::Bounds::Contains(via_facade, ::Vector3(1.0f, 2.0f, 3.0f)), "BC46", "Bounds.Contains");
+        Check(Runtime::Bounds::Intersects(via_facade, overlapping), "BC47", "Bounds.Intersects");
+        Check(Near(Runtime::Bounds::ClosestPoint(via_facade, ::Vector3(10.0f, 2.0f, 3.0f)),
+                   ::Vector3(3.0f, 2.0f, 3.0f)),
+              "BC48", "Bounds.ClosestPoint");
+        Check(Near(Runtime::Bounds::SqrDistance(via_facade, ::Vector3(10.0f, 2.0f, 3.0f)), 49.0f), "BC49",
+              "Bounds.SqrDistance");
+
+        // 非破坏性：Encapsulate / Expand 返回新值，传入的那个不动。
+        const ::Bounds before = via_facade;
+        const ::Bounds after = Runtime::Bounds::Encapsulate(via_facade, ::Vector3(0.0f, 0.0f, 20.0f));
+        Check(Near(before.center, ::Vector3(1.0f, 2.0f, 3.0f)) && Near(before.extents, ::Vector3(2.0f, 3.0f, 4.0f)),
+              "BC50", "Encapsulate does not mutate the argument (it returns a new value)");
+        Check(Near(after.GetMax().z, 20.0f), "BC51", "and the returned box really grew");
+        Check(Near(Runtime::Bounds::Expand(via_facade, 2.0f).GetSize(), ::Vector3(6.0f, 8.0f, 10.0f)), "BC52",
+              "Bounds.Expand grows size by amount");
+        Check(Near(Runtime::Bounds::ExpandVector(via_facade, ::Vector3(2.0f, 0.0f, 4.0f)).GetSize(),
+                   ::Vector3(6.0f, 6.0f, 12.0f)),
+              "BC53", "Bounds.ExpandVector is per-axis");
+        Check(Near(Runtime::Bounds::EncapsulateBounds(via_facade, ::Bounds::FromCenterSize(
+                                                                      ::Vector3(0.0f, 2.0f, 3.0f),
+                                                                      ::Vector3(20.0f, 6.0f, 8.0f)))
+                       .GetMax()
+                       .x,
+                   10.0f),
+              "BC54", "Bounds.EncapsulateBounds takes the far corner, not the centre");
+
+        // IntersectRay：null 射线与真射线。
+        Check(Runtime::Bounds::IntersectRay(via_facade, nullptr) < 0.0f, "BC55", "a null ray is a miss, not a crash");
+        ::Ray ray;
+        ray.SetOrigin(::Vector3(0.0f, 0.0f, -5.0f));
+        ray.SetDirection(::Vector3(0.0f, 0.0f, 1.0f));
+        Check(Near(Runtime::Bounds::IntersectRay(via_facade, &ray), 4.0f), "BC56", "Bounds.IntersectRay(Ray)");
+        ray.SetDirection(::Vector3(0.0f, 0.0f, -1.0f));
+        Check(Runtime::Bounds::IntersectRay(via_facade, &ray) < 0.0f, "BC57", "a miss is reported as a negative");
+        Check(Runtime::Bounds::ToString(::Bounds()) == "Center: (0.0, 0.0, 0.0), Extents: (0.0, 0.0, 0.0)", "BC58",
+              "Bounds.ToString matches Unity's format");
+
+        // Color32 门面 + Color 侧的两个互转入口。
+        Check(Runtime::Color32::FromColor(::Color(1.0f, 0.0f, 0.0f, 1.0f)) == ::Color32(255, 0, 0, 255), "BC59",
+              "Color32.FromColor");
+        Check(Near(Runtime::Color32::ToColor(::Color32(255, 0, 0, 255)).r, 1.0f), "BC60", "Color32.ToColor");
+        Check(Runtime::Color32::ToString(::Color32(255, 0, 0, 255)) == "RGBA(255, 0, 0, 255)", "BC61",
+              "Color32.ToString matches Unity's format");
+        Check(Runtime::Color::ToColor32(::Color(0.0f, 1.0f, 0.0f, 1.0f)) == ::Color32(0, 255, 0, 255), "BC62",
+              "Color.ToColor32");
+        Check(Near(Runtime::Color::FromColor32(::Color32(0, 255, 0, 255)).g, 1.0f), "BC63", "Color.FromColor32");
+    }
+
+    void TestBoundsAndColor32Wiring()
+    {
+        // 值类型只在**声明了 interface 且 Converter 存在**的时候才真的能过边界。
+        // 少任何一半都是"编译能过、脚本一跑就是 undefined"——所以两边都要 grep。
+        const std::string binding_source =
+            ReadFile("Source/Runtime/Scripting/Binding/ScriptBinding.cpp");
+        Check(!binding_source.empty(), "BCW0", "ScriptBinding.cpp is readable");
+        Check(CountOccurrences(binding_source, "declare interface Bounds") >= 1, "BCW1",
+              "the .d.ts declares `interface Bounds`");
+        Check(CountOccurrences(binding_source, "declare interface Color32") >= 1, "BCW2",
+              "the .d.ts declares `interface Color32`");
+
+        const std::string binding_header =
+            ReadFile("Source/Runtime/Scripting/Binding/ScriptBinding.h");
+        Check(!binding_header.empty(), "BCW3", "ScriptBinding.h is readable");
+        Check(CountOccurrences(binding_header, "struct Converter<Bounds>") >= 1, "BCW4",
+              "there is a Converter for Bounds");
+        Check(CountOccurrences(binding_header, "struct Converter<Color32>") >= 1, "BCW5",
+              "there is a Converter for Color32");
+
+        const std::string bounds_source = ReadFile("Source/Runtime/Core/Math/Bounds.cpp");
+        Check(!bounds_source.empty(), "BCW6", "Bounds.cpp is readable");
+        // 平行的那一轴必须判"起点在板内"，否则除零出 NaN、NaN 参与比较会把结
+        // 果带成假命中。
+        Check(CountOccurrences(bounds_source, "1e-8f") >= 1, "BCW7",
+              "IntersectRay guards the parallel axis instead of dividing by zero");
+
+        const std::string color_source = ReadFile("Source/Runtime/Core/Color/Color.cpp");
+        Check(!color_source.empty(), "BCW8", "Color.cpp is readable");
+        // 截断而不是四舍五入：出现 `std::lround(` / `std::round(` 说明 Unity 的
+        // (byte)float 语义被"修好"了，于是 0.5 会变成 128 而不是 127。
+        //
+        // ⚠️ 必须带左括号：源码注释里也要提 `std::lround` 这个名字，不带括号的
+        // grep 会被解释性文字命中，报一个并不存在的违规（和 ZFUNCTION()、
+        // group->AddQuad( 同一个坑）。
+        Check(CountOccurrences(color_source, "lround(") == 0 && CountOccurrences(color_source, "std::round(") == 0,
+              "BCW9", "the byte conversion truncates (no rounding helper slipped in)");
+
+        const std::string facade_source =
+            ReadFile("Source/Runtime/Scripting/ScriptBounds/ScriptBounds.cpp");
+        Check(!facade_source.empty(), "BCW10", "ScriptBounds.cpp is readable");
+        Check(CountOccurrences(facade_source, "ray == nullptr") >= 1, "BCW11",
+              "Bounds.IntersectRay(null) degrades instead of dereferencing");
+    }
+
     // ---------------------------------------------------------------- BE ---
     // Script coroutines: StartCoroutine / StopCoroutine / StopAllCoroutines.
 
@@ -7187,6 +7431,8 @@ int main()
     TestAxisConventionAgreement();
     TestGizmos();
     TestGizmosWiring();
+    TestBoundsAndColor32();
+    TestBoundsAndColor32Wiring();
     TestScriptCoroutines();
     TestScriptCoroutineWiring();
     TestWiringGate();

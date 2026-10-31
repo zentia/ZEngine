@@ -66,6 +66,7 @@
 #include "Runtime/Function/Render/DebugDraw/DebugDrawManager.h"
 #include "Runtime/Project/ProjectInfo.h"
 #include "Runtime/Scripting/Native/PuertsNative.h"
+#include "Runtime/Scripting/ScriptGizmos/ScriptGizmos.h"
 #include "Runtime/Scripting/ScriptRegistry.h"
 #include "Runtime/Scripting/ScriptingManager.h"
 #include "Runtime/Scripting/Wrapper/ScriptEnv.h"
@@ -703,6 +704,11 @@ int main(int argc, char** argv)
     if (gizmo_group != nullptr)
     {
         gizmo_group->ClearData();
+        // 发布面在这个 env 里也得在：绑定表装全局是 ScriptEnv 的事，而
+        // `InvokeMethod` 对不存在的方法也返回 true（见 J 组），所以"真的调到了"
+        // 只能靠下面 I2 的计数或这一条证明。
+        CheckEq("I0b", "Gizmos 在这个 env 里是可见的", EvalToResult(*sm->GetEnv(), "globalThis.__zResult = typeof Gizmos;"),
+                "function");
         CheckTrue("I1", "DrawGizmo 送到了 JS 侧", comp2->InvokeMethod("DrawGizmo"));
         CheckEq("I2", "一条线 + 一个球（后端真的收到了）",
                 std::to_string(gizmo_group->GetLineCount(false)) + "/" +
@@ -715,6 +721,34 @@ int main(int argc, char** argv)
         // 没有后端时也不能炸 —— 走到这里本身就是证明。
         CheckTrue("I1", "没有后端时 DrawGizmo 仍然是 no-op 而不是崩",
                   comp2->InvokeMethod("DrawGizmo"));
+    }
+
+    // ---- F4. Bounds + Color32：从 TypeScript 里用 -------------------------
+    //
+    // 同 F3 的道理：C++ 的 BC 组断言算术，ScriptVMSmokeTest 的 M 组断言发布面，
+    // 只有这一段同时经过 **tsc 的类型检查** 和 **引擎**。尤其 `declare
+    // interface Bounds` 与 `declare class Bounds` 的同名合并 —— 那是一个真正的
+    // 类型检查器才验得了的性质（两段字符串各自都对，合起来可能重复声明）。
+    std::printf("\n--- F4. Bounds + Color32（TypeScript -> 引擎）---\n");
+    {
+        auto mover_field = [&](const char* key) {
+            for (const auto& entry : comp2->EnumerateLiveFields())
+            {
+                if (std::get<0>(entry) == key)
+                {
+                    return std::get<2>(entry);
+                }
+            }
+            return std::string("<missing>");
+        };
+
+        CheckTrue("J1", "InvokeMethod(\"MeasureBounds\") 送到了 JS 侧",
+                  comp2->InvokeMethod("MeasureBounds"));
+        // 6,8,10 == Expand(2) 之后的新 size（旧的是 4,6,8）—— Unity 的 Expand
+        // 先把 amount 除以 2，写成"加 2 到 extents"会得到 8,10,12。
+        CheckEq("J2", "Bounds.Expand(2) 让 size 增大 2；Color32.FromColor 是字节；"
+                      "Contains 命中；null 射线是不命中",
+                mover_field("measured"), "6,8,10|255,0,0,255|true|-1");
     }
 
     // ---- G. 卸载：OnDestroy -> 不再有活实例 -------------------------------

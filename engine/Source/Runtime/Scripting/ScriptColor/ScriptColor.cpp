@@ -1,6 +1,8 @@
 #include "Runtime/Scripting/ScriptColor/ScriptColor.h"
 
 #include <cmath>
+#include <cstdio>
+#include <string>
 
 namespace Runtime
 {
@@ -188,5 +190,43 @@ namespace Runtime
         }
 
         return Vector3(h, s, v);
+    }
+
+    ::Color32 Color::ToColor32(const ::Color& c)
+    {
+        return ::Color32(c);
+    }
+
+    ::Color Color::FromColor32(const ::Color32& c)
+    {
+        return static_cast<::Color>(c);
+    }
+
+    ::Color32 Color32::Lerp(const ::Color32& a, const ::Color32& b, float t)
+    {
+        return ::Color32::Lerp(a, b, t);
+    }
+
+    ::Color32 Color32::LerpUnclamped(const ::Color32& a, const ::Color32& b, float t)
+    {
+        return ::Color32::LerpUnclamped(a, b, t);
+    }
+
+    ::Color32 Color32::FromColor(const ::Color& c)
+    {
+        return ::Color32(c);
+    }
+
+    ::Color Color32::ToColor(const ::Color32& c)
+    {
+        return static_cast<::Color>(c);
+    }
+
+    std::string Color32::ToString(const ::Color32& c)
+    {
+        char buffer[64];
+        std::snprintf(buffer, sizeof(buffer), "RGBA(%d, %d, %d, %d)", static_cast<int>(c.r), static_cast<int>(c.g),
+                      static_cast<int>(c.b), static_cast<int>(c.a));
+        return std::string(buffer);
     }
 }  // namespace Runtime

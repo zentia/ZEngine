@@ -93,6 +93,28 @@ class Mover extends Behaviour {
         Gizmos.color = { r: 1, g: 1, b: 1, a: 1 };
     }
 
+    // ---- Bounds / Color32 -------------------------------------------------
+    //
+    // 这两个是 Unity 里仅剩、而引擎里此前**零命中**的值类型。C++ 侧的 BC 组
+    // 断言算术，ScriptVMSmokeTest 的 M 组断言"脚本看不看得见" —— 只有这里能
+    // 证明 `Bounds.Create(...)` 在 **.ts 里也能通过 tsc 的类型检查**（d.ts 里
+    // `declare interface Bounds` 与 `declare class Bounds` 的同名合并在真正的
+    // 类型检查器下是成立的，不只是两段互不相干的字符串）。
+    measured: string = "";
+
+    MeasureBounds(): void {
+        const box: Bounds = Bounds.Create({ x: 1, y: 2, z: 3 }, { x: 4, y: 6, z: 8 });
+        const grown: Bounds = Bounds.Expand(box, 2);
+        const size: Vector3 = Bounds.GetSize(grown);
+        const bytes: Color32 = Color32.FromColor(Color.red);
+        this.measured = [
+            size.x + "," + size.y + "," + size.z,
+            bytes.r + "," + bytes.g + "," + bytes.b + "," + bytes.a,
+            String(Bounds.Contains(box, { x: 1, y: 2, z: 3 })),
+            String(Bounds.IntersectRay(box, null as unknown as Ray))
+        ].join("|");
+    }
+
     /// 走 **JS shim** 的那条停止路径（`g.Behaviour.prototype.StopAllCoroutines`）。
     /// C++ 直接调 comp.StopAllCoroutines() 是测不到 shim 的 —— 少一行转发
     /// 照样全绿（变异 SC16 就是这么漏的）。

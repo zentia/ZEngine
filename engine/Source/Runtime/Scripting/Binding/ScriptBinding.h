@@ -39,6 +39,9 @@
 // {r,g,b,a} object. Core/Color/Color.h is header-only and pulls in nothing but
 // Vector3, so including it here costs every .gen.cpp nothing.
 #include "Runtime/Core/Color/Color.h"
+// Bounds is the Unity-shaped AABB value type ({center, extents}); it is a POD
+// like Color, so it crosses as a plain object.
+#include "Runtime/Core/Math/Bounds.h"
 #include "Runtime/Core/Math/Matrix4.h"
 #include "Runtime/Core/Math/Quaternion.h"
 #include "Runtime/Core/Math/Vector2.h"
@@ -645,6 +648,73 @@ namespace ZScript
             out.a = (alpha != nullptr && apis->is_undefined(env, alpha) == 0)
                         ? static_cast<float>(apis->get_value_double(env, alpha))
                         : 1.0f;
+            return out;
+        }
+    };
+
+    // Color32: Unity's byte-valued colour. Same four channel names as Color --
+    // the two are deliberately interchangeable in Unity (`Color32 c = Color.red;`
+    // is an implicit conversion), and a script that switches between them must
+    // not have to rename anything. Channels cross as numbers (JS has no byte).
+    template <>
+    struct Converter<Color32>
+    {
+        static pesapi_value ToJs(pesapi_ffi* apis, pesapi_env env, const Color32& v)
+        {
+            pesapi_value o = apis->create_object(env);
+            apis->set_property(env, o, "r", apis->create_double(env, v.r));
+            apis->set_property(env, o, "g", apis->create_double(env, v.g));
+            apis->set_property(env, o, "b", apis->create_double(env, v.b));
+            apis->set_property(env, o, "a", apis->create_double(env, v.a));
+            return o;
+        }
+        static Color32 FromJs(pesapi_ffi* apis, pesapi_env env, pesapi_value v)
+        {
+            auto channel = [&](const char* name, uint8_t fallback) -> uint8_t {
+                pesapi_value slot = apis->get_property(env, v, name);
+                if (slot == nullptr || apis->is_undefined(env, slot) != 0)
+                    return fallback;
+                const double d = apis->get_value_double(env, slot);
+                if (!(d > 0.0))
+                    return 0;  // NaN / negative -> 0, never a wrapped 253
+                return static_cast<uint8_t>(d > 255.0 ? 255.0 : d);
+            };
+            Color32 out;
+            out.r = channel("r", 0);
+            out.g = channel("g", 0);
+            out.b = channel("b", 0);
+            // A literal that omits `a` is opaque (255), matching Unity's
+            // `new Color32(r, g, b)` -- NOT the C++ `Color32` default (0). The
+            // default has to stay 0 for `default(Color32)` parity, so the
+            // "omitted means opaque" rule lives here, in the boundary.
+            out.a = channel("a", 255);
+            return out;
+        }
+    };
+
+    // Bounds: Unity stores centre + half-extents and derives size/min/max, so
+    // those two are what crosses. Marshalling `size` instead would lose the
+    // distinction Unity keeps: `bounds.size = s` holds the centre still while
+    // `SetMinMax` moves it, and only centre+extents can express both.
+    template <>
+    struct Converter<Bounds>
+    {
+        static pesapi_value ToJs(pesapi_ffi* apis, pesapi_env env, const Bounds& v)
+        {
+            pesapi_value o = apis->create_object(env);
+            apis->set_property(env, o, "center", Converter<Vector3>::ToJs(apis, env, v.center));
+            apis->set_property(env, o, "extents", Converter<Vector3>::ToJs(apis, env, v.extents));
+            return o;
+        }
+        static Bounds FromJs(pesapi_ffi* apis, pesapi_env env, pesapi_value v)
+        {
+            Bounds out;
+            pesapi_value center = apis->get_property(env, v, "center");
+            if (center != nullptr && apis->is_undefined(env, center) == 0)
+                out.center = Converter<Vector3>::FromJs(apis, env, center);
+            pesapi_value extents = apis->get_property(env, v, "extents");
+            if (extents != nullptr && apis->is_undefined(env, extents) == 0)
+                out.extents = Converter<Vector3>::FromJs(apis, env, extents);
             return out;
         }
     };

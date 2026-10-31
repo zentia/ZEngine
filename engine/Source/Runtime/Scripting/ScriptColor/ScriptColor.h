@@ -142,5 +142,56 @@ namespace Runtime
         /// Unity 搬过来的取色代码就会对不上。
         ZFUNCTION()
         static Vector3 RGBToHSV(const ::Color& c);
+
+        // ---- Color32 -----------------------------------------------------
+
+        /// Unity 里 `Color -> Color32` 是**隐式转换**（`Color32 c = Color.red;`）。
+        /// TS 没有转换运算符，所以给一对显式的互转函数放在 `Color32` 门面上
+        /// （`Color32.FromColor` / `Color32.ToColor`）。这里也留一份 `Color`
+        /// 侧的入口，让"从 Color 出发"的代码不用跳到另一个类。
+        ZFUNCTION()
+        static ::Color32 ToColor32(const ::Color& c);
+
+        ZFUNCTION()
+        static ::Color FromColor32(const ::Color32& c);
+    };
+
+    /// Unity 的 `UnityEngine.Color32`：四个 0..255 的字节版 `Color`。
+    ///
+    /// 与 `Color` 一样是"值类型 + 门面"的分成两半（见文件开头的说明）：
+    /// `::Color32` 是跨边界的值（.d.ts 里是 `declare interface Color32`），这个
+    /// `Runtime::Color32` 只挂静态方法。
+    ///
+    /// Unity 的 `Color32` **没有** `Color32.red` 那批静态常量（那些在 `Color`
+    /// 上），这里同样不补 —— 补了就是 ZEngine 发明的 API。
+    ZCLASS()
+    class Color32 : public Object
+    {
+        ZGENERATED_BODY(Color32)
+
+    public:
+        /// `Color32.Lerp`：`t` 被夹到 [0,1]，逐通道插值后**截断**成字节。
+        ZFUNCTION()
+        static ::Color32 Lerp(const ::Color32& a, const ::Color32& b, float t);
+
+        /// `Color32.LerpUnclamped`：`t` 不夹（Unity 2018.1+）。
+        ZFUNCTION()
+        static ::Color32 LerpUnclamped(const ::Color32& a, const ::Color32& b, float t);
+
+        /// Unity 的 `implicit operator Color32(Color)` 的显式版本。
+        ///
+        /// ⚠️ 转换是**截断**不是四舍五入（Unity 用 `(byte)(Clamp01(v) * 255f)`）：
+        /// `Color(0.5f)` 得到 127 而不是 128。所以
+        /// `ToColor(FromColor(c)) != c` 是**正常**的，不是 bug。
+        ZFUNCTION()
+        static ::Color32 FromColor(const ::Color& c);
+
+        /// Unity 的 `implicit operator Color(Color32)` 的显式版本。
+        ZFUNCTION()
+        static ::Color ToColor(const ::Color32& c);
+
+        /// Unity 的 `Color32.ToString()`：`"RGBA(255, 0, 0, 255)"`。
+        ZFUNCTION()
+        static std::string ToString(const ::Color32& c);
     };
 }  // namespace Runtime

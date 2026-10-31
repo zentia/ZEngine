@@ -783,6 +783,115 @@ int main()
             "Gizmos.DrawRay({x:1,y:0,z:0}, {x:0,y:2,z:0});"
             "globalThis.__zResult = 'ok';", "ok");
 
+    // ---- M. Bounds + Color32 ---------------------------------------------
+    //
+    // 同 L 组的道理：C++ 的 BC 组断言的是算术，而"脚本能不能写
+    // `Bounds.Create(...)`"完全不经过那段代码。绑定表里少一个类 => BC 全绿，
+    // 用户的 .ts 报 `Cannot find name 'Bounds'`。
+    std::printf("\n--- M. Bounds + Color32（脚本发布面）---\n");
+    CheckJs("M1", "Bounds / Color32 都是可见的全局（绑定类以构造器形式装全局）", script_env,
+            "globalThis.__zResult = typeof Bounds + '|' + typeof Color32;", "function|function");
+    CheckJs("M2", "Bounds 的静态方法都发布了", script_env,
+            "globalThis.__zResult = "
+            "[typeof Bounds.Create, typeof Bounds.FromMinMax, typeof Bounds.Contains,"
+            " typeof Bounds.Intersects, typeof Bounds.Encapsulate, typeof Bounds.EncapsulateBounds,"
+            " typeof Bounds.Expand, typeof Bounds.ExpandVector, typeof Bounds.ClosestPoint,"
+            " typeof Bounds.SqrDistance, typeof Bounds.IntersectRay, typeof Bounds.ToString].join('|');",
+            "function|function|function|function|function|function|function|function|function|function|function|function");
+    CheckJs("M3", "Color32 的静态方法都发布了", script_env,
+            "globalThis.__zResult = "
+            "[typeof Color32.Lerp, typeof Color32.LerpUnclamped, typeof Color32.FromColor,"
+            " typeof Color32.ToColor, typeof Color32.ToString].join('|');",
+            "function|function|function|function|function");
+
+    // Create 的第二个参数是 **size**（不是 extents）—— 混淆它是最常见的
+    // Unity 迁移 bug，而且不报错。
+    CheckJs("M4", "Bounds.Create 的第二个参数是 size：extents 是它的一半", script_env,
+            "var b = Bounds.Create({x:1,y:2,z:3}, {x:4,y:6,z:8});"
+            "globalThis.__zResult = b.extents.x + ',' + b.extents.y + ',' + b.extents.z;",
+            "2,3,4");
+    CheckJs("M5", "Bounds.GetSize 是 extents 的两倍", script_env,
+            "var b = Bounds.Create({x:1,y:2,z:3}, {x:4,y:6,z:8});"
+            "var s = Bounds.GetSize(b);"
+            "globalThis.__zResult = s.x + ',' + s.y + ',' + s.z;",
+            "4,6,8");
+    CheckJs("M6", "Bounds.GetMin / GetMax", script_env,
+            "var b = Bounds.Create({x:1,y:2,z:3}, {x:4,y:6,z:8});"
+            "var mn = Bounds.GetMin(b); var mx = Bounds.GetMax(b);"
+            "globalThis.__zResult = mn.x + ',' + mn.y + ',' + mn.z + '|' + mx.x + ',' + mx.y + ',' + mx.z;",
+            "-1,-1,-1|3,5,7");
+    CheckJs("M7", "Bounds.Contains：命中与不命中", script_env,
+            "var b = Bounds.Create({x:1,y:2,z:3}, {x:4,y:6,z:8});"
+            "globalThis.__zResult = Bounds.Contains(b, {x:1,y:2,z:3}) + '|' + Bounds.Contains(b, {x:50,y:0,z:0});",
+            "true|false");
+    CheckJs("M8", "Bounds.Intersects：贴面算相交，分开不算", script_env,
+            "var b = Bounds.Create({x:1,y:2,z:3}, {x:4,y:6,z:8});"
+            "var touch = Bounds.Create({x:5,y:2,z:3}, {x:4,y:6,z:8});"
+            "var apart = Bounds.Create({x:20,y:2,z:3}, {x:1,y:1,z:1});"
+            "globalThis.__zResult = Bounds.Intersects(b, touch) + '|' + Bounds.Intersects(b, apart);",
+            "true|false");
+    // Expand(2) 只让 size 增大 2 —— 漏掉 Unity 那个 `amount *= .5f` 的话这里
+    // 会得到 8,10,12，而它仍然是一个自洽的盒子。
+    CheckJs("M9", "Bounds.Expand(2) 让 size 增大 2（不是 4）", script_env,
+            "var b = Bounds.Create({x:1,y:2,z:3}, {x:4,y:6,z:8});"
+            "var s = Bounds.GetSize(Bounds.Expand(b, 2));"
+            "globalThis.__zResult = s.x + ',' + s.y + ',' + s.z;",
+            "6,8,10");
+    CheckJs("M10", "Bounds.ExpandVector 逐轴", script_env,
+            "var b = Bounds.Create({x:1,y:2,z:3}, {x:4,y:6,z:8});"
+            "var s = Bounds.GetSize(Bounds.ExpandVector(b, {x:2,y:0,z:4}));"
+            "globalThis.__zResult = s.x + ',' + s.y + ',' + s.z;",
+            "6,6,12");
+    CheckJs("M11", "Bounds.Encapsulate 返回新盒，不改传入的那个", script_env,
+            "var b = Bounds.Create({x:1,y:2,z:3}, {x:4,y:6,z:8});"
+            "var g = Bounds.Encapsulate(b, {x:0,y:0,z:20});"
+            "globalThis.__zResult = b.extents.z + '|' + Bounds.GetMax(g).z;",
+            "4|20");
+    CheckJs("M12", "Bounds.SqrDistance 是平方距离（盒内为 0）", script_env,
+            "var b = Bounds.Create({x:1,y:2,z:3}, {x:4,y:6,z:8});"
+            "globalThis.__zResult = Bounds.SqrDistance(b, {x:1,y:2,z:3}) + '|' + Bounds.SqrDistance(b, {x:10,y:2,z:3});",
+            "0|49");
+    CheckJs("M13", "Bounds.IntersectRay：null 射线是不命中而不是崩", script_env,
+            "var b = Bounds.Create({x:1,y:2,z:3}, {x:4,y:6,z:8});"
+            "globalThis.__zResult = String(Bounds.IntersectRay(b, null));",
+            "-1");
+    CheckJs("M14", "Bounds.ToString 是 Unity 的格式", script_env,
+            "globalThis.__zResult = Bounds.ToString(Bounds.Create({x:1,y:2,z:3}, {x:4,y:6,z:8}));",
+            "Center: (1.0, 2.0, 3.0), Extents: (2.0, 3.0, 4.0)");
+
+    // --- Color32 ---
+    // 截断而不是四舍五入：0.5 的通道得到 127。用 `Color.gray`（0.5）当样本，
+    // 0/1 的样本分不出这两种取整。
+    CheckJs("M15", "Color32.FromColor(Color.gray) 是 127（截断）", script_env,
+            "var c = Color32.FromColor(Color.gray);"
+            "globalThis.__zResult = c.r + ',' + c.g + ',' + c.b + ',' + c.a;",
+            "127,127,127,255");
+    CheckJs("M16", "Color32.ToColor(255) 回到 1.0", script_env,
+            "var c = Color32.ToColor({r:255,g:0,b:0,a:255});"
+            "globalThis.__zResult = c.r + ',' + c.g + ',' + c.b + ',' + c.a;",
+            "1,0,0,1");
+    // 省略 a 的字面量按**不透明**处理（Unity 的 `new Color32(r,g,b)`）。
+    // 这条只可能在这里验：C++ 侧拿到的一定是填好了四个字段的值。
+    CheckJs("M17", "字面量省略 a 时是不透明（a=255）", script_env,
+            "var c = Color32.ToColor({r:0,g:255,b:0});"
+            "globalThis.__zResult = String(c.a);",
+            "1");
+    CheckJs("M18", "Color32.Lerp(0, 255, 0.5) 截断成 127", script_env,
+            "var c = Color32.Lerp({r:0,g:0,b:0,a:255}, {r:255,g:255,b:255,a:255}, 0.5);"
+            "globalThis.__zResult = String(c.r);",
+            "127");
+    CheckJs("M19", "Color32.Lerp 夹住 t，LerpUnclamped 不夹", script_env,
+            "var a = {r:0,g:0,b:0,a:255}; var b = {r:255,g:255,b:255,a:255};"
+            "globalThis.__zResult = Color32.Lerp(a, b, 2).r + '|' + Color32.LerpUnclamped(a, b, 2).r;",
+            "255|255");
+    CheckJs("M20", "Color32.ToString 是 Unity 的格式", script_env,
+            "globalThis.__zResult = Color32.ToString({r:255,g:0,b:0,a:255});",
+            "RGBA(255, 0, 0, 255)");
+    CheckJs("M21", "Color 侧的两个互转入口也在", script_env,
+            "var c = Color.ToColor32(Color.green);"
+            "globalThis.__zResult = c.r + ',' + c.g + ',' + c.b + ',' + c.a + '|' + Color.FromColor32(c).g;",
+            "0,255,0,255|1");
+
     std::printf("\n========================================\n");
     std::printf("总计 %d 项检查，失败 %d 项\n", g_Checks, g_Failed);
     std::printf("========================================\n");

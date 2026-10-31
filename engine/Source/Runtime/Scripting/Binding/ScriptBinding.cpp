@@ -204,6 +204,29 @@ namespace
         "    a: number;\n"
         "}\n"
         "\n"
+        // Color32：通道名与 Color 完全相同（Unity 里两者可隐式互转，脚本换用
+        // 时不该改字段名），只是值域是 0..255 的整数。与 `declare class Color32`
+        // （ZHeaderTool 从 ScriptColor.h 生成，带 Lerp / FromColor / ToColor）
+        // 同名合并。
+        "declare interface Color32 {\n"
+        "    r: number;\n"
+        "    g: number;\n"
+        "    b: number;\n"
+        "    a: number;\n"
+        "}\n"
+        "\n"
+        // Bounds：Unity 存的是 center + **extents（半尺寸）**，`size` / `min` /
+        // `max` 都是派生量。键名与 `ZScript::Converter<Bounds>` 一致。
+        // 与 `declare class Bounds`（ScriptBounds.h 那批静态方法）同名合并。
+        //
+        // ⚠️ 这里只有两个字段，所以 TS 里 `{ center: ..., extents: ... }` 字面量
+        // 可以直接当 Bounds 用 —— 这正是 Unity 里 `new Bounds(c, s)` 的位置
+        // （ZHeaderTool 绑不了构造函数，所以额外给了 `Bounds.Create(c, s)`）。
+        "declare interface Bounds {\n"
+        "    center: Vector3;\n"
+        "    extents: Vector3;\n"
+        "}\n"
+        "\n"
         "declare interface Quaternion {\n"
         "    w: number;\n"
         "    x: number;\n"
