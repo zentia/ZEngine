@@ -235,6 +235,66 @@ public:
     /// 1 / mass. 0 means immovable, which is what a static body reports.
     bool GetInverseMass(uint32_t body_id, float& out_inverse_mass) const;
 
+    /// Kilograms. 0 when the body is immovable (static / kinematic).
+    bool GetMass(uint32_t body_id, float& out_mass) const;
+
+    /// Unity's `rigidbody.mass`.
+    ///
+    /// 质量不是"改一个倒数"就完了：惯性张量必须按新质量重新标定，否则一个
+    /// 10kg 的物体会带着 1kg 的转动惯量转 —— 推起来对了，转起来飞快。Jolt 的
+    /// `MassProperties::ScaleToMass` 一次把两样都缩对，所以走它而不是只写
+    /// `SetInverseMass`。
+    ///
+    /// 质量 <= 0 时**夹到极小正数**而不是照单全收：0 质量在除法里是 inf（倒数
+    /// 质量），一旦进积分就是 NaN 位置，而 NaN 物体会把整个 broadphase 拖垮。
+    /// Unity 也是这个态度（mass 必须为正）。
+    bool SetMass(uint32_t body_id, float mass);
+
+    /// 1 = 受重力，0 = 不受（Unity 的 `rigidbody.useGravity`）。可以取中间值做
+    /// "半重力"，Jolt 支持，Unity 不支持 —— 这里照 Unity 只暴露布尔。
+    bool GetGravityFactor(uint32_t body_id, float& out_factor) const;
+    bool SetGravityFactor(uint32_t body_id, float factor);
+
+    /// Unity 的 `rigidbody.drag` / `angularDrag`。Jolt 叫 damping，语义相同：
+    /// 每秒保留 (1 - damping) 的速度。
+    bool GetLinearDamping(uint32_t body_id, float& out_damping) const;
+    bool SetLinearDamping(uint32_t body_id, float damping);
+    bool GetAngularDamping(uint32_t body_id, float& out_damping) const;
+    bool SetAngularDamping(uint32_t body_id, float damping);
+
+    /// 连续力矩（牛·米），累加到下一步、被下一步清掉。非动力学刚体上无操作。
+    bool AddTorque(uint32_t body_id, const Vector3& torque);
+
+    /// 瞬时角动量变化 —— "让它转起来"的原语。
+    bool AddAngularImpulse(uint32_t body_id, const Vector3& angular_impulse);
+
+    /// 作用在**世界坐标某一点**上的力。除了线性分量还会带出力矩，所以"踢箱子
+    /// 的角"会让它一边飞一边转 —— 这正是 `AddForce` 做不到的。
+    bool AddForceAtPosition(uint32_t body_id, const Vector3& force, const Vector3& position);
+
+    /// 作用在**世界坐标某一点**上的冲量（爆炸、子弹命中的手感）。
+    bool AddImpulseAtPosition(uint32_t body_id, const Vector3& impulse, const Vector3& position);
+
+    /// 直接把物体搬过去（Unity 的 `rigidbody.position = p`）。**不**产生碰撞
+    /// 扫掠 —— 想让 kinematic 物体推着别人走用 `MoveKinematic`。
+    bool SetRigidBodyPosition(uint32_t body_id, const Vector3& position);
+
+    bool SetRigidBodyRotation(uint32_t body_id, const Quaternion& rotation);
+
+    /// Unity 的 `MovePosition` / `MoveRotation`：给一个目标位姿，由物理步按
+    /// `delta_time` 反推速度走过去。和 `SetRigidBodyPosition` 的差别是它会
+    /// **推**开路上的东西，而传送不会。
+    bool MoveKinematic(uint32_t body_id,
+                       const Vector3& target_position,
+                       const Quaternion& target_rotation,
+                       float delta_time);
+
+    /// 是否已经睡着。睡着的物体不再模拟，也不再上报接触 —— 一个"该动没动"的
+    /// bug 有一半是这个。
+    bool IsSleeping(uint32_t body_id, bool& out_is_sleeping) const;
+    bool SleepRigidBody(uint32_t body_id);
+    bool WakeRigidBody(uint32_t body_id);
+
     void Tick(float delta_time);
 
     /// The underlying Jolt system. Exposed so the character controller and the

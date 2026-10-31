@@ -43,7 +43,9 @@
 #include "Runtime/Function/Physics/Jolt/Utils.h"
 #include "Runtime/Function/Physics/Physics.h"
 #include "Runtime/Function/Physics/PhysicsManager.h"
+#include "Runtime/Function/Framework/Component/Rigidbody/RigidbodyComponent.h"
 #include "Runtime/Function/Physics/PhysicsScene.h"
+#include "Runtime/Resource/ResType/Components/RigidBody.h"
 #include "Runtime/Function/PlayerSettings/PlayerSettings.h"
 #include "Runtime/Function/Render/WindowSystem.h"
 #include "Runtime/Project/ProjectInfo.h"
@@ -2730,6 +2732,365 @@ namespace
               "T19", "the childCount getter is the const ZFUNCTION one");
     }
 
+    // ---------------------------------------------------------------- G ----
+    /// 刚体的 Unity 面：质量 / 阻尼 / 重力 / 力矩 / 偏心力 / 传送 / 睡眠。
+    ///
+    /// 这一组测的是 `PhysicsScene` 上那批新方法（真正的逻辑都在这里），
+    /// `RigidBodyComponent` 上的同名包装测"没有物理场景时的降级"和"写回序列化
+    /// 字段"两件事 —— 组件其余那些一行转发由 O 组的接线门守着。
+    ///
+    /// 为什么组件层拿不到一台活的刚体
+    /// --------------------------------
+    /// `RigidBodyComponent` 通过 `WorldManager::GetCurrentActivePhysicsScene()`
+    /// 找场景，而"活动关卡"只能由加载流程设置（`m_CurrentActiveLevel` 是私有
+    /// 的，没有 setter）。headless 加载不出真实关卡，所以组件在这一组里永远走
+    /// "没有场景"那条早退 —— 和 U 组（Scene）同一类限制。
+    void TestRigidbody()
+    {
+        PhysicsManager* physics_manager = GET_SYSTEM(PhysicsManager);
+        Check(physics_manager != nullptr, "G0", "PhysicsManager is reachable");
+        if (physics_manager == nullptr)
+        {
+            return;
+        }
+
+        std::shared_ptr<PhysicsScene> scene = physics_manager->CreatePhysicsScene(Vector3(0.f, 0.f, -9.81f)).lock();
+        Check(scene != nullptr, "G1", "a physics scene can be created");
+        if (!scene)
+        {
+            return;
+        }
+
+        const uint32_t body = SpawnBox(*scene, Vector3(0.f, 0.f, 50.f), 0, true);
+        Check(body != kInvalidPhysicsBodyId, "G2", "a dynamic body can be spawned");
+        if (body == kInvalidPhysicsBodyId)
+        {
+            return;
+        }
+
+        // --- 质量 --------------------------------------------------------
+        float mass = 0.f;
+        Check(scene->GetMass(body, mass) && mass > 0.f, "G3", "a dynamic body has a positive mass");
+        Check(scene->SetMass(body, 12.0f) && scene->GetMass(body, mass) && Near(mass, 12.0f, 0.01f),
+              "G4", "mass round-trips (12 kg in, 12 kg out)");
+        // 0 / 负质量必须被夹住：倒数质量是 inf，一步积分之后就是 NaN 位置，而一个
+        // NaN 物体会把整个 broadphase 拖垮（表现是"物理突然全不动了"，还不报错）。
+        Check(scene->SetMass(body, 0.0f) && scene->GetMass(body, mass) && mass > 0.0f && mass < 1.0f,
+              "G5", "a zero mass is clamped to a tiny positive, not accepted as inf");
+        Check(scene->SetMass(body, -5.0f) && scene->GetMass(body, mass) && mass > 0.0f,
+              "G6", "and so is a negative one");
+        scene->SetMass(body, 12.0f);
+        // 静态刚体没有质量：它是"不可推动"的，不是"质量无穷大但可写"。
+        const uint32_t static_body = SpawnBox(*scene, Vector3(0.f, 30.f, 0.f), 0, false);
+        Check(static_body != kInvalidPhysicsBodyId, "G7", "a static body can be spawned");
+        Check(!scene->SetMass(static_body, 10.0f), "G8", "a static body refuses a mass");
+        float static_mass = -1.f;
+        Check(!scene->GetMass(static_body, static_mass) || static_mass == 0.f, "G9",
+              "and reports none");
+
+        // --- 重力 --------------------------------------------------------
+        float factor = -1.f;
+        Check(scene->GetGravityFactor(body, factor) && Near(factor, 1.0f), "G10",
+              "gravity is on by default");
+        Check(scene->SetGravityFactor(body, 0.0f) && scene->GetGravityFactor(body, factor) &&
+                  Near(factor, 0.0f),
+              "G11", "useGravity = false sets the factor to 0");
+        Check(scene->SetGravityFactor(body, 1.0f) && scene->GetGravityFactor(body, factor) &&
+                  Near(factor, 1.0f),
+              "G12", "and back to 1");
+
+        // --- 阻尼 --------------------------------------------------------
+        float damping = -1.f;
+        Check(scene->SetLinearDamping(body, 0.0f) && scene->GetLinearDamping(body, damping) &&
+                  Near(damping, 0.0f),
+              "G13", "drag round-trips");
+        Check(scene->SetLinearDamping(body, 2.5f) && scene->GetLinearDamping(body, damping) &&
+                  Near(damping, 2.5f, 0.001f),
+              "G14", "and takes the value that was set (not a default)");
+        Check(scene->SetAngularDamping(body, 3.5f) && scene->GetAngularDamping(body, damping) &&
+                  Near(damping, 3.5f, 0.001f),
+              "G15", "angularDrag round-trips");
+        Check(!scene->SetLinearDamping(static_body, 1.0f), "G16", "a static body refuses damping");
+        scene->SetLinearDamping(body, 0.0f);
+        scene->SetAngularDamping(body, 0.0f);
+
+        // --- 阻尼 / 力矩 / 偏心力：真的进模拟了吗 ------------------------
+        // 关掉重力，把物体放在空中，隔离出"只有我们施加的那个作用"。
+        scene->SetGravityFactor(body, 0.0f);
+
+        // 无阻尼：一步之后速度还在。有阻尼：明显掉下来。只测"读回来对不对"的
+        // 话，一个把 damping 写进字段却没接进积分的实现是全绿的。
+        scene->SetLinearVelocity(body, Vector3(10.f, 0.f, 0.f));
+        for (int i = 0; i < 20; ++i)
+        {
+            scene->Tick(1.0f / 60.0f);
+        }
+        Vector3 velocity = Vector3::ZERO;
+        Check(scene->GetLinearVelocity(body, velocity) && std::fabs(velocity.x) > 9.0f, "G17",
+              "with no drag the velocity survives 20 steps");
+
+        scene->SetLinearVelocity(body, Vector3(10.f, 0.f, 0.f));
+        scene->SetLinearDamping(body, 8.0f);
+        for (int i = 0; i < 20; ++i)
+        {
+            scene->Tick(1.0f / 60.0f);
+        }
+        Check(scene->GetLinearVelocity(body, velocity) && std::fabs(velocity.x) < 3.0f, "G18",
+              "with drag 8 the same 20 steps eat most of it");
+        scene->SetLinearDamping(body, 0.0f);
+
+        // 力矩：转起来。
+        scene->SetAngularVelocity(body, Vector3::ZERO);
+        scene->AddTorque(body, Vector3(0.f, 0.f, 500.f));
+        scene->Tick(1.0f / 60.0f);
+        Check(scene->GetAngularVelocity(body, velocity) && std::fabs(velocity.z) > 0.01f, "G19",
+              "AddTorque actually spins the body");
+
+        // 偏心力 vs 中心力：这是 `AddForceAtPosition` 存在的全部理由 —— 它会带出
+        // 力矩，而 `AddForce` 不会。两者都"推动了物体"，所以只看线速度分不出。
+        scene->SetLinearVelocity(body, Vector3::ZERO);
+        scene->SetAngularVelocity(body, Vector3::ZERO);
+        scene->AddForce(body, Vector3(5000.f, 0.f, 0.f));
+        scene->Tick(1.0f / 60.0f);
+        Vector3 after_centre_force = Vector3::ZERO;
+        scene->GetAngularVelocity(body, after_centre_force);
+        Check(after_centre_force.length() < 0.01f, "G20", "AddForce at the centre produces no spin");
+
+        scene->SetLinearVelocity(body, Vector3::ZERO);
+        scene->SetAngularVelocity(body, Vector3::ZERO);
+        // 作用在物体"上方一角"：偏心臂会让力和力矩同时出现。
+        Vector3 body_position = Vector3::ZERO;
+        scene->GetRigidBodyPosition(body, body_position);
+        scene->AddForceAtPosition(body, Vector3(5000.f, 0.f, 0.f),
+                                  body_position + Vector3(0.f, 0.f, 0.5f));
+        scene->Tick(1.0f / 60.0f);
+        Vector3 after_offset_force = Vector3::ZERO;
+        scene->GetAngularVelocity(body, after_offset_force);
+        Check(after_offset_force.length() > 0.01f, "G21",
+              "AddForceAtPosition off-centre DOES spin it (that is the whole point)");
+
+        // --- 质量必须连惯性张量一起缩 ------------------------------------
+        // 只写倒数质量的话惯性停在旧值，"改质量"于是对转动**毫无影响**：一个
+        // 12kg 的箱子带着 1000kg 的转动惯量，推起来对了、转起来纹丝不动。
+        //
+        // 判据不依赖任何解析常数：惯性正比于质量 ⇒ 同一个角冲量下，100 倍的
+        // 质量得到约 1/100 的角速度。惯性没跟着变的话两者**相等**。
+        scene->SetLinearVelocity(body, Vector3::ZERO);
+        scene->SetAngularVelocity(body, Vector3::ZERO);
+        scene->WakeRigidBody(body);
+        scene->SetMass(body, 12.0f);
+        scene->AddAngularImpulse(body, Vector3(0.f, 0.f, 60.f));
+        scene->Tick(1.0f / 60.0f);
+        Vector3 spin_light = Vector3::ZERO;
+        const bool read_light = scene->GetAngularVelocity(body, spin_light);
+
+        scene->SetLinearVelocity(body, Vector3::ZERO);
+        scene->SetAngularVelocity(body, Vector3::ZERO);
+        scene->WakeRigidBody(body);
+        scene->SetMass(body, 1200.0f);
+        scene->AddAngularImpulse(body, Vector3(0.f, 0.f, 60.f));
+        scene->Tick(1.0f / 60.0f);
+        Vector3 spin_heavy = Vector3::ZERO;
+        const bool read_heavy = scene->GetAngularVelocity(body, spin_heavy);
+
+        Check(read_light && read_heavy && spin_light.length() > 0.01f && spin_heavy.length() > 0.0f &&
+                  (spin_light.length() / spin_heavy.length()) > 20.0f,
+              "G44", "mass scales the INERTIA too: 100x the mass spins ~100x slower");
+        scene->SetMass(body, 12.0f);
+
+        // --- 传送 / 摆位 --------------------------------------------------
+        Check(scene->SetRigidBodyPosition(body, Vector3(3.f, 4.f, 5.f)) &&
+                  scene->GetRigidBodyPosition(body, body_position) &&
+                  Near(body_position, Vector3(3.f, 4.f, 5.f), 0.01f),
+              "G22", "SetRigidBodyPosition teleports the body");
+        Quaternion body_rotation = Quaternion::IDENTITY;
+        Check(scene->SetRigidBodyRotation(body, Quaternion(Radian(Degree(90.f)), Vector3::UNIT_Z)) &&
+                  scene->GetRigidBodyRotation(body, body_rotation) &&
+                  Near(body_rotation.getW(), std::cos(Math_PI / 4.0f), 0.01f),
+              "G23", "SetRigidBodyRotation sets the orientation");
+
+        // --- MoveKinematic -----------------------------------------------
+        // 只有运动学物体会"推着别人走"，也只有它才用 MoveKinematic。传送
+        // （SetRigidBodyPosition）不会推 —— 这是两者的分界。
+        RigidBodyActorType motion_type = RigidBodyActorType::static_body;
+        Check(scene->SetRigidBodyMotionType(body, RigidBodyActorType::kinematic) &&
+                  scene->GetRigidBodyMotionType(body, motion_type) &&
+                  motion_type == RigidBodyActorType::kinematic,
+              "G24", "a body can be switched to kinematic");
+        scene->SetRigidBodyPosition(body, Vector3(0.f, 0.f, 50.f));
+        Check(scene->MoveKinematic(body, Vector3(1.f, 0.f, 50.f), Quaternion::IDENTITY, 1.0f / 60.0f),
+              "G25", "MoveKinematic accepts a target pose");
+        scene->Tick(1.0f / 60.0f);
+        Check(scene->GetRigidBodyPosition(body, body_position) && body_position.x > 0.5f, "G26",
+              "and one step later the body has moved toward it");
+        // delta_time 为 0 不能算出 inf 的速度。
+        Check(scene->MoveKinematic(body, Vector3(2.f, 0.f, 50.f), Quaternion::IDENTITY, 0.0f), "G27",
+              "a zero delta_time is clamped instead of producing an infinite velocity");
+        scene->Tick(1.0f / 60.0f);
+        Check(scene->GetRigidBodyPosition(body, body_position) && std::isfinite(body_position.x),
+              "G28", "and the body is still finite afterwards");
+        scene->SetRigidBodyMotionType(body, RigidBodyActorType::dynamic);
+
+        // --- 睡眠 ---------------------------------------------------------
+        bool is_sleeping = false;
+        Check(scene->SleepRigidBody(body) && scene->IsSleeping(body, is_sleeping) && is_sleeping,
+              "G29", "a body can be put to sleep and reports it");
+        Check(scene->WakeRigidBody(body) && scene->IsSleeping(body, is_sleeping) && !is_sleeping,
+              "G30", "and woken up again");
+
+        // --- 无效 id：一律 false，不是崩 ---------------------------------
+        float ignored_float = 0.f;
+        bool ignored_bool = false;
+        Vector3 ignored_vec = Vector3::ZERO;
+        Check(!scene->SetMass(kInvalidPhysicsBodyId, 1.0f) &&
+                  !scene->GetMass(kInvalidPhysicsBodyId, ignored_float) &&
+                  !scene->SetGravityFactor(kInvalidPhysicsBodyId, 1.0f) &&
+                  !scene->SetLinearDamping(kInvalidPhysicsBodyId, 1.0f) &&
+                  !scene->SetAngularDamping(kInvalidPhysicsBodyId, 1.0f) &&
+                  !scene->AddTorque(kInvalidPhysicsBodyId, Vector3::UNIT_Z) &&
+                  !scene->AddAngularImpulse(kInvalidPhysicsBodyId, Vector3::UNIT_Z) &&
+                  !scene->AddForceAtPosition(kInvalidPhysicsBodyId, Vector3::UNIT_X, ignored_vec) &&
+                  !scene->AddImpulseAtPosition(kInvalidPhysicsBodyId, Vector3::UNIT_X, ignored_vec) &&
+                  !scene->SetRigidBodyPosition(kInvalidPhysicsBodyId, ignored_vec) &&
+                  !scene->SetRigidBodyRotation(kInvalidPhysicsBodyId, Quaternion::IDENTITY) &&
+                  !scene->MoveKinematic(kInvalidPhysicsBodyId, ignored_vec, Quaternion::IDENTITY, 0.1f) &&
+                  !scene->IsSleeping(kInvalidPhysicsBodyId, ignored_bool) &&
+                  !scene->SleepRigidBody(kInvalidPhysicsBodyId) &&
+                  !scene->WakeRigidBody(kInvalidPhysicsBodyId),
+              "G31", "every new call rejects an invalid body id instead of crashing");
+
+        // --- 组件侧：没有活动物理场景时的降级 ----------------------------
+        WorldManager* world = GET_SYSTEM(WorldManager);
+        Check(world != nullptr && world->GetCurrentActivePhysicsScene().lock() == nullptr, "G32",
+              "(the component fixture has no active physics scene)");
+        RigidBodyComponent rigidbody;
+        Check(!rigidbody.HasBody(), "G33", "a component with no scene has no body");
+        Check(Near(rigidbody.GetDrag(), 0.0f), "G34", "drag reads 0");
+        Check(Near(rigidbody.GetAngularDrag(), 0.0f), "G35", "angularDrag reads 0");
+        Check(rigidbody.GetUseGravity(), "G36", "useGravity reads true (Unity's default)");
+        // 没有刚体时"没在模拟"是真的 —— 它没有在动。返回 true 而不是 false，这样
+        // "如果它睡着就叫醒它"的逻辑不会漏掉一个其实根本还没建出来的物体。
+        Check(rigidbody.IsSleeping(), "G37", "IsSleeping reads true when there is nothing simulating");
+        Check(Near(rigidbody.GetPosition(), Vector3::ZERO, 1.0e-6f), "G38",
+              "position reads zero rather than NaN");
+        // 全部写操作必须是安全的空操作。
+        rigidbody.SetMass(4.0f);
+        rigidbody.SetDrag(0.5f);
+        rigidbody.SetAngularDrag(0.5f);
+        rigidbody.SetUseGravity(false);
+        rigidbody.AddTorque(Vector3::UNIT_Z);
+        rigidbody.AddAngularImpulse(Vector3::UNIT_Z);
+        rigidbody.AddForceAtPosition(Vector3::UNIT_X, Vector3::UNIT_Z);
+        rigidbody.AddImpulseAtPosition(Vector3::UNIT_X, Vector3::UNIT_Z);
+        rigidbody.AddExplosionForce(100.0f, Vector3::ZERO, 5.0f);
+        rigidbody.AddExplosionForce(100.0f, Vector3::ZERO, 0.0f);
+        rigidbody.AddExplosionForce(100.0f, Vector3::ZERO, -1.0f);
+        rigidbody.SetPosition(Vector3::UNIT_X);
+        rigidbody.SetRotation(Quaternion::IDENTITY);
+        rigidbody.MovePosition(Vector3::UNIT_X);
+        rigidbody.MoveRotation(Quaternion::IDENTITY);
+        rigidbody.Sleep();
+        rigidbody.WakeUp();
+        Check(true, "G39", "every Unity-named method is safe with no body (they ran above)");
+
+        // --- 序列化字段：改质量必须落进存档 ------------------------------
+        // 只改活刚体的话，存盘再读回来质量就变回作者设的那个值，而没有任何警告。
+        rigidbody.SetMass(8.0f);
+        Check(Near(rigidbody.GetRigidbodyRes().m_InverseMass, 1.0f / 8.0f, 1.0e-6f), "G40",
+              "SetMass writes the serialized field back (a save keeps the new mass)");
+
+        // --- isKinematic：走的是作者值，不依赖活刚体 ---------------------
+        rigidbody.SetActorType(RigidBodyActorType::dynamic);
+        Check(!rigidbody.GetIsKinematic(), "G41", "a dynamic body is not kinematic");
+        rigidbody.SetIsKinematic(true);
+        Check(rigidbody.GetIsKinematic() && rigidbody.GetActorType() == RigidBodyActorType::kinematic,
+              "G42", "SetIsKinematic(true) makes it kinematic");
+        rigidbody.SetIsKinematic(false);
+        Check(!rigidbody.GetIsKinematic() && rigidbody.GetActorType() == RigidBodyActorType::dynamic,
+              "G43", "and back (Unity turns it into a dynamic body, not a static one)");
+    }
+
+    // ---------------------------------------------------------------- O ----
+    void TestRigidbodyWiring()
+    {
+        const std::string scene_header = ReadFile("Source/Runtime/Function/Physics/PhysicsScene.h");
+        Check(!scene_header.empty(), "O0", "PhysicsScene.h is readable");
+        // 质量必须连惯性张量一起标定：只改倒数质量的话，一个 10kg 的箱子会带着
+        // 1kg 的转动惯量 —— 推起来对了，转起来飞快。
+        Check(CountOccurrences(scene_header, "SetMass(uint32_t body_id, float mass)") >= 1, "O1",
+              "the scene exposes a mass setter");
+        Check(CountOccurrences(scene_header, "AddForceAtPosition") >= 1 &&
+                  CountOccurrences(scene_header, "AddTorque") >= 1 &&
+                  CountOccurrences(scene_header, "MoveKinematic") >= 1 &&
+                  CountOccurrences(scene_header, "SetGravityFactor") >= 1 &&
+                  CountOccurrences(scene_header, "SetLinearDamping") >= 1 &&
+                  CountOccurrences(scene_header, "SetAngularDamping") >= 1,
+              "O2", "and the torque / off-centre / kinematic-move / gravity / damping entries");
+
+        const std::string scene_source = ReadFile("Source/Runtime/Function/Physics/PhysicsScene.cpp");
+        Check(!scene_source.empty(), "O3", "PhysicsScene.cpp is readable");
+        // 惯性必须一起缩。`SetInverseMass` 单独出现说明有人"顺手改了一下"。
+        Check(CountOccurrences(scene_source, "ScaleToMass") >= 1, "O4",
+              "mass is scaled together with the inertia tensor (ScaleToMass)");
+        // 0 质量 → inf 倒数质量 → NaN 位置 → 整个 broadphase 塌掉。
+        Check(CountOccurrences(scene_source, "kMinMass") >= 2, "O5",
+              "a non-positive mass is clamped (kMinMass is defined AND used)");
+        // delta_time 为 0 时 MoveKinematic 算出的速度是 inf。
+        Check(CountOccurrences(scene_source, "kMinDeltaTime") >= 2, "O6",
+              "a zero delta_time is clamped before MoveKinematic");
+        // 施力路径的**顺序**是致命的：BodyInterface::ActivateBody 自己会拿写锁，
+        // 在持有 BodyLockWrite 时调它属于同优先级重入 —— Jolt 断言之后就是同一
+        // 线程重入同一把 mutex，直接死锁（表现是"施一次力，物理整个停住"，而且
+        // 不报错）。判的是"先把动态性探完、锁外唤醒"这个结构还在。
+        Check(CountOccurrences(scene_source, "BodyLockRead probe_lock") >= 1 &&
+                  CountOccurrences(scene_source, "inType > mutexes") >= 1,
+              "O15", "AddForce/AddImpulse activate OUTSIDE the body write lock (re-entrance deadlocks)");
+
+        const std::string component_header =
+            ReadFile("Source/Runtime/Function/Framework/Component/Rigidbody/RigidbodyComponent.h");
+        Check(!component_header.empty(), "O7", "RigidbodyComponent.h is readable");
+        Check(CountOccurrences(component_header, "ZFUNCTION()") >= 36, "O8",
+              "all 36 entry points carry ZFUNCTION()");
+        // Unity 里 mass / drag / useGravity / isKinematic / velocity / position
+        // 全是**属性**（`rb.velocity = v`）。只给方法的话脚本得写
+        // `rb.SetLinearVelocity(v)`，而 `rb.velocity` 在 .d.ts 里根本不存在。
+        Check(CountOccurrences(component_header, "ZSCRIPTPROPERTY(Name=\"mass\"") >= 1 &&
+                  CountOccurrences(component_header, "ZSCRIPTPROPERTY(Name=\"drag\"") >= 1 &&
+                  CountOccurrences(component_header, "ZSCRIPTPROPERTY(Name=\"useGravity\"") >= 1 &&
+                  CountOccurrences(component_header, "ZSCRIPTPROPERTY(Name=\"isKinematic\"") >= 1 &&
+                  CountOccurrences(component_header, "ZSCRIPTPROPERTY(Name=\"velocity\"") >= 1 &&
+                  CountOccurrences(component_header, "ZSCRIPTPROPERTY(Name=\"position\"") >= 1,
+              "O9", "the Unity properties are published, not just the methods");
+        Check(CountOccurrences(component_header, "AddExplosionForce") >= 2, "O10",
+              "AddExplosionForce is declared AND documented as single-body");
+
+        const std::string component_source =
+            ReadFile("Source/Runtime/Function/Framework/Component/Rigidbody/RigidbodyComponent.cpp");
+        Check(!component_source.empty(), "O11", "RigidbodyComponent.cpp is readable");
+        // 每个 Unity 名字都必须真的转发到场景上 —— 一个"忘了接线"的方法是静默
+        // 的空函数，编译得过也跑得过。
+        Check(CountOccurrences(component_source, "physics_scene->SetMass(m_RigidbodyId") >= 1 &&
+                  CountOccurrences(component_source, "physics_scene->SetGravityFactor(m_RigidbodyId") >= 1 &&
+                  CountOccurrences(component_source, "physics_scene->SetLinearDamping(m_RigidbodyId") >= 1 &&
+                  CountOccurrences(component_source, "physics_scene->SetAngularDamping(m_RigidbodyId") >= 1 &&
+                  CountOccurrences(component_source, "physics_scene->AddTorque(m_RigidbodyId") >= 1 &&
+                  CountOccurrences(component_source, "physics_scene->AddAngularImpulse(m_RigidbodyId") >= 1 &&
+                  CountOccurrences(component_source, "physics_scene->AddForceAtPosition(m_RigidbodyId") >= 1 &&
+                  CountOccurrences(component_source, "physics_scene->AddImpulseAtPosition(m_RigidbodyId") >= 1 &&
+                  CountOccurrences(component_source, "physics_scene->SetRigidBodyPosition(m_RigidbodyId") >= 1 &&
+                  CountOccurrences(component_source, "physics_scene->SetRigidBodyRotation(m_RigidbodyId") >= 1 &&
+                  CountOccurrences(component_source, "physics_scene->MoveKinematic(m_RigidbodyId") >= 2 &&
+                  CountOccurrences(component_source, "physics_scene->SleepRigidBody(m_RigidbodyId") >= 1 &&
+                  CountOccurrences(component_source, "physics_scene->WakeRigidBody(m_RigidbodyId") >= 1,
+              "O12", "every Unity-named method forwards to the scene with the body id");
+        // 改质量必须同时写序列化字段，否则存盘再读回来就变回作者设的值。
+        Check(CountOccurrences(component_source, "m_RigidbodyRes.m_InverseMass =") >= 1, "O13",
+              "SetMass also writes the serialized field (a save keeps the new mass)");
+        // AddExplosionForce 的两个除零：半径 0 和"炸在质心上"。
+        Check(CountOccurrences(component_source, "explosion_radius <= 0.f") >= 1 &&
+                  CountOccurrences(component_source, "distance < 1.0e-5f") >= 1,
+              "O14", "AddExplosionForce guards both zero-radius and zero-distance");
+    }
     // ---------------------------------------------------------------- B ----
     void TestWiringGate()
     {
@@ -2849,6 +3210,8 @@ int main()
     TestRandomWiring();
     TestCameraFacade();
     TestCameraWiring();
+    TestRigidbody();
+    TestRigidbodyWiring();
     TestWiringGate();
 
     std::printf("\n=== %d checks, %d failures ===\n", g_Checks, g_Failures);

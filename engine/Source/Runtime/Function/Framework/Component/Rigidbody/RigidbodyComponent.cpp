@@ -9,6 +9,11 @@
 
 namespace
 {
+    /// MovePosition / MoveRotation 用位移 / delta_time 反推速度，所以需要一个
+    /// 步长。取 1/60 —— 与物理的固定步长一致：传一个和真实步长不符的值会让
+    /// 运动学物体每帧走得或快或慢（Jolt 按这个速度积分一整步）。
+    constexpr float kMoveStepSeconds = 1.0f / 60.0f;
+
     /// The active physics scene, or null when there is none OR no WorldManager at all.
     /// Every caller already handles "no scene yet" (deferred body, level teardown); a
     /// process without a WorldManager -- an editor tool or headless test instantiating a
@@ -281,6 +286,237 @@ float RigidBodyComponent::GetMass() const
 
     const float authored_inverse_mass = m_RigidbodyRes.m_InverseMass;
     return authored_inverse_mass > 0.f ? 1.f / authored_inverse_mass : 0.f;
+}
+
+void RigidBodyComponent::SetMass(float mass)
+{
+    std::shared_ptr<PhysicsScene> physics_scene = GetActivePhysicsScene();
+    if (physics_scene)
+    {
+        physics_scene->SetMass(m_RigidbodyId, mass);
+    }
+    // 同时写回序列化字段：只改刚体的话，存盘再读回来质量就变回作者设的那个
+    // 值，而没有任何警告。活体优先（模拟出来的才是真实使用的），但存档必须跟上。
+    m_RigidbodyRes.m_InverseMass = (mass > 0.f) ? (1.f / mass) : 0.f;
+}
+
+float RigidBodyComponent::GetDrag() const
+{
+    std::shared_ptr<PhysicsScene> physics_scene = GetActivePhysicsScene();
+    if (!physics_scene)
+    {
+        return 0.f;
+    }
+    float damping = 0.f;
+    return physics_scene->GetLinearDamping(m_RigidbodyId, damping) ? damping : 0.f;
+}
+
+void RigidBodyComponent::SetDrag(float drag)
+{
+    std::shared_ptr<PhysicsScene> physics_scene = GetActivePhysicsScene();
+    if (physics_scene)
+    {
+        physics_scene->SetLinearDamping(m_RigidbodyId, drag);
+    }
+}
+
+float RigidBodyComponent::GetAngularDrag() const
+{
+    std::shared_ptr<PhysicsScene> physics_scene = GetActivePhysicsScene();
+    if (!physics_scene)
+    {
+        return 0.f;
+    }
+    float damping = 0.f;
+    return physics_scene->GetAngularDamping(m_RigidbodyId, damping) ? damping : 0.f;
+}
+
+void RigidBodyComponent::SetAngularDrag(float angular_drag)
+{
+    std::shared_ptr<PhysicsScene> physics_scene = GetActivePhysicsScene();
+    if (physics_scene)
+    {
+        physics_scene->SetAngularDamping(m_RigidbodyId, angular_drag);
+    }
+}
+
+bool RigidBodyComponent::GetUseGravity() const
+{
+    std::shared_ptr<PhysicsScene> physics_scene = GetActivePhysicsScene();
+    if (!physics_scene)
+    {
+        return true;
+    }
+    float factor = 1.f;
+    return physics_scene->GetGravityFactor(m_RigidbodyId, factor) ? (factor > 0.f) : true;
+}
+
+void RigidBodyComponent::SetUseGravity(bool use_gravity)
+{
+    std::shared_ptr<PhysicsScene> physics_scene = GetActivePhysicsScene();
+    if (physics_scene)
+    {
+        physics_scene->SetGravityFactor(m_RigidbodyId, use_gravity ? 1.f : 0.f);
+    }
+}
+
+bool RigidBodyComponent::GetIsKinematic() const
+{
+    return GetActorType() == RigidBodyActorType::kinematic;
+}
+
+void RigidBodyComponent::SetIsKinematic(bool is_kinematic)
+{
+    SetActorType(is_kinematic ? RigidBodyActorType::kinematic : RigidBodyActorType::dynamic);
+}
+
+void RigidBodyComponent::AddTorque(const Vector3& torque)
+{
+    std::shared_ptr<PhysicsScene> physics_scene = GetActivePhysicsScene();
+    if (physics_scene)
+    {
+        physics_scene->AddTorque(m_RigidbodyId, torque);
+    }
+}
+
+void RigidBodyComponent::AddAngularImpulse(const Vector3& angular_impulse)
+{
+    std::shared_ptr<PhysicsScene> physics_scene = GetActivePhysicsScene();
+    if (physics_scene)
+    {
+        physics_scene->AddAngularImpulse(m_RigidbodyId, angular_impulse);
+    }
+}
+
+void RigidBodyComponent::AddForceAtPosition(const Vector3& force, const Vector3& position)
+{
+    std::shared_ptr<PhysicsScene> physics_scene = GetActivePhysicsScene();
+    if (physics_scene)
+    {
+        physics_scene->AddForceAtPosition(m_RigidbodyId, force, position);
+    }
+}
+
+void RigidBodyComponent::AddImpulseAtPosition(const Vector3& impulse, const Vector3& position)
+{
+    std::shared_ptr<PhysicsScene> physics_scene = GetActivePhysicsScene();
+    if (physics_scene)
+    {
+        physics_scene->AddImpulseAtPosition(m_RigidbodyId, impulse, position);
+    }
+}
+
+void RigidBodyComponent::AddExplosionForce(float explosion_force,
+                                           const Vector3& explosion_position,
+                                           float explosion_radius)
+{
+    if (explosion_radius <= 0.f)
+    {
+        // 半径为 0 / 负的爆炸没有任何物体可作用。直接返回而不是照着公式算出
+        // inf —— 除零会从这里一路传成 NaN 位置。
+        return;
+    }
+
+    const Vector3 body_position = GetPosition();
+    Vector3 direction = body_position - explosion_position;
+    const float distance = direction.length();
+    if (distance >= explosion_radius)
+    {
+        // 半径外不受力（Unity 同）：这是"手雷在墙那边"和"手雷在脚下"的分界。
+        return;
+    }
+    if (distance < 1.0e-5f)
+    {
+        // 正好炸在质心上：方向没有定义。给一个确定的方向（引擎的 up）而不是
+        // 归一化零向量（那会得到 NaN 并污染整个刚体的速度）。
+        direction = Vector3::UNIT_Z;
+    }
+    else
+    {
+        direction /= distance;
+    }
+
+    const float falloff = 1.f - (distance / explosion_radius);
+    AddForceAtPosition(direction * (explosion_force * falloff), body_position);
+}
+
+Vector3 RigidBodyComponent::GetPosition() const
+{
+    return GetBodyPosition();
+}
+
+Quaternion RigidBodyComponent::GetRotation() const
+{
+    return GetBodyRotation();
+}
+
+void RigidBodyComponent::SetPosition(const Vector3& position)
+{
+    std::shared_ptr<PhysicsScene> physics_scene = GetActivePhysicsScene();
+    if (physics_scene)
+    {
+        physics_scene->SetRigidBodyPosition(m_RigidbodyId, position);
+    }
+}
+
+void RigidBodyComponent::SetRotation(const Quaternion& rotation)
+{
+    std::shared_ptr<PhysicsScene> physics_scene = GetActivePhysicsScene();
+    if (physics_scene)
+    {
+        physics_scene->SetRigidBodyRotation(m_RigidbodyId, rotation);
+    }
+}
+
+void RigidBodyComponent::MovePosition(const Vector3& position)
+{
+    std::shared_ptr<PhysicsScene> physics_scene = GetActivePhysicsScene();
+    if (physics_scene)
+    {
+        // 只动位置、保持当前朝向：Unity 的 MovePosition 也是这个语义（"把物体
+        // 移到这"，不是"把物体摆成这个位姿"）。
+        physics_scene->MoveKinematic(m_RigidbodyId, position, GetRotation(), kMoveStepSeconds);
+    }
+}
+
+void RigidBodyComponent::MoveRotation(const Quaternion& rotation)
+{
+    std::shared_ptr<PhysicsScene> physics_scene = GetActivePhysicsScene();
+    if (physics_scene)
+    {
+        physics_scene->MoveKinematic(m_RigidbodyId, GetPosition(), rotation, kMoveStepSeconds);
+    }
+}
+
+bool RigidBodyComponent::IsSleeping() const
+{
+    std::shared_ptr<PhysicsScene> physics_scene = GetActivePhysicsScene();
+    if (!physics_scene)
+    {
+        // 没有刚体时"没在模拟"是真的 —— 它没有在动。返回 true 而不是 false，
+        // 这样 "如果它睡着就叫醒它" 的逻辑不会漏。
+        return true;
+    }
+    bool is_sleeping = false;
+    return physics_scene->IsSleeping(m_RigidbodyId, is_sleeping) ? is_sleeping : true;
+}
+
+void RigidBodyComponent::Sleep()
+{
+    std::shared_ptr<PhysicsScene> physics_scene = GetActivePhysicsScene();
+    if (physics_scene)
+    {
+        physics_scene->SleepRigidBody(m_RigidbodyId);
+    }
+}
+
+void RigidBodyComponent::WakeUp()
+{
+    std::shared_ptr<PhysicsScene> physics_scene = GetActivePhysicsScene();
+    if (physics_scene)
+    {
+        physics_scene->WakeRigidBody(m_RigidbodyId);
+    }
 }
 
 Vector3 RigidBodyComponent::GetBodyPosition() const

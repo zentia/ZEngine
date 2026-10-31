@@ -49,6 +49,13 @@ namespace
         const JPH::Vec3 reference = (y < 0.9f && y > -0.9f) ? JPH::Vec3::sAxisY() : JPH::Vec3::sAxisX();
         return reference.Cross(in_axis).Normalized();
     }
+
+    /// 最小质量（千克）。0 / 负质量会让倒数质量变成 inf，一步积分之后就是 NaN
+    /// 位置，而一个 NaN 物体会把整个 broadphase 拖垮。
+    constexpr float kMinMass = 0.0001f;
+
+    /// MoveKinematic 用位移 / delta_time 反推速度，delta_time 为 0 会得到 inf。
+    constexpr float kMinDeltaTime = 0.0001f;
 }  // namespace
 
 // -----------------------------------------------------------------------------
@@ -762,6 +769,31 @@ bool PhysicsScene::ApplyForceOrImpulse(uint32_t body_id, const Vector3& value, b
 
     // AddForce / AddImpulse live on JPH::Body, not on BodyInterface, so the
     // body needs a write lock.
+    //
+    // 但**唤醒必须在拿到写锁之前**：`BodyInterface::ActivateBody` 自己会再拿一
+    // 次同优先级的写锁，而 Jolt 不允许"已持有同级锁时再取"（PhysicsLock 的
+    // `inType > mutexes` 断言），随后就是同一线程重入同一把 mutex —— 直接死锁。
+    // 之前这两行在锁里，而没有任何测试真正调用过 AddForce / AddImpulse，所以
+    // 它一直没暴露（表现是"施力之后物理整个停住"，不报错）。
+    JPH::BodyInterface& body_interface = m_Physics.m_JoltPhysicsSystem->GetBodyInterface();
+    {
+        JPH::BodyLockRead probe_lock(m_Physics.m_JoltPhysicsSystem->GetBodyLockInterface(),
+                                     JPH::BodyID(body_id));
+        if (!probe_lock.Succeeded())
+        {
+            return false;
+        }
+
+        // Only dynamic bodies integrate forces. Silently ignoring it keeps a
+        // script from crashing the frame because a level author left a body
+        // static.
+        if (!probe_lock.GetBody().IsDynamic())
+        {
+            return false;
+        }
+    }
+    body_interface.ActivateBody(JPH::BodyID(body_id));
+
     JPH::BodyLockWrite body_lock(m_Physics.m_JoltPhysicsSystem->GetBodyLockInterface(), JPH::BodyID(body_id));
     if (!body_lock.Succeeded())
     {
@@ -773,14 +805,8 @@ bool PhysicsScene::ApplyForceOrImpulse(uint32_t body_id, const Vector3& value, b
     JPH::Body& jph_body = body_lock.GetBody();
     if (!jph_body.IsDynamic())
     {
-        // Only dynamic bodies integrate forces. Silently ignoring it keeps a
-        // script from crashing the frame because a level author left a body
-        // static.
         return false;
     }
-
-    JPH::BodyInterface& body_interface = m_Physics.m_JoltPhysicsSystem->GetBodyInterface();
-    body_interface.ActivateBody(JPH::BodyID(body_id));
 
     if (is_force)
     {
@@ -822,6 +848,309 @@ bool PhysicsScene::GetInverseMass(uint32_t body_id, float& out_inverse_mass) con
     }
 
     out_inverse_mass = motion_properties->GetInverseMass();
+    return true;
+}
+
+bool PhysicsScene::GetMass(uint32_t body_id, float& out_mass) const
+{
+    float inverse_mass = 0.f;
+    if (!GetInverseMass(body_id, inverse_mass) || inverse_mass <= 0.f)
+    {
+        out_mass = 0.f;
+        return false;
+    }
+    out_mass = 1.f / inverse_mass;
+    return true;
+}
+
+bool PhysicsScene::SetMass(uint32_t body_id, float mass)
+{
+    if (body_id == s_InvalidRigidbodyId)
+    {
+        return false;
+    }
+
+    // 与 AddForce / AddImpulse 同一条规则：MotionProperties 挂在 Body 上，要写
+    // 锁而不是 BodyInterface（后者会自己再拿一次写锁，Jolt 会断言"优先级不高
+    // 于当前持有的锁"）。
+    JPH::BodyLockWrite body_lock(m_Physics.m_JoltPhysicsSystem->GetBodyLockInterface(), JPH::BodyID(body_id));
+    if (!body_lock.Succeeded())
+    {
+        return false;
+    }
+
+    JPH::Body& jph_body = body_lock.GetBody();
+    if (!jph_body.IsDynamic())
+    {
+        return false;
+    }
+    JPH::MotionProperties* motion_properties = jph_body.GetMotionProperties();
+    if (motion_properties == nullptr)
+    {
+        return false;
+    }
+
+    // 0 / 负质量会让倒数质量变成 inf，进积分就是 NaN 位置，而一个 NaN 物体会把
+    // 整个 broadphase 拖垮。夹到一个极小正数，比"照单全收然后整场炸掉"好。
+    const float safe_mass = (mass > kMinMass) ? mass : kMinMass;
+
+    // ScaleToMass 把**质量和惯性张量一起**按新质量缩放：只改倒数质量的话，一个
+    // 10kg 的箱子会带着 1kg 的转动惯量，推起来对了、转起来飞快。
+    JPH::MassProperties mass_properties = jph_body.GetShape()->GetMassProperties();
+    mass_properties.ScaleToMass(safe_mass);
+    motion_properties->SetMassProperties(JPH::EAllowedDOFs::All, mass_properties);
+    return true;
+}
+
+bool PhysicsScene::GetGravityFactor(uint32_t body_id, float& out_factor) const
+{
+    if (body_id == s_InvalidRigidbodyId)
+    {
+        return false;
+    }
+
+    const JPH::BodyInterface& body_interface = m_Physics.m_JoltPhysicsSystem->GetBodyInterface();
+    out_factor = body_interface.GetGravityFactor(JPH::BodyID(body_id));
+    return true;
+}
+
+bool PhysicsScene::SetGravityFactor(uint32_t body_id, float factor)
+{
+    if (body_id == s_InvalidRigidbodyId)
+    {
+        return false;
+    }
+
+    JPH::BodyInterface& body_interface = m_Physics.m_JoltPhysicsSystem->GetBodyInterface();
+    body_interface.SetGravityFactor(JPH::BodyID(body_id), factor);
+    return true;
+}
+
+// damping 挂在 MotionProperties 上，而 BodyInterface 没有转发这两个访问器
+// （它只转发了 gravity factor），所以下面四个方法各自拿一次 Body 锁。
+bool PhysicsScene::GetLinearDamping(uint32_t body_id, float& out_damping) const
+{
+    if (body_id == s_InvalidRigidbodyId)
+    {
+        return false;
+    }
+
+    JPH::BodyLockRead body_lock(m_Physics.m_JoltPhysicsSystem->GetBodyLockInterface(), JPH::BodyID(body_id));
+    if (!body_lock.Succeeded())
+    {
+        return false;
+    }
+
+    const JPH::Body& jph_body = body_lock.GetBody();
+    if (!jph_body.IsDynamic())
+    {
+        out_damping = 0.f;
+        return false;
+    }
+
+    out_damping = jph_body.GetMotionProperties()->GetLinearDamping();
+    return true;
+}
+
+bool PhysicsScene::SetLinearDamping(uint32_t body_id, float damping)
+{
+    if (body_id == s_InvalidRigidbodyId)
+    {
+        return false;
+    }
+
+    JPH::BodyLockWrite body_lock(m_Physics.m_JoltPhysicsSystem->GetBodyLockInterface(), JPH::BodyID(body_id));
+    if (!body_lock.Succeeded())
+    {
+        return false;
+    }
+
+    JPH::Body& jph_body = body_lock.GetBody();
+    if (!jph_body.IsDynamic())
+    {
+        return false;
+    }
+
+    jph_body.GetMotionProperties()->SetLinearDamping(damping);
+    return true;
+}
+
+bool PhysicsScene::GetAngularDamping(uint32_t body_id, float& out_damping) const
+{
+    if (body_id == s_InvalidRigidbodyId)
+    {
+        return false;
+    }
+
+    JPH::BodyLockRead body_lock(m_Physics.m_JoltPhysicsSystem->GetBodyLockInterface(), JPH::BodyID(body_id));
+    if (!body_lock.Succeeded())
+    {
+        return false;
+    }
+
+    const JPH::Body& jph_body = body_lock.GetBody();
+    if (!jph_body.IsDynamic())
+    {
+        out_damping = 0.f;
+        return false;
+    }
+
+    out_damping = jph_body.GetMotionProperties()->GetAngularDamping();
+    return true;
+}
+
+bool PhysicsScene::SetAngularDamping(uint32_t body_id, float damping)
+{
+    if (body_id == s_InvalidRigidbodyId)
+    {
+        return false;
+    }
+
+    JPH::BodyLockWrite body_lock(m_Physics.m_JoltPhysicsSystem->GetBodyLockInterface(), JPH::BodyID(body_id));
+    if (!body_lock.Succeeded())
+    {
+        return false;
+    }
+
+    JPH::Body& jph_body = body_lock.GetBody();
+    if (!jph_body.IsDynamic())
+    {
+        return false;
+    }
+
+    jph_body.GetMotionProperties()->SetAngularDamping(damping);
+    return true;
+}
+
+bool PhysicsScene::AddTorque(uint32_t body_id, const Vector3& torque)
+{
+    if (body_id == s_InvalidRigidbodyId)
+    {
+        return false;
+    }
+
+    JPH::BodyInterface& body_interface = m_Physics.m_JoltPhysicsSystem->GetBodyInterface();
+    // BodyInterface 的 AddTorque 会顺带唤醒睡着的物体，而 Body::AddTorque 不会
+    // —— 脚本"给睡着的箱子一个力矩"当然希望它转起来。
+    body_interface.AddTorque(JPH::BodyID(body_id), toVec3(torque));
+    return true;
+}
+
+bool PhysicsScene::AddAngularImpulse(uint32_t body_id, const Vector3& angular_impulse)
+{
+    if (body_id == s_InvalidRigidbodyId)
+    {
+        return false;
+    }
+
+    JPH::BodyInterface& body_interface = m_Physics.m_JoltPhysicsSystem->GetBodyInterface();
+    body_interface.AddAngularImpulse(JPH::BodyID(body_id), toVec3(angular_impulse));
+    return true;
+}
+
+bool PhysicsScene::AddForceAtPosition(uint32_t body_id, const Vector3& force, const Vector3& position)
+{
+    if (body_id == s_InvalidRigidbodyId)
+    {
+        return false;
+    }
+
+    JPH::BodyInterface& body_interface = m_Physics.m_JoltPhysicsSystem->GetBodyInterface();
+    body_interface.AddForce(JPH::BodyID(body_id), toVec3(force), toVec3(position));
+    return true;
+}
+
+bool PhysicsScene::AddImpulseAtPosition(uint32_t body_id, const Vector3& impulse, const Vector3& position)
+{
+    if (body_id == s_InvalidRigidbodyId)
+    {
+        return false;
+    }
+
+    JPH::BodyInterface& body_interface = m_Physics.m_JoltPhysicsSystem->GetBodyInterface();
+    body_interface.AddImpulse(JPH::BodyID(body_id), toVec3(impulse), toVec3(position));
+    return true;
+}
+
+bool PhysicsScene::SetRigidBodyPosition(uint32_t body_id, const Vector3& position)
+{
+    if (body_id == s_InvalidRigidbodyId)
+    {
+        return false;
+    }
+
+    JPH::BodyInterface& body_interface = m_Physics.m_JoltPhysicsSystem->GetBodyInterface();
+    body_interface.SetPosition(JPH::BodyID(body_id), toVec3(position), JPH::EActivation::Activate);
+    return true;
+}
+
+bool PhysicsScene::SetRigidBodyRotation(uint32_t body_id, const Quaternion& rotation)
+{
+    if (body_id == s_InvalidRigidbodyId)
+    {
+        return false;
+    }
+
+    JPH::BodyInterface& body_interface = m_Physics.m_JoltPhysicsSystem->GetBodyInterface();
+    body_interface.SetRotation(JPH::BodyID(body_id), toQuat(rotation), JPH::EActivation::Activate);
+    return true;
+}
+
+bool PhysicsScene::MoveKinematic(uint32_t body_id,
+                                 const Vector3& target_position,
+                                 const Quaternion& target_rotation,
+                                 float delta_time)
+{
+    if (body_id == s_InvalidRigidbodyId)
+    {
+        return false;
+    }
+
+    // deltaTime 为 0 时 Jolt 算出的速度是 inf（位移 / 0），所以夹到极小正数：
+    // 调用方传 0 是"我没想清楚"，不是"我要无穷大的速度"。
+    const float safe_delta = (delta_time > kMinDeltaTime) ? delta_time : kMinDeltaTime;
+
+    JPH::BodyInterface& body_interface = m_Physics.m_JoltPhysicsSystem->GetBodyInterface();
+    body_interface.MoveKinematic(JPH::BodyID(body_id), toVec3(target_position), toQuat(target_rotation),
+                                 safe_delta);
+    return true;
+}
+
+bool PhysicsScene::IsSleeping(uint32_t body_id, bool& out_is_sleeping) const
+{
+    if (body_id == s_InvalidRigidbodyId)
+    {
+        return false;
+    }
+
+    const JPH::BodyInterface& body_interface = m_Physics.m_JoltPhysicsSystem->GetBodyInterface();
+    // IsActive 而不是 IsSleeping：Jolt 的 BodyInterface 只有前者，而"不在模拟"
+    // 正是 Unity 的 isSleeping 的含义。
+    out_is_sleeping = !body_interface.IsActive(JPH::BodyID(body_id));
+    return true;
+}
+
+bool PhysicsScene::SleepRigidBody(uint32_t body_id)
+{
+    if (body_id == s_InvalidRigidbodyId)
+    {
+        return false;
+    }
+
+    JPH::BodyInterface& body_interface = m_Physics.m_JoltPhysicsSystem->GetBodyInterface();
+    body_interface.DeactivateBody(JPH::BodyID(body_id));
+    return true;
+}
+
+bool PhysicsScene::WakeRigidBody(uint32_t body_id)
+{
+    if (body_id == s_InvalidRigidbodyId)
+    {
+        return false;
+    }
+
+    JPH::BodyInterface& body_interface = m_Physics.m_JoltPhysicsSystem->GetBodyInterface();
+    body_interface.ActivateBody(JPH::BodyID(body_id));
     return true;
 }
 
