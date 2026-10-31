@@ -65,6 +65,32 @@ public:
         }
     }
 
+    /// Unity 的 `Camera.fieldOfView` 是**垂直**视场角。引擎内部主存的是水平
+    /// fovx 并由 aspect 推出 fovy（见 SetAspect），所以"按垂直角设置"要把用户
+    /// 给的值换算回 fovx 再走同一条路 —— 直接写 m_Fovy 的话下一次 SetAspect
+    /// 就会把它覆盖掉，`camera.fieldOfView = 60` 会静默失效。
+    ///
+    /// 与 setFOVx 一样受 [MIN_FOV, MAX_FOV] 夹取：极端宽高比下（aspect > 约
+    /// 3.2）想表达的垂直角需要超出上限的水平角，此时设进去和读出来的值会不
+    /// 相等。这是引擎已有的夹取，不是换算写错了。
+    void setFOVy(float fovy)
+    {
+        const float clamped = Math::Clamp(fovy, MIN_FOV, MAX_FOV);
+        if (m_Aspect <= 0.0f)
+        {
+            // 还没有 aspect（相机刚建、视口还没定尺寸）：fovy 推不出来也用不上，
+            // 先把用户要的垂直角记下来。
+            m_Fovy = clamped;
+            return;
+        }
+        // tan(fovx/2) = tan(fovy/2) * aspect  ——  SetAspect 里那条公式反过来。
+        m_Fovx = Math::Clamp(Radian(Math::atan(Math::tan(Radian(Degree(clamped * 0.5f))) * m_Aspect) *
+                                    2.0f)
+                                 .valueDegrees(),
+                             MIN_FOV, MAX_FOV);
+        SetAspect(m_Aspect);
+    }
+
     // Unity-style: Set/get target RenderTexture
     void setTargetTexture(const std::string& texture_id) { m_TargetTextureId = texture_id; }
     const std::string& getTargetTexture() const { return m_TargetTextureId; }

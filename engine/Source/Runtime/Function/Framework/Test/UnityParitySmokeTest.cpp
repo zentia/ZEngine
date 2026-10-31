@@ -48,6 +48,9 @@
 #include "Runtime/Function/Render/WindowSystem.h"
 #include "Runtime/Project/ProjectInfo.h"
 #include "Runtime/Resource/Config/ConfigManager.h"
+#include "Runtime/Function/Render/RenderCamera.h"
+#include "Runtime/Function/Render/RenderSystem.h"
+#include "Runtime/Scripting/ScriptCamera/ScriptCamera.h"
 #include "Runtime/Scripting/ScriptDebug/ScriptDebug.h"
 #include "Runtime/Scripting/ScriptRandom/ScriptRandom.h"
 #include "Runtime/Scripting/ScriptScene/ScriptScene.h"
@@ -71,6 +74,8 @@ template<> void RegisterKlass<Component>();
 template<> void RegisterKlass<Transform>();
 template<> void RegisterKlass<GameObject>();
 template<> void RegisterKlass<Random>();
+template<> void RegisterKlass<Camera>();
+template<> void RegisterKlass<Ray>();
 
 #include <cmath>
 #include <cstdio>
@@ -1955,6 +1960,8 @@ namespace
         RegisterKlass<Transform>();
         RegisterKlass<GameObject>();
         RegisterKlass<Random>();
+        RegisterKlass<Camera>();
+        RegisterKlass<Ray>();
         type_manager.InitializeAllTypes();
     }
 
@@ -2376,6 +2383,255 @@ namespace
         Check(unseeded >= 0.0f && unseeded < 1.0f, "W31", "and the stream it starts is still in [0, 1)");
     }
 
+    // ---------------------------------------------------------------- Y ----
+    /// 脚本侧 `Camera` / `Ray` 的行为。
+    ///
+    /// 这一组最要紧的是**屏幕坐标的朝向**和 **z 的含义**。两处写反都编译得过、
+    /// 跑得起来，表现分别是"点哪都点反"和"只在画面边缘错"。
+    ///
+    /// 夹具：一台摆在原点、朝 +Y 看、up = +Z 的相机（`RenderCamera` 自己的基是
+    /// X=right / Y=forward / Z=up）。near 0.1 / far 1000 / aspect 16:9 / 垂直
+    /// fov 60° —— 注意 `RenderCamera` 的默认值是 near=1000、far=0.1（**反的**），
+    /// 不显式设的话投影出来的深度是反的，而画面照常能出。
+    /// RenderCamera 不可拷贝（ZCLASS 的 Object 基类删了拷贝构造），所以按引用
+    /// 填，不能按值返回。
+    void MakeRenderCamera(RenderCamera& rc)
+    {
+        rc.m_Znear = 0.1f;
+        rc.m_Zfar = 1000.0f;
+        rc.SetAspect(16.0f / 9.0f);
+        rc.setFOVy(60.0f);
+        rc.LookAt(Vector3(0.f, 0.f, 0.f), Vector3(0.f, 10.f, 0.f), Vector3(0.f, 0.f, 1.f));
+    }
+
+    void TestCameraFacade()
+    {
+        // --- 门面是注册过、脚本能按名字找到的类型 ------------------------
+        const Type* camera_type = TypeManager::GetInstance().ClassNameToType("Camera");
+        Check(camera_type != nullptr && camera_type->GetFactory() != nullptr, "Y0",
+              "scripts can look up a factored class named 'Camera'");
+        const Type* ray_type = TypeManager::GetInstance().ClassNameToType("Ray");
+        Check(ray_type != nullptr && ray_type->GetFactory() != nullptr, "Y1",
+              "and one named 'Ray'");
+
+        // --- 没有 RenderSystem 时的降级：null / 0 / 空，不是崩 -----------
+        Check(GET_SYSTEM(RenderSystem) == nullptr, "Y2", "(the fixture has no RenderSystem)");
+        Check(Camera::GetMain() == nullptr, "Y3", "no render system -> GetMain() is null");
+        Check(Camera::GetCount() == 0, "Y4", "and zero cameras");
+        Check(Camera::GetCameraAt(0) == nullptr, "Y5", "GetCameraAt(0) is null");
+        Check(Camera::GetCameraAt(-1) == nullptr, "Y6", "GetCameraAt(-1) is null");
+        Check(Camera::GetAllCameras().empty(), "Y7", "and the list is empty");
+
+        // --- 未绑定的 Camera：一切返回"空"，不是未定义 -------------------
+        Camera unbound;
+        Check(!unbound.IsValid(), "Y8", "an unbound Camera is not valid");
+        Check(Near(unbound.GetFieldOfView(), 0.0f), "Y9", "and reads 0 fov (not a stale value)");
+        Check(Near(unbound.GetAspect(), 0.0f), "Y10", "and 0 aspect");
+        Check(Near(unbound.WorldToScreenPoint(Vector3::UNIT_Z), Vector3::ZERO, 1.0e-6f), "Y11",
+              "WorldToScreenPoint returns zero rather than NaN");
+        Check(unbound.ScreenPointToRay(Vector2(0.5f, 0.5f)) == nullptr, "Y12",
+              "ScreenPointToRay returns null");
+        Check(unbound.GetPixelWidth() > 0 && unbound.GetPixelHeight() > 0, "Y13",
+              "pixel size falls back to the screen size");
+
+        // --- 绑上一台真实的 RenderCamera --------------------------------
+        RenderCamera rc;
+        MakeRenderCamera(rc);
+        Camera cam;
+        cam.Bind(&rc);
+        Check(cam.IsValid(), "Y14", "binding makes the Camera valid");
+        Check(cam.GetPixelWidth() == Screen::GetWidth() && cam.GetPixelHeight() == Screen::GetHeight(),
+              "Y15", "pixel size is the screen size");
+
+        // --- 投影参数 ----------------------------------------------------
+        // 垂直 fov：60 进 60 出。返回水平 fov 的话这里会是 91.5 —— 而 Unity 的
+        // fieldOfView 是垂直的，移植过来的脚本算视锥高度时会整个算错。
+        Check(Near(cam.GetFieldOfView(), 60.0f, 0.01f), "Y16", "fieldOfView is the VERTICAL fov");
+        Check(std::fabs(cam.GetFieldOfView() - 91.5f) > 1.0f, "Y17",
+              "and is not the horizontal one (91.5 at 16:9)");
+        // 改 fov 必须真的改到投影上。只写 m_Fovy 的话下一次 SetAspect 会把它盖
+        // 掉，读出来还是 60，但画面纹丝不动 —— 静默的错行为。
+        const Vector3 before_fov = cam.WorldToScreenPoint(Vector3(0.f, 10.f, 1.f));
+        cam.SetFieldOfView(30.0f);
+        Check(Near(cam.GetFieldOfView(), 30.0f, 0.01f), "Y18", "SetFieldOfView(30) reads back 30");
+        const Vector3 after_fov = cam.WorldToScreenPoint(Vector3(0.f, 10.f, 1.f));
+        // 视场**变窄**，同一个世界偏移量在屏幕上占的比例反而**变大**（60° 时偏
+        // 62px，30° 时偏 134px）。方向写反的断言会通过"没变"的实现，所以这里连
+        // 大小一起判。
+        Check(std::fabs(after_fov.y - static_cast<float>(cam.GetPixelHeight()) * 0.5f) >
+                  std::fabs(before_fov.y - static_cast<float>(cam.GetPixelHeight()) * 0.5f) + 1.0f,
+              "Y19", "and the projection actually narrowed (a narrower fov pushes the point OUT)");
+        cam.SetFieldOfView(60.0f);
+
+        cam.SetNearClipPlane(0.5f);
+        Check(Near(cam.GetNearClipPlane(), 0.5f, 1.0e-6f), "Y20", "near clip round-trips");
+        cam.SetNearClipPlane(0.0f);
+        Check(cam.GetNearClipPlane() > 0.0f, "Y21",
+              "a zero near clip is clamped, not accepted (w would be 0 -> NaN everywhere)");
+        cam.SetNearClipPlane(0.1f);
+        cam.SetFarClipPlane(500.0f);
+        Check(Near(cam.GetFarClipPlane(), 500.0f, 1.0e-6f), "Y22", "far clip round-trips");
+        cam.SetFarClipPlane(0.05f);
+        Check(cam.GetFarClipPlane() > cam.GetNearClipPlane(), "Y23",
+              "and a far clip below near is pushed above it (inverted depth flips the scene silently)");
+        cam.SetFarClipPlane(1000.0f);
+
+        cam.SetAspect(1.0f);
+        Check(Near(cam.GetAspect(), 1.0f, 1.0e-6f), "Y24", "aspect round-trips");
+        cam.SetAspect(16.0f / 9.0f);
+
+        Check(!cam.GetOrthographic(), "Y25", "the fixture is a perspective camera");
+        cam.SetOrthographicSize(7.5f);
+        Check(Near(cam.GetOrthographicSize(), 7.5f, 1.0e-6f), "Y26", "orthographicSize round-trips");
+        cam.SetOrthographic(true);
+        Check(cam.GetOrthographic(), "Y27", "and orthographic round-trips");
+        cam.SetOrthographic(false);
+
+        // --- 屏幕坐标的朝向 ----------------------------------------------
+        const float w = static_cast<float>(cam.GetPixelWidth());
+        const float h = static_cast<float>(cam.GetPixelHeight());
+        const Vector3 centre = cam.WorldToScreenPoint(Vector3(0.f, 10.f, 0.f));
+        Check(Near(centre.x, w * 0.5f, 0.5f) && Near(centre.y, h * 0.5f, 0.5f), "Y28",
+              "a point straight ahead lands in the middle of the screen");
+        // 世界里的"上"必须落在**更大**的屏幕 y 上（Unity 的屏幕原点在左下角）。
+        // 反了的话 ScreenPointToRay 会点天花板选中地板，而且不报错。
+        const Vector3 above = cam.WorldToScreenPoint(Vector3(0.f, 10.f, 1.f));
+        Check(above.y > h * 0.5f + 1.0f, "Y29",
+              "world up maps to a LARGER screen y (bottom-left origin)");
+        Check(Near(above.x, w * 0.5f, 0.5f), "Y30", "and does not move sideways");
+        const Vector3 right = cam.WorldToScreenPoint(Vector3(1.f, 10.f, 0.f));
+        Check(right.x > w * 0.5f + 1.0f, "Y31", "camera right maps to a larger screen x");
+        Check(Near(right.y, h * 0.5f, 0.5f), "Y32", "and does not move vertically");
+
+        // --- z 是"沿视线的深度"，不是欧氏距离 ----------------------------
+        Check(Near(centre.z, 10.0f, 0.01f), "Y33", "z is the depth straight ahead");
+        const Vector3 twice = cam.WorldToScreenPoint(Vector3(0.f, 20.f, 0.f));
+        Check(Near(twice.z, 20.0f, 0.01f), "Y34", "and doubles with the distance");
+        // 按欧氏距离取 z 的话下面这条会在**画面边缘**错（正中间两者相等，只测中
+        // 间就漏了）：点在 (6, 10, 4)，欧氏距离 7.2，投影到视线方向是 10。
+        const Vector3 off_axis = cam.WorldToScreenPoint(Vector3(6.f, 10.f, 4.f));
+        Check(Near(off_axis.z, 10.0f, 0.01f), "Y35",
+              "off-centre: z is the depth ALONG the view direction, not the euclidean distance");
+
+        // --- 往返 --------------------------------------------------------
+        // 正中间一个点测不出"深度按投影还是按欧氏距离"，必须带上偏心点。
+        const Vector3 samples[3] = {Vector3(0.f, 10.f, 0.f), Vector3(6.f, 10.f, 4.f),
+                                    Vector3(-3.f, 25.f, -2.f)};
+        bool round_trips = true;
+        for (const Vector3& p : samples)
+        {
+            const Vector3 back = cam.ScreenToWorldPoint(cam.WorldToScreenPoint(p));
+            if (!Near(back, p, 0.05f))
+            {
+                round_trips = false;
+            }
+        }
+        Check(round_trips, "Y36",
+              "ScreenToWorldPoint inverts WorldToScreenPoint (incl. off-centre)");
+
+        // --- 视口坐标 ----------------------------------------------------
+        const Vector3 vp = cam.WorldToViewportPoint(Vector3(0.f, 10.f, 0.f));
+        Check(Near(vp.x, 0.5f, 1.0e-3f) && Near(vp.y, 0.5f, 1.0e-3f), "Y37",
+              "the centre is viewport (0.5, 0.5)");
+        const Vector3 vp_above = cam.WorldToViewportPoint(Vector3(0.f, 10.f, 1.f));
+        Check(vp_above.y > 0.5f && vp_above.y <= 1.0f, "Y38", "and world up is above 0.5");
+        bool viewport_round_trips = true;
+        for (const Vector3& p : samples)
+        {
+            const Vector3 back = cam.ViewportToWorldPoint(cam.WorldToViewportPoint(p));
+            if (!Near(back, p, 0.05f))
+            {
+                viewport_round_trips = false;
+            }
+        }
+        Check(viewport_round_trips, "Y39", "ViewportToWorldPoint inverts WorldToViewportPoint");
+        // 视口 = 屏幕 / 尺寸，两条路径必须给出同一个世界点。
+        const Vector3 via_screen = cam.ScreenToWorldPoint(Vector3(vp.x * w, vp.y * h, vp.z));
+        const Vector3 via_viewport = cam.ViewportToWorldPoint(vp);
+        Check(Near(via_screen, via_viewport, 0.05f), "Y40", "screen and viewport paths agree");
+
+        // --- 射线 --------------------------------------------------------
+        Ray* centre_ray = cam.ViewportPointToRay(Vector2(0.5f, 0.5f));
+        Check(centre_ray != nullptr, "Y41", "ViewportPointToRay returns a ray");
+        if (centre_ray == nullptr)
+        {
+            return;
+        }
+        Check(Near(centre_ray->GetOrigin(), rc.position(), 1.0e-3f), "Y42",
+              "the perspective ray starts at the camera position");
+        Check(Near(centre_ray->GetDirection(), rc.forward(), 1.0e-3f), "Y43",
+              "and the centre ray points along the camera's forward");
+        Check(Near(centre_ray->GetDirection().length(), 1.0f, 1.0e-3f), "Y44",
+              "the direction is normalized");
+        Check(Near(centre_ray->GetPoint(10.0f), Vector3(0.f, 10.f, 0.f), 0.05f), "Y45",
+              "Ray.GetPoint(distance) walks along the ray");
+        // 右上角：x 朝右、z 朝上。这里翻一次就点反了。
+        Ray* corner_ray = cam.ViewportPointToRay(Vector2(0.9f, 0.9f));
+        Check(corner_ray != nullptr && corner_ray->GetDirection().x > 0.0f &&
+                  corner_ray->GetDirection().z > 0.0f,
+              "Y46", "the top-right viewport corner aims right and up");
+        // 正交相机没有"会聚点"：起点必须落在近平面上，否则整条射线偏出视锥。
+        cam.SetOrthographic(true);
+        Ray* ortho_ray = cam.ViewportPointToRay(Vector2(0.5f, 0.5f));
+        Check(ortho_ray != nullptr && !Near(ortho_ray->GetOrigin(), rc.position(), 1.0e-3f) &&
+                  Near(ortho_ray->GetDirection(), rc.forward(), 1.0e-3f),
+              "Y47",
+              "an orthographic ray starts off the camera position and keeps the forward direction");
+        cam.SetOrthographic(false);
+        // 屏幕路径和视口路径给出同一条射线。
+        Ray* via_screen_ray = cam.ScreenPointToRay(Vector2(w * 0.5f, h * 0.5f));
+        Check(via_screen_ray != nullptr && Near(via_screen_ray->GetDirection(), rc.forward(), 1.0e-3f),
+              "Y48", "ScreenPointToRay at the screen centre matches the viewport ray");
+    }
+
+    // ---------------------------------------------------------------- Z ----
+    void TestCameraWiring()
+    {
+        const std::string header = ReadFile("Source/Runtime/Scripting/ScriptCamera/ScriptCamera.h");
+        Check(!header.empty(), "Z0", "ScriptCamera.h is readable");
+        Check(CountOccurrences(header, "class Camera :") >= 1, "Z1", "Camera is declared");
+        Check(CountOccurrences(header, "class Ray :") >= 1, "Z2", "Ray is declared");
+        Check(CountOccurrences(header, "ZFUNCTION()") >= 30, "Z3",
+              "all 30 entry points carry ZFUNCTION()");
+        Check(CountOccurrences(header, "ZSCRIPTPROPERTY(") >= 8, "Z4",
+              "the Unity properties are published (fieldOfView, nearClipPlane, ...)");
+        // 屏幕朝向是最容易写反的一处，而写反了**不报任何错**。守的是"翻转这件事
+        // 在头文件里写清楚了"。
+        Check(CountOccurrences(header, "左下角") >= 2, "Z5",
+              "the bottom-left screen origin is documented");
+
+        const std::string source = ReadFile("Source/Runtime/Scripting/ScriptCamera/ScriptCamera.cpp");
+        Check(!source.empty(), "Z6", "ScriptCamera.cpp is readable");
+        // Y 翻转必须真的在代码里。只断言"有个函数叫这名"没用 —— 判的是那一行算术。
+        Check(CountOccurrences(source, "0.5f - ndc_y * 0.5f") >= 1, "Z7",
+              "screen y is flipped from NDC y (0.5 - ndc*0.5)");
+        // 缓存按 RenderCamera*，不是按序号：序号会随增删相机滑动，脚本手里那个
+        // Camera 会突然指向另一台。
+        Check(CountOccurrences(source, "unordered_map<RenderCamera*") >= 2, "Z8",
+              "Camera and Ray instances are cached per RenderCamera*");
+        // 越界夹紧到第 0 台是最阴的一类：脚本 `for (i=0..count)` 写错时会静默地又
+        // 拿到第 0 台。headless 没有 RenderSystem 走不到那条分支，所以判源码。
+        Check(CountOccurrences(source, "index >= static_cast<int>(cameras.size())") >= 1 &&
+                  CountOccurrences(source, "index = 0;") == 0,
+              "Z9", "GetCameraAt out of range returns null instead of clamping to 0");
+        // 必须走 NoJitter：TAA 抖动会让拾取射线每帧偏半个像素。
+        Check(CountOccurrences(source, "GetProjectionMatrixNoJitter()") >= 2 &&
+                  CountOccurrences(source, "->GetProjectionMatrix()") == 0,
+              "Z10", "conversion uses the un-jittered projection (picking must not wobble)");
+        // w≈0 的守卫：漏了就是 NaN 顺着脚本的算术传遍整个 UI。
+        Check(CountOccurrences(source, "std::fabs(clip.w) < 1.0e-6f") >= 2, "Z11",
+              "degenerate w is guarded in both directions");
+        // 深度必须按"沿视线投影"算，不能是欧氏距离。两者只在正中间相等。
+        Check(CountOccurrences(source, "dotProduct(m_RenderCamera->forward())") >= 2, "Z12",
+              "depth is measured along the view direction, not as a distance");
+
+        const std::string camera_header = ReadFile("Source/Runtime/Function/Render/RenderCamera.h");
+        Check(!camera_header.empty(), "Z13", "RenderCamera.h is readable");
+        // `Camera.fieldOfView = v` 依赖这个 setter：没有它，门面只能直接写
+        // m_Fovy，而下一次 SetAspect 就会把那个值盖掉 —— 静默失效。
+        Check(CountOccurrences(camera_header, "void setFOVy(float fovy)") >= 1, "Z14",
+              "RenderCamera exposes a vertical-FOV setter");
+    }
     // ---------------------------------------------------------------- X ----
     void TestRandomWiring()
     {
@@ -2591,6 +2847,8 @@ int main()
     TestSceneWiring();
     TestRandomFacade();
     TestRandomWiring();
+    TestCameraFacade();
+    TestCameraWiring();
     TestWiringGate();
 
     std::printf("\n=== %d checks, %d failures ===\n", g_Checks, g_Failures);
