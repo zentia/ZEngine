@@ -236,6 +236,31 @@ bool AudioSystem::IsPlaying(AudioVoiceId in_voice) const
     return m_Mixer.IsPlaying(in_voice);
 }
 
+bool AudioSystem::IsVoicePaused(AudioVoiceId in_voice) const
+{
+    return m_Mixer.IsVoicePaused(in_voice);
+}
+
+double AudioSystem::GetVoicePlaybackTime(AudioVoiceId in_voice) const
+{
+    return m_Mixer.GetVoicePlaybackTime(in_voice);
+}
+
+uint64_t AudioSystem::GetVoicePlaybackFrames(AudioVoiceId in_voice) const
+{
+    return m_Mixer.GetVoicePlaybackFrames(in_voice);
+}
+
+double AudioSystem::GetVoiceDuration(AudioVoiceId in_voice) const
+{
+    return m_Mixer.GetVoiceDuration(in_voice);
+}
+
+bool AudioSystem::SetVoicePlaybackTime(AudioVoiceId in_voice, double in_seconds)
+{
+    return m_Mixer.SetVoicePlaybackTime(in_voice, in_seconds);
+}
+
 bool AudioSystem::UpdateVoice(AudioVoiceId in_voice, const AudioPlayParams& in_params)
 {
     return m_Mixer.UpdateVoiceParams(in_voice, in_params);

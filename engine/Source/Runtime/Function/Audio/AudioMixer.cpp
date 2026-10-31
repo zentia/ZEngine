@@ -195,6 +195,9 @@ AudioVoiceId AudioMixer::Play(const AudioClipData* in_clip, const AudioPlayParam
     }
     voice.m_FadeTarget = 1.0f;
 
+    // PlayDelayed：延迟只在开播时读一次（见 AudioPlayParams::m_DelaySeconds）。
+    voice.m_DelayRemaining = (in_params.m_DelaySeconds > 0.0f) ? in_params.m_DelaySeconds : 0.0f;
+
     m_Voices.push_back(voice);
     return voice.m_Id;
 }
@@ -269,6 +272,95 @@ AudioVoiceState AudioMixer::GetVoiceState(AudioVoiceId in_voice) const
     return (voice != nullptr) ? voice->m_State : AudioVoiceState::Stopped;
 }
 
+double AudioMixer::VoicePlaybackSecondsLocked(const Voice& in_voice) const
+{
+    if (in_voice.m_Clip == nullptr || in_voice.m_Clip->m_SampleRate == 0u)
+    {
+        return 0.0;
+    }
+    return in_voice.m_Playhead / static_cast<double>(in_voice.m_Clip->m_SampleRate);
+}
+
+double AudioMixer::GetVoicePlaybackTime(AudioVoiceId in_voice) const
+{
+    std::lock_guard<std::mutex> lock(m_Mutex);
+
+    const Voice* voice = FindVoiceLocked(in_voice);
+    if (voice == nullptr)
+    {
+        return kUnknownPlaybackTime;
+    }
+    return VoicePlaybackSecondsLocked(*voice);
+}
+
+uint64_t AudioMixer::GetVoicePlaybackFrames(AudioVoiceId in_voice) const
+{
+    std::lock_guard<std::mutex> lock(m_Mutex);
+
+    const Voice* voice = FindVoiceLocked(in_voice);
+    if (voice == nullptr)
+    {
+        return 0u;
+    }
+    return static_cast<uint64_t>(voice->m_Playhead);
+}
+
+double AudioMixer::GetVoiceDuration(AudioVoiceId in_voice) const
+{
+    std::lock_guard<std::mutex> lock(m_Mutex);
+
+    const Voice* voice = FindVoiceLocked(in_voice);
+    if (voice == nullptr || voice->m_Clip == nullptr)
+    {
+        return kUnknownPlaybackTime;
+    }
+
+    // 倍速会缩短听感时长：pitch 2 的素材半秒就放完了。`AudioSource.time` 问的
+    // 是"听到哪儿了"，所以这里要除掉 pitch。
+    const double pitch = (voice->m_Params.m_Pitch > 0.0f) ? static_cast<double>(voice->m_Params.m_Pitch) : 1.0;
+    return voice->m_Clip->GetDuration() / pitch;
+}
+
+bool AudioMixer::SetVoicePlaybackTime(AudioVoiceId in_voice, double in_seconds)
+{
+    std::lock_guard<std::mutex> lock(m_Mutex);
+
+    Voice* voice = FindVoiceLocked(in_voice);
+    if (voice == nullptr || voice->m_Clip == nullptr || voice->m_Clip->m_SampleRate == 0u)
+    {
+        return false;
+    }
+
+    const double source_frames = static_cast<double>(voice->m_Clip->GetFrameCount());
+    double frames = in_seconds * static_cast<double>(voice->m_Clip->m_SampleRate);
+    // 夹而不是拒绝：跳到末尾是合法的（"让它播完"），跳到负数没有意义。
+    if (frames < 0.0)
+    {
+        frames = 0.0;
+    }
+    // 上界是**最后一个可播帧**，不是"帧数"。
+    //
+    // 播放头等于帧数时，Render() 里 `frame_index == 帧数`，于是
+    // `m_Samples[frame_index * channels]` 是一次越界读（线性插值还要再读下一
+    // 帧）。正常播放永远碰不到这个状态 —— 播放头是在"推进之后"才判是否到头的，
+    // 到头就 finished 了 —— 只有从外面 seek 才可能把它摆到正好等于帧数。
+    //
+    // 少一帧的代价是"跳到末尾"要等下一次渲染才真正结束：同一个可观测结果，
+    // 但不是 UB。
+    const double last_playable_frame = (source_frames > 0.0) ? (source_frames - 1.0) : 0.0;
+    if (frames > last_playable_frame)
+    {
+        frames = last_playable_frame;
+    }
+    voice->m_Playhead = frames;
+    return true;
+}
+
+bool AudioMixer::IsVoicePaused(AudioVoiceId in_voice) const
+{
+    return GetVoiceState(in_voice) == AudioVoiceState::Paused;
+}
+
 bool AudioMixer::UpdateVoiceParams(AudioVoiceId in_voice, const AudioPlayParams& in_params)
 {
     std::lock_guard<std::mutex> lock(m_Mutex);
@@ -326,6 +418,18 @@ void AudioMixer::Render(float* out_frames, uint32_t in_frame_count, uint32_t in_
 
         const AudioPlayParams& params = voice.m_Params;
         const Bus& bus = m_Buses[BusIndexLocked(params.m_Bus)];
+
+        // ---- PlayDelayed 的等待段 --------------------------------------
+        //
+        // 延迟期间**不推进播放头**：这一段静音是"还没开始"，不是"播到了一段空
+        // 白"。推进的话 `PlayDelayed(2)` 之后 `time` 会是 2 而不是 0，淡入也会
+        // 在声音出现之前就跑完了。
+        if (voice.m_DelayRemaining > 0.0f)
+        {
+            voice.m_DelayRemaining -= static_cast<float>(in_frame_count) / static_cast<float>(in_sample_rate);
+            ++voice_index;
+            continue;
+        }
 
         if (voice.m_FadeRate <= 0.0f && voice.m_FadeSeconds > 0.0f)
         {

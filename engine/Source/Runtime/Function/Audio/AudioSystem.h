@@ -55,8 +55,24 @@ public:
     void StopAll(float in_fade_out_seconds = 0.0f);
     bool SetPaused(AudioVoiceId in_voice, bool in_paused);
     bool IsPlaying(AudioVoiceId in_voice) const;
+    bool IsVoicePaused(AudioVoiceId in_voice) const;
     /// Push a new emitter state (position / volume / pitch) into a live voice.
     bool UpdateVoice(AudioVoiceId in_voice, const AudioPlayParams& in_params);
+
+    // ---- 播放进度（Unity 的 `AudioSource.time` / `timeSamples`）----------
+    //
+    // 进度由 `AudioMixer::Render()` 推进，所以**没有设备在跑就没有进度**（null
+    // device 下恒为 0）。这是对的：进度是"渲染到第几帧"的结果，凭空算一个时间
+    // 反而会和实际听到的对不上。
+    //
+    // 找不到这条 voice 时返回 `AudioMixer::kUnknownPlaybackTime`(-1)，**不是 0**
+    // —— 0 是"刚开头"，拿它当"没有这条 voice"会让两者分不开。
+    double GetVoicePlaybackTime(AudioVoiceId in_voice) const;
+    uint64_t GetVoicePlaybackFrames(AudioVoiceId in_voice) const;
+    /// 素材时长（秒），已折算 `m_Pitch`。同样是 -1 表示没有这条 voice。
+    double GetVoiceDuration(AudioVoiceId in_voice) const;
+    /// 跳转。超出素材长度夹到末尾，负数夹到 0。
+    bool SetVoicePlaybackTime(AudioVoiceId in_voice, double in_seconds);
 
     // ---- listener ----
     void SetListener(const AudioListenerData& in_listener);

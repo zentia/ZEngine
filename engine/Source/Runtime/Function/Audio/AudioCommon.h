@@ -139,6 +139,13 @@ struct AudioPlayParams
     AudioDistanceModel m_DistanceModel {AudioDistanceModel::Inverse};
     /// Fade-in from silence, seconds. 0 = start immediately.
     float m_FadeInSeconds {0.0f};
+    /// 延迟启动，秒（Unity 的 `AudioSource.PlayDelayed`）。0 = 立刻。
+    ///
+    /// 放在 params 而不是给 Play() 多加一个形参：`UpdateVoiceParams` 整块替换
+    /// params，多一个形参的话组件每帧推参数时会把延迟一起抹掉。放进来之后它也
+    /// 只是"新开一条声音时的设置" —— 播放中的声音改它没有意义，mixer 只在
+    /// Play() 时读一次。
+    float m_DelaySeconds {0.0f};
     /// Higher wins when the voice cap is hit.
     int32_t m_Priority {0};
     /// Output bus. kAudioMasterBusId unless the project routed it elsewhere.

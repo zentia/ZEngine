@@ -34,6 +34,9 @@
 #include "Runtime/Core/Math/UnityRandom.h"
 #include "Runtime/Function/AI/Navigation/NavMeshAgentComponent.h"
 #include "Runtime/Function/AI/Navigation/NavigationSystem.h"
+#include "Runtime/Function/Audio/AudioDecoder.h"
+#include "Runtime/Function/Audio/AudioSystem.h"
+#include "Runtime/Function/Framework/Component/Audio/AudioSourceComponent.h"
 #include "Runtime/Function/Command/CommandSystem.h"
 #include "Runtime/Function/Framework/Component/Behaviour.h"
 #include "Runtime/Function/Framework/Level/Level.h"
@@ -112,6 +115,7 @@ template<> void RegisterKlass<PlayerPrefs>();
 #include <memory>
 #include <sstream>
 #include <string>
+#include <vector>
 
 #if defined(_MSC_VER) && defined(_DEBUG)
     #include <crtdbg.h>
@@ -5567,6 +5571,350 @@ namespace
               "and it builds the system's own mesh (so FindPath sees it immediately)");
     }
 
+    // =====================================================================
+    // AW / AV -- AudioSource 对齐 Unity（`time` / `timeSamples` / `PlayDelayed`
+    // / `Pause` / `UnPause` / `mute` / `volume` / `PlayOneShot`）。
+    //
+    // 无头下没有声卡，`AudioMixer::Render()` 没人调，于是播放进度恒为 0 —— 直接
+    // 断言进度只会测到"自己的假设"。所以这里**手动 Render**：渲染掉多少秒，就
+    // 等价于声卡把这段时间播过去了。顺带"幅度"也能量了：mute / volume 到底有没
+    // 有真的落到 DSP 上，看输出峰值就知道，不用去猜参数推没推过去。
+    // =====================================================================
+
+    constexpr uint32_t kAudioTestRate = 48000u;
+    constexpr uint32_t kAudioTestChannels = 2u;
+
+    /// 渲染掉 in_seconds 秒，返回输出峰值（0 = 全程静音）。
+    float RenderAudio(AudioSystem& in_system, float in_seconds)
+    {
+        std::vector<float> buffer(1024u * kAudioTestChannels);
+        float peak = 0.0f;
+        uint32_t remaining = static_cast<uint32_t>(in_seconds * static_cast<float>(kAudioTestRate) + 0.5f);
+        while (remaining > 0u)
+        {
+            const uint32_t chunk = std::min(remaining, 1024u);
+            std::fill(buffer.begin(), buffer.end(), 0.0f);
+            in_system.GetMixer().Render(buffer.data(), chunk, kAudioTestChannels, kAudioTestRate);
+            for (uint32_t index = 0u; index < chunk * kAudioTestChannels; ++index)
+            {
+                peak = std::max(peak, std::fabs(buffer[index]));
+            }
+            remaining -= chunk;
+        }
+        return peak;
+    }
+
+    /// 在临时目录烘一个单声道正弦当 clip。
+    ///
+    /// 仓库里没有现成音频素材，而 `AudioSystem::GetClip()` 只认能解码的文件 ——
+    /// 拿一个不存在的路径去测，只会走到"加载失败"那条路，下面所有播放断言都是
+    /// 空转（而且全是绿的全空转）。
+    std::string BakeTestClip(float in_seconds)
+    {
+        AudioClipData clip;
+        clip.m_SampleRate = kAudioTestRate;
+        clip.m_Channels = 1u;
+        clip.m_Name = "parity_tone";
+        const size_t frames = static_cast<size_t>(in_seconds * static_cast<float>(kAudioTestRate));
+        clip.m_Samples.resize(frames);
+        for (size_t index = 0u; index < frames; ++index)
+        {
+            clip.m_Samples[index] = std::sin(2.0f * 3.14159265f * 440.0f * static_cast<float>(index) /
+                                             static_cast<float>(kAudioTestRate));
+        }
+
+        std::vector<uint8_t> encoded;
+        std::string error;
+        if (!EncodeWavS16(clip, encoded, &error))
+        {
+            std::printf("      (cannot encode the synthetic clip: %s)\n", error.c_str());
+            return std::string();
+        }
+
+        const std::string path = (std::filesystem::temp_directory_path() / "zengine_audio_parity_tone.wav").string();
+        std::ofstream out(path, std::ios::binary);
+        if (!out)
+        {
+            return std::string();
+        }
+        out.write(reinterpret_cast<const char*>(encoded.data()), static_cast<std::streamsize>(encoded.size()));
+        out.close();
+        return path;
+    }
+
+    void TestAudioSource()
+    {
+        const std::string clip_path = BakeTestClip(0.5f);
+        Check(!clip_path.empty(), "AW1", "a synthetic wav clip exists on disk");
+        if (clip_path.empty())
+        {
+            return;
+        }
+
+        // 不调 Initialize()：那会真的去开 WASAPI。这里要的只是 mixer，而 mixer
+        // 不需要设备 —— 进度由测试自己 Render 推进，比让声卡线程来得更可控。
+        if (GET_SYSTEM(AudioSystem) == nullptr)
+        {
+            SystemRegistry::GetInstance().RegisterSystem(new AudioSystem());
+        }
+        AudioSystem* audio = GET_SYSTEM(AudioSystem);
+        Check(audio != nullptr, "AW2", "AudioSystem is reachable");
+        if (audio == nullptr)
+        {
+            return;
+        }
+
+        ObjectManager* om = GET_SYSTEM(ObjectManager);
+        Check(om != nullptr, "AW3", "ObjectManager is reachable");
+        if (om == nullptr)
+        {
+            return;
+        }
+
+        Level level;
+        level.setLevelResUrl("Assets/Scenes/Audio.level");
+        level.LoadObjectGraph({}, false);
+        Transform* transform = nullptr;
+        GameObject* go = MakeRuntimeObject(*om, level, &transform);
+        Check(go != nullptr, "AW4", "a runtime object with a Transform exists");
+        if (go == nullptr)
+        {
+            return;
+        }
+
+        Runtime::AudioSourceComponent* source = new Runtime::AudioSourceComponent();
+        om->AllocateAndAssignInstanceID(source);
+        go->addComponent(source);
+        source->PostLoadResource(go);
+
+        source->SetClipPath(clip_path.c_str());
+        Check(source->GetClipPath() == clip_path.c_str(), "AW5", "the clip path round-trips");
+
+        // volume / pitch / mute 都是 ZPROPERTY（私有字段 + ZHeaderTool 生成的
+        // 访问器），脚本就是走这对访问器写的 —— 测试也这么写，才是同一条路径。
+        // 2D：下面要量"峰值 == volume"，不能掺距离衰减。
+        source->ZhtScriptSet_m_SpatialBlend(0.f);
+        source->ZhtScriptSet_m_Volume(1.f);
+        source->ZhtScriptSet_m_Pitch(1.f);
+        source->ZhtScriptSet_m_Mute(false);
+        source->ZhtScriptSet_m_Loop(false);
+
+        Check(Near(source->GetClipLength(), 0.5f, 0.01f), "AW6", "clip length matches the file");
+        source->ZhtScriptSet_m_Pitch(2.f);
+        Check(Near(source->GetClipLength(), 0.25f, 0.01f), "AW7", "pitch 2 halves the audible length");
+        source->ZhtScriptSet_m_Pitch(1.f);
+
+        // --- Play ---------------------------------------------------------
+        const AudioVoiceId voice = source->Play();
+        Check(voice != kInvalidAudioVoiceId, "AW8", "Play() starts a voice");
+        Check(source->GetVoiceId() == voice, "AW9", "and the component remembers it");
+        Check(source->IsPlaying(), "AW10", "IsPlaying() is true right after Play()");
+        Check(!source->IsPaused(), "AW11", "and it is not paused");
+        Check(Near(source->GetTime(), 0.f), "AW12", "time is 0 before anything has rendered");
+        Check(source->GetTimeSamples() == 0, "AW13", "and so is timeSamples");
+
+        // --- 进度：只有 Render 会推进它 ------------------------------------
+        RenderAudio(*audio, 0.1f);
+        Check(Near(source->GetTime(), 0.1f, 0.01f), "AW14", "rendering 0.1 s advances time by 0.1 s");
+        Check(source->GetTimeSamples() > 4000 && source->GetTimeSamples() < 5600, "AW15",
+              "timeSamples tracks it in source frames (4800 at 48 kHz)");
+        Check(Near(static_cast<float>(audio->GetVoiceDuration(voice)), 0.5f, 0.01f), "AW16",
+              "the mixer reports the clip duration for that voice");
+        // 倍速也会缩短"听感时长"，mixer 侧同样要折算（组件的 GetClipLength 是另一
+        // 条路，别只测了一条）。
+        source->ZhtScriptSet_m_Pitch(2.f);
+        source->Play();
+        Check(Near(static_cast<float>(audio->GetVoiceDuration(source->GetVoiceId())), 0.25f, 0.01f), "AW16a",
+              "and so does the mixer's own duration (pitch 2 = half as long)");
+        source->ZhtScriptSet_m_Pitch(1.f);
+        source->Play();
+
+        // --- 跳转 ----------------------------------------------------------
+        source->SetTime(0.25f);
+        Check(Near(source->GetTime(), 0.25f, 0.01f), "AW17", "SetTime seeks");
+        // 负数也要夹：负播放头会让 `static_cast<uint64_t>(playhead)` 变成一个巨大
+        // 的下标，同样是越界读。
+        source->SetTime(-5.f);
+        Check(source->GetTimeSamples() == 0, "AW17a", "a negative seek clamps to 0");
+        source->SetTime(100.f);
+        Check(Near(source->GetTime(), 0.5f, 0.01f), "AW18", "and seeking past the end clamps to the end");
+        // 严格小于帧数，不只是"约等于时长"：播放头 == 帧数 时 Render() 里
+        // `m_Samples[frame_index * channels]` 是一次越界读。
+        Check(source->GetTimeSamples() == 23999, "AW18a",
+              "it clamps to the last playable frame, not to the frame count (that would read past the end)");
+        RenderAudio(*audio, 0.05f);
+        Check(!source->IsPlaying(), "AW19", "a non-looping clip ends once it reaches the end");
+        // 组件还没 Tick，所以句柄还挂着 —— 而 mixer 已经不认识这条 voice 了。
+        // `GetTime()` 必须把 -1（"没了"）翻译成 0，不能原样给脚本。
+        Check(Near(source->GetTime(), 0.f), "AW19a",
+              "a voice that ended on its own reports time 0, not the -1 sentinel");
+
+        // --- 暂停 / 继续 ----------------------------------------------------
+        source->Play();
+        RenderAudio(*audio, 0.1f);
+        const float before_pause = source->GetTime();
+        source->Pause();
+        Check(source->IsPaused(), "AW20", "Pause() reports paused");
+        // Unity 的语义：`AudioSource.isPlaying` 在 Pause() 之后是 **false**（文档
+        // 明说）。所以"暂停中"不等于"没了"，两件事必须分开问。
+        Check(!source->IsPlaying(), "AW21", "and isPlaying is false while paused (Unity semantics)");
+        // 而 Tick 必须认得暂停中的 voice：原来它只问 IsPlaying，于是暂停一帧之后
+        // 句柄就被当成"播完了"丢掉，`UnPause()` 从此没有对象可以恢复 —— 静默失效。
+        for (int frame = 0; frame < 10; ++frame)
+        {
+            source->Tick(1.f / 60.f);
+        }
+        Check(source->IsPaused(), "AW22", "ticking a paused source keeps the voice (pause is not stop)");
+        Check(RenderAudio(*audio, 0.2f) < 1.0e-6f, "AW23", "a paused voice renders silence");
+        Check(Near(source->GetTime(), before_pause, 0.005f), "AW24", "and does not advance");
+        source->UnPause();
+        Check(!source->IsPaused(), "AW25", "UnPause() resumes");
+        RenderAudio(*audio, 0.1f);
+        Check(source->GetTime() > before_pause + 0.05f && source->GetTime() < before_pause + 0.2f, "AW26",
+              "and it continues from where it stopped, not from 0");
+
+        // --- Stop ----------------------------------------------------------
+        source->Stop();
+        Check(!source->IsPlaying(), "AW27", "Stop() ends the voice");
+        Check(Near(source->GetTime(), 0.f), "AW28", "and time reads 0 for a source that is not playing");
+        // -1 而不是 0：**0 是合法的播放位置**，拿它当"没这条 voice"会让"还没开始"
+        // 和"已经在播"分不开。
+        Check(audio->GetVoicePlaybackTime(voice) == AudioMixer::kUnknownPlaybackTime, "AW29",
+              "a dead voice reports -1, not 0 (0 is a real position)");
+
+        // --- 一条音源只占一条 voice -----------------------------------------
+        const AudioVoiceId first = source->Play();
+        const AudioVoiceId second = source->Play();
+        Check(first != second && second != kInvalidAudioVoiceId, "AW30", "a second Play() starts a new voice");
+        Check(audio->GetMixer().GetActiveVoiceCount() == 1, "AW31",
+              "and the first one was released (one voice per source, not a stack)");
+
+        // --- PlayOneShot 不抢本音源的 voice ---------------------------------
+        const AudioVoiceId owner = source->GetVoiceId();
+        const AudioVoiceId one_shot = source->PlayOneShot(clip_path.c_str(), 1.f);
+        Check(one_shot != kInvalidAudioVoiceId, "AW32", "PlayOneShot starts a voice");
+        Check(one_shot != owner, "AW33", "a different one");
+        Check(source->GetVoiceId() == owner, "AW34", "and the source still owns its own voice");
+        Check(audio->GetMixer().GetActiveVoiceCount() == 2, "AW35", "both are alive at once (that is the point)");
+
+        // --- 一次性音效不该继承 loop ------------------------------------------
+        //
+        // `PlayOneShot` 用的是本组件的 params，但 loop 必须强行关掉：叠一个循环
+        // 体上去就再也停不下来了，而且它是"一次性"的，没人会去 Stop 它。
+        source->ZhtScriptSet_m_Loop(true);
+        audio->StopAll();
+        source->Play();
+        const AudioVoiceId looping = source->GetVoiceId();
+        const AudioVoiceId shot = source->PlayOneShot(clip_path.c_str(), 1.f);
+        Check(shot != looping && shot != kInvalidAudioVoiceId, "AW35a", "a looping source can still fire a one-shot");
+        RenderAudio(*audio, 0.6f);
+        Check(audio->IsPlaying(looping), "AW35b", "the source's own looping voice survives past one clip length");
+        Check(!audio->IsPlaying(shot), "AW35c", "and the one-shot does not inherit loop (it would never stop)");
+
+        // --- 幅度：mute / volume 必须真的落到 DSP 上 --------------------------
+        //
+        // 这是本切片那个真 bug 的判据：Tick 里原来有一条 `m_SpatialBlend <= 0`
+        // 的提前返回，于是 **2D 音源改 volume / pitch / mute 完全不生效** ——
+        // 字段是脚本直接写的，绕过了任何 setter，唯一的生效路径就是 Tick 推参数。
+        // 3D 音源因为要更新位置顺带生效了，所以这个 bug 一直没人发现。
+        audio->StopAll();
+        source->ZhtScriptSet_m_Loop(true);  // 量幅度时不能让它播完
+        source->Play();
+        source->Tick(1.f / 60.f);
+        const float full_peak = RenderAudio(*audio, 0.05f);
+        // 不是 1.0：2D 声源在正中，走等功率声像（左右各 0.707），这是对的 ——
+        // 阈值按 0.6 取，判的是"有没有声音"而不是"是不是 1.0"。
+        Check(full_peak > 0.6f, "AW36", "an unmuted 2D source at volume 1 renders at equal-power pan level");
+
+        source->ZhtScriptSet_m_Volume(0.25f);
+        source->Tick(1.f / 60.f);
+        const float quarter_peak = RenderAudio(*audio, 0.05f);
+        Check(Near(quarter_peak / full_peak, 0.25f, 0.02f), "AW37",
+              "dropping volume to 0.25 really scales the output (2D sources are pushed too)");
+
+        source->ZhtScriptSet_m_Volume(1.f);
+        source->ZhtScriptSet_m_Mute(true);
+        source->Tick(1.f / 60.f);
+        Check(RenderAudio(*audio, 0.05f) < 1.0e-6f, "AW38", "mute silences the source");
+        source->ZhtScriptSet_m_Mute(false);
+        source->Tick(1.f / 60.f);
+        Check(RenderAudio(*audio, 0.05f) > 0.6f, "AW39",
+              "and unmuting restores it (mute never destroyed the volume)");
+
+        // --- PlayDelayed -----------------------------------------------------
+        audio->StopAll();
+        source->PlayDelayed(0.5f);
+        Check(source->IsPlaying(), "AW40", "PlayDelayed() registers the voice immediately");
+        Check(Near(source->GetTime(), 0.f), "AW41", "and time is 0 (it has not started yet)");
+        Check(RenderAudio(*audio, 0.25f) < 1.0e-6f, "AW42", "the wait is silent");
+        Check(Near(source->GetTime(), 0.f), "AW43", "and still 0 half the delay later");
+        // 再渲染 0.4 s：延迟（剩 0.25）在第 12 个 1024 帧块上跑完，剩下的 0.144 s
+        // 才是真正播出去的。容差留到 0.3，专门用来区分"从 0 开始"和"把等待的
+        // 0.65 s 全算进播放头"（后者会得到 0.65）。
+        const float after_delay_peak = RenderAudio(*audio, 0.4f);
+        Check(after_delay_peak > 0.6f, "AW44", "once the delay is over it is audible");
+        Check(source->GetTime() > 0.05f && source->GetTime() < 0.3f, "AW45",
+              "and it starts counting from 0, not from the 0.65 s already elapsed");
+
+        audio->StopAll();
+    }
+
+    void TestAudioSourceWiring()
+    {
+        const std::string header = ReadFile("Source/Runtime/Function/Framework/Component/Audio/AudioSourceComponent.h");
+        Check(!header.empty(), "AV0", "AudioSourceComponent.h is readable");
+        Check(CountOccurrences(header, "ZFUNCTION()") >= 15, "AV1", "the source publishes a real script surface");
+        Check(CountOccurrences(header, "void PlayDelayed(") >= 1, "AV2", "PlayDelayed is declared");
+        Check(CountOccurrences(header, "AudioVoiceId PlayOneShot(") >= 1, "AV3", "PlayOneShot is declared");
+        Check(CountOccurrences(header, "bool IsPaused() const") >= 1, "AV4", "IsPaused is declared");
+        Check(CountOccurrences(header, "bool m_Mute") >= 1, "AV5", "mute is a serialized field");
+
+        const std::string source = ReadFile("Source/Runtime/Function/Framework/Component/Audio/AudioSourceComponent.cpp");
+        Check(!source.empty(), "AV6", "AudioSourceComponent.cpp is readable");
+        // 静音必须折进 params，而不是让脚本去改 volume（改了原值就丢了，取消静音
+        // 恢复不回去）。
+        Check(CountOccurrences(source, "params.m_Volume = m_Mute ? 0.0f : m_Volume;") >= 1, "AV7",
+              "mute is folded into the play params");
+        // 2D 音源也必须每帧推参数。`m_SpatialBlend <= 0.0f` 这个 token 特意带
+        // `.0f`：注释里提到的是不带后缀的写法，用带后缀的才不会命中注释。
+        Check(CountOccurrences(source, "m_SpatialBlend <= 0.0f") == 0, "AV8",
+              "there is no 2D early return in Tick (it would mute every parameter change)");
+        Check(CountOccurrences(source, "audio_system->UpdateVoice(m_VoiceId, BuildPlayParams());") >= 1, "AV9",
+              "Tick pushes the params every frame");
+        // Play() 必须是"延迟 0"，而不是自己再抄一遍播放逻辑（两份逻辑必然漂移）。
+        Check(CountOccurrences(source, "return PlayWithDelay(0.0f);") >= 1, "AV10",
+              "Play() is the zero-delay case of PlayWithDelay");
+        // Wwise 的 event 没有"延迟 post"这回事，只能组件自己数完再发。
+        Check(CountOccurrences(source, "m_HasWwisePendingDelay") >= 4, "AV11",
+              "the Wwise route counts its own delay down");
+        // `IsPlaying()` 在暂停时是 false，所以 Tick 不能只问它 —— 否则暂停一帧就
+        // 把句柄当"播完了"丢掉，UnPause() 从此没有对象可恢复。
+        Check(CountOccurrences(source, "audio_system->IsVoicePaused(m_VoiceId)") >= 1, "AV22",
+              "Tick treats a paused voice as alive");
+
+        const std::string mixer_header = ReadFile("Source/Runtime/Function/Audio/AudioMixer.h");
+        Check(CountOccurrences(mixer_header, "m_DelayRemaining") >= 1, "AV12", "the mixer holds the pending delay");
+        Check(CountOccurrences(mixer_header, "kUnknownPlaybackTime") >= 2, "AV13",
+              "and reports a missing voice as -1, not 0");
+        const std::string mixer_source = ReadFile("Source/Runtime/Function/Audio/AudioMixer.cpp");
+        Check(CountOccurrences(mixer_source, "voice.m_DelayRemaining = (in_params.m_DelaySeconds") >= 1, "AV14",
+              "Play() seeds it from the requested delay once");
+        Check(CountOccurrences(mixer_source, "voice.m_DelayRemaining -= ") >= 1, "AV15", "and Render counts it down");
+        Check(CountOccurrences(mixer_source, "voice->m_Clip->GetDuration() / pitch") >= 1, "AV16",
+              "the voice duration accounts for pitch");
+        Check(CountOccurrences(mixer_source, "last_playable_frame") >= 2, "AV17",
+              "and seeking clamps to the last playable frame (frame_count would read out of bounds)");
+
+        const std::string common = ReadFile("Source/Runtime/Function/Audio/AudioCommon.h");
+        Check(CountOccurrences(common, "m_DelaySeconds") >= 1, "AV18", "the delay lives in the play params");
+
+        const std::string system_header = ReadFile("Source/Runtime/Function/Audio/AudioSystem.h");
+        Check(CountOccurrences(system_header, "GetVoicePlaybackTime") >= 1, "AV19",
+              "AudioSystem exposes the playhead");
+        Check(CountOccurrences(system_header, "SetVoicePlaybackTime") >= 1, "AV20", "and seeking");
+        Check(CountOccurrences(system_header, "IsVoicePaused") >= 1, "AV21", "and the paused state");
+    }
+
     // ---------------------------------------------------------------- B ----
     void TestWiringGate()
     {
@@ -5709,6 +6057,8 @@ int main()
     TestCameraExtrasWiring();
     TestNavMeshAgent();
     TestNavMeshAgentWiring();
+    TestAudioSource();
+    TestAudioSourceWiring();
     TestWiringGate();
 
     std::printf("\n=== %d checks, %d failures ===\n", g_Checks, g_Failures);

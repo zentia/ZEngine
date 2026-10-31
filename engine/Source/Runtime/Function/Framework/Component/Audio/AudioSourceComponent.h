@@ -44,6 +44,62 @@ namespace Runtime
         ZFUNCTION()
         AudioVoiceId GetVoiceId() const { return m_VoiceId; }
 
+        // ---- Unity 的 AudioSource 里本引擎缺的那些 ------------------------
+        //
+        // 补全前这个组件只有 5 个 ZFUNCTION（Play / Stop / SetPaused /
+        // IsPlaying / GetVoiceId），而 volume / pitch / loop / spatialBlend /
+        // minDistance / maxDistance / priority / playOnAwake 是靠 ZPROPERTY 自动
+        // 导出的字段 —— 字段有了，但"播到哪了""延迟播放""静音""在别处放一个一
+        // 次性音效"这些**动作**一个都没有。
+
+        /// 延迟 delay_seconds 秒后开始（Unity 的 `PlayDelayed`）。
+        ///
+        /// 与 `Play()` 一样会先停掉当前这条 voice。延迟期间 `IsPlaying()` 是
+        /// **true**（声音已经排上了），但 `GetTime()` 是 0 —— 还没开始播。
+        ZFUNCTION()
+        void PlayDelayed(float delay_seconds);
+
+        /// 暂停 / 继续。`Pause()` 保留播放头，`Stop()` 不保留。
+        ZFUNCTION()
+        void Pause();
+        ZFUNCTION()
+        void UnPause();
+        ZFUNCTION()
+        bool IsPaused() const;
+
+        /// **不占用本组件的 voice** 地放一个一次性音效（Unity 的
+        /// `AudioSource.PlayOneShot`）。
+        ///
+        /// 这是它和 `Play()` 唯一但关键的区别：`Play()` 会让本组件"正在播的就是
+        /// 这条"，`PlayOneShot` 不会 —— 可以在背景音乐上叠脚步声。
+        /// 返回新 voice 的 id（拿不到素材时是 0）。
+        ZFUNCTION()
+        AudioVoiceId PlayOneShot(const eastl::string& clip_path, float volume_scale);
+
+        /// 已播放的秒数（Unity 的 `time`）。
+        ///
+        /// ⚠️ 进度由 `AudioMixer::Render()` 推进 —— **没有设备在跑就恒为 0**（无头
+        /// / null device）。不是 bug：进度是"渲染到第几帧"的结果。
+        ZFUNCTION()
+        float GetTime() const;
+
+        /// 跳到指定秒数（Unity 的 `time` 的写端）。超出素材长度夹到末尾。
+        ZFUNCTION()
+        void SetTime(float time_seconds);
+
+        /// 已播放的**源采样帧**数（Unity 的 `timeSamples`）。
+        ZFUNCTION()
+        int GetTimeSamples() const;
+
+        /// 当前 clip 的时长（秒），已折算 `pitch`。没有 clip 时是 0。
+        ZFUNCTION()
+        float GetClipLength() const;
+
+        ZFUNCTION()
+        eastl::string GetClipPath() const { return m_ClipPath; }
+        ZFUNCTION()
+        void SetClipPath(const eastl::string& clip_path) { m_ClipPath = clip_path; }
+
     private:
         /// Builds AudioPlayParams from the serialized fields + current transform.
         AudioPlayParams BuildPlayParams() const;
@@ -53,6 +109,9 @@ namespace Runtime
         /// object with no allocated id has no stable identity to be an emitter.
         /// Idempotent: the id is cached in m_WwiseGameObject.
         uint64_t ResolveWwiseEmitter();
+
+        /// `Play()` / `PlayDelayed()` 共用的实现。`Play()` 就是延迟 0。
+        AudioVoiceId PlayWithDelay(float in_delay_seconds);
 
         /// Pushes the current world position/orientation to Wwise. Wwise does not
         /// read the scene graph; without this a moving emitter stays at the
@@ -76,6 +135,13 @@ namespace Runtime
         eastl::string m_BusName;
         ZPROPERTY(meta=(ClampMin=0, ClampMax=1))
         float m_Volume {1.0f};
+        /// 静音（Unity 的 `mute`）。
+        ///
+        /// 与"把 volume 调成 0"的区别是**它不改变 volume**：取消静音后音量回到
+        /// 原来的值，而调成 0 之后原来的值就丢了。脚本里"临时静音再恢复"只能用
+        /// 前者。
+        ZPROPERTY(meta=(Tooltip="Silences the source without changing its volume."))
+        bool m_Mute {false};
         ZPROPERTY(meta=(Tooltip="Playback rate multiplier (1 = original pitch)."))
         float m_Pitch {1.0f};
         ZPROPERTY()
@@ -106,5 +172,16 @@ namespace Runtime
         /// overwrite the listener transform every frame and turn all 3D audio
         /// into whatever the last emitter happened to be.
         uint64_t m_WwiseGameObject {WwiseAudioSystem::kInvalidGameObject};
+
+        /// Wwise 路线的 `PlayDelayed` 倒计时。
+        ///
+        /// 内部后端把延迟交给 mixer（见 `AudioPlayParams::m_DelaySeconds`），而
+        /// Wwise 的 event 一旦 post 出去就立刻响，没有"延迟参数" —— 只能由组件
+        /// 在 `Tick` 里数完再 post。两条路线的等待逻辑不同源，所以分开存。
+        float m_WwisePendingDelay {0.f};
+        bool m_HasWwisePendingDelay {false};
+        /// Wwise 侧**没有**"查暂停"的接口，所以组件自己记最后一次 SetPaused 的
+        /// 意图，`IsPaused()` 才能回答。
+        bool m_WwisePaused {false};
     };
 }  // namespace Runtime

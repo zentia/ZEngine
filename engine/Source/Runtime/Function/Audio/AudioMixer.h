@@ -28,6 +28,12 @@
 class AudioMixer
 {
 public:
+    /// `GetVoicePlaybackTime` / `GetVoiceDuration` 找不到 voice 时的返回值。
+    ///
+    /// 用 -1 而不是 0：**0 是一个合法的播放位置**（刚开头），拿它当"没有这条
+    /// voice"会让"还没开始"和"已经在播"分不开。
+    static constexpr double kUnknownPlaybackTime = -1.0;
+
     AudioMixer();
 
     // ---- buses ----
@@ -65,6 +71,27 @@ public:
     /// The clip pointer cannot be swapped -- start a new voice instead.
     bool UpdateVoiceParams(AudioVoiceId in_voice, const AudioPlayParams& in_params);
 
+    // ---- 播放进度（Unity 的 `AudioSource.time` / `timeSamples`）----------
+    //
+    // 进度只在 `Render()` 里推进，所以**没有设备在跑就没有进度**。这不是缺陷：
+    // 进度本来就是"渲染到第几帧"的结果，凭空算一个时间出来反而会和实际听到的
+    // 对不上。
+
+    /// 已播放的秒数。找不到这条 voice 时返回 -1（`kUnknownPlaybackTime`）。
+    double GetVoicePlaybackTime(AudioVoiceId in_voice) const;
+
+    /// 已播放的**源**帧数（不受输出采样率影响）。找不到时返回 0。
+    uint64_t GetVoicePlaybackFrames(AudioVoiceId in_voice) const;
+
+    /// 这条 voice 的素材时长（秒）；考虑 `m_Pitch`（倍速会缩短听感时长）。
+    /// 找不到时返回 -1。
+    double GetVoiceDuration(AudioVoiceId in_voice) const;
+
+    /// 跳到指定秒数。超出素材长度时夹到末尾，负数夹到 0。找不到时返回 false。
+    bool SetVoicePlaybackTime(AudioVoiceId in_voice, double in_seconds);
+
+    bool IsVoicePaused(AudioVoiceId in_voice) const;
+
     uint32_t GetActiveVoiceCount() const;
 
     // ---- rendering (audio device thread) ----
@@ -91,6 +118,8 @@ private:
         float m_FadeRate {0.0f};
         /// Remove the voice once the fade-out reaches silence.
         bool m_RemoveWhenFaded {false};
+        /// PlayDelayed 剩下的等待秒数。只在 Play() 时从 params 读一次。
+        float m_DelayRemaining {0.0f};
     };
 
     struct Bus
@@ -102,6 +131,9 @@ private:
 
     Voice* FindVoiceLocked(AudioVoiceId in_voice);
     const Voice* FindVoiceLocked(AudioVoiceId in_voice) const;
+    /// 播放头换算成"素材秒数"：源帧数 / 源采样率。播放头是**源**帧，不随输出
+    /// 采样率变，所以这里只能用素材自己的采样率。
+    double VoicePlaybackSecondsLocked(const Voice& in_voice) const;
     uint32_t BusIndexLocked(AudioBusId in_bus) const;
 
     mutable std::mutex m_Mutex;
