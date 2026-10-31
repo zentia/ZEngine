@@ -147,6 +147,26 @@ bool PhysicsScene::IsRigidBodySensor(uint32_t, bool&) const
     return false;
 }
 
+bool PhysicsScene::GetBodySurface(uint32_t, float&, float&) const
+{
+    return false;
+}
+
+bool PhysicsScene::SetBodyFriction(uint32_t, float)
+{
+    return false;
+}
+
+bool PhysicsScene::SetBodyRestitution(uint32_t, float)
+{
+    return false;
+}
+
+bool PhysicsScene::SetBodyCombineModes(uint32_t, PhysicMaterialCombine, PhysicMaterialCombine)
+{
+    return false;
+}
+
 void PhysicsScene::PollTriggerEvents(std::vector<PhysicsTriggerEvent>& out_events)
 {
     out_events.clear();

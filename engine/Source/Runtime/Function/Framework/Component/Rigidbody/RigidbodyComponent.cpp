@@ -340,6 +340,60 @@ void RigidBodyComponent::SetAngularDrag(float angular_drag)
     }
 }
 
+void RigidBodyComponent::SetFriction(float friction)
+{
+    // 负值没有物理意义，且 Jolt 明确要求"合成后的摩擦不得为负"。夹到 0 而不是
+    // 断言：脚本里 `friction = -0.1` 更可能是笔误，而一个被夹住的手感比一个在
+    // Debug 下炸掉、Release 下静默的断言好诊断。
+    m_RigidbodyRes.m_Friction = (friction > 0.f) ? friction : 0.f;
+
+    std::shared_ptr<PhysicsScene> physics_scene = GetActivePhysicsScene();
+    if (physics_scene)
+    {
+        physics_scene->SetBodyFriction(m_RigidbodyId, m_RigidbodyRes.m_Friction);
+    }
+}
+
+void RigidBodyComponent::SetBounciness(float bounciness)
+{
+    // Unity 的 bounciness 是 0..1（1 已经有能量近似误差了，再大会真的加能量）。
+    m_RigidbodyRes.m_Bounciness = (bounciness > 0.f) ? ((bounciness < 1.f) ? bounciness : 1.f) : 0.f;
+
+    std::shared_ptr<PhysicsScene> physics_scene = GetActivePhysicsScene();
+    if (physics_scene)
+    {
+        physics_scene->SetBodyRestitution(m_RigidbodyId, m_RigidbodyRes.m_Bounciness);
+    }
+}
+
+void RigidBodyComponent::SetFrictionCombine(PhysicMaterialCombine combine_mode)
+{
+    m_RigidbodyRes.SetFrictionCombine(combine_mode);
+
+    std::shared_ptr<PhysicsScene> physics_scene = GetActivePhysicsScene();
+    if (physics_scene)
+    {
+        // 两个模式一起写：user data 里两个都存，分开写会让"改了摩擦组合、弹性
+        // 组合被悄悄重置"这种事发生。
+        physics_scene->SetBodyCombineModes(m_RigidbodyId,
+                                           m_RigidbodyRes.GetFrictionCombine(),
+                                           m_RigidbodyRes.GetBounceCombine());
+    }
+}
+
+void RigidBodyComponent::SetBounceCombine(PhysicMaterialCombine combine_mode)
+{
+    m_RigidbodyRes.SetBounceCombine(combine_mode);
+
+    std::shared_ptr<PhysicsScene> physics_scene = GetActivePhysicsScene();
+    if (physics_scene)
+    {
+        physics_scene->SetBodyCombineModes(m_RigidbodyId,
+                                           m_RigidbodyRes.GetFrictionCombine(),
+                                           m_RigidbodyRes.GetBounceCombine());
+    }
+}
+
 bool RigidBodyComponent::GetUseGravity() const
 {
     std::shared_ptr<PhysicsScene> physics_scene = GetActivePhysicsScene();

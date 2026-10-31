@@ -4546,6 +4546,312 @@ namespace
               "the delay is documented as scaled game time, not wall-clock");
     }
 
+    // --------------------------------------------------------------- AO ----
+    /// Unity 的 `PhysicMaterial`：摩擦 / 弹性 / 两种组合模式。
+    ///
+    /// 组合规则（`CombineSurfaceValues`）是**纯函数**、不碰 Jolt，所以这一组能在
+    /// 没有物理世界的情况下把规则本身测干净。这是有意的：组合模式是整个特性里
+    /// 最容易搞错又最难在真世界里复现的部分（它要两个特定材质接触才走一次），
+    /// 所以规则必须能单独断言。
+    /// 一张只有一个 1x1x1 盒子、带指定表面材质的 res。
+    ///
+    /// 走 `PhysicsScene::CreateRigidBody` 而不是 SpawnBox（后者直接造 Jolt body，
+    /// 绕开了"res -> body"这一段，而那正是这个特性唯一可能没接上的地方）。
+    RigidBodyComponentRes MakeBoxRes(ObjectManager& om,
+                                     float friction,
+                                     float bounciness,
+                                     PhysicMaterialCombine friction_combine,
+                                     PhysicMaterialCombine bounce_combine)
+    {
+        RigidBodyComponentRes res;
+        res.SetActorType(RigidBodyActorType::dynamic);
+        res.m_InverseMass = 0.1f;  // 10 kg
+        res.m_Friction = friction;
+        res.m_Bounciness = bounciness;
+        res.SetFrictionCombine(friction_combine);
+        res.SetBounceCombine(bounce_combine);
+
+        // ⚠️ 必须经 ObjectManager::NewObject 而不是裸 `new`：PPtr<Geometry> 是按
+        // InstanceID 解析的，裸 new 出来的对象 id 为 0，`toShape` 里那次
+        // `static_cast<const Geometry*>(m_Geometry)` 拿到 null，建体静默失败
+        // （只是一条 LOG_ERROR，测试表现为 "body id 无效"）。
+        Box* box_geometry = om.NewObject<Box>();
+        box_geometry->m_HalfExtents = Vector3(0.5f, 0.5f, 0.5f);
+
+        RigidBodyShape* shape = om.NewObject<RigidBodyShape>();
+        shape->m_Type = RigidBodyShapeType::box;
+        shape->m_Geometry = box_geometry;
+        res.m_Shapes.push_back(shape);
+        return res;
+    }
+
+    TransformTRS MakeBoxTransform(const Vector3& position)
+    {
+        return TransformTRS(Vector3d(position), Quaternion::IDENTITY, Vector3(1.f, 1.f, 1.f));
+    }
+
+    void TestPhysicMaterialCombine()
+    {
+        using Combine = PhysicMaterialCombine;
+
+        // --- 四种模式各自的算术 -------------------------------------------
+        Check(Near(CombineSurfaceValues(0.2f, Combine::Average, 0.8f, Combine::Average), 0.5f, 1e-5f),
+              "AO0", "Average is the mean of the two");
+        Check(Near(CombineSurfaceValues(0.2f, Combine::Minimum, 0.8f, Combine::Minimum), 0.2f, 1e-5f),
+              "AO1", "Minimum takes the smaller");
+        Check(Near(CombineSurfaceValues(0.2f, Combine::Maximum, 0.8f, Combine::Maximum), 0.8f, 1e-5f),
+              "AO2", "Maximum takes the larger");
+        Check(Near(CombineSurfaceValues(0.5f, Combine::Multiply, 0.8f, Combine::Multiply), 0.4f, 1e-5f),
+              "AO3", "Multiply is the product (0.5 * 0.8 = 0.4)");
+
+        // 交换律：两种模式相同时结果必须与参数顺序无关。求解器给的两个 body 顺序
+        // 不保证（broadphase 决定），不对称的组合会让同一个接触在两帧之间跳值。
+        Check(Near(CombineSurfaceValues(0.8f, Combine::Minimum, 0.2f, Combine::Minimum),
+                   CombineSurfaceValues(0.2f, Combine::Minimum, 0.8f, Combine::Minimum), 1e-6f),
+              "AO4", "and every mode is symmetric in its two arguments");
+
+        // --- 优先级：Average < Minimum < Multiply < Maximum ----------------
+        // Unity 文档的原文规则：两个面模式不同时**取优先级高的那一个**，不是"各
+        // 让一步"。顺序即优先级，所以有效模式就是 max。
+        Check(Near(CombineSurfaceValues(0.2f, Combine::Average, 0.8f, Combine::Maximum), 0.8f, 1e-5f),
+              "AO5", "Average vs Maximum -> Maximum wins");
+        Check(Near(CombineSurfaceValues(0.2f, Combine::Average, 0.8f, Combine::Minimum), 0.2f, 1e-5f),
+              "AO6", "Average vs Minimum -> Minimum wins");
+        Check(Near(CombineSurfaceValues(0.5f, Combine::Average, 0.8f, Combine::Multiply), 0.4f, 1e-5f),
+              "AO7", "Average vs Multiply -> Multiply wins");
+        Check(Near(CombineSurfaceValues(0.2f, Combine::Minimum, 0.8f, Combine::Maximum), 0.8f, 1e-5f),
+              "AO8", "Minimum vs Maximum -> Maximum wins");
+        Check(Near(CombineSurfaceValues(0.5f, Combine::Minimum, 0.8f, Combine::Multiply), 0.4f, 1e-5f),
+              "AO9", "Minimum vs Multiply -> Multiply wins");
+
+        // 反着传也要一样：优先级判定不能依赖参数顺序，否则同一对物体换个 broadphase
+        // 顺序就换了一种手感。
+        Check(Near(CombineSurfaceValues(0.8f, Combine::Maximum, 0.2f, Combine::Average),
+                   CombineSurfaceValues(0.2f, Combine::Average, 0.8f, Combine::Maximum), 1e-6f),
+              "AO10", "priority does not depend on argument order");
+
+        // --- 默认：必须是 Unity 的 0.6 / 0 / Average -----------------------
+        RigidBodyComponentRes res;
+        Check(Near(res.m_Friction, 0.6f, 1e-6f), "AO11", "a fresh res carries Unity's default friction (0.6)");
+        Check(Near(res.m_Bounciness, 0.f, 1e-6f), "AO12", "and zero bounce, like Unity's default PhysicMaterial");
+        Check(res.GetFrictionCombine() == Combine::Average && res.GetBounceCombine() == Combine::Average,
+              "AO13", "and Average for both combines");
+
+        // 越界值必须回到 Average 而不是变成野枚举：存档里这个键可能根本不存在
+        // （老资源），也可能被手改成 7。
+        Check(ToPhysicMaterialCombine(0) == Combine::Average && ToPhysicMaterialCombine(7) == Combine::Average &&
+                  ToPhysicMaterialCombine(-3) == Combine::Average,
+              "AO14", "an out-of-range combine mode reads as Average, not garbage");
+        Check(ToPhysicMaterialCombine(static_cast<int>(Combine::Maximum)) == Combine::Maximum,
+              "AO15", "and the in-range ones round-trip");
+
+        // --- user data 打包 -----------------------------------------------
+        // 组合模式搭在 Jolt body 的 user data 上（Jolt 没有别的槽位），所以打包
+        // /解包必须是双射 —— 解错了就是一个"手感莫名其妙"的 bug，而且没法从日志
+        // 里看出来。
+        const uint64_t packed = PackCombineModes(Combine::Multiply, Combine::Maximum);
+        Check(FrictionCombineFromUserData(packed) == Combine::Multiply, "AO16",
+              "the friction combine survives the user-data round trip");
+        Check(BounceCombineFromUserData(packed) == Combine::Maximum, "AO17",
+              "and so does the bounce combine (separate bits, not the same field)");
+        // 默认值（全是 0）必须解出 Average/Average：一个没写过 user data 的 body
+        // （例如测试里直接 SpawnBox 造的）不该被当成野值。
+        Check(FrictionCombineFromUserData(0) == Combine::Average && BounceCombineFromUserData(0) == Combine::Average,
+              "AO18", "a zero user datum means Average/Average, which is the Unity default");
+    }
+
+    /// 物理材质在**真 Jolt body** 上的落地（写进去、读出来、夹住越界值）。
+    ///
+    /// 上面 AO 组只测规则；这一组测"规则真的接到了物理上"—— 一个从来没被
+    /// CreateRigidBody 读过的材质字段，和没有这个字段是一样的。
+    void TestPhysicMaterial()
+    {
+        PhysicsManager* physics_manager = GET_SYSTEM(PhysicsManager);
+        Check(physics_manager != nullptr, "AP0", "PhysicsManager is reachable");
+        if (physics_manager == nullptr)
+        {
+            return;
+        }
+
+        std::shared_ptr<PhysicsScene> scene = physics_manager->CreatePhysicsScene(Vector3(0.f, 0.f, -9.81f)).lock();
+        Check(scene != nullptr, "AP1", "a physics scene can be created");
+        if (!scene)
+        {
+            return;
+        }
+
+        const uint32_t body = SpawnBox(*scene, Vector3(0.f, 0.f, 50.f), 0, true);
+        Check(body != kInvalidPhysicsBodyId, "AP2", "a dynamic body can be spawned");
+        if (body == kInvalidPhysicsBodyId)
+        {
+            return;
+        }
+
+        // --- 读写往返 ------------------------------------------------------
+        float friction = -1.f;
+        float restitution = -1.f;
+        Check(scene->GetBodySurface(body, friction, restitution), "AP3", "the surface of a live body is readable");
+        Check(scene->SetBodyFriction(body, 0.25f) && scene->SetBodyRestitution(body, 0.75f), "AP4",
+              "friction and restitution can be written");
+        Check(scene->GetBodySurface(body, friction, restitution) && Near(friction, 0.25f, 1e-5f) &&
+                  Near(restitution, 0.75f, 1e-5f),
+              "AP5", "and read back unchanged (they are real Jolt body state, not a side table)");
+
+        // 摩擦与弹性必须是**两个独立的量**：合成后摩擦为负会让 Jolt 的行为未定义。
+        Check(scene->SetBodyFriction(body, 0.9f) && scene->GetBodySurface(body, friction, restitution) &&
+                  Near(restitution, 0.75f, 1e-5f),
+              "AP6", "writing friction does not disturb restitution");
+
+        // --- 组合模式写进 user data ----------------------------------------
+        Check(scene->SetBodyCombineModes(body, PhysicMaterialCombine::Multiply, PhysicMaterialCombine::Maximum),
+              "AP7", "the combine modes can be written to a live body");
+        // 读数只能间接验证（没有 getter），所以这里验的是"打包函数与写入用的是同一
+        // 套编码"：把同样的值喂给打包函数，再断言 Jolt 侧解出来一致。
+        Check(FrictionCombineFromUserData(PackCombineModes(PhysicMaterialCombine::Multiply,
+                                                           PhysicMaterialCombine::Maximum)) ==
+                  PhysicMaterialCombine::Multiply,
+              "AP8", "the encoding the scene writes is the one the combine callback decodes");
+
+        // --- 不存在的 body：必须是 false，不是崩 ---------------------------
+        Check(!scene->GetBodySurface(kInvalidPhysicsBodyId, friction, restitution), "AP9",
+              "an invalid body id reports failure rather than reading freed memory");
+        Check(!scene->SetBodyFriction(kInvalidPhysicsBodyId, 0.5f), "AP10", "and refuses a write");
+
+        // --- 组件层 --------------------------------------------------------
+        // 组件是脚本真正碰的那一层。这里没有活动关卡（WorldManager 没有 setter），
+        // 所以活体写入那条分支走不到 —— 但 res 的读写与夹紧是纯状态，能测。
+        RigidBodyComponent body_component;
+        Check(Near(body_component.GetFriction(), 0.6f, 1e-6f), "AP11",
+              "a fresh RigidBodyComponent reports Unity's default friction");
+        Check(Near(body_component.GetBounciness(), 0.f, 1e-6f), "AP12", "and zero bounce");
+        Check(body_component.GetFrictionCombine() == PhysicMaterialCombine::Average &&
+                  body_component.GetBounceCombine() == PhysicMaterialCombine::Average,
+              "AP13", "with Average for both combines");
+
+        body_component.SetFriction(0.15f);
+        Check(Near(body_component.GetFriction(), 0.15f, 1e-6f), "AP14", "friction round-trips");
+        // 负摩擦夹到 0：Jolt 明确要求合成后的值不能为负，而脚本里写 -0.1 几乎肯定
+        // 是笔误。夹住比把 NaN/未定义行为留到求解器里好。
+        body_component.SetFriction(-0.5f);
+        Check(body_component.GetFriction() >= 0.f, "AP15", "a negative friction is clamped, not stored");
+        // 弹性夹到 [0,1]：>1 会真的往系统里加能量，弹一次比一次高。
+        body_component.SetBounciness(0.4f);
+        Check(Near(body_component.GetBounciness(), 0.4f, 1e-6f), "AP16", "bounciness round-trips");
+        body_component.SetBounciness(3.f);
+        Check(body_component.GetBounciness() <= 1.f, "AP17", "bounciness above 1 is clamped");
+        body_component.SetBounciness(-1.f);
+        Check(body_component.GetBounciness() >= 0.f, "AP18", "and below 0 is clamped");
+
+        // 组合模式：**先设弹性、后设摩擦**，然后两个一起断言。
+        //
+        // 顺序是有意的（变异 M13 就是被原来那个顺序放过去的）：如果两个模式共用
+        // 一份存储，"设摩擦把弹性冲掉"这件事只有在**弹性先设**的时候才看得见 ——
+        // 先设摩擦、后设弹性的话，被冲掉的值马上又被覆盖了，断言全绿。
+        body_component.SetBounceCombine(PhysicMaterialCombine::Minimum);
+        body_component.SetFrictionCombine(PhysicMaterialCombine::Maximum);
+        Check(body_component.GetFrictionCombine() == PhysicMaterialCombine::Maximum, "AP19",
+              "the friction combine round-trips");
+        Check(body_component.GetBounceCombine() == PhysicMaterialCombine::Minimum, "AP20",
+              "and setting the friction combine leaves the bounce combine alone");
+        // 反方向也验一次：只验一个方向的话，"设弹性把摩擦冲掉"同样看不见。
+        body_component.SetBounceCombine(PhysicMaterialCombine::Multiply);
+        Check(body_component.GetFrictionCombine() == PhysicMaterialCombine::Maximum, "AP20a",
+              "and setting the bounce combine leaves the friction combine alone");
+
+        // --- 建体时真的读 res ----------------------------------------------
+        // 这是整个特性唯一一条"行为级"的接线断言：前面读写的是 SpawnBox 直接造的
+        // Jolt body，而脚本改的是 **res**。res -> Jolt 这一段如果没接上，前面
+        // 全绿而特性等于不存在（能存档、能改脚本，但物理永远用默认值）。
+        ObjectManager* body_om = GET_SYSTEM(ObjectManager);
+        Check(body_om != nullptr, "AP20b", "ObjectManager is reachable for authoring a res");
+        if (body_om == nullptr)
+        {
+            return;
+        }
+
+        const uint32_t authored = scene->CreateRigidBody(
+            MakeBoxTransform(Vector3(0.f, 0.f, 80.f)),
+            MakeBoxRes(*body_om, 0.11f, 0.62f, PhysicMaterialCombine::Minimum, PhysicMaterialCombine::Multiply), 0);
+        Check(authored != kInvalidPhysicsBodyId, "AP21", "a body can be created from an authored res");
+        if (authored != kInvalidPhysicsBodyId)
+        {
+            float authored_friction = -1.f;
+            float authored_bounce = -1.f;
+            Check(scene->GetBodySurface(authored, authored_friction, authored_bounce) &&
+                      Near(authored_friction, 0.11f, 1e-5f) && Near(authored_bounce, 0.62f, 1e-5f),
+                  "AP22", "CreateRigidBody puts the authored friction and bounce on the body");
+
+            // 反过来验一次：默认值不能"恰好"等于被测值，否则这条断言在材质没被
+            // 应用时也会绿。
+            const uint32_t plain = scene->CreateRigidBody(
+                MakeBoxTransform(Vector3(0.f, 0.f, 90.f)),
+                MakeBoxRes(*body_om, 0.6f, 0.f, PhysicMaterialCombine::Average, PhysicMaterialCombine::Average), 0);
+            float plain_friction = -1.f;
+            Check(plain != kInvalidPhysicsBodyId && scene->GetBodySurface(plain, plain_friction, authored_bounce) &&
+                      std::fabs(plain_friction - authored_friction) > 0.1f,
+                  "AP23", "and two different materials really do land on two different bodies");
+        }
+    }
+
+    void TestPhysicMaterialWiring()
+    {
+        const std::string rigidbody_res = ReadFile("Source/Runtime/Resource/ResType/Components/RigidBody.h");
+        Check(!rigidbody_res.empty(), "AQ0", "RigidBody.h is readable");
+        Check(CountOccurrences(rigidbody_res, "enum class PhysicMaterialCombine") >= 1, "AQ1",
+              "the combine enum exists");
+        // 组合规则必须是**函数**而不是散在 Jolt 回调里的 if：散在回调里就没法在
+        // 没有物理世界的情况下测（AO 组就是这么测的）。
+        Check(CountOccurrences(rigidbody_res, "inline float CombineSurfaceValues(") >= 1, "AQ2",
+              "the combine rule is one free function, not duplicated in the solver callback");
+
+        const std::string scene_source = ReadFile("Source/Runtime/Function/Physics/PhysicsScene.cpp");
+        Check(!scene_source.empty(), "AQ3", "PhysicsScene.cpp is readable");
+        // 接线门 1：建体时必须**读** res 里的材质，否则这个特性等于不存在
+        // （能存档、能改脚本、但物理永远用 Jolt 的默认值）。
+        Check(CountOccurrences(scene_source, "body_settings.mFriction = rigidbody_actor_res.m_Friction;") >= 1,
+              "AQ4", "CreateRigidBody applies the authored friction");
+        Check(CountOccurrences(scene_source, "body_settings.mRestitution = rigidbody_actor_res.m_Bounciness;") >= 1,
+              "AQ5", "and the authored bounce");
+        Check(CountOccurrences(scene_source, "body_settings.mUserData =") >= 1, "AQ6",
+              "and packs the combine modes into the body's user data");
+        // 接线门 2：组合函数必须**装到 Jolt 上**。不装的话 Jolt 用自己那套
+        // （sqrt(f1*f2) / max(r1,r2)），跟 Unity 四种模式都不一样，而症状只是
+        // "手感不太对"，没有任何日志。
+        Check(CountOccurrences(scene_source, "SetCombineFriction(") >= 1, "AQ7",
+              "the friction combine is installed on the Jolt system");
+        Check(CountOccurrences(scene_source, "SetCombineRestitution(") >= 1, "AQ8",
+              "and so is the restitution combine");
+
+        const std::string scene_header = ReadFile("Source/Runtime/Function/Physics/PhysicsScene.h");
+        Check(!scene_header.empty(), "AQ9", "PhysicsScene.h is readable");
+        Check(CountOccurrences(scene_header, "bool SetBodyFriction(uint32_t body_id, float friction);") >= 1,
+              "AQ10", "a live body's friction can be changed");
+        Check(CountOccurrences(scene_header, "bool SetBodyRestitution(uint32_t body_id, float restitution);") >= 1,
+              "AQ11", "and its restitution");
+
+        // 接线门 3：slim 构建（无 Jolt）必须有对应的空实现，否则那里是
+        // EXC_BAD_ACCESS 而不是"物理关掉了"。
+        const std::string scene_null = ReadFile("Source/Runtime/Function/Physics/PhysicsSceneNull.cpp");
+        Check(!scene_null.empty(), "AQ12", "PhysicsSceneNull.cpp is readable");
+        Check(CountOccurrences(scene_null, "bool PhysicsScene::SetBodyFriction(") >= 1, "AQ13",
+              "the Jolt-free build stubs SetBodyFriction");
+        Check(CountOccurrences(scene_null, "bool PhysicsScene::SetBodyCombineModes(") >= 1, "AQ14",
+              "and SetBodyCombineModes");
+
+        const std::string component_header =
+            ReadFile("Source/Runtime/Function/Framework/Component/Rigidbody/RigidbodyComponent.h");
+        Check(!component_header.empty(), "AQ15", "RigidbodyComponent.h is readable");
+        Check(CountOccurrences(component_header, "ZSCRIPTPROPERTY(Name=\"friction\"") >= 1, "AQ16",
+              "friction is a script property, not just a method");
+        Check(CountOccurrences(component_header, "ZSCRIPTPROPERTY(Name=\"bounciness\"") >= 1, "AQ17",
+              "and so is bounciness");
+        // 存档门：只加了字段没进 Transfer() 的话，存盘再读回来材质就丢了。
+        Check(CountOccurrences(rigidbody_res, "transfer.Transfer(m_Friction, \"friction\");") >= 1, "AQ18",
+              "friction is serialized, not just declared");
+        Check(CountOccurrences(rigidbody_res, "transfer.Transfer(m_FrictionCombine, \"friction_combine\");") >= 1,
+              "AQ19", "and so is the friction combine mode");
+    }
+
     // ---------------------------------------------------------------- B ----
     void TestWiringGate()
     {
@@ -4681,6 +4987,9 @@ int main()
     TestVectorQuaternionExtrasWiring();
     TestObjectLifecycle();
     TestObjectLifecycleWiring();
+    TestPhysicMaterialCombine();
+    TestPhysicMaterial();
+    TestPhysicMaterialWiring();
     TestWiringGate();
 
     std::printf("\n=== %d checks, %d failures ===\n", g_Checks, g_Failures);

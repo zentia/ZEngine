@@ -45,6 +45,9 @@ class RigidBodyShape;
 // type once declared, so PhysicsScene.h stays free of the RigidBody.h include
 // (which pulls in PPtr / Geometry / the generated header).
 enum class RigidBodyActorType : unsigned char;
+// Same trick, same reason: the combine-mode enum is only ever passed through
+// here, and its underlying type is fixed so a declaration is a complete type.
+enum class PhysicMaterialCombine : unsigned char;
 
 static constexpr uint32_t s_InvalidRigidbodyId = 0xffffffff;
 static constexpr uint32_t s_InvalidJointId = 0;
@@ -294,6 +297,24 @@ public:
     bool IsSleeping(uint32_t body_id, bool& out_is_sleeping) const;
     bool SleepRigidBody(uint32_t body_id);
     bool WakeRigidBody(uint32_t body_id);
+
+    // --- surface material (Unity's PhysicMaterial) --------------------------
+    //
+    // Jolt stores one friction and one restitution per **body**, not per shape,
+    // so these are body-wide here where Unity would put them on the collider
+    // (see doc/PHYSIC_MATERIAL_SCRIPT_API.md). They are readable and writable
+    // on a live body so `rigidbody.friction = 0.1` takes effect on the next
+    // contact instead of waiting for the body to be rebuilt.
+
+    bool GetBodySurface(uint32_t body_id, float& out_friction, float& out_restitution) const;
+    bool SetBodyFriction(uint32_t body_id, float friction);
+    bool SetBodyRestitution(uint32_t body_id, float restitution);
+
+    /// The combine modes live in the body's user data, so changing them is a
+    /// user-data write, not a solver-state write.
+    bool SetBodyCombineModes(uint32_t body_id,
+                             PhysicMaterialCombine friction_combine,
+                             PhysicMaterialCombine bounce_combine);
 
     void Tick(float delta_time);
 

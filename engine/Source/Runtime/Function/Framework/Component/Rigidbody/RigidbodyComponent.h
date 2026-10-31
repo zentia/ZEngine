@@ -160,6 +160,45 @@ public:
     ZFUNCTION()
     void SetRotation(const Quaternion& rotation);
 
+    // --- surface material (Unity: `collider.material`) ----------------------
+    //
+    // Unity hangs these off the **collider**; Jolt has no per-shape material at
+    // all -- one friction and one restitution per body -- so they live on the
+    // Rigidbody here. That is a genuine deviation, documented in
+    // doc/PHYSIC_MATERIAL_SCRIPT_API.md; the alternative (store a per-shape
+    // material and never read it) is worse than an honest difference.
+    //
+    // Unity also splits friction into static and dynamic and picks by whether
+    // the contact is sliding. With one coefficient per body there is nowhere to
+    // put the second, so there is a single `friction` rather than a field that
+    // is written, serialized and quietly ignored.
+
+    ZFUNCTION()
+    float GetFriction() const { return m_RigidbodyRes.m_Friction; }
+
+    /// 同时写回 res 与活体：只改活体的话下一次重新建体（关卡重载、pending flush）
+    /// 就静默回到作者设的值。
+    ZFUNCTION()
+    void SetFriction(float friction);
+
+    ZFUNCTION()
+    float GetBounciness() const { return m_RigidbodyRes.m_Bounciness; }
+
+    ZFUNCTION()
+    void SetBounciness(float bounciness);
+
+    ZFUNCTION()
+    PhysicMaterialCombine GetFrictionCombine() const { return m_RigidbodyRes.GetFrictionCombine(); }
+
+    ZFUNCTION()
+    void SetFrictionCombine(PhysicMaterialCombine combine_mode);
+
+    ZFUNCTION()
+    PhysicMaterialCombine GetBounceCombine() const { return m_RigidbodyRes.GetBounceCombine(); }
+
+    ZFUNCTION()
+    void SetBounceCombine(PhysicMaterialCombine combine_mode);
+
     /// Unity 的 `MovePosition` / `MoveRotation`：由物理步按 delta_time 反推速度
     /// 走过去，所以**会**推开路上的东西。运动学物体的正确移动方式。
     ZFUNCTION()
@@ -185,6 +224,8 @@ public:
     ZSCRIPTPROPERTY(Name="angularVelocity", Getter="GetAngularVelocity", Setter="SetAngularVelocity")
     ZSCRIPTPROPERTY(Name="position", Getter="GetPosition", Setter="SetPosition")
     ZSCRIPTPROPERTY(Name="rotation", Getter="GetRotation", Setter="SetRotation")
+    ZSCRIPTPROPERTY(Name="friction", Getter="GetFriction", Setter="SetFriction")
+    ZSCRIPTPROPERTY(Name="bounciness", Getter="GetBounciness", Setter="SetBounciness")
 
     void Tick(float delta_time) override {}
     void UpdateGlobalTransform(const TransformTRS& transform, bool is_scale_dirty);

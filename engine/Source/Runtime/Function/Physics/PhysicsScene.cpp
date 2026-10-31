@@ -56,6 +56,34 @@ namespace
 
     /// MoveKinematic 用位移 / delta_time 反推速度，delta_time 为 0 会得到 inf。
     constexpr float kMinDeltaTime = 0.0001f;
+
+    /// Jolt 的接触求解器每对接触问一次"这个接触用多少摩擦/弹性"。这两个函数就是
+    /// 答案，必须与 `CombineSurfaceValues` 是同一套规则 —— 所以规则本身住在
+    /// RigidBody.h 里的那个纯函数里，这里只负责把 Jolt 的 Body 翻译成它的参数。
+    ///
+    /// 值取 Body 自带的（Jolt 已经存了），组合模式取 user data（Jolt 没有这个
+    /// 概念，只能搭车）。
+    ///
+    /// ⚠️ 这两个函数在 PhysicsSystem::Update 内部、可能并发地被调用，所以**不能**
+    /// 查任何可变容器（PhysicsManager 的 body->GameObject 表正在被别处写就炸了）。
+    /// 只读 Body 自身的成员是安全的：Jolt 保证求解期间 Body 不被修改。
+    float JoltCombineFriction(const JPH::Body& in_body_1, const JPH::SubShapeID&,
+                              const JPH::Body& in_body_2, const JPH::SubShapeID&)
+    {
+        return CombineSurfaceValues(in_body_1.GetFriction(),
+                                    FrictionCombineFromUserData(in_body_1.GetUserData()),
+                                    in_body_2.GetFriction(),
+                                    FrictionCombineFromUserData(in_body_2.GetUserData()));
+    }
+
+    float JoltCombineRestitution(const JPH::Body& in_body_1, const JPH::SubShapeID&,
+                                 const JPH::Body& in_body_2, const JPH::SubShapeID&)
+    {
+        return CombineSurfaceValues(in_body_1.GetRestitution(),
+                                    BounceCombineFromUserData(in_body_1.GetUserData()),
+                                    in_body_2.GetRestitution(),
+                                    BounceCombineFromUserData(in_body_2.GetUserData()));
+    }
 }  // namespace
 
 // -----------------------------------------------------------------------------
@@ -395,6 +423,15 @@ PhysicsScene::PhysicsScene(const Vector3& gravity)
 
     m_ContactListener = std::make_unique<PhysicsContactListener>();
     m_Physics.m_JoltPhysicsSystem->SetContactListener(m_ContactListener.get());
+
+    // Surface combining has to be installed on the system, not per body: Jolt
+    // asks "what is the combined friction for this pair" once per contact
+    // manifold, and the answer depends on both bodies. Jolt's own defaults
+    // (sqrt(f1*f2) for friction, max(r1,r2) for restitution) are close to
+    // Unity's Average/Maximum but are not any of the four Unity modes, so a
+    // level authored against Unity's rules would silently resolve differently.
+    m_Physics.m_JoltPhysicsSystem->SetCombineFriction(&JoltCombineFriction);
+    m_Physics.m_JoltPhysicsSystem->SetCombineRestitution(&JoltCombineRestitution);
 }
 
 PhysicsScene::~PhysicsScene()
@@ -530,6 +567,16 @@ uint32_t PhysicsScene::CreateRigidBody(const TransformTRS& global_transform,
                                            motion_type,
                                            layer);
 
+    // Surface material. Jolt's own defaults (0.2 friction / 0 restitution) are
+    // what every body used to get, and there was no way to see or change them;
+    // taking them from the res is what makes a PhysicMaterial authorable at
+    // all. The combine modes ride in user data because Jolt has no per-body
+    // slot for them and the combine callback only gets the two Bodies.
+    body_settings.mFriction = rigidbody_actor_res.m_Friction;
+    body_settings.mRestitution = rigidbody_actor_res.m_Bounciness;
+    body_settings.mUserData =
+        PackCombineModes(rigidbody_actor_res.GetFrictionCombine(), rigidbody_actor_res.GetBounceCombine());
+
     // Authoring carries an inverse mass (0 == "unset"), so honour it when it is
     // meaningful: take the mass from it and let Jolt derive the inertia tensor
     // from the shape, scaled to that mass. Leaving it 0 keeps the shape-derived
@@ -562,6 +609,80 @@ uint32_t PhysicsScene::CreateRigidBody(const TransformTRS& global_transform,
 void PhysicsScene::RemoveRigidBody(uint32_t body_id)
 {
     m_PendingRemoveBodies.push_back(body_id);
+}
+
+bool PhysicsScene::GetBodySurface(uint32_t body_id, float& out_friction, float& out_restitution) const
+{
+    if (body_id == s_InvalidRigidbodyId)
+    {
+        return false;
+    }
+
+    JPH::BodyLockRead body_lock(m_Physics.m_JoltPhysicsSystem->GetBodyLockInterface(), JPH::BodyID(body_id));
+    if (!body_lock.Succeeded())
+    {
+        return false;
+    }
+
+    out_friction = body_lock.GetBody().GetFriction();
+    out_restitution = body_lock.GetBody().GetRestitution();
+    return true;
+}
+
+bool PhysicsScene::SetBodyFriction(uint32_t body_id, float friction)
+{
+    if (body_id == s_InvalidRigidbodyId)
+    {
+        return false;
+    }
+
+    // BodyInterface locks internally, so this must NOT be called from inside a
+    // BodyLockRead on the same body -- Jolt asserts on taking a lower-priority
+    // lock while holding one, and in Debug that is a hard trap.
+    JPH::BodyInterface& body_interface = m_Physics.m_JoltPhysicsSystem->GetBodyInterface();
+    if (!body_interface.IsAdded(JPH::BodyID(body_id)))
+    {
+        return false;
+    }
+
+    body_interface.SetFriction(JPH::BodyID(body_id), friction);
+    return true;
+}
+
+bool PhysicsScene::SetBodyRestitution(uint32_t body_id, float restitution)
+{
+    if (body_id == s_InvalidRigidbodyId)
+    {
+        return false;
+    }
+
+    JPH::BodyInterface& body_interface = m_Physics.m_JoltPhysicsSystem->GetBodyInterface();
+    if (!body_interface.IsAdded(JPH::BodyID(body_id)))
+    {
+        return false;
+    }
+
+    body_interface.SetRestitution(JPH::BodyID(body_id), restitution);
+    return true;
+}
+
+bool PhysicsScene::SetBodyCombineModes(uint32_t body_id,
+                                       PhysicMaterialCombine friction_combine,
+                                       PhysicMaterialCombine bounce_combine)
+{
+    if (body_id == s_InvalidRigidbodyId)
+    {
+        return false;
+    }
+
+    JPH::BodyInterface& body_interface = m_Physics.m_JoltPhysicsSystem->GetBodyInterface();
+    if (!body_interface.IsAdded(JPH::BodyID(body_id)))
+    {
+        return false;
+    }
+
+    body_interface.SetUserData(JPH::BodyID(body_id), PackCombineModes(friction_combine, bounce_combine));
+    return true;
 }
 
 bool PhysicsScene::GetBodyLayer(uint32_t body_id, int32_t& out_layer) const
