@@ -72,6 +72,11 @@ class MethodInfo:
     is_static: bool = False
     ts_name: str = ""
     ts_signature: str = ""
+    # JSDoc line lifted from the C++ declaration comment (`/// ...`), emitted as
+    # a `/** ... */` block in front of the member in the generated d.ts.
+    # Empty -> no comment. ⚠️ codegen.py reads this on every method, so the
+    # field must exist even before the parser learns to fill it in.
+    doc_comment: str = ""
 
     def to_dict(self) -> dict:
         return {
@@ -84,6 +89,7 @@ class MethodInfo:
             "is_static": self.is_static,
             "ts_name": self.ts_name,
             "ts_signature": self.ts_signature,
+            "doc_comment": self.doc_comment,
         }
 
 
