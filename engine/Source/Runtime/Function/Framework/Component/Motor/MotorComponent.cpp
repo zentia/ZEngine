@@ -4,6 +4,7 @@
 #include "Runtime/BaseClasses/ObjectManager.h"
 #include "Runtime/Core/Base/Macro.h"
 #include "Runtime/Core/Math/Math.h"
+#include "Runtime/Core/Time/TimeState.h"
 #include "Runtime/Function/Character/Character.h"
 #include "Runtime/Function/Controller/CharacterController.h"
 #include "Runtime/Function/Framework/Component/Animation/AnimationComponent.h"
@@ -419,4 +420,172 @@ void MotorComponent::CalculateTargetPosition(const Vector3&& current_position)
 
     m_IsMoving = (final_position - current_position).squaredLength() > 0.f;
     m_TargetPosition = final_position;
+}
+// ===========================================================================
+// Unity 的 CharacterController 面
+// ===========================================================================
+//
+// 这一整块的共同前提：**没有活动物理场景时降级，而不是崩、也不是静默失败**。
+// headless 测试、关卡切换的空档、以及没配 controller config 的 Motor 都走到
+// 这条路上。
+
+PhysicsScene* MotorComponent::ResolvePhysicsScene() const
+{
+    WorldManager* world_manager = GET_SYSTEM(WorldManager);
+    if (world_manager == nullptr)
+    {
+        return nullptr;
+    }
+
+    std::shared_ptr<PhysicsScene> scene = world_manager->GetCurrentActivePhysicsScene().lock();
+    return scene.get();
+}
+
+CharacterController* MotorComponent::ResolveCharacterController() const
+{
+    if (m_ControllerType != ControllerType::physics || m_Controller == nullptr)
+    {
+        return nullptr;
+    }
+
+    // `m_Controller` 是 `Controller*`，而只有 PostLoadResource 会填它，且 physics
+    // 分支下填的一定是 CharacterController。这里仍然用 dynamic_cast：将来加
+    // 别的 Controller 实现时，一个 static_cast 会把新类型当成胶囊控制器去解引用。
+    return dynamic_cast<CharacterController*>(m_Controller);
+}
+
+int32_t MotorComponent::Move(const Vector3& motion)
+{
+    if (m_ParentObject == nullptr)
+    {
+        return static_cast<int32_t>(CollisionFlags::none);
+    }
+
+    Transform* transform_component = m_ParentObject->tryGetComponent<Transform>("Transform");
+    if (transform_component == nullptr)
+    {
+        return static_cast<int32_t>(CollisionFlags::none);
+    }
+
+    CharacterController* controller = ResolveCharacterController();
+    if (controller == nullptr)
+    {
+        // 没配 controller config：这个 Motor 本来就走"无碰撞"那条路（见
+        // CalculateTargetPosition 的 default 分支）。这里保持一致 —— 一个
+        // 未配置的角色不该因为脚本调了 Move 就获得碰撞能力，也不该被钉死在原地。
+        const Vector3 start = transform_component->GetLocalPosition();
+        transform_component->SetLocalPosition(start + motion);
+        m_IsMoving = motion.squaredLength() > 0.f;
+        return static_cast<int32_t>(CollisionFlags::none);
+    }
+
+    const Vector3 start = transform_component->GetLocalPosition();
+    Vector3 landed = start;
+    const int32_t flags = controller->MoveWithFlags(ResolvePhysicsScene(), start, motion,
+                                                    m_DetectCollisions, m_MinMoveDistance, landed);
+
+    transform_component->SetLocalPosition(landed);
+
+    // velocity 是"实际位移 / 时间"，不是请求的速度：撞墙之后两者不一样，而脚本
+    // 想知道的是"我到底动没动、多快"。dt 为 0（编辑器暂停）时不能除 —— 那会写出
+    // inf，而 inf 会顺着动画 blend 一路扩散；此时保持上一次的速度。
+    constexpr float kEpsilon = 1.0e-5f;
+    const float delta_time = TimeState::Get().GetDeltaTime();
+    if (delta_time > kEpsilon)
+    {
+        m_Velocity = (landed - start) / delta_time;
+    }
+
+    m_IsMoving = (landed - start).squaredLength() > 0.f;
+    return flags;
+}
+
+void MotorComponent::SimpleMove(const Vector3& speed)
+{
+    if (m_ParentObject == nullptr)
+    {
+        return;
+    }
+
+    const float delta_time = TimeState::Get().GetDeltaTime();
+    if (delta_time <= 0.f)
+    {
+        // 暂停中：不给位移，也不要去改累积的下落速度 —— 否则恢复播放的那一帧
+        // 会攒出一个巨大的下落量，角色直接穿过地板。
+        return;
+    }
+
+    float gravity = 9.81f;
+    if (PhysicsScene* scene = ResolvePhysicsScene(); scene != nullptr)
+    {
+        gravity = scene->getGravity().length();
+    }
+
+    // `speed` 的单位是 m/s 且**不**需要调用方乘 dt —— 这是 Unity 的 SimpleMove
+    // 与 Move 最容易混错的一处：给 SimpleMove 再乘一次 dt，角色速度就会随帧率
+    // 平方衰减。
+    const Vector3 motion = CharacterController::ComputeSimpleMoveMotion(
+        speed, gravity, delta_time, IsGrounded(), m_SimpleMoveFallSpeed);
+
+    Move(motion);
+}
+
+bool MotorComponent::IsGrounded() const
+{
+    CharacterController* controller = ResolveCharacterController();
+    PhysicsScene* scene = ResolvePhysicsScene();
+    if (controller == nullptr || scene == nullptr || m_ParentObject == nullptr)
+    {
+        return false;
+    }
+
+    const Transform* transform_component = m_ParentObject->tryGetComponentConst(Transform);
+    if (transform_component == nullptr)
+    {
+        return false;
+    }
+
+    return controller->ProbeGrounded(scene, transform_component->GetLocalPosition(), m_SkinWidth);
+}
+
+float MotorComponent::GetHeight() const
+{
+    const CharacterController* controller = ResolveCharacterController();
+    return (controller != nullptr) ? controller->GetCapsuleHeight() : 0.f;
+}
+
+void MotorComponent::SetHeight(float height)
+{
+    if (CharacterController* controller = ResolveCharacterController(); controller != nullptr)
+    {
+        controller->SetCapsuleHeight(height);
+    }
+}
+
+float MotorComponent::GetRadius() const
+{
+    const CharacterController* controller = ResolveCharacterController();
+    return (controller != nullptr) ? controller->GetCapsuleRadius() : 0.f;
+}
+
+void MotorComponent::SetRadius(float radius)
+{
+    if (CharacterController* controller = ResolveCharacterController(); controller != nullptr)
+    {
+        controller->SetCapsuleRadius(radius);
+    }
+}
+
+Vector3 MotorComponent::GetCenter() const
+{
+    const CharacterController* controller = ResolveCharacterController();
+    return (controller != nullptr) ? controller->GetCapsuleCenter() : Vector3::ZERO;
+}
+
+void MotorComponent::SetCenter(const Vector3& center)
+{
+    if (CharacterController* controller = ResolveCharacterController(); controller != nullptr)
+    {
+        controller->SetCapsuleCenter(center);
+    }
 }

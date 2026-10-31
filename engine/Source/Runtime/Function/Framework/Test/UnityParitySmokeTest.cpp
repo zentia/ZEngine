@@ -44,6 +44,8 @@
 #include "Runtime/Function/Physics/Physics.h"
 #include "Runtime/Function/Physics/PhysicsManager.h"
 #include "Runtime/Function/Framework/Component/Rigidbody/RigidbodyComponent.h"
+#include "Runtime/Function/Framework/Component/Motor/MotorComponent.h"
+#include "Runtime/Function/Controller/CharacterController.h"
 #include "Runtime/Function/Physics/PhysicsScene.h"
 #include "Runtime/Resource/ResType/Components/RigidBody.h"
 #include "Runtime/Function/PlayerSettings/PlayerSettings.h"
@@ -78,6 +80,11 @@ template<> void RegisterKlass<GameObject>();
 template<> void RegisterKlass<Random>();
 template<> void RegisterKlass<Camera>();
 template<> void RegisterKlass<Ray>();
+// 角色控制器那组要 `Cast<Capsule>`：`PhysicsScene::IsOverlap` 走 toShape()，而
+// toShape 按运行时类型分发。`TypeOf<Capsule>()` 的实体在 Capsule.gen.cpp 里，
+// 本 exe 不编 .gen.cpp（/WHOLEARCHIVE 会把它带进来），但 RegisterKlass 必须显式
+// 调一次 —— 否则 TypeContainer<Capsule>::m_Type 还是空，Cast 一解引用就崩。
+template<> void RegisterKlass<Capsule>();
 
 #include <cmath>
 #include <cstdio>
@@ -820,14 +827,21 @@ namespace
     // difference between "the filter reads the matrix" and "the filter reads
     // the matrix and Jolt actually calls it".
 
-    /// A box straight through Jolt, tagged with an explicit Unity layer. Going
-    /// through RigidBodyComponentRes would drag the object + reflection layer
-    /// in; the layer plumbing that path adds is covered by group I.
-    uint32_t SpawnBox(PhysicsScene& in_scene, const Vector3& in_position, int32_t in_layer, bool in_dynamic)
+    /// 一块直投 Jolt 的盒子，带显式 Unity 层。不走 RigidBodyComponentRes 是为了
+    /// 不把对象 / 反射层拖进来；那条路多出来的层管线由 I 组覆盖。
+    ///
+    /// 半尺寸可调：角色控制器那组需要**比角色大得多**的地板和墙 —— 0.5 的固定
+    /// 半尺寸下，角色往旁边走两步就出了地板边缘，于是"没被挡住"和"地板太短"
+    /// 分不出来。
+    uint32_t SpawnBoxSized(PhysicsScene& in_scene,
+                           const Vector3& in_position,
+                           const Vector3& in_half_extents,
+                           int32_t in_layer,
+                           bool in_dynamic)
     {
         JPH::BodyInterface& body_interface = in_scene.GetJoltPhysicsSystem()->GetBodyInterface();
 
-        JPH::BoxShapeSettings box_settings(JPH::Vec3(0.5f, 0.5f, 0.5f));
+        JPH::BoxShapeSettings box_settings(toVec3(in_half_extents));
         // RefTarget starts at refcount 0 and deletes at 0; a stack object
         // without SetEmbedded() is "delete a stack pointer". See the note in
         // PhysicsCharacterJointSmokeTest.
@@ -847,6 +861,12 @@ namespace
 
         body_interface.AddBody(jph_body->GetID(), JPH::EActivation::Activate);
         return jph_body->GetID().GetIndexAndSequenceNumber();
+    }
+
+    /// 一个 1x1x1 的盒子。I / H 两组只关心层与矩阵，尺寸无关紧要。
+    uint32_t SpawnBox(PhysicsScene& in_scene, const Vector3& in_position, int32_t in_layer, bool in_dynamic)
+    {
+        return SpawnBoxSized(in_scene, in_position, Vector3(0.5f, 0.5f, 0.5f), in_layer, in_dynamic);
     }
 
     void StepScene(PhysicsScene& in_scene, int in_steps)
@@ -1964,6 +1984,7 @@ namespace
         RegisterKlass<Random>();
         RegisterKlass<Camera>();
         RegisterKlass<Ray>();
+        RegisterKlass<Capsule>();
         type_manager.InitializeAllTypes();
     }
 
@@ -3091,6 +3112,272 @@ namespace
                   CountOccurrences(component_source, "distance < 1.0e-5f") >= 1,
               "O14", "AddExplosionForce guards both zero-radius and zero-distance");
     }
+
+    // --------------------------------------------------------------- AA ----
+    /// 角色控制器（Unity 的 `CharacterController`）。
+    ///
+    /// 这一组测的是 `CharacterController` 上那批新方法 —— **全部**真实逻辑都在
+    /// 那里。`MotorComponent` 上的同名包装是薄壳：它要靠 `WorldManager` 找活动
+    /// 场景，而活动关卡只能由加载流程设置（没有 setter），headless 下永远走
+    /// "没有场景"那条路。和 Rigidbody 切片同一个取舍：逻辑放在显式收
+    /// `PhysicsScene*` 的方法里，组件层由 AB 组的接线门守着。
+    void TestCharacterController()
+    {
+        PhysicsManager* physics_manager = GET_SYSTEM(PhysicsManager);
+        Check(physics_manager != nullptr, "AA0", "PhysicsManager is reachable");
+        if (physics_manager == nullptr)
+        {
+            return;
+        }
+
+        std::shared_ptr<PhysicsScene> scene = physics_manager->CreatePhysicsScene(Vector3(0.f, 0.f, -9.81f)).lock();
+        Check(scene != nullptr, "AA1", "a physics scene can be created");
+        if (!scene)
+        {
+            return;
+        }
+
+        // 地板：顶面在 z=0 的一块大板。墙：x ∈ [2.5, 3.5] 的一块竖板。
+        // 都比角色大得多 —— 否则"没被挡住"和"地板太短"分不出来。
+        const uint32_t ground =
+            SpawnBoxSized(*scene, Vector3(0.f, 0.f, -0.5f), Vector3(20.f, 20.f, 0.5f), 0, false);
+        Check(ground != kInvalidPhysicsBodyId, "AA2", "a ground slab can be spawned");
+        const uint32_t wall =
+            SpawnBoxSized(*scene, Vector3(3.f, 0.f, 2.f), Vector3(0.5f, 20.f, 2.f), 0, false);
+        Check(wall != kInvalidPhysicsBodyId, "AA3", "a wall can be spawned");
+
+        ObjectManager* om = GET_SYSTEM(ObjectManager);
+        if (om == nullptr)
+        {
+            om = new ObjectManager();
+            SystemRegistry::GetInstance().RegisterSystem(om);
+            om->Initialize();
+        }
+        Check(om != nullptr, "AA4", "ObjectManager is reachable");
+        if (om == nullptr)
+        {
+            return;
+        }
+
+        // 用 NewObject 而不是 new + AllocateAndAssignInstanceID：控制器析构时走
+        // MemoryManager::DestroyObject，必须和 NewObject 配对（mimalloc 对 CRT
+        // 堆），混用是堆损坏。这里也让控制器一直活着（同文件其它夹具的取舍）。
+        Capsule* capsule = om->NewObject<Capsule>();
+        Check(capsule != nullptr, "AA5", "a capsule can be allocated through ObjectManager");
+        if (capsule == nullptr)
+        {
+            return;
+        }
+        capsule->m_Radius = 0.3f;
+        capsule->m_HalfHeight = 0.7f;
+
+        CharacterController* controller = new CharacterController();
+        controller->Initialize(capsule);
+        Check(controller->HasShape(), "AA6", "Initialize builds a shape for the capsule");
+
+        // --- 尺寸换算：height 是含帽总高 --------------------------------
+        Check(Near(controller->GetCapsuleHeight(), 2.0f, 0.001f), "AA7",
+              "height = 2 * (halfHeight + radius) — caps included, not the cylinder");
+        Check(Near(controller->GetCapsuleRadius(), 0.3f, 0.001f), "AA8", "radius round-trips");
+        Check(Near(controller->GetCapsuleCenter().z, 1.0f, 0.001f), "AA9",
+              "center is half the height above the feet (origin is at the sole)");
+        controller->SetCapsuleHeight(3.0f);
+        Check(Near(controller->GetCapsuleHeight(), 3.0f, 0.001f) &&
+                  Near(controller->GetCapsuleRadius(), 0.3f, 0.001f),
+              "AA10", "SetHeight keeps the radius and re-solves the half height");
+        // 比一个球的直径还矮 ⇒ 夹住。不夹的话会算出负半高，胶囊翻过来。
+        controller->SetCapsuleHeight(0.2f);
+        Check(controller->GetCapsuleHeight() > 0.55f && controller->GetCapsuleHeight() < 0.65f, "AA11",
+              "a height below one sphere diameter is clamped, not accepted as negative");
+        // 半径 0 会让 Jolt 直接断言。
+        controller->SetCapsuleRadius(0.0f);
+        Check(controller->GetCapsuleRadius() > 0.0f, "AA12", "a zero radius is clamped, not accepted");
+        controller->SetCapsuleCenter(Vector3(0.f, 0.f, 1.2f));
+        Check(Near(controller->GetCapsuleCenter().z, 1.2f, 0.001f), "AA13",
+              "SetCenter re-solves the half height so the centre lands where asked");
+
+        // 复位成标准身材，后面的碰撞检查都基于它。
+        controller->SetCapsuleRadius(0.3f);
+        controller->SetCapsuleHeight(2.0f);
+        Check(Near(controller->GetCapsuleHeight(), 2.0f, 0.001f), "AA14", "and the size can be restored");
+
+        // --- 着地探测 ----------------------------------------------------
+        Check(controller->ProbeGrounded(scene.get(), Vector3(0.f, 0.f, 0.f), 0.08f), "AA15",
+              "feet on the slab reads grounded");
+        Check(!controller->ProbeGrounded(scene.get(), Vector3(0.f, 0.f, 5.f), 0.08f), "AA16",
+              "five metres up reads airborne");
+        // skinWidth 必须真的参与：脚底离地 5cm，skin=0.08 算贴地，skin=0 不算。
+        // 只测"贴着地面"的话，一个把 skin 存起来不用的实现是全绿的。
+        Check(controller->ProbeGrounded(scene.get(), Vector3(0.f, 0.f, 0.05f), 0.08f), "AA17",
+              "a 5 cm gap is still grounded with skinWidth 0.08");
+        Check(!controller->ProbeGrounded(scene.get(), Vector3(0.f, 0.f, 0.05f), 0.0f), "AA18",
+              "and airborne with skinWidth 0 — the skin is consumed, not stored");
+        Check(!controller->ProbeGrounded(nullptr, Vector3(0.f, 0.f, 0.f), 0.08f), "AA19",
+              "no scene means 'unknown', reported as false (not a guess of true)");
+
+        // --- Move：碰撞标志 ---------------------------------------------
+        Vector3 landed = Vector3::ZERO;
+        const int32_t down = controller->MoveWithFlags(scene.get(), Vector3(0.f, 0.f, 0.f),
+                                                       Vector3(0.f, 0.f, -0.5f), true, 0.f, landed);
+        Check((down & 4) != 0, "AA20", "a blocked downward move reports CollisionFlags.Below");
+        Check(Near(landed.z, 0.0f, 0.001f), "AA21", "and the feet stay on the slab");
+
+        const int32_t up = controller->MoveWithFlags(scene.get(), Vector3(0.f, 0.f, 0.f),
+                                                     Vector3(0.f, 0.f, 0.5f), true, 0.f, landed);
+        Check(up == 0, "AA22", "an unobstructed move reports no flags");
+        Check(Near(landed.z, 0.5f, 0.001f), "AA23", "and actually moves");
+
+        // 朝着墙推进：2.0 到得了（胶囊 x 上限 2.3 < 2.5），再 0.4 就被挡。
+        controller->MoveWithFlags(scene.get(), Vector3(0.f, 0.f, 0.f), Vector3(2.0f, 0.f, 0.f), true, 0.f,
+                                  landed);
+        Check(Near(landed.x, 2.0f, 0.001f), "AA24", "a move short of the wall goes through");
+        const int32_t into_wall =
+            controller->MoveWithFlags(scene.get(), landed, Vector3(0.4f, 0.f, 0.f), true, 0.f, landed);
+        Check((into_wall & 1) != 0, "AA25", "a blocked sideways move reports CollisionFlags.Sides");
+
+        // --- 逐轴推进 ⇒ 贴墙滑行 ----------------------------------------
+        // 合并判定的实现会整段取消，x 和 z 一起归零。这条断言是"逐轴"这个决定
+        // 唯一的守护者：它漏了就退化成"角色被墙粘住"。
+        const Vector3 before_slide = landed;
+        const int32_t slide = controller->MoveWithFlags(scene.get(), before_slide,
+                                                        Vector3(0.4f, 0.f, 0.5f), true, 0.f, landed);
+        Check((slide & 1) != 0, "AA26", "the blocked axis still reports Sides");
+        Check(Near(landed.x, before_slide.x, 0.001f), "AA27", "and does not move");
+        Check(Near(landed.z, before_slide.z + 0.5f, 0.001f), "AA28",
+              "while the free axis still moves — that is sliding along the wall");
+
+        // --- 上方：撞顶 ---------------------------------------------------
+        // 在头顶正上方压一块板，角色跳起来会撞到。
+        SpawnBoxSized(*scene, Vector3(0.f, 0.f, 2.4f), Vector3(2.f, 2.f, 0.2f), 0, false);
+        const int32_t ceiling = controller->MoveWithFlags(scene.get(), Vector3(0.f, 0.f, 0.f),
+                                                          Vector3(0.f, 0.f, 0.6f), true, 0.f, landed);
+        Check((ceiling & 2) != 0, "AA29", "a blocked upward move reports CollisionFlags.Above");
+
+        // --- minMoveDistance / detectCollisions --------------------------
+        const int32_t dropped = controller->MoveWithFlags(scene.get(), Vector3(0.f, 0.f, 0.f),
+                                                          Vector3(0.f, 0.f, -0.001f), true, 0.01f, landed);
+        Check(dropped == 0 && Near(landed.z, 0.0f, 0.0001f), "AA30",
+              "minMoveDistance discards the whole motion (position untouched)");
+        const int32_t ghost = controller->MoveWithFlags(scene.get(), Vector3(0.f, 0.f, 0.f),
+                                                        Vector3(0.f, 0.f, -0.5f), false, 0.f, landed);
+        Check(ghost == 0 && Near(landed.z, -0.5f, 0.001f), "AA31",
+              "detectCollisions = false walks straight through the floor");
+
+        // --- 改尺寸要真的改动碰撞体 --------------------------------------
+        // 这是 `RefreshShapeTransform` 唯一的守护者。原点在脚底，所以形状要把胶囊
+        // 抬高 `halfHeight + radius`；只改 Capsule 的两个字段而忘了重写局部变换的
+        // 话，碰撞体还挂在旧高度上 —— 表现是"蹲下了却照样撞头"，而且**不报任何错**
+        // （`IsOverlap` 每次都从当前几何重建 Jolt 形状，所以看起来是生效的）。
+        //
+        // 判据必须挑一个"抬高量"能左右结果的位置：矮天花板（底面 z=1.6）。
+        // 蹲到 1.5 m 时胶囊顶端 1.5 < 1.6 ⇒ 过得去；忘刷新的话顶端还是 1.75 ⇒ 撞。
+        SpawnBoxSized(*scene, Vector3(0.f, 0.f, 1.65f), Vector3(2.f, 2.f, 0.05f), 0, false);
+        controller->SetCapsuleHeight(1.5f);
+        const int32_t crouch = controller->MoveWithFlags(scene.get(), Vector3(0.f, 0.f, 0.f),
+                                                         Vector3(0.f, 0.f, 0.05f), true, 0.f, landed);
+        Check(crouch == 0 && Near(landed.z, 0.05f, 0.001f), "AA32",
+              "a crouched capsule fits under a 1.6 m ceiling — the shape transform was refreshed");
+        controller->SetCapsuleHeight(2.0f);
+        const int32_t stand = controller->MoveWithFlags(scene.get(), Vector3(0.f, 0.f, 0.f),
+                                                        Vector3(0.f, 0.f, 0.05f), true, 0.f, landed);
+        Check((stand & 2) != 0, "AA33", "and the full-height one does not");
+
+        // --- SimpleMove：纯函数那一半 ------------------------------------
+        // 带着一个"刚从高处落下"的速度进场：初值是 0 的话，"落地是否归零"这条
+        // 断言对任何实现都成立（变异 M12 就是这么漏过去的）。
+        float fall = -7.3f;
+        const Vector3 on_ground = CharacterController::ComputeSimpleMoveMotion(
+            Vector3(1.f, 0.f, 5.f), 9.81f, 1.0f / 60.0f, true, fall);
+        Check(Near(on_ground.z, 0.0f, 0.0001f), "AA34", "SimpleMove ignores the vertical component of speed");
+        Check(Near(on_ground.x, 1.f / 60.f, 0.0001f), "AA35", "and converts m/s into a per-step motion");
+        Check(Near(fall, 0.f, 0.0001f), "AA36",
+              "landing resets the accumulated fall speed (a stale -7.3 would tunnel through the floor)");
+
+        float airborne_fall = 0.f;
+        const Vector3 first = CharacterController::ComputeSimpleMoveMotion(
+            Vector3(0.f, 0.f, 0.f), 9.81f, 1.0f / 60.0f, false, airborne_fall);
+        const Vector3 second = CharacterController::ComputeSimpleMoveMotion(
+            Vector3(0.f, 0.f, 0.f), 9.81f, 1.0f / 60.0f, false, airborne_fall);
+        Check(first.z < 0.f, "AA37", "airborne falls");
+        Check(second.z < first.z * 1.9f, "AA38",
+              "and accelerates — the fall speed accumulates instead of being recomputed");
+        Check(CharacterController::ComputeSimpleMoveMotion(Vector3(0.f, 0.f, 0.f), 9.81f, 0.f, false,
+                                                          airborne_fall)
+                  .squaredLength() == 0.f,
+              "AA39", "a zero delta time yields no motion (a paused frame must not fall)");
+    }
+
+    // --------------------------------------------------------------- AB ----
+    /// 角色控制器的接线门：组件层那层薄壳**有没有接上**。
+    ///
+    /// AA 组证明了 `CharacterController` 的逻辑是对的；这一组证明脚本真的能碰到
+    /// 它。只做前者的话，"实现对了但没接进组件"这种静默失败是绿的 —— 这正是
+    /// `MotorComponent` 此前十年的状态（一整套移动实现，0 个 ZFUNCTION）。
+    void TestCharacterControllerWiring()
+    {
+        const std::string motor_header = ReadFile("Source/Runtime/Function/Framework/Component/Motor/MotorComponent.h");
+        Check(!motor_header.empty(), "AB0", "MotorComponent.h is readable");
+        Check(CountOccurrences(motor_header, "class MotorComponent : public Component") >= 1, "AB1",
+              "and it is the component that carries the motor");
+        // 带括号数：数裸词永远为真（注释里也会出现）。
+        Check(CountOccurrences(motor_header, "ZFUNCTION()") == 21, "AB2",
+              "the component exposes exactly 21 script methods (a dropped ZFUNCTION is a silent API loss)");
+        Check(CountOccurrences(motor_header, "ZSCRIPTPROPERTY(") == 11, "AB3",
+              "and exactly 11 script properties");
+
+        // Unity 的拼写。**必须连着 ZFUNCTION() 一起数**：只数 `void SimpleMove(`
+        // 的话，一个"实现还在但忘了标 ZFUNCTION"的方法是全绿的 —— 那正是
+        // MotorComponent 在此之前的样子（一整套移动实现，0 个可脚本方法）。
+        Check(CountOccurrences(motor_header, "ZFUNCTION()\n    int32_t Move(") >= 1, "AB4",
+              "Move is declared AND exported");
+        Check(CountOccurrences(motor_header, "ZFUNCTION()\n    void SimpleMove(") >= 1, "AB5",
+              "SimpleMove is declared AND exported");
+        Check(CountOccurrences(motor_header, "ZFUNCTION()\n    bool IsGrounded()") >= 1, "AB6",
+              "isGrounded is declared AND exported");
+        Check(CountOccurrences(motor_header, "\"isGrounded\"") >= 1, "AB7",
+              "isGrounded is published under Unity's name");
+        Check(CountOccurrences(motor_header, "\"velocity\"") >= 1, "AB8", "and so is velocity");
+        Check(CountOccurrences(motor_header, "\"height\"") >= 1 &&
+                  CountOccurrences(motor_header, "\"radius\"") >= 1 &&
+                  CountOccurrences(motor_header, "\"center\"") >= 1,
+              "AB9", "height / radius / center are all published");
+
+        // CollisionFlags 的值必须和 Unity 对上，否则 `flags & Below` 全错。
+        Check(CountOccurrences(motor_header, "enum class CollisionFlags") >= 1 &&
+                  CountOccurrences(motor_header, "sides = 1") >= 1 &&
+                  CountOccurrences(motor_header, "above = 2") >= 1 &&
+                  CountOccurrences(motor_header, "below = 4") >= 1,
+              "AB10", "CollisionFlags uses Unity's bit values (Sides=1, Above=2, Below=4)");
+        Check(CountOccurrences(motor_header, "ZENUM()") >= 1, "AB11",
+              "and is published to TypeScript (a bare number would be unreadable)");
+
+        // 明确没做的两个属性必须**留在注释里说明**，不能悄悄消失。
+        Check(CountOccurrences(motor_header, "slopeLimit") >= 1 &&
+                  CountOccurrences(motor_header, "stepOffset") >= 1,
+              "AB12", "slopeLimit / stepOffset are documented as deliberately absent");
+
+        const std::string motor_source = ReadFile("Source/Runtime/Function/Framework/Component/Motor/MotorComponent.cpp");
+        Check(!motor_source.empty(), "AB13", "MotorComponent.cpp is readable");
+        // 薄壳必须把活派给 CharacterController，不能自己重算一遍 —— 两个实现
+        // 迟早分叉，而且 AA 组测的就不是跑在脚本路径上的那份。
+        Check(CountOccurrences(motor_source, "MoveWithFlags(") >= 1, "AB14",
+              "Move delegates to CharacterController::MoveWithFlags");
+        Check(CountOccurrences(motor_source, "ComputeSimpleMoveMotion(") >= 1, "AB15",
+              "SimpleMove delegates to the shared solver too");
+        Check(CountOccurrences(motor_source, "ProbeGrounded(") >= 1, "AB16",
+              "isGrounded goes through the ray probe, not the jump state machine");
+        // 没有场景/没有控制器时的降级：这些分支不是"不可能发生"。
+        Check(CountOccurrences(motor_source, "world_manager == nullptr") >= 1, "AB17",
+              "a missing WorldManager degrades instead of dereferencing null");
+
+        const std::string controller_header = ReadFile("Source/Runtime/Function/Controller/CharacterController.h");
+        Check(!controller_header.empty(), "AB18", "CharacterController.h is readable");
+        Check(CountOccurrences(controller_header, "RefreshShapeTransform()") >= 1, "AB19",
+              "dimension setters refresh the shape transform (else the collider stays at the old height)");
+        Check(CountOccurrences(controller_header, "height = 2 * (half_height + radius)") >= 1, "AB20",
+              "the height/halfHeight relation is written down where it is implemented");
+    }
+
     // ---------------------------------------------------------------- B ----
     void TestWiringGate()
     {
@@ -3212,6 +3499,8 @@ int main()
     TestCameraWiring();
     TestRigidbody();
     TestRigidbodyWiring();
+    TestCharacterController();
+    TestCharacterControllerWiring();
     TestWiringGate();
 
     std::printf("\n=== %d checks, %d failures ===\n", g_Checks, g_Failures);
