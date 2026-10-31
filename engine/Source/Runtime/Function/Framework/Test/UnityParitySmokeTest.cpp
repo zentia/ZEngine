@@ -6304,6 +6304,43 @@ namespace
               "codegen still keeps static accessors out of the method table");
     }
 
+    // --------------------------------------------------------------- BC ----
+    // `Vector3` / `Quaternion` 的静态面（`Vector3.zero`、`Quaternion.identity`）。
+    // C++ 侧看不见"装没装进 d.ts"，所以这里查源码，ScriptVMSmokeTest 的 K 组查
+    // 运行时。
+    void TestVectorFacadeWiring()
+    {
+        const std::string header = ReadFile("Source/Runtime/Scripting/ScriptVector/ScriptVector.h");
+        const std::string source = ReadFile("Source/Runtime/Scripting/ScriptVector/ScriptVector.cpp");
+        Check(!header.empty(), "BC0", "ScriptVector.h is readable");
+        // 门面必须与值类型同名，但得住进命名空间（同 Runtime::Color）。
+        Check(CountOccurrences(header, "namespace Runtime") >= 1, "BC1",
+              "the Vector3 facade is namespaced (a global one would collide with the value type)");
+        Check(CountOccurrences(header, "class Vector3 : public Object") >= 1 &&
+                  CountOccurrences(header, "class Quaternion : public Object") >= 1,
+              "BC2", "both value types have an Object-derived facade (ZCLASS requirement)");
+        // 值类型一律全称：命名空间里裸 `Vector3` 指的是门面类。
+        Check(CountOccurrences(header, "static ::Vector3 GetZero()") >= 1, "BC3",
+              "constants return a fully-qualified ::Vector3");
+        Check(CountOccurrences(header, "ZSCRIPTPROPERTY(Name = \"zero\", Getter = \"GetZero\")") >= 1,
+              "BC4", "Vector3.zero is a static script property (Unity's spelling)");
+        Check(CountOccurrences(header, "ZSCRIPTPROPERTY(Name = \"identity\", Getter = \"GetIdentity\")") >= 1,
+              "BC5", "Quaternion.identity is a static script property");
+        // 轴向常量：Z-up。写反了脚本会把物体平推到墙里，而且不报错。
+        Check(CountOccurrences(source, "Make(0.0f, 0.0f, 1.0f)") >= 1, "BC6",
+              "up is +Z (Z-up engine, not Unity's +Y) -- see the file header");
+        Check(CountOccurrences(source, "Make(0.0f, -1.0f, 0.0f)") >= 1, "BC7",
+              "forward is -Y (the camera's default facing)");
+        // 实现必须转发，不许重写一份（两份实现迟早漂移）。
+        Check(!source.empty(), "BC8", "ScriptVector.cpp is readable");
+        Check(CountOccurrences(source, "VectorMath::") >= 10 &&
+                  CountOccurrences(source, "QuaternionMath::") >= 8,
+              "BC9", "the facades forward to VectorMath / QuaternionMath (no second implementation)");
+        // Unity 的 `Vector3.Lerp` 夹 t —— 门面按 Unity 来，`VectorMath.Lerp` 不夹。
+        Check(CountOccurrences(source, "clamped > 1.0f") >= 1, "BC10",
+              "Vector3.Lerp clamps t like Unity's (LerpUnclamped is the other one)");
+    }
+
     // ---------------------------------------------------------------- B ----
     void TestWiringGate()
     {
@@ -6458,6 +6495,7 @@ int main()
     TestColor();
     TestColorWiring();
     TestStaticFieldWiring();
+    TestVectorFacadeWiring();
     TestWiringGate();
 
     std::printf("\n=== %d checks, %d failures ===\n", g_Checks, g_Failures);

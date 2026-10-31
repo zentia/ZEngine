@@ -671,6 +671,72 @@ int main()
             "globalThis.__zResult = typeof Screen.GetWidth + '/' + typeof Application.GetDataPath;",
             "undefined/undefined");
 
+    std::printf("\n--- K. Vector3 / Quaternion 的静态面（Unity 拼写）---\n");
+
+    // K1：Unity 的 `Vector3.zero` / `Vector3.one`。
+    CheckJs("K1", "Vector3.zero / one", script_env,
+            "var p = function(v){ return __fx(v.x)+','+__fx(v.y)+','+__fx(v.z); };\n"
+            "globalThis.__zResult = p(Vector3.zero) + '|' + p(Vector3.one);",
+            "0.0000,0.0000,0.0000|1.0000,1.0000,1.0000");
+    // K2/K3：轴向。⚠️ Z-up：up 是 +Z、forward 是 -Y（Unity 是 up=+Y、
+    // forward=+Z）。名字对的是语义轴，不是分量 —— 这条同时钉住"别照抄 Unity 的
+    // 数字"。三个方向互不相等，互换会被发现。
+    CheckJs("K2", "Z-up：up=(0,0,1) / forward=(0,-1,0) / right=(1,0,0)", script_env,
+            "var q = function(v){ return v.x+','+v.y+','+v.z; };\n"
+            "globalThis.__zResult = q(Vector3.up)+'|'+q(Vector3.forward)+'|'+q(Vector3.right);",
+            "0,0,1|0,-1,0|1,0,0");
+    CheckJs("K3", "down / back / left 是它们的反向", script_env,
+            "var q = function(v){ return v.x+','+v.y+','+v.z; };\n"
+            "globalThis.__zResult = q(Vector3.down)+'|'+q(Vector3.back)+'|'+q(Vector3.left);",
+            "0,0,-1|0,1,0|-1,0,0");
+    CheckJs("K4", "positiveInfinity / negativeInfinity", script_env,
+            "globalThis.__zResult = String(Vector3.positiveInfinity.x === Infinity) + '/' +\n"
+            "                       String(Vector3.negativeInfinity.z === -Infinity);",
+            "true/true");
+    // K5：运算转发。Cross 用非对称样本（X×Y=Z，反过来是 -Z）。
+    CheckJs("K5", "Vector3.Distance / Dot / Cross", script_env,
+            "var c = Vector3.Cross({x:1,y:0,z:0},{x:0,y:1,z:0});\n"
+            "var c2 = Vector3.Cross({x:0,y:1,z:0},{x:1,y:0,z:0});\n"
+            "globalThis.__zResult = __fx(Vector3.Distance({x:0,y:0,z:0},{x:0,y:0,z:5})) + '|' +\n"
+            "                       __fx(Vector3.Dot({x:1,y:2,z:3},{x:4,y:5,z:6})) + '|' +\n"
+            "                       __fx(c.z) + '/' + __fx(c2.z);",
+            "5.0000|32.0000|1.0000/-1.0000");
+    // K6：Unity 的 `Vector3.Lerp` **夹** t，`LerpUnclamped` 才不夹
+    // （`VectorMath.Lerp` 不夹 —— 这条就是两者的差别）。
+    CheckJs("K6", "Vector3.Lerp 夹 t，LerpUnclamped 不夹", script_env,
+            "var a = {x:0,y:0,z:0}, b = {x:10,y:10,z:10};\n"
+            "globalThis.__zResult = __fx(Vector3.Lerp(a, b, 2).x) + '/' +\n"
+            "                       __fx(Vector3.LerpUnclamped(a, b, 2).x) + '/' +\n"
+            "                       __fx(Vector3.Lerp(a, b, -1).x);",
+            "10.0000/20.0000/0.0000");
+    CheckJs("K7", "Vector3.Magnitude / SqrMagnitude / Normalize", script_env,
+            "var n = Vector3.Normalize({x:0,y:3,z:4});\n"
+            "globalThis.__zResult = __fx(Vector3.Magnitude({x:3,y:4,z:0})) + '|' +\n"
+            "                       __fx(Vector3.SqrMagnitude({x:3,y:4,z:0})) + '|' +\n"
+            "                       __fx(n.y) + ',' + __fx(n.z);",
+            "5.0000|25.0000|0.6000,0.8000");
+    // K8：Quaternion.identity。
+    CheckJs("K8", "Quaternion.identity 是 (0,0,0,1)", script_env,
+            "var i = Quaternion.identity;\n"
+            "globalThis.__zResult = __fx(i.x)+','+__fx(i.y)+','+__fx(i.z)+','+__fx(i.w);",
+            "0.0000,0.0000,0.0000,1.0000");
+    // K9：绕语义轴 up 转 45°，与 identity 的夹角就该是 45 —— 不依赖具体分量，
+    // 所以轴向约定变了这条仍然成立（K2 才管约定）。
+    CheckJs("K9", "Quaternion.AngleAxis(45, up) 与 identity 相差 45°", script_env,
+            "globalThis.__zResult = Quaternion.Angle(Quaternion.identity,\n"
+            "                                        Quaternion.AngleAxis(45, Vector3.up)).toFixed(2);",
+            "45.00");
+    // K10：绕 up(+Z) 转 +90°，right(+X) 落 back(+Y) —— 右手系里 X 绕 Z 正转
+    // 就是到 +Y。这条把"正向旋转往哪边"钉死：以后谁改了四元数的手性，这里会红。
+    CheckJs("K10", "绕 up 转 +90°：right(+X) -> back(+Y)", script_env,
+            "var r = Quaternion.Rotate(Quaternion.AngleAxis(90, Vector3.up), {x:1,y:0,z:0});\n"
+            "globalThis.__zResult = __fx(r.x)+','+__fx(r.y)+','+__fx(r.z);",
+            "0.0000,1.0000,0.0000");
+    // K11：VectorMath / QuaternionMath 仍然在（老名字没被这次改名拿掉）。
+    CheckJs("K11", "VectorMath / QuaternionMath 仍然可用", script_env,
+            "globalThis.__zResult = (typeof VectorMath.Sub) + '|' + (typeof QuaternionMath.Slerp);",
+            "function|function");
+
     std::printf("\n========================================\n");
     std::printf("总计 %d 项检查，失败 %d 项\n", g_Checks, g_Failed);
     std::printf("========================================\n");
