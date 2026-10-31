@@ -229,7 +229,7 @@ int main(int argc, char** argv)
 
     std::printf("\n--- C. 每帧 OnUpdate 穿过 C++ 绑定 ---\n");
 
-    // 脚本里读的是 Time.GetDeltaTime()，所以这里推一帧把值定下来。
+    // 脚本里读的是 Time.deltaTime，所以这里推一帧把值定下来。
     TimeState::Get().BeginFrame(0.016f, 0.02f, true);
 
     CheckTrue("T13", "OnUpdate(0.5) 第一帧", script_env.InvokeInstanceMethodNumber(mover, "OnUpdate", 0.5));
@@ -240,7 +240,7 @@ int main(int argc, char** argv)
         auto fields = script_env.EnumerateInstanceFields(mover);
         std::string v;
         CheckTrue("T16", "字段 lastSnapshot 存在", FindField(fields, "lastSnapshot", nullptr, &v));
-        // origin.x | ticks | lastDt | sawKeyDown | Time.GetDeltaTime()
+        // origin.x | ticks | lastDt | sawKeyDown | Time.deltaTime
         CheckEq("T17", "两帧后 origin.x=2 / ticks=2 / dt=0.5 / 无按键 / deltaTime=0.016",
                 v, "2.0000,2,0.5,false,0.0160");
         std::string ticks_type;

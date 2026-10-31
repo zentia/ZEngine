@@ -53,7 +53,7 @@ ZSCRIPTPROPERTY '%s': getter '%s' must not be static
 ```
 
 所以 Unity 里所有"其实是静态属性"的东西在 ZEngine 只能导成方法
-（`Time.GetDeltaTime()` 对应 `Time.deltaTime`，见 `ScriptTime.h`）。这次放开：
+（`Time.deltaTime` 当时是 `Time.GetDeltaTime()`）。这次放开：
 
 * `parser.py` —— 静态 getter 合法；getter 与 setter 的静态性必须一致（否则
   `Color.red = x` 写到另一个东西上）；

@@ -359,46 +359,69 @@ int main()
             "globalThis.__zResult = [__fx(Mathf.Clamp(5,0,3)), __fx(Mathf.Clamp01(-2)),\n"
             "                        __fx(Mathf.Lerp(0,10,0.3)), __fx(Mathf.Sign(-7))].join('|');",
             "3.0000|0.0000|3.0000|-1.0000");
-    CheckJs("C3", "Mathf.Pi / Deg2Rad / Rad2Deg", script_env,
-            "globalThis.__zResult = __fx(Mathf.Pi())+'|'+__fx(Mathf.Deg2Rad(180))+'|'+__fx(Mathf.Rad2Deg(Mathf.Pi()));",
+    // Unity 的 `Mathf.PI` / `Mathf.Deg2Rad` / `Mathf.Rad2Deg` 都是**常量**
+    // （不是函数），所以这里是 `180 * Mathf.Deg2Rad` 而不是 `Deg2Rad(180)`。
+    CheckJs("C3", "Mathf.PI / Deg2Rad / Rad2Deg 是静态常量", script_env,
+            "globalThis.__zResult = __fx(Mathf.PI)+'|'+__fx(180 * Mathf.Deg2Rad)+'|'+__fx(Mathf.PI * Mathf.Rad2Deg);",
             "3.1416|3.1416|180.0000");
 
     std::printf("\n--- D. Time：JS 读 C++ 状态，JS 写 C++ 状态 ---\n");
 
     // D1：还没有任何帧时，TimeState 是初始状态。
     CheckJs("D1", "未推进任何帧时 deltaTime / time / frameCount 全 0", script_env,
-            "globalThis.__zResult = [__fx(Time.GetDeltaTime()), __fx(Time.GetTime()),\n"
-            "                        Time.GetFrameCount(), __fx(Time.GetTimeScale())].join('|');",
+            "globalThis.__zResult = [__fx(Time.deltaTime), __fx(Time.time),\n"
+            "                        Time.frameCount, __fx(Time.timeScale)].join('|');",
             "0.0000|0.0000|0|1.0000");
 
     // D2：C++ 推一帧，脚本必须立刻看到（单向 C++ -> JS）。
     TimeState::Get().BeginFrame(0.016f, 0.02f, true);
     CheckJs("D2", "BeginFrame(0.016, 0.02) 后 deltaTime / unscaled / frameCount", script_env,
-            "globalThis.__zResult = [__fx(Time.GetDeltaTime()), __fx(Time.GetUnscaledDeltaTime()),\n"
-            "                        Time.GetFrameCount(), Time.IsLogicUpdating()].join('|');",
+            "globalThis.__zResult = [__fx(Time.deltaTime), __fx(Time.unscaledDeltaTime),\n"
+            "                        Time.frameCount, Time.IsLogicUpdating()].join('|');",
             "0.0160|0.0200|1|true");
 
-    // D3：JS 改 timeScale，C++ 侧的下一帧必须按新 scale 算（双向）。
-    CheckJs("D3", "JS 调 Time.SetTimeScale(2) 后 C++ 读到 2", script_env,
-            "Time.SetTimeScale(2);\n"
-            "globalThis.__zResult = __fx(Time.GetTimeScale());",
+    // D3：JS **赋值**给静态属性 —— Unity 的 `Time.timeScale = 2`。这是本切片最
+    // 关键的一条：属性装的是 getter/setter 描述符，赋值必须真的走到 C++。
+    CheckJs("D3", "JS 写 Time.timeScale = 2 后 C++ 读到 2", script_env,
+            "Time.timeScale = 2;\n"
+            "globalThis.__zResult = __fx(Time.timeScale);",
             "2.0000");
     TimeState::Get().BeginFrame(0.016f, 0.02f, true);
     CheckJs("D4", "timeScale=2 时脚本看到的 deltaTime 是原始值的两倍", script_env,
-            "globalThis.__zResult = __fx(Time.GetDeltaTime())+'|'+__fx(Time.GetUnscaledDeltaTime());",
+            "globalThis.__zResult = __fx(Time.deltaTime)+'|'+__fx(Time.unscaledDeltaTime);",
             "0.0320|0.0200");
 
     CheckJs("D5", "Time.ResetTimeScale() 把 scale 还原", script_env,
             "Time.ResetTimeScale();\n"
-            "globalThis.__zResult = __fx(Time.GetTimeScale());",
+            "globalThis.__zResult = __fx(Time.timeScale);",
             "1.0000");
 
     // D6：暂停帧（should_update_logic=false）—— 逻辑 delta 归零但 unscaled 还在走。
     TimeState::Get().BeginFrame(0.016f, 0.02f, false);
     CheckJs("D6", "暂停帧：deltaTime=0、IsLogicUpdating=false、unscaled 仍在走", script_env,
-            "globalThis.__zResult = [__fx(Time.GetDeltaTime()), __fx(Time.GetUnscaledDeltaTime()),\n"
-            "                        Time.IsLogicUpdating(), __fx(Time.GetTime())].join('|');",
+            "globalThis.__zResult = [__fx(Time.deltaTime), __fx(Time.unscaledDeltaTime),\n"
+            "                        Time.IsLogicUpdating(), __fx(Time.time)].join('|');",
             "0.0000|0.0200|false|0.0480");
+
+    // D7：静态属性的另一半 —— 访问器被从方法表里摘掉了（否则 MSVC 把同一个
+    // MethodCallback 编进两个 COMDAT 段，LNK1179）。所以 TS 里只有 Unity 的
+    // 拼写，Get* 版本不该存在。
+    CheckJs("D7", "deltaTime 是属性；GetDeltaTime() 已不在 TS 面上", script_env,
+            "globalThis.__zResult = typeof Time.deltaTime + '/' + typeof Time.GetDeltaTime;",
+            "number/undefined");
+    // D8：可写属性的第二个样本（fixedDeltaTime），并确认改完能读回来。
+    CheckJs("D8", "fixedDeltaTime 可读写，fixedTime 是数", script_env,
+            "var before = Time.fixedDeltaTime;\n"
+            "Time.fixedDeltaTime = 0.05;\n"
+            "var mid = __fx(Time.fixedDeltaTime);\n"
+            "Time.fixedDeltaTime = before;\n"
+            "globalThis.__zResult = mid + '/' + (typeof Time.fixedTime);",
+            "0.0500/number");
+    // D9：两个名字共用同一个 getter（Unity 的 unscaledTime / realtimeSinceStartup）。
+    CheckJs("D9", "realtimeSinceStartup 与 unscaledTime 同一个值", script_env,
+            "globalThis.__zResult = String(Time.realtimeSinceStartup === Time.unscaledTime) + '/' +\n"
+            "                       (typeof Time.realtimeSinceStartup);",
+            "true/number");
 
     std::printf("\n--- E. ZENUM 发布 + Input 无系统时的安全降级 ---\n");
 
@@ -611,6 +634,42 @@ int main()
     CheckJs("I15", "字面量显式给出的 alpha 被保留", script_env,
             "globalThis.__zResult = Color.Lerp({r: 0, g: 0, b: 0, a: 0.25}, Color.white, 0).a.toFixed(3);\n",
             "0.250");
+
+    std::printf("\n--- J. Unity 的静态字段：Screen / Mathf / Application ---\n");
+
+    // J1：Screen 三个量都是 number（无窗口系统时是 0 / 0 / 1，但类型不能是
+    // undefined —— 静态属性没装上就是 undefined）。
+    CheckJs("J1", "Screen.width / height / dpi 是静态属性", script_env,
+            "globalThis.__zResult = typeof Screen.width + '/' + typeof Screen.height + '/' + typeof Screen.dpi;",
+            "number/number/number");
+    // J2：Mathf 的常量。Unity 里它们是**字段**，这里也必须能当字段读。
+    CheckJs("J2", "Mathf.PI / Epsilon / Infinity / NegativeInfinity", script_env,
+            "globalThis.__zResult = __fx(Mathf.PI) + '/' + (Mathf.Epsilon > 0) + '/' +\n"
+            "                       (Mathf.Infinity > 0) + '/' + (Mathf.NegativeInfinity < 0) + '/' +\n"
+            "                       __fx(Mathf.Deg2Rad) + '/' + __fx(Mathf.Rad2Deg);",
+            "3.1416/true/true/true/0.0175/57.2958");
+    // J3：Application 的字符串 / 布尔字段。
+    CheckJs("J3", "Application.isPlaying / dataPath / productName 是字段", script_env,
+            "globalThis.__zResult = typeof Application.isPlaying + '/' + typeof Application.dataPath +\n"
+            "                       '/' + typeof Application.productName + '/' + typeof Application.platform;",
+            "boolean/string/string/number");
+    // J4/J5：这两个是**系统状态**（`Application::m_TargetFrameRate` /
+    // `m_RunInBackground`），本测试没有 Application 系统，所以读的是文档里写明的
+    // 降级值（-1 / true），写是空操作。这里要守的是"有降级值、不崩、不是
+    // undefined"；真正的写路径由 D3（Time.timeScale）与
+    // D8（Time.fixedDeltaTime）覆盖 —— 那两个是纯静态状态。
+    CheckJs("J4", "无 Application 系统时 targetFrameRate 降级为 -1（可写但不生效）", script_env,
+            "Application.targetFrameRate = 60;\n"
+            "globalThis.__zResult = typeof Application.targetFrameRate + '/' + Application.targetFrameRate;",
+            "number/-1");
+    CheckJs("J5", "无 Application 系统时 runInBackground 降级为 true", script_env,
+            "Application.runInBackground = false;\n"
+            "globalThis.__zResult = typeof Application.runInBackground + '/' + Application.runInBackground;",
+            "boolean/true");
+    // J6：Get* 那一套已经从 TS 面上撤掉（静态访问器被 codegen 移出方法表）。
+    CheckJs("J6", "Screen.GetWidth / Application.GetDataPath 已不在 TS 面上", script_env,
+            "globalThis.__zResult = typeof Screen.GetWidth + '/' + typeof Application.GetDataPath;",
+            "undefined/undefined");
 
     std::printf("\n========================================\n");
     std::printf("总计 %d 项检查，失败 %d 项\n", g_Checks, g_Failed);

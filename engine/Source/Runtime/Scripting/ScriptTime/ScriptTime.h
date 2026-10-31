@@ -7,16 +7,18 @@
 
 // 脚本侧的时间查询。
 //
-// 为什么是 `Time.GetDeltaTime()` 而不是 `Time.deltaTime`
-// -------------------------------------------------------
-// Unity 的 `Time.deltaTime` 是**静态属性**。这里的 ZSCRIPTPROPERTY 不支持
-// 静态访问器 —— `zht/parser.py` 会直接报错：
+// 拼写与 Unity 一致：`Time.deltaTime`，不是 `Time.GetDeltaTime()`
+// ---------------------------------------------------------------
+// Unity 的这些是**静态属性**。以前 ZSCRIPTPROPERTY 不接受静态访问器
+// （`zht/parser.py` 直接报 "getter must not be static"），只能落成
+// `Time.GetDeltaTime()`；`Color.red` 那一档把静态属性做出来了（静态属性走
+// pesapi 的 `Variables` 表，由后端装到**构造器**上），于是这里换成 Unity 的
+// 拼写。Get* 方法在 C++ 里照旧保留（ZSCRIPTPROPERTY 的 getter 本来就得是个
+// ZFUNCTION），但**不再出现在 .d.ts 里** —— 静态访问器会被 codegen 从方法表
+// 摘掉，否则 MSVC 把同一个 MethodCallback 编进两个 COMDAT 段（LNK1179）。
 //
-//     ZSCRIPTPROPERTY '%s': getter '%s' must not be static
-//
-// 所以只能导出成静态方法，脚本写 `Time.GetDeltaTime()`。这是工具链约束，
-// 不是笔误；和 VectorMath 用静态方法的原因（ZCLASS 必须派生 Object，
-// Vector3 进不了绑定表）是同一类取舍。
+// 也就是说：TS 写 `Time.deltaTime`，C++ 写 `Time::GetDeltaTime()`，两边各自
+// 是本语言的习惯写法。
 //
 // 注意：脚本的 `OnUpdate(dt)` **本来就收到本帧的 delta**。所以"每帧移动"
 // 不需要 Time：
@@ -68,17 +70,20 @@ public:
     /// Unity 的 `Time.deltaTime`。
     ZFUNCTION()
     static float GetDeltaTime() { return TimeState::Get().GetDeltaTime(); }
+    ZSCRIPTPROPERTY(Name = "deltaTime", Getter = "GetDeltaTime")
 
     /// 真实帧间隔（秒）。不受 timeScale、不受暂停影响。
     /// Unity 的 `Time.unscaledDeltaTime`。UI 动画与"暂停时也要走"的计时
     /// 用它。
     ZFUNCTION()
     static float GetUnscaledDeltaTime() { return TimeState::Get().GetUnscaledDeltaTime(); }
+    ZSCRIPTPROPERTY(Name = "unscaledDeltaTime", Getter = "GetUnscaledDeltaTime")
 
     /// 平滑过的帧间隔（秒），EMA（alpha = 1/100）。Unity 的
     /// `Time.smoothDeltaTime`。想让镜头跟随不受单帧卡顿影响时用这个。
     ZFUNCTION()
     static float GetSmoothDeltaTime() { return TimeState::Get().GetSmoothDeltaTime(); }
+    ZSCRIPTPROPERTY(Name = "smoothDeltaTime", Getter = "GetSmoothDeltaTime")
 
     // ---- 累计 ----
 
@@ -86,16 +91,33 @@ public:
     /// Unity 的 `Time.time`。
     ZFUNCTION()
     static float GetTime() { return TimeState::Get().GetTime(); }
+    ZSCRIPTPROPERTY(Name = "time", Getter = "GetTime")
 
     /// 真实时间累计（秒）。Unity 的 `Time.unscaledTime`。
     ZFUNCTION()
     static float GetUnscaledTime() { return TimeState::Get().GetUnscaledTime(); }
+    ZSCRIPTPROPERTY(Name = "unscaledTime", Getter = "GetUnscaledTime")
+
+    /// Unity 里 `realtimeSinceStartup` 与 `unscaledTime` 是同一个量，只是叫法
+    /// 不同（前者强调"含启动前的初始化"）。
+    ///
+    /// ⚠️ 它必须是**另一个函数**，不能让两个 ZSCRIPTPROPERTY 共用
+    /// `GetUnscaledTime`：同一个静态访问器挂两次，MSVC 就把
+    /// `PropertyCallback<同一个指针>` 编进两个 COMDAT 段，链接器直接拒收整个
+    /// obj（LNK1179，与 `Color` 那次同源）。转发一层是这里最省事的解法。
+    ZFUNCTION()
+    static float GetRealtimeSinceStartup() { return GetUnscaledTime(); }
+    ZSCRIPTPROPERTY(Name = "realtimeSinceStartup", Getter = "GetRealtimeSinceStartup")
 
     /// 已经跑过的帧数（含暂停帧）。Unity 的 `Time.frameCount`。
     ZFUNCTION()
     static int GetFrameCount() { return TimeState::Get().GetFrameCount(); }
+    ZSCRIPTPROPERTY(Name = "frameCount", Getter = "GetFrameCount")
 
     /// 平滑帧率（帧/秒）。
+    ///
+    /// ⚠️ Unity **没有** `Time.fps`（要看帧率得自己 1/deltaTime）。这里额外
+    /// 留一个方法，因为引擎内部已经在算（HUD 要用），脚本自己算会重复一遍 EMA。
     ZFUNCTION()
     static int GetFps() { return TimeState::Get().GetFps(); }
 
@@ -104,6 +126,9 @@ public:
     /// 当前时间缩放：1 = 正常，0 = 逻辑冻结。Unity 的 `Time.timeScale`。
     ZFUNCTION()
     static float GetTimeScale() { return TimeState::Get().GetTimeScale(); }
+    /// Unity 的 `Time.timeScale` 是**可写**的（`Time.timeScale = 0` 是暂停
+    /// 的标准写法），所以这里带 setter。
+    ZSCRIPTPROPERTY(Name = "timeScale", Getter = "GetTimeScale", Setter = "SetTimeScale")
 
     /// 设置时间缩放。**负数会被夹到 0**（时间不能倒流）。
     ///
@@ -125,6 +150,9 @@ public:
     /// 与之相对，`GetDeltaTime()` 是帧间隔，一帧一个样。
     ZFUNCTION()
     static float GetFixedDeltaTime() { return TimeState::Get().GetFixedDeltaTime(); }
+    /// Unity 的 `Time.fixedDeltaTime` 同样可写（改物理步长）。
+    ZSCRIPTPROPERTY(Name = "fixedDeltaTime", Getter = "GetFixedDeltaTime",
+                    Setter = "SetFixedDeltaTime")
 
     /// 设置固定步长。<= 1ms 的值被夹到 1ms（0 会让引擎的固定步循环变成
     /// 死循环）。见 TimeState::SetFixedDeltaTime。
@@ -147,6 +175,7 @@ public:
     /// 固定步推进的逻辑时间累计（秒）。Unity 的 `Time.fixedTime`。
     ZFUNCTION()
     static float GetFixedTime() { return TimeState::Get().GetFixedTime(); }
+    ZSCRIPTPROPERTY(Name = "fixedTime", Getter = "GetFixedTime")
 
     /// 固定步之间的插值系数 [0,1)。
     ///

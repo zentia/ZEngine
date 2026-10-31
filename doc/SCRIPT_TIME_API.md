@@ -32,50 +32,59 @@ class Mover extends Behaviour {
 | **timeScale** | 脚本唯一能改变"世界推进速度"的手段，之前根本不存在 |
 | 非 Tick 上下文的 delta | `OnAwake` / `OnStart` / 事件回调里没有 `dt` 参数 |
 
-## 2. 为什么是 `Time.GetDeltaTime()` 而不是 `Time.deltaTime`
+## 2. 拼写与 Unity 一致：`Time.deltaTime`
 
-Unity 的 `Time.deltaTime` 是**静态属性**。这里的 `ZSCRIPTPROPERTY` 不支持静态
-访问器，`zht/parser.py` 会直接报错：
+`Time.deltaTime` 是**静态属性**，和 Unity 的写法一字不差。
+
+以前这里是 `Time.GetDeltaTime()`：`ZSCRIPTPROPERTY` 不接受静态访问器
+（`zht/parser.py` 直接报 "getter must not be static"），只能落成静态方法。
+`Color.red` 那一档把静态属性做出来了（静态属性走 pesapi 的 `Variables` 表，
+后端把它装到**构造器**上；实例属性走 `Properties` 装到 prototype），于是这里
+换回 Unity 的拼写。
+
+**Get* 方法在 C++ 里照旧保留**（`ZSCRIPTPROPERTY` 的 getter 本来就得是个
+`ZFUNCTION`），但**不再出现在 .d.ts 里**：静态访问器会被 `codegen.py` 从方法表
+摘掉。不摘的话 MSVC 把同一个 `MethodCallback` 编进两个 COMDAT 段，链接器直接
+拒收整个 obj（LNK1179，见 `doc/COLOR_SCRIPT_API.md`）。
+
+所以：TS 写 `Time.deltaTime`，C++ 写 `Time::GetDeltaTime()`，两边各自是本语言
+的习惯写法。
+
+| Unity | 这里（.d.ts） | C++ |
+| --- | --- | --- |
+| `Time.deltaTime` | `Time.deltaTime` | `Time::GetDeltaTime()` |
+| `Time.unscaledDeltaTime` | 同左 | `GetUnscaledDeltaTime()` |
+| `Time.smoothDeltaTime` | 同左 | `GetSmoothDeltaTime()` |
+| `Time.time` | 同左 | `GetTime()` |
+| `Time.unscaledTime` | 同左 | `GetUnscaledTime()` |
+| `Time.realtimeSinceStartup` | 同左（同一个量，另一个 getter） | `GetRealtimeSinceStartup()` |
+| `Time.frameCount` | 同左 | `GetFrameCount()` |
+| `Time.timeScale`（可写） | 同左 | `GetTimeScale()` / `SetTimeScale(v)` |
+| `Time.fixedDeltaTime`（可写） | 同左 | `GetFixedDeltaTime()` / `SetFixedDeltaTime(v)` |
+| `Time.fixedTime` | 同左 | `GetFixedTime()` |
+| — | `Time.GetFps()` | `GetFps()`（Unity 没有 `Time.fps`） |
+| — | `Time.GetFixedStepTotal()` | 同左（Unity 无直接对应） |
+
+## 3. 导出的 API
 
 ```
-ZSCRIPTPROPERTY '%s': getter '%s' must not be static
-```
+// 静态属性（.d.ts 里的形状）
+static readonly deltaTime: number
+static readonly unscaledDeltaTime: number
+static readonly smoothDeltaTime: number
+static readonly time: number
+static readonly unscaledTime: number
+static readonly realtimeSinceStartup: number
+static readonly frameCount: number
+static          timeScale: number          // 可写
+static          fixedDeltaTime: number     // 可写
+static readonly fixedTime: number
 
-所以只能导出成静态方法。这是工具链约束，不是笔误 —— 和 `VectorMath` 用静态
-方法的原因（`ZCLASS` 必须派生 `Object`，`Vector3` 进不了绑定表）是同一类取舍。
-
-| Unity | 这里 |
-| --- | --- |
-| `Time.deltaTime` | `Time.GetDeltaTime()` |
-| `Time.unscaledDeltaTime` | `Time.GetUnscaledDeltaTime()` |
-| `Time.smoothDeltaTime` | `Time.GetSmoothDeltaTime()` |
-| `Time.time` | `Time.GetTime()` |
-| `Time.unscaledTime` | `Time.GetUnscaledTime()` |
-| `Time.frameCount` | `Time.GetFrameCount()` |
-| `Time.timeScale` | `Time.GetTimeScale()` / `Time.SetTimeScale(v)` |
-| `Time.fixedDeltaTime` | `Time.GetFixedDeltaTime()` / `Time.SetFixedDeltaTime(v)` |
-| `Time.fixedTime` | `Time.GetFixedTime()` |
-| — | `Time.GetFixedStepTotal()`（Unity 无直接对应） |
-
-## 3. 导出的 API（16 个）
-
-```
-GetDeltaTime(): number            本帧逻辑步长（秒），受 timeScale；暂停时为 0
-GetUnscaledDeltaTime(): number    真实帧间隔（秒），不受 timeScale、不受暂停
-GetSmoothDeltaTime(): number      平滑帧间隔（秒），EMA alpha = 1/100
-GetTime(): number                 逻辑时间累计（秒），受 timeScale
-GetUnscaledTime(): number         真实时间累计（秒）
-GetFrameCount(): number           已跑帧数（含暂停帧）
+// 方法
 GetFps(): number                  平滑帧率
-GetTimeScale(): number            1 = 正常，0 = 冻结
-SetTimeScale(scale: number): void 负数被夹到 0
 ResetTimeScale(): void           还回 1（不动累计时间与帧数）
 IsLogicUpdating(): boolean        本帧是否推进逻辑（编辑器暂停时为 false）
-
-GetFixedDeltaTime(): number      固定步长（秒），OnFixedUpdate 收到的那个 dt
-SetFixedDeltaTime(v): void       <= 1ms 被夹到 1ms（0 会让固定步循环死循环）
 GetFixedStepTotal(): number      累计固定步数，**与帧率无关**
-GetFixedTime(): number           固定步推进的逻辑时间累计（秒）
 GetFixedStepAlpha(): number      固定步之间的插值系数 [0,1)
 ```
 

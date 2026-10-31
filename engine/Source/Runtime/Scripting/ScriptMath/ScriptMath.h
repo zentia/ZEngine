@@ -494,14 +494,33 @@ public:
     ZFUNCTION()
     static float Sign(float value) { return (value > 0.f) ? 1.f : ((value < 0.f) ? -1.f : 0.f); }
 
-    ZFUNCTION()
+    // ⚠️ 这两个在 Unity 里是**常量**（`Mathf.Deg2Rad`），不是函数。以前这里导成
+    // 了 `Deg2Rad(degrees)`，脚本侧和 Unity 的写法对不上（Unity 写
+    // `deg * Mathf.Deg2Rad`），所以改回常量：TS 只有 `Mathf.Deg2Rad`，
+    // C++ 侧的 `Deg2Rad(degrees)` 留着（仍是普通静态函数，只是不再发布给脚本）。
     static float Deg2Rad(float degrees) { return degrees * Math_fDeg2Rad; }
 
-    ZFUNCTION()
     static float Rad2Deg(float radians) { return radians * Math_fRad2Deg; }
+
+    /// 每弧度的角度数（57.29578）。Unity 的 `Mathf.Rad2Deg`。
+    ///
+    /// 与上面的 `Rad2Deg(radians)` 不是同一个东西：这个是常量，那个是"顺手
+    /// 换算"的 C++ 便利函数。两个都得是不同的函数 —— 一个静态访问器只能挂一个
+    /// ZSCRIPTPROPERTY（挂两次 ⇒ MSVC 把 PropertyCallback 编进两个 COMDAT 段，
+    /// LNK1179）。
+    ZFUNCTION()
+    static float GetRad2Deg() { return Math_fRad2Deg; }
+    ZSCRIPTPROPERTY(Name = "Rad2Deg", Getter = "GetRad2Deg")
+
+    /// 每角度的弧度数（0.0174533）。Unity 的 `Mathf.Deg2Rad`。
+    ZFUNCTION()
+    static float GetDeg2Rad() { return Math_fDeg2Rad; }
+    ZSCRIPTPROPERTY(Name = "Deg2Rad", Getter = "GetDeg2Rad")
 
     ZFUNCTION()
     static float Pi() { return Math_PI; }
+    /// Unity 的 `Mathf.PI`（全大写）。
+    ZSCRIPTPROPERTY(Name = "PI", Getter = "Pi")
 
     ZFUNCTION()
     static float HalfPi() { return Math_HALF_PI; }
@@ -520,11 +539,11 @@ public:
 
     // ---- 常量 ----------------------------------------------------------
     //
-    // ⚠️ Unity 里 `Epsilon` / `Infinity` / `NegativeInfinity` 是**静态只读字段**，
-    // 这里只能是**方法**。ZSCRIPTPROPERTY 的 getter 不允许 static（zht/parser.py
-    // 直接报错），所以静态属性在 ZFUNCTION 体系里做不出来 —— 脚本得写
-    // `Mathf.Infinity()`。这个偏差是有意的：宁可多一对括号，也不给一个"看起来
-    // 是字段其实是函数"的东西。
+    // Unity 的 `Epsilon` / `Infinity` / `NegativeInfinity` 是**静态只读字段**。
+    // 以前 ZSCRIPTPROPERTY 不接受静态访问器，只能写成方法（`Mathf.Infinity()`）；
+    // 现在静态属性做出来了，脚本写 `Mathf.Infinity` —— 与 Unity 一致。下面每个
+    // 常量都各自占一个 getter（一个静态访问器只能挂一个属性，见 `GetRad2Deg`
+    // 上面的说明）。
 
     /// 1 附近的浮点分辨极限（`FLT_EPSILON`，≈1.19e-7）。
     ///
@@ -534,12 +553,15 @@ public:
     /// Approximately 会退化成纯相对比较，在 0 附近直接失效。
     ZFUNCTION()
     static float Epsilon() { return std::numeric_limits<float>::epsilon(); }
+    ZSCRIPTPROPERTY(Name = "Epsilon", Getter = "Epsilon")
 
     ZFUNCTION()
     static float Infinity() { return std::numeric_limits<float>::infinity(); }
+    ZSCRIPTPROPERTY(Name = "Infinity", Getter = "Infinity")
 
     ZFUNCTION()
     static float NegativeInfinity() { return -std::numeric_limits<float>::infinity(); }
+    ZSCRIPTPROPERTY(Name = "NegativeInfinity", Getter = "NegativeInfinity")
 
     // ---- 取整数 --------------------------------------------------------
     //

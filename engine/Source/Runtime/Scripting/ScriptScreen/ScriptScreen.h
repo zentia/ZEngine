@@ -7,10 +7,14 @@
 
 // 脚本侧的屏幕 / 窗口查询（Unity 的 `Screen` 静态类）。
 //
-// 为什么是 `GetWidth()` 而不是 `width`
-// -------------------------------------
-// 同 `Time.GetDeltaTime()` / `Application.GetDataPath()`：ZSCRIPTPROPERTY 的
-// getter 不允许 static，静态属性做不出来，只能落成静态方法。
+// 为什么现在是 `width` 而不是 `GetWidth()`
+// -----------------------------------------
+// 以前 ZSCRIPTPROPERTY 的 getter 不允许 static，静态属性做不出来，只能落成
+// `GetWidth()`。`Color.red` 那一档把静态属性做出来了（走 pesapi 的 `Variables`
+// 表，装到构造器上），于是这里换回 Unity 的拼写。Get* 方法在 C++ 里照旧保留
+// （ZSCRIPTPROPERTY 的 getter 本来就得是个 ZFUNCTION），但**不在 .d.ts 里** ——
+// 静态访问器会被 codegen 从方法表摘掉，否则 MSVC 把同一个 MethodCallback 编进
+// 两个 COMDAT 段（LNK1179）。
 //
 // 单位：屏幕坐标，不是像素
 // -------------------------------------
@@ -54,6 +58,7 @@ public:
         }
         return 0;
     }
+    ZSCRIPTPROPERTY(Name = "width", Getter = "GetWidth")
 
     /// 窗口客户区高（屏幕坐标，非像素）。Unity 的 `Screen.height`。
     ZFUNCTION()
@@ -65,6 +70,7 @@ public:
         }
         return 0;
     }
+    ZSCRIPTPROPERTY(Name = "height", Getter = "GetHeight")
 
     /// 实际渲染缓冲宽（像素，已含 DPI 缩放）。建 render target / 截图时用。
     ZFUNCTION()
@@ -112,6 +118,7 @@ public:
         }
         return 1.0f;
     }
+    ZSCRIPTPROPERTY(Name = "dpi", Getter = "GetDpi")
 
     // ---- 显示器 ----
 

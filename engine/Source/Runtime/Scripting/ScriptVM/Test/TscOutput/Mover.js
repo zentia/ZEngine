@@ -62,7 +62,7 @@ class Mover extends Behaviour {
         this.lastDt = delta_time;
         this.origin = VectorMath.Add(this.origin, VectorMath.Scale(VectorMath.UnitX(), this.speed * delta_time));
         this.sawKeyDown = Input.GetKeyDown(Key.Space);
-        this.seenDeltaTime = Time.GetDeltaTime();
+        this.seenDeltaTime = Time.deltaTime;
     }
     /// 把当前状态打成一行字符串。测试的读法：调 snapshot() 再用
     /// ScriptEnv::EnumerateInstanceFields 取 lastSnapshot。

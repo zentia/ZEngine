@@ -80,12 +80,14 @@ public:
     //
     // 全部是 static：脚本侧写 `Application.Quit()`，没有实例可拿。
     //
-    // 为什么是 `GetDataPath()` 而不是 `dataPath`
-    // -----------------------------------------
-    // 同 `Time.GetDeltaTime()` —— ZSCRIPTPROPERTY 的 getter 不允许 static
-    // （zht/parser.py 直接报错）。所以 Unity 的静态属性在这里一律落成
-    // Get/Set 方法对。刻意保持 `Get<UnityName>()` 的拼写，这样从 Unity 搬
-    // 代码时改的是调用形式，不是名字。
+    // 为什么现在是 `dataPath` 而不是 `GetDataPath()`
+    // ----------------------------------------------
+    // 以前 ZSCRIPTPROPERTY 的 getter 不允许 static（zht/parser.py 直接报错），
+    // Unity 的静态属性一律只能落成 Get/Set 方法对。`Color.red` 那一档把静态属性
+    // 做出来了（走 pesapi 的 `Variables` 表，装到构造器上），于是这里换回 Unity
+    // 的拼写。Get* 方法在 C++ 里照旧保留（ZSCRIPTPROPERTY 的 getter 本来就得是
+    // 个 ZFUNCTION），但**不在 .d.ts 里** —— 静态访问器会被 codegen 从方法表
+    // 摘掉，否则 MSVC 把同一个 MethodCallback 编进两个 COMDAT 段（LNK1179）。
     //
     // 名字冲突注意
     // ------------
@@ -102,10 +104,12 @@ public:
     /// Player 壳恒为 true。Unity 的 `Application.isPlaying`。
     ZFUNCTION()
     static bool GetIsPlaying() { return g_isPlaying; }
+    ZSCRIPTPROPERTY(Name = "isPlaying", Getter = "GetIsPlaying")
 
     /// 是否在编辑器里运行。Unity 的 `Application.isEditor`。
     ZFUNCTION()
     static bool GetIsEditor() { return g_isEditor; }
+    ZSCRIPTPROPERTY(Name = "isEditor", Getter = "GetIsEditor")
 
     /// 工程资源目录（`<project>/<content_dir>`，通常是 Assets）。
     /// Unity 的 `Application.dataPath`。
@@ -114,6 +118,7 @@ public:
     /// 同一支：无工程启动是合法状态，让调用方自己判空比返回个假路径好。
     ZFUNCTION()
     static std::string GetDataPath();
+    ZSCRIPTPROPERTY(Name = "dataPath", Getter = "GetDataPath")
 
     /// 工程根目录（.zproject 所在目录）。无工程时为空。
     ZFUNCTION()
@@ -126,6 +131,7 @@ public:
     /// 拼出来的路径。要"存在"得自己 mkdir 或改打包流程。
     ZFUNCTION()
     static std::string GetStreamingAssetsPath();
+    ZSCRIPTPROPERTY(Name = "streamingAssetsPath", Getter = "GetStreamingAssetsPath")
 
     /// 可写的持久化目录（跨启动保留，卸载才清）。
     /// Unity 的 `Application.persistentDataPath`。
@@ -136,26 +142,38 @@ public:
     /// 地方，这样"存档"和"设置"不会各占一个目录。
     ZFUNCTION()
     static std::string GetPersistentDataPath();
+    ZSCRIPTPROPERTY(Name = "persistentDataPath", Getter = "GetPersistentDataPath")
 
     /// 产品名。Unity 的 `Application.productName`。
     ZFUNCTION()
     static std::string GetProductName();
+    ZSCRIPTPROPERTY(Name = "productName", Getter = "GetProductName")
 
     /// 公司名。Unity 的 `Application.companyName`。
     ZFUNCTION()
     static std::string GetCompanyName();
+    ZSCRIPTPROPERTY(Name = "companyName", Getter = "GetCompanyName")
 
     /// 版本号字符串。Unity 的 `Application.version`。
     ZFUNCTION()
     static std::string GetVersion();
+    ZSCRIPTPROPERTY(Name = "version", Getter = "GetVersion")
 
     /// 引擎版本。Unity 的 `Application.unityVersion`（对位 `engineVersion`）。
     ZFUNCTION()
     static std::string GetEngineVersion();
+    /// Unity 里叫 `unityVersion`。ZEngine 没有 "Unity"，所以 .d.ts 里用
+    /// `engineVersion` 这个更诚实的名字，但两边都指向同一个 getter 的**不同
+    /// 转发函数**（一个静态访问器只能挂一个属性，见 ScriptTime.h 的
+    /// `GetRealtimeSinceStartup`）。
+    ZFUNCTION()
+    static std::string GetEngineVersionAlias() { return GetEngineVersion(); }
+    ZSCRIPTPROPERTY(Name = "unityVersion", Getter = "GetEngineVersionAlias")
 
     /// 当前运行平台。Unity 的 `Application.platform`。
     ZFUNCTION()
     static RuntimePlatform GetPlatform();
+    ZSCRIPTPROPERTY(Name = "platform", Getter = "GetPlatform")
 
     /// 平台名（"Windows" / "MacOS" / "Linux" / "Android" / "iOS" / "Web"）。
     /// 打日志 / 上报时用，`GetPlatform()` 判分支用。
@@ -169,6 +187,9 @@ public:
     /// 那里不受这个值约束 —— 限帧是"出货行为"，不是"编辑行为"。
     ZFUNCTION()
     static int GetTargetFrameRate();
+    /// Unity 的 `Application.targetFrameRate` 可写。
+    ZSCRIPTPROPERTY(Name = "targetFrameRate", Getter = "GetTargetFrameRate",
+                    Setter = "SetTargetFrameRate")
 
     /// 设置目标帧率。<= 0 关闭限帧。
     ZFUNCTION()
@@ -177,6 +198,9 @@ public:
     /// 失焦时是否继续跑。Unity 的 `Application.runInBackground`。
     ZFUNCTION()
     static bool GetRunInBackground();
+    /// Unity 的 `Application.runInBackground` 也可写。
+    ZSCRIPTPROPERTY(Name = "runInBackground", Getter = "GetRunInBackground",
+                    Setter = "SetRunInBackground")
 
     /// 设置失焦行为。false 时窗口失焦就停止推进世界（但消息泵照跑，否则
     /// 窗口会变成"未响应"）。

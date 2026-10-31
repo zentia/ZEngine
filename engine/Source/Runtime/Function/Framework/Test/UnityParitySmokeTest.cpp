@@ -6252,6 +6252,58 @@ namespace
               "a ZPROPERTY(Color) field is marshallable");
     }
 
+    // --------------------------------------------------------------- BB ----
+    // Unity 的静态字段（`Time.deltaTime` / `Screen.width` / `Mathf.PI` /
+    // `Application.dataPath`）：拼写是对的，但"装没装上"在 C++ 侧看不见 ——
+    // 装错表（pesapi 的 Properties 而不是 Variables）不报错、不崩，只是 JS 里
+    // 永远 undefined。所以这里查源码里的声明，ScriptVMSmokeTest 的 D/J 两组查
+    // 运行时。
+    void TestStaticFieldWiring()
+    {
+        const std::string time = ReadFile("Source/Runtime/Scripting/ScriptTime/ScriptTime.h");
+        Check(!time.empty(), "BB0", "ScriptTime.h is readable");
+        Check(CountOccurrences(time, "ZSCRIPTPROPERTY(Name = \"deltaTime\", Getter = \"GetDeltaTime\")") >= 1,
+              "BB1", "Time.deltaTime is a static script property (Unity's spelling)");
+        // 可写属性必须带 setter —— Unity 里 `Time.timeScale = 0` 就是暂停。
+        Check(CountOccurrences(time, "Setter = \"SetTimeScale\"") >= 1, "BB2",
+              "Time.timeScale is writable (Setter), not readonly");
+        // 一个静态访问器只能挂一个属性：挂两次 ⇒ PropertyCallback 进两个 COMDAT
+        // 段 ⇒ LNK1179。所以 realtimeSinceStartup 必须有自己的转发函数。
+        Check(CountOccurrences(time, "GetRealtimeSinceStartup") >= 2, "BB3",
+              "realtimeSinceStartup has its own getter (a shared one trips LNK1179)");
+        // 过时的注释比没注释更坑：它会让人继续写 Get* 那一套。
+        Check(CountOccurrences(time, "ZSCRIPTPROPERTY 不支持") == 0 &&
+                  CountOccurrences(time, "getter 不允许 static") == 0,
+              "BB4", "ScriptTime.h no longer claims static properties are impossible");
+
+        const std::string screen = ReadFile("Source/Runtime/Scripting/ScriptScreen/ScriptScreen.h");
+        Check(CountOccurrences(screen, "ZSCRIPTPROPERTY(Name = \"width\", Getter = \"GetWidth\")") >= 1,
+              "BB5", "Screen.width is a static script property");
+        Check(CountOccurrences(screen, "ZSCRIPTPROPERTY(Name = \"dpi\", Getter = \"GetDpi\")") >= 1,
+              "BB6", "Screen.dpi is a static script property");
+
+        const std::string mathf = ReadFile("Source/Runtime/Scripting/ScriptMath/ScriptMath.h");
+        Check(CountOccurrences(mathf, "ZSCRIPTPROPERTY(Name = \"PI\", Getter = \"Pi\")") >= 1,
+              "BB7", "Mathf.PI is a static script property (Unity's capital spelling)");
+        Check(CountOccurrences(mathf, "ZSCRIPTPROPERTY(Name = \"Deg2Rad\", Getter = \"GetDeg2Rad\")") >= 1,
+              "BB8", "Mathf.Deg2Rad is the constant Unity has, not a function");
+        Check(CountOccurrences(mathf, "ZSCRIPTPROPERTY(Name = \"Infinity\", Getter = \"Infinity\")") >= 1,
+              "BB9", "Mathf.Infinity is a static script property");
+
+        const std::string app = ReadFile("Source/Runtime/Application/Application.h");
+        Check(CountOccurrences(app, "ZSCRIPTPROPERTY(Name = \"dataPath\", Getter = \"GetDataPath\")") >= 1,
+              "BB10", "Application.dataPath is a static script property");
+        Check(CountOccurrences(app, "ZSCRIPTPROPERTY(Name = \"isPlaying\", Getter = \"GetIsPlaying\")") >= 1,
+              "BB11", "Application.isPlaying is a static script property");
+        Check(CountOccurrences(app, "Setter = \"SetTargetFrameRate\"") >= 1, "BB12",
+              "Application.targetFrameRate is writable");
+
+        // 方法表里不该再有静态访问器（见 BA16）——这次是"旧拼写是否真的撤掉了"。
+        const std::string codegen = ReadFile("tools/ZHeaderTool/zht/codegen.py");
+        Check(CountOccurrences(codegen, "m.is_static and m.name in static_accessors") >= 1, "BB13",
+              "codegen still keeps static accessors out of the method table");
+    }
+
     // ---------------------------------------------------------------- B ----
     void TestWiringGate()
     {
@@ -6405,6 +6457,7 @@ int main()
     TestAudioSourceWiring();
     TestColor();
     TestColorWiring();
+    TestStaticFieldWiring();
     TestWiringGate();
 
     std::printf("\n=== %d checks, %d failures ===\n", g_Checks, g_Failures);

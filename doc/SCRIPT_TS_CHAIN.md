@@ -106,7 +106,7 @@ if (!resolved_exports)
 |----|------|
 | A | tsc 产物能被 IIFE 包装加载、`CreateInstance` 能 new 出 ES2020 原生 class |
 | B | 原型链：`instanceof Behaviour` 为真、`Behaviour.prototype.OnDestroy` 被继承到了、未注入时 `this.gameObject` 是 falsy |
-| C | 每帧 `OnUpdate` 穿过 C++ 的 `VectorMath.Add/Scale`；脚本读 `Time.GetDeltaTime()` 拿到的是 `TimeState` 推的值 |
+| C | 每帧 `OnUpdate` 穿过 C++ 的 `VectorMath.Add/Scale`；脚本读 `Time.deltaTime` 拿到的是 `TimeState` 推的值 |
 | D | C++ 用 `ApplyInstanceField` 改 `speed`，脚本下一帧按新值走 |
 | E | `EnumerateInstanceFields` 不把原型方法当字段；字段初始值都还在 |
 | F | 抛异常的模块不留缓存（见第 4 节） |

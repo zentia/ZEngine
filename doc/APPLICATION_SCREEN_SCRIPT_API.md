@@ -1,7 +1,7 @@
 # `Application` / `Screen` 脚本门面
 
-TS 侧：`Application.Quit()`、`Screen.GetWidth()`。对位是 Unity 的
-`UnityEngine.Application` / `UnityEngine.Screen`。
+TS 侧：`Application.Quit()`、`Application.dataPath`、`Screen.width`。对位是
+Unity 的 `UnityEngine.Application` / `UnityEngine.Screen`，**拼写与 Unity 一致**。
 
 代码位置：
 
@@ -32,17 +32,25 @@ header-only 的纯转发类。
 
 ---
 
-## 2. 静态属性做不出来（同 `Time.deltaTime`）
+## 2. 静态属性：`Application.dataPath` / `Screen.width`（同 `Time.deltaTime`）
 
-Unity 的 `Application.dataPath` 是**静态属性**。ZSCRIPTPROPERTY 的 getter 不
-允许 static，`zht/parser.py` 直接报错：
+以前 ZSCRIPTPROPERTY 的 getter 不允许 static（`zht/parser.py` 直接报
+"getter must not be static"），Unity 的静态属性只能落成 `Get<UnityName>()` /
+`Set<UnityName>(v)` 方法对。`Color.red` 那一档把静态属性做出来了（静态属性走
+pesapi 的 `Variables` 表、装到**构造器**上），于是这里换回 Unity 的拼写。
 
-```
-ZSCRIPTPROPERTY '%s': getter '%s' must not be static
-```
+Get* 方法在 C++ 里照旧保留（ZSCRIPTPROPERTY 的 getter 本来就得是个
+ZFUNCTION），但**不在 .d.ts 里** —— 静态访问器会被 `codegen.py` 从方法表摘掉，
+否则 MSVC 把同一个 `MethodCallback` 编进两个 COMDAT 段（LNK1179）。
 
-所以全部落成 `Get<UnityName>()` / `Set<UnityName>(v)` 方法对。名字刻意保留
-Unity 的拼写，这样从 Unity 搬代码时改的是调用形式，不是标识符。
+⚠️ **一个静态访问器只能挂一个属性**。`realtimeSinceStartup` 与 `unscaledTime`
+是同一个量，但必须各有一个 getter（`GetRealtimeSinceStartup()` 转发一层）：
+两个 `ZSCRIPTPROPERTY` 写同一个 `Getter=` 会让 `PropertyCallback<同一个指针>`
+进两个 COMDAT 段，链接器拒收整个 obj。
+
+⚠️ **`targetFrameRate` / `runInBackground` 的写是系统状态**：这两个量存在
+`Application` 的实例成员上（`m_TargetFrameRate` / `m_RunInBackground`），没有
+Application 系统时读的是降级值 `-1` / `true`，写是空操作（不崩、不抛）。
 
 ### 名字冲突：静态与非静态不能同签名重载
 
