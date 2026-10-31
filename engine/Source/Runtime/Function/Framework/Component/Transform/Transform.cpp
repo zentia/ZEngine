@@ -28,6 +28,152 @@ namespace
     TransformChangeSystemHandle g_PhysicsChangeSystem;
     bool g_TransformSystemsRegistered {false};
 
+    // ---- 欧拉角（度，合成顺序 X -> Y -> Z，即矩阵 Rz·Ry·Rx）--------------
+    //
+    // 不用 Quaternion::GetYaw/GetPitch/GetRoll：那三个是 Ogre 遗产，按 **Y-up**
+    // 定义的（yaw 绕 Y、pitch 绕 X、roll 绕 Z）。在 Z-up 的 ZEngine 里它们返回
+    // 的"yaw"其实是绕 Y 轴的角度，而绕 Y 轴在这里是**翻滚**不是转向 —— 名字与
+    // 语义对不上，比没有更危险。这里显式按 X->Y->Z 做分解。
+
+    float Rad(float degrees) { return Math::DegreesToRadians(degrees); }
+    float Deg(float radians) { return Math::RadiansToDegrees(radians); }
+
+    Quaternion EulerToQuaternion(const Vector3& euler_degrees)
+    {
+        Quaternion qx;
+        qx.FromAngleAxis(Radian(Rad(euler_degrees.x)), Vector3::UNIT_X);
+        Quaternion qy;
+        qy.FromAngleAxis(Radian(Rad(euler_degrees.y)), Vector3::UNIT_Y);
+        Quaternion qz;
+        qz.FromAngleAxis(Radian(Rad(euler_degrees.z)), Vector3::UNIT_Z);
+
+        // 先绕 X，再 Y，再 Z。四元数乘法与矩阵一致：(qz*qy*qx) 作用于向量时
+        // 先 qx 后 qy 再 qz。
+        Quaternion result = qz * qy * qx;
+        result.normalise();
+        return result;
+    }
+
+    // R = Rz(c)·Ry(b)·Rx(a) 展开后（下标是 [行][列]）：
+    //   R[2][0] = -sin(b)              => b = asin(-R20)
+    //   R[2][1] =  cos(b)·sin(a)       => a = atan2(R21, R22)
+    //   R[1][0] =  cos(b)·sin(c)       => c = atan2(R10, R00)
+    Vector3 EulerFromQuaternion(const Quaternion& rotation)
+    {
+        Matrix4x4 matrix = Matrix4x4::IDENTITY;
+        rotation.ToRotationMatrix(matrix);
+        const float (&r)[4][4] = matrix.m_Mat;
+
+        // 浮点误差会把 sin(b) 推出 [-1,1]，不夹一下 asin 返回 NaN。
+        const float sin_b = -Math::Clamp(r[2][0], -1.0f, 1.0f);
+
+        // 万向锁：cos(b) == 0 时 a 与 c 无法分离。惯例是把 a 取 0，剩下的全部
+        // 记到 c 上 —— 与 Unity 的处理一致，而且至少是**一个**合法解。
+        if (std::fabs(sin_b) > 0.9999f)
+        {
+            const float b = Math_HALF_PI * (sin_b < 0.0f ? -1.0f : 1.0f);
+            return Vector3(0.0f, Deg(b), Deg(Math::atan2(-r[0][1], r[1][1]).valueRadians()));
+        }
+
+        return Vector3(Deg(Math::atan2(r[2][1], r[2][2]).valueRadians()),
+                       Deg(Math::asin(sin_b).valueRadians()),
+                       Deg(Math::atan2(r[1][0], r[0][0]).valueRadians()));
+    }
+
+    bool IsAnyNaN(const Quaternion& q)
+    {
+        return !(q.w == q.w && q.x == q.x && q.y == q.y && q.z == q.z);
+    }
+
+    /// 让 local -Y（本引擎的 forward）对准 `forward`，up 尽量贴近 `up_hint`。
+    ///
+    /// 基必须是右手系且符合 (X=左, Y=-前, Z=上)：
+    ///   y_axis = -forward
+    ///   x_axis = up × forward     （左）
+    ///   z_axis = forward × x_axis （重新正交化后的 up）
+    Quaternion OrientationFacing(const Vector3& forward, const Vector3& up_hint)
+    {
+        Vector3 f = forward.normalisedCopy();
+        if (f.isZeroLength())
+        {
+            return Quaternion::IDENTITY;
+        }
+
+        Vector3 up = up_hint;
+        if (up.isZeroLength() || std::fabs(f.dotProduct(up.normalisedCopy())) > 0.9999f)
+        {
+            // 退化：forward 与 up 几乎平行。换一个与 f 不平行的参考轴，而不是
+            // 让 crossProduct 得到零向量再 normalize 出 NaN。
+            up = (std::fabs(f.z) < 0.9f) ? Vector3::UNIT_Z : Vector3::UNIT_X;
+        }
+        up.normalise();
+
+        const Vector3 left = up.crossProduct(f).normalisedCopy();
+        const Vector3 real_up = f.crossProduct(left).normalisedCopy();
+
+        Quaternion result;
+        result.FromAxes(left, -f, real_up);
+        result.normalise();
+        return result;
+    }
+
+    /// 让 local -X（本引擎的 right）对准 `right`，up 尽量贴近 `up_hint`。
+    ///
+    /// 基的推导与上面两个一致，只是这次已知的是 X 轴：
+    ///   x_axis = left  = -right
+    ///   z_axis = up    = up_hint 对 left 正交化
+    ///   y_axis = -forward = up × left   （右手系：x × y = z）
+    Quaternion OrientationWithRight(const Vector3& right, const Vector3& up_hint)
+    {
+        Vector3 r = right.normalisedCopy();
+        if (r.isZeroLength())
+        {
+            return Quaternion::IDENTITY;
+        }
+
+        const Vector3 left = -r;
+
+        Vector3 up = up_hint;
+        if (up.isZeroLength() || std::fabs(left.dotProduct(up.normalisedCopy())) > 0.9999f)
+        {
+            up = (std::fabs(left.z) < 0.9f) ? Vector3::UNIT_Z : Vector3::UNIT_X;
+        }
+        up.normalise();
+
+        const Vector3 real_up = (up - left * left.dotProduct(up)).normalisedCopy();
+        const Vector3 y_axis = real_up.crossProduct(left);
+
+        Quaternion result;
+        result.FromAxes(left, y_axis, real_up);
+        result.normalise();
+        return result;
+    }
+
+    /// 让 local +Z 对准 `up`，同时 forward 尽量贴近 `forward_hint`。
+    Quaternion OrientationWithUp(const Vector3& forward_hint, const Vector3& up)
+    {
+        Vector3 u = up.normalisedCopy();
+        if (u.isZeroLength())
+        {
+            return Quaternion::IDENTITY;
+        }
+
+        Vector3 f = forward_hint;
+        if (f.isZeroLength() || std::fabs(f.normalisedCopy().dotProduct(u)) > 0.9999f)
+        {
+            f = (std::fabs(u.z) < 0.9f) ? Vector3::NEGATIVE_UNIT_Y : Vector3::UNIT_X;
+        }
+        f.normalise();
+
+        const Vector3 left = u.crossProduct(f).normalisedCopy();
+        const Vector3 real_forward = left.crossProduct(u).normalisedCopy();
+
+        Quaternion result;
+        result.FromAxes(left, -real_forward, u);
+        result.normalise();
+        return result;
+    }
+
     void EnsureTransformSystemsRegistered()
     {
         if (g_TransformSystemsRegistered)
@@ -707,6 +853,156 @@ void Transform::SetSiblingIndex(int new_index)
 void Transform::SetAsLastSibling()
 {
     SetSiblingIndex(INT_MAX);
+}
+
+// =============================================================================
+// 方向 / 欧拉角 / Translate / Rotate / LookAt
+// =============================================================================
+
+void Transform::SetForward(const Vector3& direction)
+{
+    const Quaternion rotation = OrientationFacing(direction, Vector3::UNIT_Z);
+    if (!IsAnyNaN(rotation))
+    {
+        SetRotation(rotation);
+    }
+}
+
+void Transform::SetUp(const Vector3& direction)
+{
+    // "up 对准 direction" = 先把 up 转过去，同时尽量保住当前朝向。
+    // 直接构造基会让朝向任意，表现为物体绕自身轴乱转一下。
+    const Quaternion rotation = OrientationWithUp(GetForward(), direction);
+    if (!IsAnyNaN(rotation))
+    {
+        SetRotation(rotation);
+    }
+}
+
+void Transform::SetRight(const Vector3& direction)
+{
+    const Quaternion rotation = OrientationWithRight(direction, GetUp());
+    if (!IsAnyNaN(rotation))
+    {
+        SetRotation(rotation);
+    }
+}
+
+Vector3 Transform::GetEulerAngles() const
+{
+    return EulerFromQuaternion(GetRotation());
+}
+
+void Transform::SetEulerAngles(const Vector3& euler_angles)
+{
+    SetRotation(EulerToQuaternion(euler_angles));
+}
+
+Vector3 Transform::GetLocalEulerAngles() const
+{
+    return EulerFromQuaternion(GetLocalRotation());
+}
+
+void Transform::SetLocalEulerAngles(const Vector3& euler_angles)
+{
+    SetLocalRotation(EulerToQuaternion(euler_angles));
+}
+
+void Transform::Translate(const Vector3& translation)
+{
+    // 自身轴：等价于"沿 forward/up/right 走"。走 TransformDirection 才是对的
+    // —— 直接用 GetPosition() + translation 会变成世界轴平移。
+    SetPosition(GetPosition() + TransformDirection(translation));
+}
+
+void Transform::TranslateWorld(const Vector3& translation)
+{
+    SetPosition(GetPosition() + translation);
+}
+
+void Transform::Rotate(const Vector3& euler_angles)
+{
+    // 自身轴 ⇒ 右乘：先有的姿态再叠加这次的局部旋转。
+    SetLocalRotation(GetLocalRotation() * EulerToQuaternion(euler_angles));
+}
+
+void Transform::RotateAxis(const Vector3& axis, float angle)
+{
+    if (axis.isZeroLength())
+    {
+        return;   // 零轴没有旋转可言；FromAngleAxis 会 normalize 出 NaN
+    }
+    Quaternion delta;
+    delta.FromAngleAxis(Radian(Math::DegreesToRadians(angle)), axis.normalisedCopy());
+    // 世界轴 ⇒ 左乘。
+    SetRotation(delta * GetRotation());
+}
+
+void Transform::RotateAround(const Vector3& point, const Vector3& axis, float angle)
+{
+    if (axis.isZeroLength())
+    {
+        return;
+    }
+    Quaternion delta;
+    delta.FromAngleAxis(Radian(Math::DegreesToRadians(angle)), axis.normalisedCopy());
+
+    const Vector3 offset = GetPosition() - point;
+    // 与 RotateAxis 同一条规则：绕世界轴 ⇒ 左乘。位置和朝向都要转，只转其中一个
+    // 就是"绕着点滑动但始终面朝同一边"。
+    SetRotation(delta * GetRotation());
+    SetPosition(point + (delta * offset));
+}
+
+void Transform::LookAt(const Vector3& world_position)
+{
+    LookAtWithUp(world_position, Vector3::UNIT_Z);
+}
+
+void Transform::LookAtWithUp(const Vector3& world_position, const Vector3& world_up)
+{
+    const Vector3 direction = world_position - GetPosition();
+    if (direction.isZeroLength())
+    {
+        // 目标就是自己所在的位置：没有唯一解。静默跳过而不是写 NaN —— NaN 会
+        // 一路污染到渲染矩阵，而且极难回溯来源。
+        return;
+    }
+    const Quaternion rotation = OrientationFacing(direction, world_up);
+    if (!IsAnyNaN(rotation))
+    {
+        SetRotation(rotation);
+    }
+}
+
+bool Transform::IsChildOf(Transform* other) const
+{
+    if (other == nullptr)
+    {
+        return false;
+    }
+    for (const Transform* probe = m_Father; probe != nullptr; probe = probe->m_Father)
+    {
+        if (probe == other)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+void Transform::DetachChildren()
+{
+    // 先抄一份：SetParent(nullptr) 会改动 m_Children（把节点从当前父节点摘掉），
+    // 正序遍历一边改一边读会跳过元素 —— 表现为"只解开了一半"。
+    std::vector<PPtr<Transform>> children = m_Children;
+    for (const PPtr<Transform>& child : children)
+    {
+        if (child != nullptr)
+        {
+            child->SetParent(nullptr, true);
+        }
+    }
 }
 
 TransformAccess Transform::GetTransformAccess()

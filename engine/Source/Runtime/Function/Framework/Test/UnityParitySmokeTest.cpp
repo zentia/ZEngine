@@ -26,10 +26,13 @@
 
 #include "Runtime/Application/Application.h"
 #include "Runtime/BaseClasses/GameObject.h"
+#include "Runtime/BaseClasses/ObjectManager.h"
+#include "Runtime/BaseClasses/Type.h"
 #include "Runtime/Core/Base/SystemRegistry.h"
 #include "Runtime/Core/Math/UnityRandom.h"
 #include "Runtime/Function/Command/CommandSystem.h"
 #include "Runtime/Function/Framework/Component/Behaviour.h"
+#include "Runtime/Function/Framework/Component/Transform/Transform.h"
 #include "Runtime/Function/Framework/Coroutine/Coroutine.h"
 #include "Runtime/Function/Framework/TagLayer/TagLayerManager.h"
 #include "Runtime/Function/Physics/Jolt/Utils.h"
@@ -1680,6 +1683,273 @@ namespace
               "R17", "delivery passes the other GameObject through to the script");
     }
 
+    // ---------------------------------------------------------------- S ----
+    /// 分量级比较。方向向量一律是单位向量，逐分量比 > 用长度比 —— 长度对了方向反了
+    /// 是最容易漏的一类错（"朝向"错了但"有多远"全对）。
+    bool Near(const Vector3& a, const Vector3& b, float tolerance = 1.0e-3f)
+    {
+        return std::fabs(a.x - b.x) < tolerance && std::fabs(a.y - b.y) < tolerance &&
+               std::fabs(a.z - b.z) < tolerance;
+    }
+
+    bool Near(float a, float b, float tolerance = 1.0e-3f) { return std::fabs(a - b) < tolerance; }
+
+    /// 造一个带 Transform 的 GameObject。
+    ///
+    /// 两处都不能想当然：
+    ///
+    /// 1. **不能用 `om.Produce(TypeOf<Transform>(), 0)`**。Transform 的工厂函数
+    ///    是 `IMPLEMENT_REGISTER_CLASS(Transform)` 填进 Type 的，而那行在
+    ///    ZHeaderTool 生成的 `Transform.gen.cpp` 里 —— 本 exe 按规矩不编任何
+    ///    `.gen.cpp`（编了就会因为 /WHOLEARCHIVE 拿到第二份
+    ///    `TypeContainer<T>::m_Type`），所以这里的 `TypeOf<Transform>()` 是个
+    ///    `factory == nullptr` 的占位 Type，`Produce` 一律返回 nullptr。
+    ///    退一步说，就算真注册了，`TypeManager::Initialize()` 也得先跑一遍。
+    ///
+    /// 2. **但也不能只 `new Transform()`**。InstanceID 为 0 的 Object 对 PPtr
+    ///    等于"不存在"（`PPtr::operator T*()` 在 m_InstanceID==0 时短路返回
+    ///    nullptr），而 `m_Children` 是 `PPtr<Transform>` —— SetParent 记下来
+    ///    的儿子下一行就读不回来，IsChildOf / DetachChildren 全线静默失效。
+    ///    `AllocateAndAssignInstanceID()` 正是补这一环的（负 ID + 登记表）。
+    Transform* MakeTransform(ObjectManager& om, GameObject*& out_owner)
+    {
+        GameObject* go = new GameObject();
+        Transform* transform = new Transform();
+        om.AllocateAndAssignInstanceID(go);
+        om.AllocateAndAssignInstanceID(transform);
+        go->addComponent(transform);
+        // addComponent 只管塞进 m_Components，owner 反向指针是
+        // PostLoadResource 设的。没有它 Transform 的 m_ParentObject 是 nullptr，
+        // 层级相关的东西（以及后面 GameObject 侧的查询）会走空路径。
+        transform->PostLoadResource(go);
+        out_owner = go;
+        return transform;
+    }
+
+    void TestTransformDirections()
+    {
+        ObjectManager* om = GET_SYSTEM(ObjectManager);
+        if (om == nullptr)
+        {
+            om = new ObjectManager();
+            SystemRegistry::GetInstance().RegisterSystem(om);
+            om->Initialize();
+        }
+        Check(GET_SYSTEM(ObjectManager) != nullptr, "S0", "ObjectManager is reachable");
+
+        GameObject* owner_a = nullptr;
+        Transform* t = MakeTransform(*om, owner_a);
+        Check(t != nullptr, "S1", "a Transform can be produced");
+        if (t == nullptr)
+        {
+            return;
+        }
+
+        t->SetPosition(Vector3(0.f, 0.f, 0.f));
+        t->SetRotation(Quaternion::IDENTITY);
+
+        // ZEngine 是 Z-up、forward = -Y。这三条是整套约定的锚点：写错成 Unity 的
+        // +Z / +Y 的话，脚本里 `GetForward() * speed * dt` 会让角色朝侧面走。
+        Check(Near(t->GetForward(), Vector3(0.f, -1.f, 0.f)), "S2", "identity: forward is -Y");
+        Check(Near(t->GetUp(), Vector3(0.f, 0.f, 1.f)), "S3", "identity: up is +Z");
+        Check(Near(t->GetRight(), Vector3(-1.f, 0.f, 0.f)), "S4", "identity: right is -X (X is left)");
+        Check(Near(t->GetLeft(), Vector3(1.f, 0.f, 0.f)), "S5", "identity: left is +X");
+        Check(Near(t->GetBack(), Vector3(0.f, 1.f, 0.f)), "S6", "identity: back is +Y");
+        Check(Near(t->GetDown(), Vector3(0.f, 0.f, -1.f)), "S7", "identity: down is -Z");
+        Check(Near(t->GetForward(), Vector3::NEGATIVE_UNIT_Y) && Near(t->GetUp(), Vector3::UNIT_Z),
+              "S8", "and they match the constants the engine itself uses");
+
+        // --- RotateAxis：绕世界 +Z 转 90° ---
+        t->SetRotation(Quaternion::IDENTITY);
+        t->RotateAxis(Vector3::UNIT_Z, 90.f);
+        Check(Near(t->GetForward(), Vector3(1.f, 0.f, 0.f)), "S9", "yaw +90 about Z turns forward to +X");
+        Check(Near(t->GetUp(), Vector3(0.f, 0.f, 1.f)), "S10", "and leaves up alone");
+
+        // --- SetForward / SetUp ---
+        t->SetRotation(Quaternion::IDENTITY);
+        t->SetForward(Vector3(0.f, 1.f, 0.f));
+        Check(Near(t->GetForward(), Vector3(0.f, 1.f, 0.f)), "S11", "SetForward aims the facing direction");
+        Check(Near(t->GetUp(), Vector3(0.f, 0.f, 1.f)), "S12", "and keeps up at world +Z by default");
+
+        t->SetUp(Vector3(0.f, 1.f, 0.f));
+        Check(Near(t->GetUp(), Vector3(0.f, 1.f, 0.f)), "S13", "SetUp aims the up direction");
+        Check(Near(t->GetForward(), Vector3(0.f, 1.f, 0.f)) == false && Near(t->GetForward().length(), 1.f),
+              "S14", "facing stays a unit vector (it cannot stay put: up and forward are perpendicular)");
+
+        // 退化输入：forward 与 up 平行时没有唯一解，要的是"某个合法解"而不是 NaN
+        t->SetRotation(Quaternion::IDENTITY);
+        t->SetForward(Vector3(0.f, 0.f, 1.f));
+        Check(Near(t->GetForward(), Vector3(0.f, 0.f, 1.f)) && Near(t->GetUp().length(), 1.f),
+              "S15", "SetForward straight up is solvable, not NaN");
+
+        // --- SetRight ---
+        t->SetRotation(Quaternion::IDENTITY);
+        t->SetRight(Vector3::UNIT_X);
+        Check(Near(t->GetRight(), Vector3(1.f, 0.f, 0.f)), "S15a", "SetRight aims the right direction");
+        Check(Near(t->GetUp(), Vector3(0.f, 0.f, 1.f)), "S15b", "and keeps the up hint at world +Z");
+        // 右手系：X=left=-right, Y=-forward, Z=up，且 X×Y=Z。展开后可用的两条是
+        //   up × right = forward   和   forward × up = right
+        // 写成左手系的话"朝向看着对"但镜像了，位移和旋转都会反，而且极难发现。
+        Check(Near(t->GetUp().crossProduct(t->GetRight()), t->GetForward()),
+              "S15c", "right/up/forward still form a RIGHT-handed basis");
+        Check(Near(t->GetRight().crossProduct(t->GetUp()), t->GetForward()) == false,
+              "S15c2", "and the mirrored cross product is NOT accepted (catches a flipped sign)");
+        // 退化：right 与 up 平行
+        t->SetRotation(Quaternion::IDENTITY);
+        t->SetRight(Vector3(0.f, 0.f, 1.f));
+        Check(Near(t->GetRight(), Vector3(0.f, 0.f, 1.f)) && Near(t->GetUp().length(), 1.f),
+              "S15d", "SetRight parallel to up is solvable, not NaN");
+
+        // --- 欧拉角 ---
+        t->SetRotation(Quaternion::IDENTITY);
+        t->SetEulerAngles(Vector3(0.f, 0.f, 90.f));
+        Check(Near(t->GetForward(), Vector3(1.f, 0.f, 0.f)),
+              "S16", "SetEulerAngles(0,0,90) matches RotateAxis(Z, 90)");
+        const Vector3 read_back = t->GetEulerAngles();
+        Check(Near(read_back, Vector3(0.f, 0.f, 90.f)), "S17", "and GetEulerAngles reads it back");
+
+        t->SetEulerAngles(Vector3(10.f, 20.f, 30.f));
+        Check(Near(t->GetEulerAngles(), Vector3(10.f, 20.f, 30.f), 0.01f),
+              "S18", "a mixed euler triple round-trips");
+
+        // --- Translate：自身轴 vs 世界轴 ---
+        t->SetPosition(Vector3(0.f, 0.f, 0.f));
+        t->SetEulerAngles(Vector3(0.f, 0.f, 90.f));   // forward 变成 +X
+        t->Translate(Vector3(0.f, -2.f, 0.f));        // 沿自身 -Y（= forward）走 2
+        Check(Near(t->GetPosition(), Vector3(2.f, 0.f, 0.f)),
+              "S19", "Translate follows the object's OWN axes");
+
+        t->SetPosition(Vector3(0.f, 0.f, 0.f));
+        t->TranslateWorld(Vector3(0.f, -2.f, 0.f));
+        Check(Near(t->GetPosition(), Vector3(0.f, -2.f, 0.f)),
+              "S20", "TranslateWorld ignores the rotation");
+
+        // --- Rotate（自身轴）---
+        t->SetPosition(Vector3(0.f, 0.f, 0.f));
+        t->SetRotation(Quaternion::IDENTITY);
+        t->Rotate(Vector3(0.f, 0.f, 90.f));
+        Check(Near(t->GetForward(), Vector3(1.f, 0.f, 0.f)), "S21", "Rotate spins around its own axes");
+
+        // --- RotateAround ---
+        t->SetPosition(Vector3(1.f, 0.f, 0.f));
+        t->SetRotation(Quaternion::IDENTITY);
+        t->RotateAround(Vector3(0.f, 0.f, 0.f), Vector3::UNIT_Z, 90.f);
+        Check(Near(t->GetPosition(), Vector3(0.f, 1.f, 0.f)),
+              "S22", "RotateAround moves the position around the pivot");
+        Check(Near(t->GetForward(), Vector3(1.f, 0.f, 0.f)),
+              "S23", "and turns the object too (not a slide that keeps facing one way)");
+
+        // --- LookAt ---
+        t->SetPosition(Vector3(0.f, 0.f, 0.f));
+        t->SetRotation(Quaternion::IDENTITY);
+        t->LookAt(Vector3(0.f, -5.f, 0.f));
+        Check(Near(t->GetForward(), Vector3(0.f, -1.f, 0.f)), "S24", "LookAt aims the facing at the target");
+
+        // 退化目标必须"什么都不做"，而不是"重置成单位朝向"。只在前一步的姿态
+        // 恰好是单位姿态时，两者看不出区别 —— 所以这里先转一个非单位姿态。
+        t->SetEulerAngles(Vector3(0.f, 0.f, 90.f));   // forward = +X
+        const Vector3 before_self = t->GetForward();
+        Check(Near(before_self, Vector3(1.f, 0.f, 0.f)), "S25a", "(the fixture really is non-identity)");
+        t->LookAt(t->GetPosition());
+        Check(Near(t->GetForward(), before_self),
+              "S25", "LookAt at its own position is a no-op, not NaN");
+        Check(Near(t->GetForward(), Vector3(0.f, -1.f, 0.f)) == false,
+              "S25b", "and it did NOT silently snap back to the identity orientation");
+
+        // --- 层级 ---
+        GameObject* owner_parent = nullptr;
+        GameObject* owner_child = nullptr;
+        GameObject* owner_grand = nullptr;
+        GameObject* owner_sibling = nullptr;
+        GameObject* owner_sibling2 = nullptr;
+        Transform* parent = MakeTransform(*om, owner_parent);
+        Transform* child = MakeTransform(*om, owner_child);
+        Transform* grandchild = MakeTransform(*om, owner_grand);
+        Transform* sibling = MakeTransform(*om, owner_sibling);
+        Transform* sibling2 = MakeTransform(*om, owner_sibling2);
+        Check(parent != nullptr && child != nullptr && grandchild != nullptr && sibling != nullptr &&
+                  sibling2 != nullptr,
+              "S26", "five transforms exist");
+        if (parent == nullptr || child == nullptr || grandchild == nullptr || sibling == nullptr ||
+            sibling2 == nullptr)
+        {
+            return;
+        }
+        child->SetParent(parent, false);
+        sibling->SetParent(parent, false);
+        sibling2->SetParent(parent, false);
+        grandchild->SetParent(child, false);
+
+        Check(grandchild->IsChildOf(parent), "S27", "IsChildOf walks more than one level");
+        Check(child->IsChildOf(parent), "S28", "and the direct case");
+        Check(!parent->IsChildOf(child), "S29", "a parent is not a child of its child");
+        Check(!parent->IsChildOf(nullptr), "S30", "IsChildOf(null) is false");
+        // 三个儿子才是"边遍历边改"这个 bug 的**最小**触发条件，两个不够：
+        // range-for 的 end() 只在循环开始时求一次值，erase 之后它仍指向旧的第 2 个
+        // 槽位；而 erase 只是把后面的元素前移、并不清空尾部字节。于是第二轮恰好
+        // 又读到了那个还没解开的儿子 —— 表现"完全正确"。三个儿子时中间那个会被
+        // 前移盖掉、彻底跳过。
+        Check(parent->GetChildrenCount() == 3, "S31", "the parent has three children");
+
+        parent->DetachChildren();
+        Check(parent->GetChildrenCount() == 0, "S32", "DetachChildren empties the parent");
+        // 只解一层：孙子仍挂在儿子身上（Unity 同）。
+        Check(child->GetChildrenCount() == 1, "S33", "and only one level -- the grandchild stays put");
+        Check(!grandchild->IsChildOf(parent), "S34", "the grandchild is no longer under the parent");
+        Check(sibling->GetParent() == nullptr, "S35", "and EVERY child was detached, not just the first");
+        Check(sibling2->GetParent() == nullptr, "S36", "including the last one");
+    }
+
+    // ---------------------------------------------------------------- T ----
+    void TestTransformWiring()
+    {
+        const std::string header = ReadFile("Source/Runtime/Function/Framework/Component/Transform/Transform.h");
+        Check(!header.empty(), "T0", "Transform.h is readable");
+        // 轴向约定必须写在头文件里：这是最容易"A 组按 -Y 写、B 组按 +Z 用"的一处，
+        // 而且两边都编译得过。
+        Check(CountOccurrences(header, "NEGATIVE_UNIT_Y") >= 1, "T1", "forward is documented as -Y");
+        Check(CountOccurrences(header, "Z-up") >= 1, "T2", "and the engine is documented as Z-up");
+        Check(CountOccurrences(header, "GetForward") >= 2, "T3", "GetForward is declared AND commented");
+        Check(CountOccurrences(header, "SetForward") >= 1, "T4", "SetForward is declared");
+        Check(CountOccurrences(header, "LookAt") >= 1, "T5", "LookAt is declared");
+        Check(CountOccurrences(header, "RotateAround") >= 1, "T6", "RotateAround is declared");
+        Check(CountOccurrences(header, "GetEulerAngles") >= 1, "T7", "euler angles are exposed");
+        Check(CountOccurrences(header, "DetachChildren") >= 1, "T8", "DetachChildren is declared");
+
+        const std::string source = ReadFile("Source/Runtime/Function/Framework/Component/Transform/Transform.cpp");
+        Check(!source.empty(), "T9", "Transform.cpp is readable");
+        // DetachChildren 必须先把子节点抄一份：SetParent 会改动 m_Children，
+        // 边遍历边改会跳过元素（"只解开了一半"）。
+        Check(CountOccurrences(source, "std::vector<PPtr<Transform>> children = m_Children;") >= 1,
+              "T10", "DetachChildren iterates a COPY of the child list");
+        // 绕世界轴 = 左乘，绕自身轴 = 右乘。写反了表现是"物体绕着奇怪的轴转"，
+        // 而单看某一帧看不出来。
+        Check(CountOccurrences(source, "delta * GetRotation()") >= 2,
+              "T11", "world-axis rotation multiplies on the left");
+        Check(CountOccurrences(source, "GetLocalRotation() * EulerToQuaternion") >= 1,
+              "T12", "self-axis rotation multiplies on the right");
+        Check(CountOccurrences(source, "isZeroLength()") >= 3,
+              "T13", "degenerate axes / zero-length look targets are guarded");
+
+        // Unity 里 forward/up/right/eulerAngles 是**属性**（`t.forward = v`），
+        // 不是方法。只导出 GetForward/SetForward 的话脚本得写 t.SetForward(v)，
+        // 而且 t.forward 在 .d.ts 里根本不存在 —— tsc 直接报"属性不存在"。
+        Check(CountOccurrences(header, "ZSCRIPTPROPERTY(Name=\"forward\"") >= 1,
+              "T14", "forward is published as a script PROPERTY, not just a method");
+        Check(CountOccurrences(header, "ZSCRIPTPROPERTY(Name=\"eulerAngles\"") >= 1,
+              "T15", "eulerAngles is published as a script property");
+        Check(CountOccurrences(header, "ZSCRIPTPROPERTY(Name=\"childCount\"") >= 1,
+              "T16", "childCount is published as a script property");
+        Check(CountOccurrences(header, "ZSCRIPTPROPERTY(Name=\"parent\"") >= 1,
+              "T17", "parent is readable as a script property");
+        Check(CountOccurrences(header, "SetRight") >= 2,
+              "T18", "SetRight is declared AND documented (Unity's transform.right is writable)");
+        // GetChildrenCount 同时是属性 childCount 的 getter：它必须是 const 的
+        // ZFUNCTION，否则 ZHeaderTool 找不到匹配的访问器（生成期报错）。
+        Check(CountOccurrences(header, "int GetChildrenCount() const") >= 1,
+              "T19", "the childCount getter is the const ZFUNCTION one");
+    }
+
     // ---------------------------------------------------------------- B ----
     void TestWiringGate()
     {
@@ -1791,6 +2061,8 @@ int main()
     TestDebugFacade();
     TestContactEvents();
     TestContactEventWiring();
+    TestTransformDirections();
+    TestTransformWiring();
     TestWiringGate();
 
     std::printf("\n=== %d checks, %d failures ===\n", g_Checks, g_Failures);

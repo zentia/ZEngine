@@ -59,6 +59,23 @@ public:
     ZSCRIPTPROPERTY(Name="localScale", Getter="GetLocalScale", Setter="SetLocalScale")
     ZSCRIPTPROPERTY(Name="lossyScale", Getter="GetLossyScale")
 
+    // Unity 里这几个是**属性**（`transform.forward = v`），不是方法。ZSCRIPTPROPERTY
+    // 把已有的 ZFUNCTION getter/setter 对发布成 pesapi 访问器属性，所以脚本里
+    // 两种拼写法都能用：`t.forward = v` 和 `t.SetForward(v)`。
+    //
+    // 没有 setter 的（`childCount` / `root` / `parent`）与 Unity 一致是只读；
+    // `parent` 是唯一的例外 —— Unity 可写，这里只能读：`SetParent` 的脚本拼写
+    // 是 `SetParent(parent, worldPositionStays)`（两个参数），而属性 setter 只
+    // 接受一个。要改父级就用 `SetParent`。
+    ZSCRIPTPROPERTY(Name="forward", Getter="GetForward", Setter="SetForward")
+    ZSCRIPTPROPERTY(Name="up", Getter="GetUp", Setter="SetUp")
+    ZSCRIPTPROPERTY(Name="right", Getter="GetRight", Setter="SetRight")
+    ZSCRIPTPROPERTY(Name="eulerAngles", Getter="GetEulerAngles", Setter="SetEulerAngles")
+    ZSCRIPTPROPERTY(Name="localEulerAngles", Getter="GetLocalEulerAngles", Setter="SetLocalEulerAngles")
+    ZSCRIPTPROPERTY(Name="childCount", Getter="GetChildrenCount")
+    ZSCRIPTPROPERTY(Name="root", Getter="GetRoot")
+    ZSCRIPTPROPERTY(Name="parent", Getter="GetParent")
+
     // ---- local space ----
     // ZFUNCTION() markers are compiler no-ops picked up by ZHeaderTool, which
     // turns them into pesapi bindings and `declare class Transform` members.
@@ -178,6 +195,126 @@ public:
         m_Children.clear();
     }
     const std::vector<PPtr<Transform>>& GetChildren() const { return m_Children; }
+
+    // ---- 方向向量 ---------------------------------------------------------
+    //
+    // ⚠️ ZEngine 是 **Z-up、forward = -Y**（与 Unity 的 Y-up、forward = +Z 不同）:
+    //
+    //     ZEngine   X = 左      Y = -前     Z = 上
+    //     Unity     X = 右      Y = 上      Z = 前
+    //
+    // 这套基是右手系（X × Y = Z 两边都成立），只是"哪个轴朝前/朝上"不同。
+    // `GetForward()` 返回的是**这个物体在本引擎里真正朝向的方向** —— 也就是
+    // MotorComponent 用来算位移的那个（`rotation * NEGATIVE_UNIT_Y`）。
+    // 脚本写 `transform.GetForward() * speed * dt` 因此和引擎内部一致；如果按
+    // Unity 的 +Z 去算，角色会朝着侧面走。
+    //
+    // 名字统一用 Unity 的拼写（forward/up/right），但**语义是 ZEngine 的轴**。
+
+    /// 本物体朝向（local -Y 转到世界空间）。
+    ZFUNCTION()
+    Vector3 GetForward() const { return TransformDirection(Vector3::NEGATIVE_UNIT_Y); }
+    ZFUNCTION()
+    Vector3 GetBack() const { return TransformDirection(Vector3::UNIT_Y); }
+    /// local +Z 转到世界空间。
+    ZFUNCTION()
+    Vector3 GetUp() const { return TransformDirection(Vector3::UNIT_Z); }
+    ZFUNCTION()
+    Vector3 GetDown() const { return TransformDirection(Vector3::NEGATIVE_UNIT_Z); }
+    /// local -X（因为 local +X 是左）。
+    ZFUNCTION()
+    Vector3 GetRight() const { return TransformDirection(Vector3::NEGATIVE_UNIT_X); }
+    ZFUNCTION()
+    Vector3 GetLeft() const { return TransformDirection(Vector3::UNIT_X); }
+
+    /// 把朝向转到 `direction`，up 尽量贴近 `up_hint`。
+    ///
+    /// `direction` 与 `up_hint` 平行时（正上方 / 正下方）没有唯一解，此时换一
+    /// 个参考轴而不是产生 NaN —— Unity 的 `transform.forward = v` 在这种输入下
+    /// 也是"给某个合法解"。
+    ZFUNCTION()
+    void SetForward(const Vector3& direction);
+
+    /// 同上，对准 up。用于"贴地时把脚下方向对齐地面法线"。
+    ZFUNCTION()
+    void SetUp(const Vector3& direction);
+
+    /// 对准 right（local -X）。与 SetForward / SetUp 同一套基：只给一个方向时
+    /// 剩下两个自由度不唯一，up 尽量贴近当前 up，退化时换参考轴。
+    ZFUNCTION()
+    void SetRight(const Vector3& direction);
+
+    // ---- 欧拉角 -----------------------------------------------------------
+    //
+    // 单位**度**，合成顺序是"先绕 X、再绕 Y、再绕 Z"（等价于矩阵 Rz·Ry·Rx）。
+    // 与 Unity 的 `transform.eulerAngles` 一样是"三个角"，但 Unity 的合成顺序是
+    // Z·X·Y（Y-up 那套）；这里按 ZEngine 的 Z-up 选了 X→Y→Z，两者**不可互换**。
+    //
+    // 精度提示：欧拉角有万向锁。`GetEulerAngles(SetEulerAngles(v))` 只在非退化
+    // 区域等于 v；Y 分量接近 ±90° 时 x/z 会互相吞并。需要精确存朝向就用
+    // `GetRotation()` / `SetRotation()` 传四元数。
+
+    ZFUNCTION()
+    Vector3 GetEulerAngles() const;
+    ZFUNCTION()
+    void SetEulerAngles(const Vector3& euler_angles);
+    ZFUNCTION()
+    Vector3 GetLocalEulerAngles() const;
+    ZFUNCTION()
+    void SetLocalEulerAngles(const Vector3& euler_angles);
+
+    // ---- 移动 / 旋转 ------------------------------------------------------
+    //
+    // 命名规则：ZHeaderTool 里**只有一个重载能占用一个脚本名**（见上面
+    // `SetLocalPosition` 的注释），所以 Unity 靠 `Space` 枚举区分的两个版本在这
+    // 里是两个名字。
+
+    /// 沿**自身**坐标轴平移（Unity 的 `Translate(v, Space.Self)`）。
+    /// 这是 `Translate` 的默认语义：给角色"向前走"用 `Translate(0, s, 0)`… 不，
+    /// 因为 forward = -Y，向前是 `Translate(Vector3(0, -s, 0))`。
+    ZFUNCTION()
+    void Translate(const Vector3& translation);
+
+    /// 沿**世界**坐标轴平移（Unity 的 `Translate(v, Space.World)`）。
+    ZFUNCTION()
+    void TranslateWorld(const Vector3& translation);
+
+    /// 绕自身轴转（欧拉角，度）。局部空间，所以连续调用会累积成"自转"。
+    ZFUNCTION()
+    void Rotate(const Vector3& euler_angles);
+
+    /// 绕**世界**空间的一条轴转 `angle` 度（右手定则）。公转 / 绕柱子摆动用它，
+    /// 不要用 `Rotate` —— 那个是绕自身轴。
+    ZFUNCTION()
+    void RotateAxis(const Vector3& axis, float angle);
+
+    /// 绕世界空间的一个**点**转（Unity 的 `RotateAround`）：既改朝向也改位置。
+    /// 相机绕角色转用它最省事。
+    ZFUNCTION()
+    void RotateAround(const Vector3& point, const Vector3& axis, float angle);
+
+    /// 让朝向指向世界空间的某个点（Unity 的 `LookAt`）。up 默认世界 +Z。
+    ///
+    /// 目标是自己的位置时是**空操作**，不是 NaN —— 工程里出现这种输入通常是
+    /// "相机跟随目标还没更新"，静默跳过比把整个 transform 写成 NaN 好（NaN 会
+    /// 一路污染到渲染矩阵，而且极难回溯来源）。
+    ZFUNCTION()
+    void LookAt(const Vector3& world_position);
+    ZFUNCTION()
+    void LookAtWithUp(const Vector3& world_position, const Vector3& world_up);
+
+    // ---- 层级 -------------------------------------------------------------
+
+    /// 自己或任一祖先是 `other`。Unity 的 `transform.IsChildOf`。
+    ZFUNCTION()
+    bool IsChildOf(Transform* other) const;
+
+    /// 解除所有子节点（挂到场景根）。Unity 的 `transform.DetachChildren`。
+    ///
+    /// 循环里**先取下一个**再解绑：SetParent 会改动 m_Children，正序遍历一边
+    /// 改一边读会跳元素（经典的"删了一半"）。
+    ZFUNCTION()
+    void DetachChildren();
 
     ZFUNCTION()
     int GetSiblingIndex() const;
