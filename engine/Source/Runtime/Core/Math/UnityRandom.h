@@ -36,7 +36,7 @@
 // would silently change what every ported script rolls.
 // =============================================================================
 
-class Random
+class UnityRandom
 {
 public:
     /// One uint64. Enough to save/restore, small enough to put in a replay

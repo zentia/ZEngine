@@ -16,7 +16,7 @@
 // invalidates every recorded replay.
 // =============================================================================
 
-Random::State Random::s_State = 0x853C49E6748FEA9Bull;
+UnityRandom::State UnityRandom::s_State = 0x853C49E6748FEA9Bull;
 
 namespace
 {
@@ -26,7 +26,7 @@ namespace
     constexpr float kTwoPi = 6.28318530717958647692f;
 }  // namespace
 
-uint32_t Random::NextUInt32()
+uint32_t UnityRandom::NextUInt32()
 {
     const uint64_t old_state = s_State;
     s_State = old_state * kMultiplier + kIncrement;
@@ -38,7 +38,7 @@ uint32_t Random::NextUInt32()
     return (xor_shifted >> rotation) | (xor_shifted << ((~rotation + 1u) & 31u));
 }
 
-void Random::InitState(uint32_t seed)
+void UnityRandom::InitState(uint32_t seed)
 {
     // The increment is OR'd with 1 because PCG requires an ODD increment; an
     // even one shortens the period. Seeding must scramble the user's small
@@ -51,7 +51,7 @@ void Random::InitState(uint32_t seed)
     NextUInt32();
 }
 
-void Random::InitUnseeded()
+void UnityRandom::InitUnseeded()
 {
     const auto now = std::chrono::high_resolution_clock::now().time_since_epoch();
     const uint64_t nanos = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(now).count());
@@ -62,17 +62,17 @@ void Random::InitUnseeded()
     InitState(static_cast<uint32_t>((nanos ^ (address << 1)) & 0xFFFFFFFFull));
 }
 
-Random::State Random::GetState()
+UnityRandom::State UnityRandom::GetState()
 {
     return s_State;
 }
 
-void Random::SetState(State state)
+void UnityRandom::SetState(State state)
 {
     s_State = state;
 }
 
-float Random::value()
+float UnityRandom::value()
 {
     // 24 bits of mantissa, not 32: a float cannot hold 32 bits of precision, so
     // asking for more would just fold bits and bias the low end.
@@ -80,7 +80,7 @@ float Random::value()
     return static_cast<float>(bits) / 16777216.0f;  // 2^24
 }
 
-float Random::Range(float min, float max)
+float UnityRandom::Range(float min, float max)
 {
     if (max < min)
     {
@@ -93,7 +93,7 @@ float Random::Range(float min, float max)
     return min + (max - min) * value();
 }
 
-int Random::Range(int min, int max)
+int UnityRandom::Range(int min, int max)
 {
     if (min >= max)
     {
@@ -113,7 +113,7 @@ int Random::Range(int min, int max)
     return min + static_cast<int>(draw % span);
 }
 
-Vector3 Random::insideUnitSphere()
+Vector3 UnityRandom::insideUnitSphere()
 {
     Vector3 point;
     float squared_length;
@@ -133,7 +133,7 @@ Vector3 Random::insideUnitSphere()
     return point;
 }
 
-Vector2 Random::insideUnitCircle()
+Vector2 UnityRandom::insideUnitCircle()
 {
     Vector2 point;
     float squared_length;
@@ -148,7 +148,7 @@ Vector2 Random::insideUnitCircle()
     return point;
 }
 
-Vector3 Random::onUnitSphere()
+Vector3 UnityRandom::onUnitSphere()
 {
     // Marsaglia's method: uniform over the surface, with no pole clustering.
     // Naive (uniform theta, uniform phi) bunches at the poles, which shows up
@@ -171,13 +171,13 @@ Vector3 Random::onUnitSphere()
     return Vector3(x, y, z);
 }
 
-Vector2 Random::onUnitCircle()
+Vector2 UnityRandom::onUnitCircle()
 {
     const float angle = Range(0.0f, kTwoPi);
     return Vector2(std::cos(angle), std::sin(angle));
 }
 
-Quaternion Random::rotation()
+Quaternion UnityRandom::rotation()
 {
     // Shoemake's uniform random rotation: three uniform numbers, no rejection,
     // and uniform over SO(3) -- unlike "random Euler angles", which over-samples
@@ -197,7 +197,7 @@ Quaternion Random::rotation()
     return Quaternion(w, x, y, z);
 }
 
-bool Random::Chance(float probability)
+bool UnityRandom::Chance(float probability)
 {
     if (probability <= 0.0f)
     {

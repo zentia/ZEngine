@@ -49,6 +49,7 @@
 #include "Runtime/Project/ProjectInfo.h"
 #include "Runtime/Resource/Config/ConfigManager.h"
 #include "Runtime/Scripting/ScriptDebug/ScriptDebug.h"
+#include "Runtime/Scripting/ScriptRandom/ScriptRandom.h"
 #include "Runtime/Scripting/ScriptScene/ScriptScene.h"
 #include "Runtime/Scripting/ScriptScreen/ScriptScreen.h"
 
@@ -69,6 +70,7 @@
 template<> void RegisterKlass<Component>();
 template<> void RegisterKlass<Transform>();
 template<> void RegisterKlass<GameObject>();
+template<> void RegisterKlass<Random>();
 
 #include <cmath>
 #include <cstdio>
@@ -532,15 +534,15 @@ namespace
         // -- determinism ------------------------------------------------------
         float first_run[8];
         float second_run[8];
-        Random::InitState(12345);
+        UnityRandom::InitState(12345);
         for (float& v : first_run)
         {
-            v = Random::value();
+            v = UnityRandom::value();
         }
-        Random::InitState(12345);
+        UnityRandom::InitState(12345);
         for (float& v : second_run)
         {
-            v = Random::value();
+            v = UnityRandom::value();
         }
         bool identical = true;
         for (int i = 0; i < 8; ++i)
@@ -552,24 +554,24 @@ namespace
         }
         Check(identical, "E1", "the same seed reproduces the same sequence exactly");
 
-        Random::InitState(12346);
-        const float other_seed = Random::value();
+        UnityRandom::InitState(12346);
+        const float other_seed = UnityRandom::value();
         Check(other_seed != first_run[0], "E2", "a different seed produces a different sequence");
 
         // Adjacent seeds must not produce correlated openings -- the classic
         // "seed from a frame counter" trap.
-        Random::InitState(0);
-        const float seed0 = Random::value();
-        Random::InitState(1);
-        const float seed1 = Random::value();
+        UnityRandom::InitState(0);
+        const float seed0 = UnityRandom::value();
+        UnityRandom::InitState(1);
+        const float seed1 = UnityRandom::value();
         Check(std::fabs(seed0 - seed1) > 0.01f, "E3", "adjacent seeds are not correlated");
 
         // -- value() range ----------------------------------------------------
-        Random::InitState(7);
+        UnityRandom::InitState(7);
         bool in_range = true;
         for (int i = 0; i < 10000; ++i)
         {
-            const float v = Random::value();
+            const float v = UnityRandom::value();
             if (v < 0.0f || v >= 1.0f)
             {
                 in_range = false;
@@ -578,27 +580,27 @@ namespace
         Check(in_range, "E4", "value() stays in [0, 1) over 10000 draws");
 
         // -- the Unity asymmetry: int excludes max, float includes it ---------
-        Random::InitState(99);
+        UnityRandom::InitState(99);
         int int_min = 1000;
         int int_max = -1000;
         for (int i = 0; i < 20000; ++i)
         {
-            const int v = Random::Range(0, 10);
+            const int v = UnityRandom::Range(0, 10);
             int_min = (v < int_min) ? v : int_min;
             int_max = (v > int_max) ? v : int_max;
         }
         Check(int_min == 0, "E5", "Range(0, 10) as ints reaches 0");
         Check(int_max == 9, "E6",
               "Range(0, 10) as ints NEVER reaches 10 -- Unity excludes the int max");
-        Check(Random::Range(5, 5) == 5, "E7", "an empty int range returns min");
-        Check(Random::Range(7, 2) == 7, "E8", "an inverted int range returns min");
+        Check(UnityRandom::Range(5, 5) == 5, "E7", "an empty int range returns min");
+        Check(UnityRandom::Range(7, 2) == 7, "E8", "an inverted int range returns min");
 
-        Random::InitState(100);
+        UnityRandom::InitState(100);
         bool float_in_range = true;
         float float_max = -1000.0f;
         for (int i = 0; i < 20000; ++i)
         {
-            const float v = Random::Range(2.0f, 3.0f);
+            const float v = UnityRandom::Range(2.0f, 3.0f);
             float_max = (v > float_max) ? v : float_max;
             if (v < 2.0f || v > 3.0f)
             {
@@ -608,26 +610,26 @@ namespace
         Check(float_in_range, "E9", "Range(2.0f, 3.0f) stays inside both bounds");
         Check(float_max > 2.99f, "E10",
               "Range(2.0f, 3.0f) can get arbitrarily close to 3 -- Unity INCLUDES the float max");
-        Check(std::fabs(Random::Range(4.0f, 2.0f) - 3.0f) < 10.0f, "E11",
+        Check(std::fabs(UnityRandom::Range(4.0f, 2.0f) - 3.0f) < 10.0f, "E11",
               "an inverted float range is swapped, not nonsense");
 
         // -- save / restore ---------------------------------------------------
-        Random::InitState(2024);
+        UnityRandom::InitState(2024);
         for (int i = 0; i < 5; ++i)
         {
-            Random::value();
+            UnityRandom::value();
         }
-        const Random::State saved = Random::GetState();
+        const UnityRandom::State saved = UnityRandom::GetState();
         float after_save[4];
         for (float& v : after_save)
         {
-            v = Random::value();
+            v = UnityRandom::value();
         }
-        Random::SetState(saved);
+        UnityRandom::SetState(saved);
         bool restored = true;
         for (float v : after_save)
         {
-            if (Random::value() != v)
+            if (UnityRandom::value() != v)
             {
                 restored = false;
             }
@@ -635,11 +637,11 @@ namespace
         Check(restored, "E12", "SetState() resumes the stream exactly (one uint64 of state)");
 
         // -- shapes -----------------------------------------------------------
-        Random::InitState(555);
+        UnityRandom::InitState(555);
         bool sphere_inside = true;
         for (int i = 0; i < 2000; ++i)
         {
-            if (Random::insideUnitSphere().squaredLength() > 1.0f)
+            if (UnityRandom::insideUnitSphere().squaredLength() > 1.0f)
             {
                 sphere_inside = false;
             }
@@ -649,7 +651,7 @@ namespace
         bool circle_inside = true;
         for (int i = 0; i < 2000; ++i)
         {
-            if (Random::insideUnitCircle().squaredLength() > 1.0f)
+            if (UnityRandom::insideUnitCircle().squaredLength() > 1.0f)
             {
                 circle_inside = false;
             }
@@ -659,7 +661,7 @@ namespace
         bool on_sphere = true;
         for (int i = 0; i < 2000; ++i)
         {
-            const float length = Random::onUnitSphere().length();
+            const float length = UnityRandom::onUnitSphere().length();
             if (std::fabs(length - 1.0f) > 0.01f)
             {
                 on_sphere = false;
@@ -670,7 +672,7 @@ namespace
         bool on_circle = true;
         for (int i = 0; i < 2000; ++i)
         {
-            const float length = Random::onUnitCircle().length();
+            const float length = UnityRandom::onUnitCircle().length();
             if (std::fabs(length - 1.0f) > 0.01f)
             {
                 on_circle = false;
@@ -681,7 +683,7 @@ namespace
         bool unit_rotation = true;
         for (int i = 0; i < 2000; ++i)
         {
-            const Quaternion q = Random::rotation();
+            const Quaternion q = UnityRandom::rotation();
             const float sq = q.w * q.w + q.x * q.x + q.y * q.y + q.z * q.z;
             if (std::fabs(sq - 1.0f) > 0.01f)
             {
@@ -691,15 +693,15 @@ namespace
         Check(unit_rotation, "E17", "rotation() returns a unit quaternion");
 
         // -- Chance -----------------------------------------------------------
-        Random::InitState(3);
-        Check(!Random::Chance(0.0f), "E18", "Chance(0) is never true");
-        Check(Random::Chance(1.0f), "E19", "Chance(1) is always true");
-        Check(!Random::Chance(-0.5f), "E20", "a negative probability is never true");
-        Check(Random::Chance(2.0f), "E21", "a probability above 1 is always true");
+        UnityRandom::InitState(3);
+        Check(!UnityRandom::Chance(0.0f), "E18", "Chance(0) is never true");
+        Check(UnityRandom::Chance(1.0f), "E19", "Chance(1) is always true");
+        Check(!UnityRandom::Chance(-0.5f), "E20", "a negative probability is never true");
+        Check(UnityRandom::Chance(2.0f), "E21", "a probability above 1 is always true");
         int trues = 0;
         for (int i = 0; i < 20000; ++i)
         {
-            if (Random::Chance(0.25f))
+            if (UnityRandom::Chance(0.25f))
             {
                 ++trues;
             }
@@ -710,11 +712,11 @@ namespace
         // -- no modulo bias on the low end ------------------------------------
         // Range(0, 3) over a big sample: a `% span` implementation skews the
         // first buckets whenever span does not divide 2^32.
-        Random::InitState(4242);
+        UnityRandom::InitState(4242);
         int buckets[3] = {0, 0, 0};
         for (int i = 0; i < 30000; ++i)
         {
-            ++buckets[Random::Range(0, 3)];
+            ++buckets[UnityRandom::Range(0, 3)];
         }
         const int lowest = (buckets[0] < buckets[1]) ? buckets[0] : buckets[1];
         const int min_bucket = (lowest < buckets[2]) ? lowest : buckets[2];
@@ -1952,6 +1954,7 @@ namespace
         RegisterKlass<Component>();
         RegisterKlass<Transform>();
         RegisterKlass<GameObject>();
+        RegisterKlass<Random>();
         type_manager.InitializeAllTypes();
     }
 
@@ -2100,6 +2103,325 @@ namespace
         const std::string level_header = ReadFile("Source/Runtime/Function/Framework/Level/Level.h");
         Check(CountOccurrences(level_header, "bool IsLoaded() const") >= 1,
               "V13", "Level exposes IsLoaded (Scene.isLoaded reads it)");
+    }
+
+    // ---------------------------------------------------------------- W ----
+    /// 脚本侧 `Random` 门面的**行为**。
+    ///
+    /// E 组测的是 `UnityRandom`（实现），这一组测的是脚本真正能叫到的那个名字。
+    /// 最关键的一条是两者打在**同一条全局流**上：门面自带一份状态的话，C++ 侧
+    /// 摇出来的数和脚本侧摇出来的数会静默分叉，而"回放对不上 / 种子复现不出来"
+    /// 过很久才会被怀疑到这上面 —— 两边单看都完全正确。
+    void TestRandomFacade()
+    {
+        // --- 门面是注册过、脚本能按名字找到的类型 ------------------------
+        // factory 非空才算数：只声明不注册的话 Type 是 `[UNREGISTERED]` 占位
+        //（说明 gen.cpp 根本没链进来），而 ClassNameToType 依然查得到它。
+        const Type* random_type = TypeManager::GetInstance().ClassNameToType("Random");
+        Check(random_type != nullptr, "W0", "scripts can look the class up by the name 'Random'");
+        if (random_type != nullptr)
+        {
+            Check(std::strcmp(random_type->GetName(), "Random") == 0, "W1",
+                  "and it is spelled Random (Unity's spelling, not UnityRandom)");
+            Check(random_type->GetFactory() != nullptr, "W2",
+                  "and it has a factory, so the generated registrar really is linked in");
+        }
+
+        // --- 同一条流 ---------------------------------------------------
+        UnityRandom::InitState(12345);
+        float via_impl[8];
+        for (float& v : via_impl)
+        {
+            v = UnityRandom::value();
+        }
+        Random::InitState(12345);
+        bool same_stream = true;
+        for (float v : via_impl)
+        {
+            if (Random::value() != v)
+            {
+                same_stream = false;
+            }
+        }
+        Check(same_stream, "W3",
+              "the facade drives the SAME global stream as UnityRandom (not a private one)");
+
+        // 同一条流的另一半：状态也必须是同一份，否则存档/回放只能还原半边。
+        UnityRandom::InitState(4242);
+        for (int i = 0; i < 3; ++i)
+        {
+            UnityRandom::value();
+        }
+        Check(Random::GetState() == static_cast<int64_t>(UnityRandom::GetState()), "W4",
+              "GetState() reads the one shared state, not a mirrored copy");
+
+        // --- 可复现（脚本侧自己也要能验证） -----------------------------
+        Random::InitState(20240607);
+        float first_run[6];
+        for (float& v : first_run)
+        {
+            v = Random::value();
+        }
+        Random::InitState(20240607);
+        bool identical = true;
+        for (float v : first_run)
+        {
+            if (Random::value() != v)
+            {
+                identical = false;
+            }
+        }
+        Check(identical, "W5", "the same seed reproduces the same sequence through the facade");
+
+        // --- 存档 / 回放：一个 int64 就能续上 ---------------------------
+        Random::InitState(31337);
+        for (int i = 0; i < 5; ++i)
+        {
+            Random::value();
+        }
+        const int64_t saved = Random::GetState();
+        float after_save[4];
+        for (float& v : after_save)
+        {
+            v = Random::value();
+        }
+        Random::SetState(saved);
+        bool restored = true;
+        for (float v : after_save)
+        {
+            if (Random::value() != v)
+            {
+                restored = false;
+            }
+        }
+        Check(restored, "W6", "SetState() resumes the stream exactly through the facade");
+
+        // --- value() ----------------------------------------------------
+        Random::InitState(7);
+        bool in_range = true;
+        for (int i = 0; i < 10000; ++i)
+        {
+            const float v = Random::value();
+            if (v < 0.0f || v >= 1.0f)
+            {
+                in_range = false;
+            }
+        }
+        Check(in_range, "W7", "value() stays in [0, 1) over 10000 draws");
+
+        // --- int 不含 max / float 含 max -------------------------------
+        Random::InitState(99);
+        int int_min = 1000;
+        int int_max = -1000;
+        for (int i = 0; i < 20000; ++i)
+        {
+            const int v = Random::RangeInt(0, 10);
+            int_min = (v < int_min) ? v : int_min;
+            int_max = (v > int_max) ? v : int_max;
+        }
+        Check(int_min == 0, "W8", "RangeInt(0, 10) reaches 0");
+        Check(int_max == 9, "W9", "RangeInt(0, 10) NEVER reaches 10 -- the int max is exclusive");
+        // 偏移非零的区间：只测 [0,10) 的话，"忘了加 min"这种错看不出来。
+        Random::InitState(100);
+        bool negative_range_ok = true;
+        int neg_min = 1000;
+        int neg_max = -1000;
+        for (int i = 0; i < 20000; ++i)
+        {
+            const int v = Random::RangeInt(-7, -4);
+            if (v < -7 || v >= -4)
+            {
+                negative_range_ok = false;
+            }
+            neg_min = (v < neg_min) ? v : neg_min;
+            neg_max = (v > neg_max) ? v : neg_max;
+        }
+        Check(negative_range_ok && neg_min == -7 && neg_max == -5, "W10",
+              "RangeInt(-7, -4) covers [-7, -5] -- the offset is applied, max excluded");
+        Check(Random::RangeInt(5, 5) == 5, "W11", "an empty int range returns min");
+        Check(Random::RangeInt(7, 2) == 7, "W12", "an inverted int range returns min");
+
+        Random::InitState(101);
+        bool float_in_range = true;
+        float float_max = -1000.0f;
+        for (int i = 0; i < 20000; ++i)
+        {
+            const float v = Random::RangeFloat(2.0f, 3.0f);
+            float_max = (v > float_max) ? v : float_max;
+            if (v < 2.0f || v > 3.0f)
+            {
+                float_in_range = false;
+            }
+        }
+        Check(float_in_range, "W13", "RangeFloat(2, 3) stays inside both bounds");
+        Check(float_max > 2.99f, "W14", "RangeFloat can get arbitrarily close to 3 -- max is INCLUSIVE");
+        // 同一个偏移区间换浮点：能取到 -4，和 W10 的整数版正好对上，把不对称钉死。
+        Random::InitState(102);
+        bool float_negative_ok = true;
+        for (int i = 0; i < 20000; ++i)
+        {
+            const float v = Random::RangeFloat(-7.0f, -4.0f);
+            if (v < -7.0f || v > -4.0f)
+            {
+                float_negative_ok = false;
+            }
+        }
+        Check(float_negative_ok, "W15", "RangeFloat(-7, -4) stays inside both bounds");
+
+        // --- Chance -----------------------------------------------------
+        Random::InitState(3);
+        Check(!Random::Chance(0.0f), "W16", "Chance(0) is never true");
+        Check(Random::Chance(1.0f), "W17", "Chance(1) is always true");
+        Check(!Random::Chance(-0.5f), "W18", "a negative probability is never true");
+        Check(Random::Chance(2.0f), "W19", "a probability above 1 is always true");
+        Random::InitState(4);
+        int trues = 0;
+        for (int i = 0; i < 20000; ++i)
+        {
+            if (Random::Chance(0.25f))
+            {
+                ++trues;
+            }
+        }
+        Check(trues > 4700 && trues < 5300, "W20", "Chance(0.25) fires about a quarter of the time");
+
+        // --- 形状 -------------------------------------------------------
+        Random::InitState(555);
+        bool sphere_inside = true;
+        double sphere_sq_sum = 0.0;
+        for (int i = 0; i < 20000; ++i)
+        {
+            const float sq = Random::insideUnitSphere().squaredLength();
+            sphere_sq_sum += sq;
+            if (sq > 1.0f)
+            {
+                sphere_inside = false;
+            }
+        }
+        Check(sphere_inside, "W21", "insideUnitSphere() never leaves the unit ball");
+        // **按体积**均匀，不是按半径。E[r²] = 3/5 = 0.6；"随机方向 × 随机半径"
+        // 那种写法 E[r²] = 1/3 —— 它在球心堆点，一用来散布生成点就能看出来，
+        // 但单看"有没有出球"完全测不出（W21 照样绿）。
+        const double sphere_mean_sq = sphere_sq_sum / 20000.0;
+        Check(sphere_mean_sq > 0.55 && sphere_mean_sq < 0.65, "W22",
+              "insideUnitSphere() is uniform BY VOLUME (mean r^2 is 3/5, not 1/3)");
+
+        bool on_sphere = true;
+        for (int i = 0; i < 2000; ++i)
+        {
+            if (std::fabs(Random::onUnitSphere().length() - 1.0f) > 0.01f)
+            {
+                on_sphere = false;
+            }
+        }
+        Check(on_sphere, "W23", "onUnitSphere() is on the surface (length 1)");
+
+        bool circle_inside = true;
+        double circle_sq_sum = 0.0;
+        for (int i = 0; i < 20000; ++i)
+        {
+            const float sq = Random::insideUnitCircle().squaredLength();
+            circle_sq_sum += sq;
+            if (sq > 1.0f)
+            {
+                circle_inside = false;
+            }
+        }
+        Check(circle_inside, "W24", "insideUnitCircle() never leaves the unit disc");
+        // 二维同理：E[r²] = 1/2（按面积），按半径则是 1/3。
+        const double circle_mean_sq = circle_sq_sum / 20000.0;
+        Check(circle_mean_sq > 0.46 && circle_mean_sq < 0.54, "W25",
+              "insideUnitCircle() is uniform BY AREA (mean r^2 is 1/2, not 1/3)");
+
+        bool on_circle = true;
+        for (int i = 0; i < 2000; ++i)
+        {
+            if (std::fabs(Random::onUnitCircle().length() - 1.0f) > 0.01f)
+            {
+                on_circle = false;
+            }
+        }
+        Check(on_circle, "W26", "onUnitCircle() is on the circle (length 1)");
+
+        // --- rotation ---------------------------------------------------
+        Random::InitState(777);
+        bool unit_rotation = true;
+        double abs_w_sum = 0.0;
+        for (int i = 0; i < 4000; ++i)
+        {
+            const Quaternion q = Random::rotation();
+            const float sq = q.w * q.w + q.x * q.x + q.y * q.y + q.z * q.z;
+            if (std::fabs(sq - 1.0f) > 0.01f)
+            {
+                unit_rotation = false;
+            }
+            abs_w_sum += std::fabs(q.w);
+        }
+        Check(unit_rotation, "W27", "rotation() returns a unit quaternion");
+        // 均匀分布在 SO(3) 上：|w| 的期望是 4/(3*pi) ≈ 0.424。
+        //   * 恒等四元数恒等于 1（"根本没随机"）
+        //   * "随机三个欧拉角"会在万向节极点附近过采样，期望明显偏离
+        // 只测"是单位四元数"两种都测不出来。
+        const double mean_abs_w = abs_w_sum / 4000.0;
+        Check(mean_abs_w > 0.39 && mean_abs_w < 0.46, "W28",
+              "rotation() is uniform over SO(3) (mean |w| is 4/(3*pi), not 1)");
+
+        // --- InitUnseeded -----------------------------------------------
+        Random::InitState(1);
+        const int64_t seeded_state = Random::GetState();
+        Random::InitUnseeded();
+        Check(Random::GetState() != seeded_state, "W29", "InitUnseeded() moves off the seeded state");
+        Check(Random::GetState() != 0, "W30", "and never leaves the state at 0");
+        const float unseeded = Random::value();
+        Check(unseeded >= 0.0f && unseeded < 1.0f, "W31", "and the stream it starts is still in [0, 1)");
+    }
+
+    // ---------------------------------------------------------------- X ----
+    void TestRandomWiring()
+    {
+        const std::string header = ReadFile("Source/Runtime/Scripting/ScriptRandom/ScriptRandom.h");
+        Check(!header.empty(), "X0", "ScriptRandom.h is readable");
+        Check(CountOccurrences(header, "class Random :") >= 1, "X1", "the script-facing class is declared");
+        Check(CountOccurrences(header, "ZFUNCTION()") >= 13, "X2", "all 13 entry points carry ZFUNCTION()");
+        // 全静态 ⇒ 一个属性都发布不出来（ZSCRIPTPROPERTY 的 getter 不允许
+        // static）。守的是"别有人顺手加一个"：它会在 codegen 期炸，而报错指向
+        // 的是**生成**文件，看源码的人会一头雾水。
+        // 注意带括号：`ZSCRIPTPROPERTY` 这个词在**注释**里也出现（说明为什么
+        // 发布不出来），只搜裸词会永远为真，等于没测。
+        Check(CountOccurrences(header, "ZSCRIPTPROPERTY(") == 0, "X3",
+              "no script properties -- every entry point is static");
+        Check(CountOccurrences(header, "RangeInt") >= 2, "X4", "RangeInt is declared AND documented");
+        Check(CountOccurrences(header, "RangeFloat") >= 2, "X5", "RangeFloat is declared AND documented");
+        // 不对称必须**复刻并且写明**。缺了说明，下一个人会当 bug "修"掉 —— 那会
+        // 静默改变每一个移植过来的脚本摇出来的数，而且没有任何编译错误。
+        Check(CountOccurrences(header, "max 不含") >= 1 && CountOccurrences(header, "max 含") >= 1,
+              "X6", "the int-excludes / float-includes max asymmetry is documented");
+        Check(CountOccurrences(header, "UnityRandom") >= 2, "X7",
+              "the header points at the real implementation (this file is only a name)");
+
+        const std::string source = ReadFile("Source/Runtime/Scripting/ScriptRandom/ScriptRandom.cpp");
+        Check(!source.empty(), "X8", "ScriptRandom.cpp is readable");
+        // 门面必须**纯转发**：在这里掺进任何自己的算法，C++ 侧和脚本侧立刻分叉，
+        // 而且两边单看都对。13 个方法 = 13 次转发。
+        Check(CountOccurrences(source, "UnityRandom::") >= 13, "X9",
+              "every facade method forwards to UnityRandom");
+        // 门面里不许出现第二个随机源 —— 那就是分叉的入口。
+        Check(CountOccurrences(source, "<random>") == 0 && CountOccurrences(source, "std::mt19937") == 0 &&
+                  CountOccurrences(source, "std::rand") == 0,
+              "X10", "the facade brings in no RNG of its own");
+
+        // 实现是**改名**过的：原来就叫 `class Random`，既一个 ZFUNCTION 都没有
+        //（脚本根本用不了）又不派生自 Object（挂不上 ZCLASS）。留一条断言防止
+        // 改回去 —— 两个同名类属于 ODR 违规，症状是随机崩而不是编译错。
+        const std::string impl_header = ReadFile("Source/Runtime/Core/Math/UnityRandom.h");
+        Check(!impl_header.empty(), "X11", "UnityRandom.h is readable");
+        Check(CountOccurrences(impl_header, "class UnityRandom") >= 1, "X12",
+              "the implementation class is UnityRandom");
+        Check(CountOccurrences(impl_header, "class Random") == 0, "X13",
+              "and is NOT also called Random (two same-named classes is an ODR violation)");
+        const std::string impl_source = ReadFile("Source/Runtime/Core/Math/UnityRandom.cpp");
+        Check(CountOccurrences(impl_source, "UnityRandom::s_State") >= 1, "X14",
+              "the single global state lives on UnityRandom");
     }
 
     // ---------------------------------------------------------------- T ----
@@ -2267,6 +2589,8 @@ int main()
     TestTransformWiring();
     TestScenes();
     TestSceneWiring();
+    TestRandomFacade();
+    TestRandomWiring();
     TestWiringGate();
 
     std::printf("\n=== %d checks, %d failures ===\n", g_Checks, g_Failures);
