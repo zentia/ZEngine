@@ -281,6 +281,15 @@ void Application::LogicalTick(float delta_time)
         }
     }
 
+    // 接触事件（OnCollisionEnter/Stay/Exit、OnTriggerEnter/Exit）在这一步派发：
+    // 物理刚在固定步里跑完，事件现在才存在；而队列是**被排空**的，所以整个
+    // 帧里只能有这一个调用点 —— 派发两次的第二次什么都拿不到，表现为
+    // "回调偶尔不触发"。
+    if (auto* physics = GET_SYSTEM(PhysicsManager))
+    {
+        physics->DispatchContactEvents();
+    }
+
     GET_SYSTEM(WorldManager)->Tick(delta_time);
 
     // Coroutines: Update phase. `GetDeltaTime()` is the scaled step (a

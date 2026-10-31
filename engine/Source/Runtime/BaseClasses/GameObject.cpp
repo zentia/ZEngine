@@ -575,6 +575,11 @@ Component* GameObject::GetComponentInParentByTypeName(const std::string& compone
 
 int GameObject::DeliverMessageToSelfComponents(const eastl::string& method_name)
 {
+    return DeliverMessageToSelfComponents(method_name, nullptr);
+}
+
+int GameObject::DeliverMessageToSelfComponents(const eastl::string& method_name, GameObject* other)
+{
     int delivered = 0;
     for (auto& component : m_Components)
     {
@@ -586,12 +591,27 @@ int GameObject::DeliverMessageToSelfComponents(const eastl::string& method_name)
         // 只有脚本组件能按名字寻址方法。C++ 组件的方法在编译期定死，
         // 字符串查找在这里没有任何落点。
         TypeScriptComponent* script = Cast<TypeScriptComponent>(base);
-        if (script != nullptr && script->InvokeMethod(method_name.c_str()))
+        if (script == nullptr)
+        {
+            continue;
+        }
+        const bool ok = (other != nullptr) ? script->InvokeMethodWithOther(method_name.c_str(), other)
+                                           : script->InvokeMethod(method_name.c_str());
+        if (ok)
         {
             ++delivered;
         }
     }
     return delivered;
+}
+
+int GameObject::SendMessageWithOther(const char* method_name, GameObject* other)
+{
+    if (method_name == nullptr || method_name[0] == '\0')
+    {
+        return 0;
+    }
+    return DeliverMessageToSelfComponents(eastl::string(method_name), other);
 }
 
 int GameObject::SendMessageByName(const eastl::string& method_name)

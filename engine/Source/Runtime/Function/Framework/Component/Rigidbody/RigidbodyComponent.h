@@ -124,6 +124,11 @@ protected:
     void CreateRigidBody(const TransformTRS& global_transform);
     void RemoveRigidBody();
 
+    /// 在 PhysicsManager 的 body -> GameObject 表里登记 / 注销自己。
+    /// 没有这张表，接触事件里的 body id 翻译不成 GameObject。
+    void RegisterOwner();
+    void UnregisterOwner();
+
     /// The scene the live body lives in, or null when there is no body (pending
     /// creation) or no active scene (level teardown destroys it first).
     std::shared_ptr<PhysicsScene> GetActivePhysicsScene() const;

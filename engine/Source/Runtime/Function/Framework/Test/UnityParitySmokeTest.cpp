@@ -1482,6 +1482,204 @@ namespace
               "P13", "Debug stays a namespace (a bound class would clobber the JS object)");
     }
 
+    // ---------------------------------------------------------------- Q ----
+    /// 碰撞 / 触发事件：phase 三态、body 归属表、以及"没人接"的派发。
+    void TestContactEvents()
+    {
+        PhysicsManager* physics_manager = GET_SYSTEM(PhysicsManager);
+        Check(physics_manager != nullptr, "Q0", "PhysicsManager is reachable");
+        if (physics_manager == nullptr)
+        {
+            return;
+        }
+
+        // 零重力：否则两块方块一边撞一边掉，"还接触着吗"取决于落体时间，
+        // 这条测试就会随机器/帧率变。
+        std::shared_ptr<PhysicsScene> scene = physics_manager->CreatePhysicsScene(Vector3(0.f, 0.f, 0.f)).lock();
+        Check(scene != nullptr, "Q1", "a zero-gravity scene can be created");
+        if (!scene)
+        {
+            return;
+        }
+
+        const uint32_t mover = SpawnBox(*scene, Vector3(-2.f, 0.f, 0.f), 0, true);
+        const uint32_t wall = SpawnBox(*scene, Vector3(0.f, 0.f, 0.f), 0, false);
+        Check(mover != kInvalidPhysicsBodyId && wall != kInvalidPhysicsBodyId, "Q2", "both bodies exist");
+
+        std::vector<PhysicsCollisionEvent> events;
+        scene->PollCollisionEvents(events);
+        Check(events.empty(), "Q3", "nothing has collided yet");
+
+        Check(scene->SetLinearVelocity(mover, Vector3(2.f, 0.f, 0.f)), "Q4", "the mover is given a velocity");
+
+        // --- enter ---
+        PhysicsCollisionEvent enter_event;
+        bool saw_enter = false;
+        for (int step = 0; step < 200 && !saw_enter; ++step)
+        {
+            StepScene(*scene, 1);
+            scene->PollCollisionEvents(events);
+            for (const PhysicsCollisionEvent& event : events)
+            {
+                if (event.m_Phase == PhysicsContactPhase::enter)
+                {
+                    enter_event = event;
+                    saw_enter = true;
+                }
+            }
+        }
+        Check(saw_enter, "Q5", "a contact produces an enter event");
+        Check((enter_event.m_BodyA == mover && enter_event.m_BodyB == wall) ||
+                  (enter_event.m_BodyA == wall && enter_event.m_BodyB == mover),
+              "Q6", "and it names both bodies");
+        Check(enter_event.m_RelativeSpeed > 0.f, "Q7", "with a non-zero approach speed");
+
+        // --- stay ---
+        bool saw_stay = false;
+        bool saw_duplicate_enter = false;
+        for (int step = 0; step < 10; ++step)
+        {
+            StepScene(*scene, 1);
+            scene->PollCollisionEvents(events);
+            for (const PhysicsCollisionEvent& event : events)
+            {
+                if (event.m_Phase == PhysicsContactPhase::stay)
+                {
+                    saw_stay = true;
+                }
+                if (event.m_Phase == PhysicsContactPhase::enter)
+                {
+                    // Unity 只在撞上那一帧发 Enter。持续接触期间每帧再发一条
+                    // Enter 是最容易写出来的 bug —— Jolt 的 OnContactPersisted
+                    // 每个子步都会来，直接把它排进队列就会这样。
+                    saw_duplicate_enter = true;
+                }
+            }
+        }
+        Check(saw_stay, "Q8", "a persisting contact produces stay events");
+        Check(!saw_duplicate_enter, "Q9", "and NOT a fresh enter every step");
+
+        // --- exit ---
+        Check(scene->SetLinearVelocity(mover, Vector3(-30.f, 0.f, 0.f)), "Q10", "the mover is pulled away");
+        bool saw_exit = false;
+        for (int step = 0; step < 200 && !saw_exit; ++step)
+        {
+            StepScene(*scene, 1);
+            scene->PollCollisionEvents(events);
+            for (const PhysicsCollisionEvent& event : events)
+            {
+                if (event.m_Phase == PhysicsContactPhase::exit)
+                {
+                    saw_exit = true;
+                }
+            }
+        }
+        Check(saw_exit, "Q11", "separating the bodies produces an exit event");
+
+        // --- 触发器的三态 ---
+        const uint32_t trigger = SpawnBox(*scene, Vector3(0.f, 20.f, 0.f), 0, false);
+        const uint32_t walker = SpawnBox(*scene, Vector3(0.f, 24.f, 0.f), 0, true);
+        Check(scene->SetRigidBodySensor(trigger, true), "Q12", "a body can be made a sensor");
+        Check(scene->SetLinearVelocity(walker, Vector3(0.f, -2.f, 0.f)), "Q13", "the walker moves into it");
+
+        bool trigger_enter = false;
+        bool trigger_stay = false;
+        bool trigger_exit = false;
+        for (int step = 0; step < 400 && !trigger_exit; ++step)
+        {
+            StepScene(*scene, 1);
+            std::vector<PhysicsTriggerEvent> trigger_events;
+            scene->PollTriggerEvents(trigger_events);
+            for (const PhysicsTriggerEvent& event : trigger_events)
+            {
+                if (event.m_TriggerBodyId != trigger || event.m_OtherBodyId != walker)
+                {
+                    continue;
+                }
+                if (event.m_Phase == PhysicsContactPhase::enter)
+                {
+                    trigger_enter = true;
+                }
+                else if (event.m_Phase == PhysicsContactPhase::stay)
+                {
+                    trigger_stay = true;
+                }
+                else if (event.m_Phase == PhysicsContactPhase::exit)
+                {
+                    trigger_exit = true;
+                }
+            }
+        }
+        Check(trigger_enter, "Q14", "a sensor reports OnTriggerEnter");
+        Check(trigger_stay, "Q15", "and OnTriggerStay while the overlap persists");
+        Check(trigger_exit, "Q16", "and OnTriggerExit when it leaves");
+
+        // --- body -> GameObject 归属表 ---
+        GameObject* owner = new GameObject();
+        physics_manager->RegisterBodyOwner(mover, owner);
+        Check(physics_manager->FindBodyOwner(mover) == owner, "Q17", "a registered body resolves to its owner");
+        physics_manager->UnregisterBodyOwner(mover);
+        Check(physics_manager->FindBodyOwner(mover) == nullptr, "Q18", "and stops resolving once removed");
+        Check(physics_manager->FindBodyOwner(0x1234u) == nullptr, "Q19", "an unknown body id resolves to nothing");
+        Check(owner->SendMessageWithOther("OnCollisionEnter", nullptr) == 0,
+              "Q20", "delivery to an object with no script component is a silent no-op");
+        delete owner;
+    }
+
+    // ---------------------------------------------------------------- R ----
+    void TestContactEventWiring()
+    {
+        const std::string scene_source = ReadFile("Source/Runtime/Function/Physics/PhysicsScene.cpp");
+        Check(!scene_source.empty(), "R0", "PhysicsScene.cpp is readable");
+        // 核心接线门：OnContactAdded 以前对非 sensor 的接触直接 return —— 物理层
+        // 把碰撞事件整个丢掉了，于是框架层无论写什么，OnCollisionEnter 都不可
+        // 能存在，而且没有任何报错。
+        Check(CountOccurrences(scene_source, "OnContactPersisted") >= 1,
+              "R1", "persisting contacts are tracked (the source of OnCollisionStay)");
+        Check(CountOccurrences(scene_source, "Collide(in_body1, in_body2, in_manifold") >= 2,
+              "R2", "both the added and the persisted path feed the collision table");
+        Check(CountOccurrences(scene_source, "m_CollisionEvents.push_back(event)") >= 1,
+              "R3", "new pairs are queued as enter");
+
+        const std::string scene_header = ReadFile("Source/Runtime/Function/Physics/PhysicsScene.h");
+        Check(CountOccurrences(scene_header, "enum class PhysicsContactPhase") >= 1,
+              "R4", "the phase is a 3-state enum, not a bool");
+        Check(CountOccurrences(scene_header, "PollCollisionEvents") >= 1,
+              "R5", "collision events have a poll entry point");
+
+        const std::string manager_source = ReadFile("Source/Runtime/Function/Physics/PhysicsManager.cpp");
+        Check(!manager_source.empty(), "R6", "PhysicsManager.cpp is readable");
+        Check(CountOccurrences(manager_source, "PollTriggerEvents") >= 1, "R7", "triggers are drained");
+        Check(CountOccurrences(manager_source, "PollCollisionEvents") >= 1, "R8", "and so are collisions");
+        Check(CountOccurrences(manager_source, "OnTriggerStay") >= 1, "R9", "OnTriggerStay is delivered");
+        Check(CountOccurrences(manager_source, "OnCollisionStay") >= 1, "R10", "OnCollisionStay is delivered");
+        Check(CountOccurrences(manager_source, "OnCollisionExit") >= 1, "R11", "OnCollisionExit is delivered");
+
+        // 主循环只许有一个派发点：队列是被排空的，派发两次的第二次什么都拿不到。
+        const std::string app_source = ReadFile("Source/Runtime/Application/Application.cpp");
+        Check(CountOccurrences(app_source, "DispatchContactEvents") == 1,
+              "R12", "exactly one dispatch point per frame");
+
+        const std::string rigid_source =
+            ReadFile("Source/Runtime/Function/Framework/Component/Rigidbody/RigidbodyComponent.cpp");
+        Check(CountOccurrences(rigid_source, "RegisterBodyOwner") >= 1,
+              "R13", "creating a body registers its owner");
+        // 3 = 定义 + 析构 + RemoveRigidBody 两处拆除路径。少一处就是一条
+        // 指向已销毁 GameObject 的野记录（body id 是会被复用的）。
+        Check(CountOccurrences(rigid_source, "UnregisterOwner()") >= 3,
+              "R14", "and both teardown paths remove it");
+
+        const std::string binding_source = ReadFile("Source/Runtime/Scripting/Binding/ScriptBinding.cpp");
+        Check(CountOccurrences(binding_source, "OnCollisionEnter(other?: GameObject): void;") >= 1,
+              "R15", "the .d.ts declares OnCollisionEnter");
+        Check(CountOccurrences(binding_source, "OnTriggerExit(other?: GameObject): void;") >= 1,
+              "R16", "and OnTriggerExit");
+
+        const std::string go_source = ReadFile("Source/Runtime/BaseClasses/GameObject.cpp");
+        Check(CountOccurrences(go_source, "InvokeMethodWithOther") >= 1,
+              "R17", "delivery passes the other GameObject through to the script");
+    }
+
     // ---------------------------------------------------------------- B ----
     void TestWiringGate()
     {
@@ -1591,6 +1789,8 @@ int main()
     TestApplicationFacade();
     TestApplicationScreenWiring();
     TestDebugFacade();
+    TestContactEvents();
+    TestContactEventWiring();
     TestWiringGate();
 
     std::printf("\n=== %d checks, %d failures ===\n", g_Checks, g_Failures);

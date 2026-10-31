@@ -1,5 +1,6 @@
 #include "Runtime/Function/Physics/PhysicsManager.h"
 
+#include "Runtime/BaseClasses/GameObject.h"
 #include "Runtime/Function/Framework/World/WorldManager.h"
 #include "Runtime/Function/Physics/Jolt/Utils.h"
 #include "Runtime/Function/Physics/PhysicsScene.h"
@@ -65,6 +66,95 @@ std::shared_ptr<PhysicsScene> PhysicsManager::GetPhysicsScene(size_t index) cons
 std::shared_ptr<PhysicsScene> PhysicsManager::GetPrimaryPhysicsScene() const
 {
     return m_Scenes.empty() ? nullptr : m_Scenes.front();
+}
+
+void PhysicsManager::RegisterBodyOwner(uint32_t body_id, GameObject* owner)
+{
+    if (body_id == s_InvalidRigidbodyId)
+    {
+        return;
+    }
+    if (owner == nullptr)
+    {
+        m_BodyOwners.erase(body_id);
+        return;
+    }
+    m_BodyOwners[body_id] = owner;
+}
+
+void PhysicsManager::UnregisterBodyOwner(uint32_t body_id)
+{
+    m_BodyOwners.erase(body_id);
+}
+
+GameObject* PhysicsManager::FindBodyOwner(uint32_t body_id) const
+{
+    const auto found = m_BodyOwners.find(body_id);
+    return found != m_BodyOwners.end() ? found->second : nullptr;
+}
+
+void PhysicsManager::DispatchContactEvents()
+{
+    // 两个缓冲提到循环外：每帧都要排空好几个场景，反复分配没有任何收益。
+    std::vector<PhysicsTriggerEvent> trigger_events;
+    std::vector<PhysicsCollisionEvent> collision_events;
+
+    for (const std::shared_ptr<PhysicsScene>& scene : m_Scenes)
+    {
+        if (!scene)
+        {
+            continue;
+        }
+
+        scene->PollTriggerEvents(trigger_events);
+        for (const PhysicsTriggerEvent& event : trigger_events)
+        {
+            GameObject* trigger = FindBodyOwner(event.m_TriggerBodyId);
+            GameObject* other = FindBodyOwner(event.m_OtherBodyId);
+
+            // Unity 在两个对象上都调：触发器自己拿到 OnTriggerEnter，被触发的
+            // 那个（只要有脚本）也拿到。只给一边是常见误解。
+            const char* method = "OnTriggerEnter";
+            if (event.m_Phase == PhysicsContactPhase::stay)
+            {
+                method = "OnTriggerStay";
+            }
+            else if (event.m_Phase == PhysicsContactPhase::exit)
+            {
+                method = "OnTriggerExit";
+            }
+            DeliverToBoth(trigger, other, method);
+        }
+
+        scene->PollCollisionEvents(collision_events);
+        for (const PhysicsCollisionEvent& event : collision_events)
+        {
+            const char* method = "OnCollisionEnter";
+            if (event.m_Phase == PhysicsContactPhase::stay)
+            {
+                method = "OnCollisionStay";
+            }
+            else if (event.m_Phase == PhysicsContactPhase::exit)
+            {
+                method = "OnCollisionExit";
+            }
+            DeliverToBoth(FindBodyOwner(event.m_BodyA), FindBodyOwner(event.m_BodyB), method);
+        }
+    }
+}
+
+void PhysicsManager::DeliverToBoth(GameObject* object_a, GameObject* object_b, const char* method_name)
+{
+    // 没有脚本组件时 SendMessageWithOther 返回 0，这里**不**因此打警告：
+    // 场景里绝大多数碰撞体都没有脚本，"没人接"是常态而不是拼写错误。
+    if (object_a != nullptr)
+    {
+        object_a->SendMessageWithOther(method_name, object_a == object_b ? nullptr : object_b);
+    }
+    if (object_b != nullptr && object_b != object_a)
+    {
+        object_b->SendMessageWithOther(method_name, object_a);
+    }
 }
 
 void PhysicsManager::DeletePhysicsScene(std::weak_ptr<PhysicsScene> physics_scene)

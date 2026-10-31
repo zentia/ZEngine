@@ -4,6 +4,7 @@
 #include "Runtime/Core/Base/Macro.h"
 #include "Runtime/Function/Framework/Component/Transform/Transform.h"
 #include "Runtime/Function/Framework/World/WorldManager.h"
+#include "Runtime/Function/Physics/PhysicsManager.h"
 #include "Runtime/Function/Physics/PhysicsScene.h"
 
 namespace
@@ -99,6 +100,11 @@ RigidBodyComponent::~RigidBodyComponent()
         return;
     }
 
+    // 注销**先于**场景检查：关卡拆除时场景可能已经没了，但归属表里那条
+    // 记录会留着指向这个刚析构的组件所属的 GameObject。留着它的后果是
+    // 下一次有 body 复用这个 id 时，接触事件派发给一个已销毁的对象。
+    UnregisterOwner();
+
     std::shared_ptr<PhysicsScene> physics_scene = CurrentPhysicsScene();
     if (!physics_scene)
     {
@@ -114,6 +120,27 @@ void RigidBodyComponent::CreateRigidBody(const TransformTRS& global_transform)
     ASSERT(physics_scene);
 
     m_RigidbodyId = physics_scene->CreateRigidBody(global_transform, m_RigidbodyRes, CurrentGameObjectLayer());
+    RegisterOwner();
+}
+
+void RigidBodyComponent::RegisterOwner()
+{
+    // 没有归属表，接触事件里的 body id 就翻译不成 GameObject，脚本侧的
+    // `OnCollisionEnter(other)` 里的 other 无从填起。
+    auto* manager = GET_SYSTEM(PhysicsManager);
+    if (manager == nullptr || m_RigidbodyId == k_invalid_rigidbody_id)
+    {
+        return;
+    }
+    manager->RegisterBodyOwner(m_RigidbodyId, m_ParentObject);
+}
+
+void RigidBodyComponent::UnregisterOwner()
+{
+    if (auto* manager = GET_SYSTEM(PhysicsManager))
+    {
+        manager->UnregisterBodyOwner(m_RigidbodyId);
+    }
 }
 
 int32_t RigidBodyComponent::CurrentGameObjectLayer() const
@@ -150,6 +177,7 @@ void RigidBodyComponent::RemoveRigidBody()
         return;
     }
 
+    UnregisterOwner();
     physics_scene->RemoveRigidBody(m_RigidbodyId);
 }
 

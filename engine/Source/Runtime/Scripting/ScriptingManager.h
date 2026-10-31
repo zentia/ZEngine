@@ -85,6 +85,9 @@ public:
     bool InvokeInstanceMethod(pesapi_value_ref instance, const char* method_name);
     bool InvokeInstanceMethodNumber(pesapi_value_ref instance, const char* method_name, double numeric_arg);
 
+    /// 带一个 GameObject 参数（碰撞 / 触发回调的 `other`）。
+    bool InvokeInstanceMethodGameObject(pesapi_value_ref instance, const char* method_name, class GameObject* other);
+
     // -----------------------------------------------------------------------
     // Phase-7 serialised-field bridge (forwarders to ScriptEnv).
     //

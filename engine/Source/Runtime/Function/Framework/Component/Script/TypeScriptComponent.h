@@ -264,6 +264,12 @@ public:
     /// which only complains under SendMessageOptions.RequireReceiver.
     bool InvokeMethod(const char* method_name);
 
+    /// 带一个 GameObject 参数的版本（碰撞 / 触发回调的 `other`）。与
+    /// `InvokeMethod` 同样的失败语义：没有实例 / 没有 ScriptingManager 返回
+    /// false，方法不存在**不算**失败（Unity SendMessage 的
+    /// SendMessageOptions.DontRequireReceiver 语义）。
+    bool InvokeMethodWithOther(const char* method_name, class GameObject* other);
+
     // --- Unity's Invoke family ---------------------------------------------
     //
     // Forwarding to `Behaviour`, not declarations of their own: the timer, the

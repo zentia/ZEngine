@@ -152,6 +152,11 @@ void PhysicsScene::PollTriggerEvents(std::vector<PhysicsTriggerEvent>& out_event
     out_events.clear();
 }
 
+void PhysicsScene::PollCollisionEvents(std::vector<PhysicsCollisionEvent>& out_events)
+{
+    out_events.clear();
+}
+
 uint32_t PhysicsScene::CreateJoint(const PhysicsJointDesc&)
 {
     return s_InvalidJointId;

@@ -264,6 +264,23 @@ bool TypeScriptComponent::InvokeMethod(const char* method_name)
     return sm->InvokeInstanceMethod(ref, method_name);
 }
 
+bool TypeScriptComponent::InvokeMethodWithOther(const char* method_name, GameObject* other)
+{
+    if (m_JsInstance == nullptr || method_name == nullptr || method_name[0] == '\0')
+    {
+        return false;
+    }
+
+    auto* sm = GET_SYSTEM(ScriptingManager);
+    if (sm == nullptr)
+    {
+        return false;
+    }
+
+    auto ref = static_cast<pesapi_value_ref>(m_JsInstance);
+    return sm->InvokeInstanceMethodGameObject(ref, method_name, other);
+}
+
 bool TypeScriptComponent::BindAndAwake()
 {
     // Idempotent: if we already have a live instance, tear it down first.

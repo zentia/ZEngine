@@ -149,6 +149,12 @@ public:
     bool InvokeInstanceMethod(pesapi_value_ref instance, const char* method_name);
     bool InvokeInstanceMethodNumber(pesapi_value_ref instance, const char* method_name, double numeric_arg);
 
+    /// 带一个 `GameObject*` 参数的版本：碰撞 / 触发回调要把"撞到谁"交给脚本
+    /// （`OnCollisionEnter(other)`）。参数由 `ZScript::Converter<GameObject*>`
+    /// 转成脚本侧的 GameObject —— 复用绑定表的同一条路径，脚本拿到的对象与
+    /// `gameObject` 属性是同一种东西。
+    bool InvokeInstanceMethodGameObject(pesapi_value_ref instance, const char* method_name, class GameObject* other);
+
     // -----------------------------------------------------------------------
     // P7 serialised-field bridge.
     //

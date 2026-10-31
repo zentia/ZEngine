@@ -215,6 +215,12 @@ bool ScriptingManager::InvokeInstanceMethodNumber(pesapi_value_ref instance, con
     return m_ScriptEnv && m_ScriptEnv->InvokeInstanceMethodNumber(instance, method_name, numeric_arg);
 }
 
+bool ScriptingManager::InvokeInstanceMethodGameObject(pesapi_value_ref instance, const char* method_name,
+                                                      GameObject* other)
+{
+    return m_ScriptEnv && m_ScriptEnv->InvokeInstanceMethodGameObject(instance, method_name, other);
+}
+
 // -----------------------------------------------------------------------
 // Phase-7 serialised-field forwarders. Both are pure thin shells -- the
 // real work lives in ScriptEnv where the pesapi handle is in scope.

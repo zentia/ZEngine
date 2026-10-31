@@ -77,7 +77,11 @@ public:
 
         if (!body1_is_sensor && !body2_is_sensor)
         {
-            // Ordinary collision: not a trigger, nothing to report.
+            // Ordinary collision: not a trigger. This is the OnCollisionEnter
+            // path -- it used to be dropped on the floor, which meant Unity's
+            // collision callbacks could never exist no matter what the
+            // framework layer did.
+            Collide(in_body1, in_body2, in_manifold, /*queue=*/true);
             return;
         }
 
@@ -88,22 +92,101 @@ public:
         Add(trigger_id, other_id);
     }
 
+    void OnContactPersisted(const JPH::Body& in_body1,
+                            const JPH::Body& in_body2,
+                            [[maybe_unused]] const JPH::ContactManifold& in_manifold,
+                            [[maybe_unused]] JPH::ContactSettings& io_settings) override
+    {
+        if (in_body1.IsSensor() || in_body2.IsSensor())
+        {
+            return;
+        }
+
+        // 只刷新接触几何：pair 已经在 m_Collisions 里（或马上会被
+        // PollCollisionEvents 标记成 enter）。这里**不**排队 —— 否则每个子步
+        // 都会挤进一条事件，一帧内 3 条 OnCollisionStay。
+        Collide(in_body1, in_body2, in_manifold, /*queue=*/false);
+    }
+
     void OnContactRemoved(const JPH::SubShapeIDPair& in_sub_shape_pair) override
     {
-        Remove(in_sub_shape_pair.GetBody1ID().GetIndexAndSequenceNumber(),
-               in_sub_shape_pair.GetBody2ID().GetIndexAndSequenceNumber());
+        const uint32_t body_a = in_sub_shape_pair.GetBody1ID().GetIndexAndSequenceNumber();
+        const uint32_t body_b = in_sub_shape_pair.GetBody2ID().GetIndexAndSequenceNumber();
+        Remove(body_a, body_b);
+        RemoveCollision(body_a, body_b);
     }
 
     /// Hand the queued events to the caller and start a fresh queue.
     void Poll(std::vector<PhysicsTriggerEvent>& out_events)
     {
         std::lock_guard<std::mutex> guard(m_Mutex);
-        out_events.swap(m_Events);
+
+        out_events.clear();
+        out_events.reserve(m_Events.size() + m_Active.size());
+        for (const PhysicsTriggerEvent& pending : m_Events)
+        {
+            out_events.push_back(pending);
+        }
         m_Events.clear();
+
+        // 补 stay：还重叠着、且上一次 poll 时就已经重叠的 pair。判据与碰撞
+        // 那边的 stay 完全一致（见 PollCollisions 的注释）。
+        std::unordered_set<uint64_t> active_now;
+        for (const auto& entry : m_Active)
+        {
+            active_now.insert(entry.first);
+
+            if (m_TriggerActiveLastPoll.find(entry.first) == m_TriggerActiveLastPoll.end())
+            {
+                continue;
+            }
+            PhysicsTriggerEvent stay_event = entry.second;
+            stay_event.m_Phase = PhysicsContactPhase::stay;
+            stay_event.m_IsEnter = false;
+            out_events.push_back(stay_event);
+        }
+        m_TriggerActiveLastPoll.swap(active_now);
     }
 
-    /// A body is going away: close out every trigger pair it took part in so
-    /// gameplay does not keep believing something is still inside a trigger.
+    /// Hand this frame's collision events over, deriving `stay` for pairs that
+    /// were already in contact at the previous poll.
+    void PollCollisions(std::vector<PhysicsCollisionEvent>& out_events)
+    {
+        std::lock_guard<std::mutex> guard(m_Mutex);
+
+        out_events.clear();
+        out_events.reserve(m_CollisionEvents.size() + m_Collisions.size());
+
+        // 本帧新增 / 结束的先按到达顺序给出去。
+        for (const PhysicsCollisionEvent& pending : m_CollisionEvents)
+        {
+            out_events.push_back(pending);
+        }
+        m_CollisionEvents.clear();
+
+        // 然后补 stay：还接触着、且**上一次 poll 时就已经接触**的 pair。
+        //
+        // "上一次已经接触"而不是"上一次已经报过 stay"：新撞上的 pair 这一轮走
+        // enter，下一轮才轮到 stay —— 否则"刚撞上"的那一帧会同时收到
+        // OnCollisionEnter 和 OnCollisionStay，而 Unity 只发 Enter。
+        std::unordered_set<uint64_t> active_now;
+        for (const auto& entry : m_Collisions)
+        {
+            active_now.insert(entry.first);
+
+            if (m_ActiveLastPoll.find(entry.first) == m_ActiveLastPoll.end())
+            {
+                continue;   // 本轮刚进来的，enter 已经在上面发出去了
+            }
+            PhysicsCollisionEvent stay_event = entry.second;
+            stay_event.m_Phase = PhysicsContactPhase::stay;
+            out_events.push_back(stay_event);
+        }
+        m_ActiveLastPoll.swap(active_now);
+    }
+
+    /// A body is going away: close out every pair it took part in so gameplay
+    /// does not keep believing something is still touching it.
     void FlushBody(uint32_t in_body_id)
     {
         std::lock_guard<std::mutex> guard(m_Mutex);
@@ -116,8 +199,27 @@ public:
             {
                 PhysicsTriggerEvent exit_event = active;
                 exit_event.m_IsEnter = false;
+                exit_event.m_Phase = PhysicsContactPhase::exit;
                 m_Events.push_back(exit_event);
+                m_TriggerActiveLastPoll.erase(it->first);
                 it = m_Active.erase(it);
+            }
+            else
+            {
+                ++it;
+            }
+        }
+
+        for (auto it = m_Collisions.begin(); it != m_Collisions.end();)
+        {
+            const PhysicsCollisionEvent& active = it->second;
+            if (active.m_BodyA == in_body_id || active.m_BodyB == in_body_id)
+            {
+                PhysicsCollisionEvent exit_event = active;
+                exit_event.m_Phase = PhysicsContactPhase::exit;
+                m_CollisionEvents.push_back(exit_event);
+                m_ActiveLastPoll.erase(it->first);
+                it = m_Collisions.erase(it);
             }
             else
             {
@@ -154,6 +256,7 @@ private:
         enter_event.m_TriggerBodyId = in_trigger_id;
         enter_event.m_OtherBodyId = in_other_id;
         enter_event.m_IsEnter = true;
+        enter_event.m_Phase = PhysicsContactPhase::enter;
 
         m_Active.emplace(key, enter_event);
         m_Events.push_back(enter_event);
@@ -172,13 +275,86 @@ private:
 
         PhysicsTriggerEvent exit_event = found->second;
         exit_event.m_IsEnter = false;
+        exit_event.m_Phase = PhysicsContactPhase::exit;
         m_Events.push_back(exit_event);
         m_Active.erase(found);
+        m_TriggerActiveLastPoll.erase(key);
+    }
+
+    // ---- collisions ----------------------------------------------------
+
+    /// Record (or refresh) a non-sensor contact pair.
+    ///
+    /// `queue` 只在 `OnContactAdded` 时为 true —— 那是"新接触"，要发
+    /// OnCollisionEnter。`OnContactPersisted` 每个子步都会来，那里只更新几何，
+    /// 不排队（否则一帧内会冒出好几条 stay）。
+    void Collide(const JPH::Body& in_body1,
+                 const JPH::Body& in_body2,
+                 const JPH::ContactManifold& in_manifold,
+                 bool queue)
+    {
+        PhysicsCollisionEvent event;
+        event.m_BodyA = in_body1.GetID().GetIndexAndSequenceNumber();
+        event.m_BodyB = in_body2.GetID().GetIndexAndSequenceNumber();
+        // 接触点是 RVec3（Jolt 的双精度世界坐标）；`toVec3` 只认单精度
+        // JPH::Vec3，所以这里手工降精度。远离原点的大世界里这一步会丢精度，
+        // 但接触点只用于"在哪儿冒火花"这类表现。
+        const JPH::RVec3 contact_point = in_manifold.GetWorldSpaceContactPointOn1(0);
+        event.m_Point = Vector3(static_cast<float>(contact_point.GetX()),
+                                static_cast<float>(contact_point.GetY()),
+                                static_cast<float>(contact_point.GetZ()));
+        // Jolt 的法线定义是"把 body2 推出去的方向"，即从 1 指向 2，与这里的
+        // A -> B 一致，不用取反。
+        event.m_Normal = toVec3(in_manifold.mWorldSpaceNormal);
+        // 沿法线的相对速度。两边的合速度可能很大但只是"擦着走"，所以只看投影
+        // —— 撞得重不重取决于法向分量。
+        const JPH::Vec3 delta_velocity = in_body1.GetLinearVelocity() - in_body2.GetLinearVelocity();
+        event.m_RelativeSpeed = std::fabs(delta_velocity.Dot(in_manifold.mWorldSpaceNormal));
+        event.m_Phase = PhysicsContactPhase::enter;
+
+        std::lock_guard<std::mutex> guard(m_Mutex);
+
+        const uint64_t key = MakeKey(event.m_BodyA, event.m_BodyB);
+        const bool is_new = (m_Collisions.find(key) == m_Collisions.end());
+        m_Collisions[key] = event;
+
+        if (queue && is_new)
+        {
+            m_CollisionEvents.push_back(event);
+        }
+    }
+
+    void RemoveCollision(uint32_t in_body_a, uint32_t in_body_b)
+    {
+        std::lock_guard<std::mutex> guard(m_Mutex);
+
+        const uint64_t key = MakeKey(in_body_a, in_body_b);
+        const auto found = m_Collisions.find(key);
+        if (found == m_Collisions.end())
+        {
+            return;
+        }
+
+        PhysicsCollisionEvent exit_event = found->second;
+        exit_event.m_Phase = PhysicsContactPhase::exit;
+        m_CollisionEvents.push_back(exit_event);
+        m_Collisions.erase(found);
+        m_ActiveLastPoll.erase(key);
     }
 
     std::mutex m_Mutex;
     std::unordered_map<uint64_t, PhysicsTriggerEvent> m_Active;
     std::vector<PhysicsTriggerEvent> m_Events;
+
+    /// 上一次 poll 时还重叠着的触发器 pair —— stay 的判据。
+    std::unordered_set<uint64_t> m_TriggerActiveLastPoll;
+
+    /// 当前还在接触的碰撞 pair（几何持续被 OnContactPersisted 刷新）。
+    std::unordered_map<uint64_t, PhysicsCollisionEvent> m_Collisions;
+    /// 本帧待发出的 enter / exit。
+    std::vector<PhysicsCollisionEvent> m_CollisionEvents;
+    /// 上一次 poll 时还在接触的 pair —— stay 的判据。
+    std::unordered_set<uint64_t> m_ActiveLastPoll;
 };
 
 PhysicsScene::PhysicsScene(const Vector3& gravity)
@@ -713,6 +889,18 @@ void PhysicsScene::PollTriggerEvents(std::vector<PhysicsTriggerEvent>& out_event
     }
 
     m_ContactListener->Poll(out_events);
+}
+
+void PhysicsScene::PollCollisionEvents(std::vector<PhysicsCollisionEvent>& out_events)
+{
+    out_events.clear();
+
+    if (m_ContactListener == nullptr)
+    {
+        return;
+    }
+
+    m_ContactListener->PollCollisions(out_events);
 }
 
 uint32_t PhysicsScene::CreateJoint(const PhysicsJointDesc& in_desc)

@@ -49,6 +49,19 @@ enum class RigidBodyActorType : unsigned char;
 static constexpr uint32_t s_InvalidRigidbodyId = 0xffffffff;
 static constexpr uint32_t s_InvalidJointId = 0;
 
+/// Which of Unity's three callbacks a contact corresponds to.
+///
+/// `Stay` 不是 Jolt 的一个回调 —— `OnContactPersisted` 每个子步都会来一次
+/// （60Hz 模拟 + 一个接触跨 3 个子步就是 3 次），而 Unity 的
+/// `OnCollisionStay` / `OnTriggerStay` 是**每帧一次**。所以 Stay 由 poll 时
+/// "上一帧就在、这一帧还在"推导，而不是由 Jolt 直接喂。
+enum class PhysicsContactPhase : unsigned char
+{
+    enter = 0,
+    stay  = 1,
+    exit  = 2,
+};
+
 /// One trigger (sensor) boundary crossing for this frame.
 struct PhysicsTriggerEvent
 {
@@ -56,8 +69,33 @@ struct PhysicsTriggerEvent
     uint32_t m_TriggerBodyId {s_InvalidRigidbodyId};
     /// The body that entered or left it.
     uint32_t m_OtherBodyId {s_InvalidRigidbodyId};
-    /// true = OnTriggerEnter, false = OnTriggerExit.
+    /// true = OnTriggerEnter, false = OnTriggerExit **或 Stay**
+    /// —— 三态请看 `m_Phase`。这个字段留着是因为它是 2026-10 之前的唯一判
+    /// 据，`PhysicsCharacterJointSmokeTest` 还在用它；新代码一律用 m_Phase。
     bool m_IsEnter {true};
+    PhysicsContactPhase m_Phase {PhysicsContactPhase::enter};
+};
+
+/// One collision (non-sensor) contact for this frame.
+///
+/// 与 `PhysicsTriggerEvent` 分开：触发器只关心"谁进谁出"，碰撞还要把接触点、
+/// 法线、相对速度交给脚本（`OnCollisionEnter(collision)` 里那些）。
+struct PhysicsCollisionEvent
+{
+    uint32_t m_BodyA {s_InvalidRigidbodyId};
+    uint32_t m_BodyB {s_InvalidRigidbodyId};
+    PhysicsContactPhase m_Phase {PhysicsContactPhase::enter};
+
+    /// 世界空间接触点。两个物体多个接触点时取 Jolt 给的**第一个**
+    /// （`ContactManifold::GetWorldSpaceContactPointOn1(0)`）—— Unity 的
+    /// `collision.contacts[0]` 同样是"第一个"，不保证是哪个。
+    Vector3 m_Point;
+    /// 接触法线，从 A 指向 B。
+    Vector3 m_Normal;
+    /// 沿法线的相对速度大小（m/s）。Unity 的 `collision.relativeVelocity`
+    /// 是矢量，这里给模长 —— 判断"撞得重不重"够用，且不用把 Vector3 编进
+    /// 事件再搬一次。
+    float m_RelativeSpeed {0.f};
 };
 
 /// The constraint types exposed to gameplay. They map 1:1 onto Jolt's
@@ -221,6 +259,15 @@ public:
     /// Drain this frame's trigger events. The queue is emptied by the call, so
     /// call it once per frame from a single place.
     void PollTriggerEvents(std::vector<PhysicsTriggerEvent>& out_events);
+
+    /// Drain this frame's collision events, including the `stay` entries
+    /// derived from pairs that were already in contact last poll. Same
+    /// once-per-frame contract as `PollTriggerEvents`.
+    ///
+    /// 两个队列分开排空是刻意的：合并成一个"contact event"就会让触发器事件
+    /// 背上它用不到的 point/normal，也会让已有的
+    /// `PollTriggerEvents` 调用方签名全变。
+    void PollCollisionEvents(std::vector<PhysicsCollisionEvent>& out_events);
 
     // --- joints -------------------------------------------------------------
 

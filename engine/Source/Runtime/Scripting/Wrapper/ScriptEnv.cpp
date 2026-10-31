@@ -2,6 +2,7 @@
 
 #include "Runtime/AssetBundle/AssetBundleManager.h"
 #include "Runtime/Core/Base/Macro.h"
+#include "Runtime/BaseClasses/GameObject.h"
 #include "Runtime/Scripting/Backend.h"
 #include "Runtime/Scripting/Binding/ScriptBinding.h"
 #include "Runtime/Scripting/Native/PuertsNative.h"
@@ -1353,6 +1354,45 @@ bool ScriptEnv::InvokeInstanceMethodNumber(pesapi_value_ref instance, const char
         {
             const char* msg = pesapi_get_exception_as_string(m_Papis, scope, 1);
             LOG_ERROR(ZScripting, "instance.{}({}) threw: {}", method_name, numeric_arg, msg ? msg : "<no message>");
+            ok = false;
+        }
+    }
+    pesapi_close_scope(m_Papis, scope);
+    return ok;
+}
+
+bool ScriptEnv::InvokeInstanceMethodGameObject(pesapi_value_ref instance, const char* method_name,
+                                               GameObject* other)
+{
+    if (!instance || !method_name || !*method_name)
+        return false;
+
+    auto scope = pesapi_open_scope(m_Papis, m_EnvRef);
+    auto env = pesapi_get_env_from_ref(m_Papis, m_EnvRef);
+
+    pesapi_value this_val = pesapi_get_value_from_ref(m_Papis, env, instance);
+    if (!this_val)
+    {
+        pesapi_close_scope(m_Papis, scope);
+        return false;
+    }
+    pesapi_value fn = pesapi_get_property(m_Papis, env, this_val, method_name);
+    bool ok = true;
+    if (fn && pesapi_is_function(m_Papis, env, fn))
+    {
+        pesapi_value arg_val = ZScript::Converter<GameObject*>::ToJs(m_Papis, env, other);
+        if (!arg_val)
+        {
+            // 拿不到脚本侧的包装就退化成 null，而不是整个调用失败 —— 收不到
+            // `other` 的 OnCollisionEnter 至少还跑得到，能让作者看到日志。
+            arg_val = pesapi_create_null(m_Papis, env);
+        }
+        const pesapi_value args[1] = {arg_val};
+        pesapi_call_function(m_Papis, env, fn, this_val, 1, args);
+        if (pesapi_has_caught(m_Papis, scope))
+        {
+            const char* msg = pesapi_get_exception_as_string(m_Papis, scope, 1);
+            LOG_ERROR(ZScripting, "instance.{}(<GameObject>) threw: {}", method_name, msg ? msg : "<no message>");
             ok = false;
         }
     }

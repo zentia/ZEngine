@@ -98,6 +98,20 @@ namespace
         "    InvokeRepeating(methodName: string, time: number, repeatRate: number): void;",
         "    CancelInvoke(methodName: string): void;",
         "    IsInvoking(methodName: string): boolean;",
+        // Unity 的碰撞 / 触发回调。由 PhysicsManager::DispatchContactEvents
+        // 通过 SendMessageWithOther 调用（不是 ZFUNCTION，所以这里只是
+        // 声明）—— 不写的话 tsc 会因为 `this.OnCollisionEnter` 不存在而报
+        // 错，用户被迫写 `(this as any)` 绕过，类型检查也就没了。
+        //
+        // 两边都会收到：触发器自己和被触发的那个（只要有脚本）。
+        // `other` 在自身碰撞（A 撞 A）时为 undefined —— Jolt 不会产生这种
+        // pair，但声明成可选比让调用方不检查更诚实。
+        "    OnCollisionEnter(other?: GameObject): void;",
+        "    OnCollisionStay(other?: GameObject): void;",
+        "    OnCollisionExit(other?: GameObject): void;",
+        "    OnTriggerEnter(other?: GameObject): void;",
+        "    OnTriggerStay(other?: GameObject): void;",
+        "    OnTriggerExit(other?: GameObject): void;",
     };
 
     ZSyntheticScriptClass g_BehaviourClass {

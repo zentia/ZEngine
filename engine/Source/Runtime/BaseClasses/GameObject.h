@@ -243,6 +243,17 @@ public:
     ZFUNCTION(Name="SendMessage")
     int SendMessageByName(const eastl::string& method_name);
 
+    /// 带一个 `GameObject*` 参数的版本。Unity 的
+    /// `SendMessage("OnCollisionEnter", other)` 走的就是这条路，而碰撞/触发
+    /// 回调必须把"撞到谁"交给脚本 —— 没有它 `OnCollisionEnter(other)` 里的
+    /// `other` 无从填起。
+    ///
+    /// `other` 为 null 时等价于无参版本（脚本收到 undefined）。
+    ///
+    /// ⚠️ 与 `SendMessageByName` 不同，这里**不**在"没人收到"时打警告：场景里
+    /// 绝大多数碰撞体身上没有脚本，"没人接"是常态，打出来就是刷屏。
+    int SendMessageWithOther(const char* method_name, GameObject* other);
+
     /// 本对象 + 所有后代（Unity 的 BroadcastMessage 是向下广播）。
     ZFUNCTION(Name="BroadcastMessage")
     int BroadcastMessageByName(const eastl::string& method_name);
@@ -417,6 +428,9 @@ private:
 
     /// 把消息投递给本对象上的所有脚本组件，返回真正收到的个数。
     int DeliverMessageToSelfComponents(const eastl::string& method_name);
+
+    /// `other` 为 null 表示无参调用。
+    int DeliverMessageToSelfComponents(const eastl::string& method_name, GameObject* other);
 
     Container m_Component;
 };
