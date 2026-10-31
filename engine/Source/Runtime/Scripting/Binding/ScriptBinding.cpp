@@ -317,6 +317,19 @@ namespace
         "    constructor();\n"
         "}\n"
         "\n"
+        // WaitUntil / WaitWhile 的构造器吃一个**闭包**，所以它们的声明带参数
+        // （其余几个是空构造器）。谓词每帧被轮询一次，直到它翻面为止 —— 不是
+        // 只在 yield 的那一帧问一次。
+        "/** Resumes the first Update where `predicate()` returns true. */\n"
+        "declare class WaitUntil extends YieldInstruction {\n"
+        "    constructor(predicate: () => boolean);\n"
+        "}\n"
+        "\n"
+        "/** Resumes the first Update where `predicate()` returns false. */\n"
+        "declare class WaitWhile extends YieldInstruction {\n"
+        "    constructor(predicate: () => boolean);\n"
+        "}\n"
+        "\n"
         "/** What `StartCoroutine` hands back; feed it to `StopCoroutine`. */\n"
         "declare class Coroutine {\n"
         "    private __zId: number;\n"

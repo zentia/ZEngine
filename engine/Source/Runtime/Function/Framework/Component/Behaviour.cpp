@@ -76,6 +76,25 @@ namespace
                 case ScriptYieldKind::kEndOfFrame:
                     co_yield WaitForEndOfFrame {};
                     break;
+                case ScriptYieldKind::kUntil:
+                    // ⚠️ 捕获 `self` 是裸指针，与这个 pump 本身同一个约定：
+                    // 协程归调度器所有，而 `~Behaviour()` 里 StopAllCoroutines()
+                    // 保证它不会活得比组件更久。
+                    //
+                    // 谓词每帧被调度器重新调用（Coroutine.cpp 的 TickUpdate），
+                    // 所以这里不能把结果快照下来 —— `WaitUntil(() => this.ready)`
+                    // 要的是"到它翻面为止一直问"。
+                    co_yield WaitUntil {[self, script_id]() {
+                        bool value = false;
+                        return self->EvalScriptPredicate(script_id, value) && value;
+                    }};
+                    break;
+                case ScriptYieldKind::kWhile:
+                    co_yield WaitWhile {[self, script_id]() {
+                        bool value = false;
+                        return self->EvalScriptPredicate(script_id, value) && value;
+                    }};
+                    break;
                 case ScriptYieldKind::kNull:
                 default:
                     // 未知标记在 ScriptEnv 里已经降级成 kNull 并记了日志，这里
@@ -341,6 +360,12 @@ bool Behaviour::StepScriptCoroutine([[maybe_unused]] uint64_t script_id,
 }
 
 void Behaviour::EndScriptCoroutine([[maybe_unused]] uint64_t script_id) {}
+
+bool Behaviour::EvalScriptPredicate([[maybe_unused]] uint64_t predicate_id,
+                                    [[maybe_unused]] bool& out_value)
+{
+    return false;
+}
 
 void Behaviour::ReleaseScriptCoroutine(uint64_t script_id)
 {

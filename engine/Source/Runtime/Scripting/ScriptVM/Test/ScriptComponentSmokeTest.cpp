@@ -751,6 +751,46 @@ int main(int argc, char** argv)
         scheduler->TickUpdate(0.1f, 0.1f);
         scheduler->TickEndOfFrame();
         CheckEq("H18", "shim 转发之后确实停了", mover_value("routineSteps"), "1");
+
+        // ---- WaitUntil / WaitWhile（带闭包的等待）--------------------------
+        //
+        // 这一段是整条链唯一能证明"谓词真的被接到每帧轮询上"的地方：
+        // shim 的 `g.WaitUntil`、ScriptEnv::GeneratorNext 为 `fn` 建的强引用、
+        // ScriptYield 的 kUntil/kWhile、Behaviour 的 pump 转发、调度器的轮询，
+        // 少任何一环都是"协程永远挂着"，而且没有任何报错。
+        scheduler->StopAll();
+        CheckTrue("K0", "InvokeMethod(\"StartUntilRoutine\") 送到了 JS 侧",
+                  comp2->InvokeMethod("StartUntilRoutine"));
+        CheckEq("K1", "第一段同步跑了（untilSteps=1）", mover_value("untilSteps"), "1");
+        CheckEq("K2", "还没有被轮询过", mover_value("untilPolls"), "0");
+
+        scheduler->TickUpdate(0.1f, 0.1f);
+        CheckEq("K3", "gateReady=false 时不恢复", mover_value("untilSteps"), "1");
+        CheckEq("K4", "但谓词被问了一次", mover_value("untilPolls"), "1");
+        scheduler->TickUpdate(0.1f, 0.1f);
+        CheckEq("K5", "下一帧仍然不恢复", mover_value("untilSteps"), "1");
+        // 互补的一半：只在 yield 那一帧问一次（快照）的实现 polls 恒为 1，
+        // 而 K3/K5 在那种实现下也是绿的 —— 只有这里是真的判据。
+        CheckEq("K6", "谓词每帧都被重新问（不是快照一次）", mover_value("untilPolls"), "2");
+
+        // gateReady 是 boolean 字段，LiveSetField 按已有槽位的 typeof 强转。
+        CheckTrue("K7", "LiveSetField(gateReady=true) 成功",
+                  comp2->LiveSetField("gateReady", "true"));
+        scheduler->TickUpdate(0.1f, 0.1f);
+        CheckEq("K8", "gateReady 翻面后恢复（untilSteps=3）", mover_value("untilSteps"), "3");
+
+        // 现在是 WaitWhile：gateReady 为 true，所以它必须**挡住**。
+        scheduler->TickUpdate(0.1f, 0.1f);
+        CheckEq("K9", "WaitWhile 在谓词为真时挡住（不是当成 WaitUntil）",
+                mover_value("untilSteps"), "3");
+        CheckEq("K10", "并且也在每帧轮询", mover_value("untilPolls"), "4");
+        CheckTrue("K11", "LiveSetField(gateReady=false) 成功",
+                  comp2->LiveSetField("gateReady", "false"));
+        scheduler->TickUpdate(0.1f, 0.1f);
+        CheckEq("K12", "谓词变假后恢复（untilSteps=7）", mover_value("untilSteps"), "7");
+        // 协程体走完了：调度器里不该还留着它。
+        CheckEq("K13", "协程结束后台数清零",
+                std::to_string(scheduler->GetRunningCount()), "0");
         scheduler->StopAll();
     }
 

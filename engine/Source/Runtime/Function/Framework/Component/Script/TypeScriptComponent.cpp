@@ -492,6 +492,16 @@ void TypeScriptComponent::TearDown()
     }
     m_CoroutineGenerators.clear();
 
+    // 谓词同理：TearDown 之后组件可能再也不被 Start，没人会来收它们。
+    for (void* predicate : m_CoroutinePredicates)
+    {
+        if (predicate != nullptr && sm != nullptr)
+        {
+            sm->ReleaseCoroutineValue(static_cast<pesapi_value_ref>(predicate));
+        }
+    }
+    m_CoroutinePredicates.clear();
+
     auto ref = static_cast<pesapi_value_ref>(m_JsInstance);
 
     // Unity 的顺序是 OnDisable -> OnDestroy。销毁中的对象在脚本看来"已经不
@@ -764,8 +774,36 @@ bool TypeScriptComponent::StartScriptCoroutine(const char* method_name, uint64_t
     }
 
     m_CoroutineGenerators.push_back(generator);
+    m_CoroutinePredicates.push_back(nullptr);
     out_script_id = static_cast<uint64_t>(m_CoroutineGenerators.size());
     return true;
+}
+
+void TypeScriptComponent::SetCoroutinePredicate(uint64_t script_id, void* predicate_ref)
+{
+    if (script_id == 0 || script_id > m_CoroutinePredicates.size())
+    {
+        // 槽位不存在（协程已经结束）却还拿到了一个谓词 —— 直接放掉，别让它
+        // 挂到下一次复用的槽位上。
+        if (predicate_ref != nullptr)
+        {
+            if (auto* sm = GET_SYSTEM(ScriptingManager))
+            {
+                sm->ReleaseCoroutineValue(static_cast<pesapi_value_ref>(predicate_ref));
+            }
+        }
+        return;
+    }
+
+    auto& slot = m_CoroutinePredicates[static_cast<size_t>(script_id - 1)];
+    if (slot != nullptr && slot != predicate_ref)
+    {
+        if (auto* sm = GET_SYSTEM(ScriptingManager))
+        {
+            sm->ReleaseCoroutineValue(static_cast<pesapi_value_ref>(slot));
+        }
+    }
+    slot = predicate_ref;
 }
 
 bool TypeScriptComponent::StepScriptCoroutine(uint64_t script_id, ScriptYield& out)
@@ -787,7 +825,45 @@ bool TypeScriptComponent::StepScriptCoroutine(uint64_t script_id, ScriptYield& o
         return false;
     }
 
-    return sm->GeneratorNext(static_cast<pesapi_value_ref>(generator), out);
+    if (!sm->GeneratorNext(static_cast<pesapi_value_ref>(generator), out))
+    {
+        return false;
+    }
+
+    // WaitUntil / WaitWhile 带出来的强引用在这里转手。不管这次 yield 带不带
+    // 谓词都要走一次：循环体里上一轮的谓词必须被放掉。
+    if (out.kind == ScriptYieldKind::kUntil || out.kind == ScriptYieldKind::kWhile)
+    {
+        SetCoroutinePredicate(script_id, out.predicate);
+    }
+    else
+    {
+        SetCoroutinePredicate(script_id, nullptr);
+    }
+    out.predicate = nullptr;  // 所有权已经转给槽位了
+    return true;
+}
+
+bool TypeScriptComponent::EvalScriptPredicate(uint64_t predicate_id, bool& out_value)
+{
+    out_value = false;
+    if (predicate_id == 0 || predicate_id > m_CoroutinePredicates.size())
+    {
+        return false;
+    }
+
+    void* predicate = m_CoroutinePredicates[static_cast<size_t>(predicate_id - 1)];
+    if (predicate == nullptr)
+    {
+        return false;
+    }
+
+    auto* sm = GET_SYSTEM(ScriptingManager);
+    if (sm == nullptr || sm->GetEnv() == nullptr)
+    {
+        return false;
+    }
+    return sm->GetEnv()->CallPredicate(static_cast<pesapi_value_ref>(predicate), out_value);
 }
 
 void TypeScriptComponent::EndScriptCoroutine(uint64_t script_id)
@@ -808,4 +884,7 @@ void TypeScriptComponent::EndScriptCoroutine(uint64_t script_id)
         sm->ReleaseCoroutineValue(static_cast<pesapi_value_ref>(slot));
     }
     slot = nullptr;
+
+    // 谓词与生成器同一生命周期：协程没了，它的谓词也该放。
+    SetCoroutinePredicate(script_id, nullptr);
 }

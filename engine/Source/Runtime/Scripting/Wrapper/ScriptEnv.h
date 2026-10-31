@@ -187,6 +187,18 @@ public:
     /// Release a ref from InvokeInstanceMethodReturning. Safe with nullptr.
     void ReleaseValue(pesapi_value_ref value);
 
+    /// Call a script function held by `fn` and report its truthiness.
+    ///
+    /// Used to poll a `WaitUntil` / `WaitWhile` predicate once per Update.
+    /// Returns false when the call threw or `fn` is not a function: the caller
+    /// must treat that as "predicate said no" rather than as an error, because
+    /// a coroutine that stops being polled is a coroutine that hangs, and it
+    /// runs inside the frame loop where there is nobody to catch an exception.
+    ///
+    /// A non-boolean return is coerced the way JS `if (x)` coerces it, which is
+    /// also what Unity's `Func<bool>` wrapper does.
+    bool CallPredicate(pesapi_value_ref fn, bool& out_value);
+
     // -----------------------------------------------------------------------
     // P7 serialised-field bridge.
     //

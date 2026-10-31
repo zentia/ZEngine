@@ -6857,6 +6857,16 @@ namespace
         /// One entry per `yield`, in order. Past the end the body is done.
         eastl::vector<ScriptYield> body;
 
+        /// What `EvalScriptPredicate` answers. Flipping this is how a test
+        /// makes a WaitUntil / WaitWhile become ready.
+        bool predicate_value = false;
+
+        /// How many times the predicate has been polled. A `WaitUntil`
+        /// implementation that snapshots the value at yield time instead of
+        /// asking every frame polls exactly once -- which is invisible if you
+        /// only assert "eventually resumed".
+        int predicate_polls = 0;
+
         // -- observations -------------------------------------------------
         eastl::vector<eastl::string> started;
         int steps = 0;
@@ -6902,6 +6912,17 @@ namespace
             out = body[static_cast<std::size_t>(step)];
             gen_steps[script_id - 1] = step + 1;
             ++steps;
+            return true;
+        }
+
+        bool EvalScriptPredicate(uint64_t script_id, bool& out_value) override
+        {
+            if (script_id == 0)
+            {
+                return false;
+            }
+            ++predicate_polls;
+            out_value = predicate_value;
             return true;
         }
 
@@ -7157,6 +7178,60 @@ namespace
             Check(probe.polled_after_release == 0, "BE41", "and neither is polled afterwards");
         }
 
+        // --- WaitUntil / WaitWhile ----------------------------------------
+        //
+        // 调度器**本来**就支持这两个等待（`Coroutine.cpp` 的 TickUpdate 里轮询
+        // std::function），所以这一段测的不是调度器，是"脚本侧那个谓词有没有
+        // 真的被接到轮询上"这一层适配器。
+        //
+        // 关键的两条：谓词必须**每帧**被问（不是 yield 那一帧快照一次），且
+        // WaitWhile 是 WaitUntil 的**反** —— 两个只测一个的话，"把 kWhile 当成
+        // kUntil 转发"这种实现是绿的。
+        {
+            CoroutineProbe probe;
+            ScriptYield until_yield {};
+            until_yield.kind = ScriptYieldKind::kUntil;
+            ScriptYield tail {};
+            probe.body = {until_yield, tail};
+            probe.predicate_value = false;
+
+            probe.StartCoroutine("Until");
+            Check(probe.steps == 1, "BE44", "WaitUntil runs the first segment synchronously");
+            Check(probe.predicate_polls == 0, "BE45", "and is not polled before the first Update");
+
+            AdvanceUpdate(1, 0.1f, 0.1f);
+            Check(probe.steps == 1, "BE46", "a false predicate does not resume");
+            Check(probe.predicate_polls == 1, "BE47", "but it was asked");
+            AdvanceUpdate(1, 0.1f, 0.1f);
+            Check(probe.steps == 1, "BE48", "and still does not on the next frame");
+            // 互补的一半：只在 yield 那一帧问一次的实现 polls 恒为 1，于是
+            // "等下去"这件事永远不成立 —— 而上面三条在那种实现下也全绿。
+            Check(probe.predicate_polls == 2, "BE49",
+                  "the predicate is re-polled every frame (not snapshotted once)");
+
+            probe.predicate_value = true;
+            AdvanceUpdate(1, 0.1f, 0.1f);
+            Check(probe.steps == 2, "BE50", "and flipping it resumes the coroutine");
+        }
+
+        {
+            CoroutineProbe probe;
+            ScriptYield while_yield {};
+            while_yield.kind = ScriptYieldKind::kWhile;
+            ScriptYield tail {};
+            probe.body = {while_yield, tail};
+            probe.predicate_value = true;
+
+            probe.StartCoroutine("While");
+            AdvanceUpdate(1, 0.1f, 0.1f);
+            Check(probe.steps == 1, "BE51", "WaitWhile blocks while the predicate is true");
+            Check(probe.predicate_polls == 1, "BE52", "and polls it every frame");
+
+            probe.predicate_value = false;
+            AdvanceUpdate(1, 0.1f, 0.1f);
+            Check(probe.steps == 2, "BE53", "and resumes when the predicate goes false");
+        }
+
         // --- destruction stops everything ---------------------------------
         {
             const int before = scheduler->GetRunningCount();
@@ -7281,6 +7356,62 @@ namespace
               "BF31", "and WaitForEndOfFrame as a global class");
         Check(CountOccurrences(binding_source, "declare class Coroutine") >= 1,
               "BF32", "and the Coroutine handle");
+
+        // --- WaitUntil / WaitWhile ----------------------------------------
+        // 这两个带闭包，是家族里唯一"少一环就永远挂着、且不报错"的成员：
+        // 强引用没建 → 谓词被回收；pump 没转发 → 调度器拿不到 WaitUntil；
+        // 调度器不轮询 → 位永远停在第一段。每一环都要单独 grep。
+        Check(CountOccurrences(env_source, "g.WaitUntil") >= 1,
+              "BF33", "WaitUntil is installed as a global");
+        Check(CountOccurrences(env_source, "g.WaitWhile") >= 1,
+              "BF34", "and WaitWhile");
+        // 标记必须被读走：GeneratorNext 少了分支的话，yield 出来的对象会被
+        // 当成"下一帧继续"（静默的语义降级，不是错误）。
+        Check(CountOccurrences(env_source, "\"until\"") >= 1,
+              "BF35", "GeneratorNext reads the 'until' tag");
+        Check(CountOccurrences(env_source, "\"while\"") >= 1,
+              "BF36", "and the 'while' tag");
+        // 声明在 .h、定义在 .cpp，所以两边各判一次（合起来才是"既有入口也有
+        // 实现"）——只数 .cpp 会得到 1，写成 >= 2 会误报。
+        Check(CountOccurrences(env_source, "ScriptEnv::CallPredicate") >= 1,
+              "BF37", "the predicate poll is implemented");
+        const std::string env_header = ReadFile("Source/Runtime/Scripting/Wrapper/ScriptEnv.h");
+        Check(!env_header.empty(), "BF37b", "ScriptEnv.h is readable");
+        Check(CountOccurrences(env_header, "CallPredicate") >= 1,
+              "BF37c", "and exposed as an entry point");
+
+        const std::string yield_header =
+            ReadFile("Source/Runtime/Function/Framework/Coroutine/ScriptYield.h");
+        Check(!yield_header.empty(), "BF38", "ScriptYield.h is readable");
+        Check(CountOccurrences(yield_header, "kUntil") >= 1 && CountOccurrences(yield_header, "kWhile") >= 1,
+              "BF39", "both kinds exist in the POD that crosses the boundary");
+
+        // ⚠️ 变量名不能叫 `behaviour_source`：本函数里已经有一个同名的了。
+        const std::string pump_source =
+            ReadFile("Source/Runtime/Function/Framework/Component/Behaviour.cpp");
+        Check(!pump_source.empty(), "BF40", "Behaviour.cpp is readable");
+        // 转发必须分别指向 WaitUntil / WaitWhile：两个都写成 WaitUntil 的话
+        // WaitWhile 永远不会恢复，而且没有任何日志。
+        Check(CountOccurrences(pump_source, "WaitUntil {") >= 1,
+              "BF41", "the pump forwards kUntil to WaitUntil");
+        Check(CountOccurrences(pump_source, "WaitWhile {") >= 1,
+              "BF42", "and kWhile to WaitWhile (not to WaitUntil again)");
+
+        const std::string ts_component =
+            ReadFile("Source/Runtime/Function/Framework/Component/Script/TypeScriptComponent.cpp");
+        Check(CountOccurrences(ts_component, "EvalScriptPredicate") >= 1,
+              "BF43", "the script component answers the predicate poll");
+        // 谓词的强引用必须有释放点：`yield new WaitUntil(() => ...)` 在循环里
+        // 每帧造一个新闭包，只放生成器不放谓词就是每帧一个 GC 看不见的泄漏。
+        Check(CountOccurrences(ts_component, "SetCoroutinePredicate") >= 3,
+              "BF44", "the predicate ref is released on replace, on end and on teardown");
+
+        Check(CountOccurrences(binding_source, "declare class WaitUntil") >= 1,
+              "BF45", "the .d.ts declares WaitUntil");
+        Check(CountOccurrences(binding_source, "declare class WaitWhile") >= 1,
+              "BF46", "and WaitWhile");
+        Check(CountOccurrences(binding_source, "constructor(predicate: () => boolean);") >= 2,
+              "BF47", "and both constructors take a predicate (the whole point)");
     }
 
     // ---------------------------------------------------------------- LU ---

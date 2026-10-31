@@ -244,6 +244,19 @@ private:
     // coroutine, a bug with no symptom until two routines run at once.
     std::vector<void*> m_CoroutineGenerators;
 
+    /// `WaitUntil` / `WaitWhile` 的谓词，与 `m_CoroutineGenerators` **平行同
+    /// 下标**（所以 `predicate_id == script_id`）。
+    ///
+    /// 分开一张表而不是塞进生成器那张：谓词是可空的（大部分 yield 不带谓词），
+    /// 而生成器槽位一旦空了就代表"协程结束了"。混在一张表里，"这个协程还活着
+    /// 但没有谓词"和"协程已经结束"就没法区分。
+    ///
+    /// 释放时机与生成器完全一致（`EndScriptCoroutine` / `TearDown`），且每次
+    /// `StepScriptCoroutine` 都会先放掉上一个 —— 循环里
+    /// `yield new WaitUntil(() => ...)` 每帧造一个新闭包，不放就是每帧一个
+    /// GC 看不见的泄漏。
+    std::vector<void*> m_CoroutinePredicates;
+
     // Phase-6 hot-reload subscription token. 0 means "not subscribed".
     // ScriptingManager::AddModuleReloadObserver hands these out; we drop
     // ours in TearDown / dtor.
@@ -279,6 +292,11 @@ private:
     /// Phase-7 helper: locate the index of `key` in m_SerializedFields,
     /// or SIZE_MAX if not present. Even-indexed entries only.
     size_t FindSerializedFieldIndex(const eastl::string& key) const;
+
+    /// 把谓词的强引用放进（或拿出）`m_CoroutinePredicates[script_id - 1]`。
+    /// 传 nullptr 就是"释放并清空"。若槽位已经不存在，新谓词会被直接放掉 ——
+    /// 不能让它挂到下一次复用的槽位上。
+    void SetCoroutinePredicate(uint64_t script_id, void* predicate_ref);
 
     /// OnEnable / OnDisable 的唯一派发点：重算 `enabled && activeInHierarchy`，
     /// 与 m_LastEnabledAndActive 不同才发，并记住新值。
@@ -383,6 +401,7 @@ public:
     bool StartScriptCoroutine(const char* method_name, uint64_t& out_script_id) override;
     bool StepScriptCoroutine(uint64_t script_id, ScriptYield& out) override;
     void EndScriptCoroutine(uint64_t script_id) override;
+    bool EvalScriptPredicate(uint64_t predicate_id, bool& out_value) override;
 
 protected:
     /// `Behaviour.Invoke` delivery: a delayed call reaches THIS instance rather

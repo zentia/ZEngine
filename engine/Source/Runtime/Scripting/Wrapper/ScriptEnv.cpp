@@ -475,6 +475,12 @@ void ScriptEnv::InstallConsoleAndDebugGlobals()
         "  g.WaitForFixedUpdate = function() { return { __zWait: 'fixedUpdate' }; };"
         "  g.WaitForLateUpdate = function() { return { __zWait: 'lateUpdate' }; };"
         "  g.WaitForEndOfFrame = function() { return { __zWait: 'endOfFrame' }; };"
+        // WaitUntil / WaitWhile 带一个**闭包**。它必须被 C++ 侧强引用持有：
+        // 谓词要每帧轮询到它翻面为止，而 yield 出来的那个对象本身活不过当前
+        // 帧（GeneratorNext 一走完 JS 就可以回收它）。C++ 拿到的是 `fn` 这一
+        // 个属性的 value ref —— 闭包捕获的 `this` 因此也跟着活着。
+        "  g.WaitUntil = function(fn) { return { __zWait: 'until', fn: fn }; };"
+        "  g.WaitWhile = function(fn) { return { __zWait: 'while', fn: fn }; };"
         // `StartCoroutine` 返回的句柄。Unity 返回的是 Coroutine 对象（不是
         // id），StopCoroutine 既能吃这个对象也能吃方法名字符串 —— 所以这里把
         // 方法名一起存下来，C++ 侧就只需要一个 `StopCoroutine(string)`。
@@ -1496,6 +1502,48 @@ void ScriptEnv::ReleaseValue(pesapi_value_ref value)
     pesapi_release_value_ref(m_Papis, value);
 }
 
+bool ScriptEnv::CallPredicate(pesapi_value_ref fn, bool& out_value)
+{
+    out_value = false;
+    if (!fn)
+        return false;
+
+    auto scope = pesapi_open_scope(m_Papis, m_EnvRef);
+    auto env = pesapi_get_env_from_ref(m_Papis, m_EnvRef);
+
+    bool ok = false;
+    do
+    {
+        pesapi_value callable = pesapi_get_value_from_ref(m_Papis, env, fn);
+        if (!callable || !pesapi_is_function(m_Papis, env, callable))
+        {
+            break;
+        }
+        // `this` 传 undefined：谓词通常是箭头函数（捕获了词法 this），传什么
+        // 都不影响；而传 undefined 比传 globalThis 更诚实 —— 万一用户写了
+        // `function () { return this.flag; }`，拿到 globalThis 会静默返回
+        // undefined 而不是报 TypeError，那是 Unity 里最常见的一类"等待永不
+        // 结束"。
+        pesapi_value undefined_val = pesapi_create_undefined(m_Papis, env);
+        pesapi_value returned = pesapi_call_function(m_Papis, env, callable, undefined_val, 0, nullptr);
+        if (pesapi_has_caught(m_Papis, scope))
+        {
+            const char* msg = pesapi_get_exception_as_string(m_Papis, scope, 1);
+            LOG_ERROR(ZScripting, "WaitUntil/WaitWhile predicate threw: {}", msg ? msg : "<no message>");
+            break;
+        }
+        if (!returned)
+        {
+            break;
+        }
+        out_value = pesapi_get_value_bool(m_Papis, env, returned) != 0;
+        ok = true;
+    } while (false);
+
+    pesapi_close_scope(m_Papis, scope);
+    return ok;
+}
+
 namespace
 {
     /// 这个 backend 没有 `pesapi_is_number`：整数和浮点是两套类型标记。
@@ -1620,6 +1668,25 @@ bool ScriptEnv::GeneratorNext(pesapi_value_ref generator, ScriptYield& out)
             else if (kind == "endOfFrame")
             {
                 out.kind = ScriptYieldKind::kEndOfFrame;
+            }
+            else if (kind == "until" || kind == "while")
+            {
+                out.kind = (kind == "until") ? ScriptYieldKind::kUntil : ScriptYieldKind::kWhile;
+                pesapi_value fn = pesapi_get_property(m_Papis, env, yielded, "fn");
+                if (fn && pesapi_is_function(m_Papis, env, fn))
+                {
+                    // 强引用交给调用方（TypeScriptComponent::StepScriptCoroutine）。
+                    // 拿不到就降级成"下一帧继续"——一个永远不恢复的协程比
+                    // 多跑一帧难查得多。
+                    out.predicate = pesapi_create_value_ref(m_Papis, env, fn, 0);
+                }
+                if (out.predicate == nullptr)
+                {
+                    LOG_ERROR(ZScripting, "Wait{}: the argument is not a function -- "
+                                          "resuming next frame instead of hanging",
+                              kind == "until" ? "Until" : "While");
+                    out.kind = ScriptYieldKind::kNull;
+                }
             }
             else
             {

@@ -148,6 +148,20 @@ public:
     /// id that was already released (Stop-then-Prune is a normal sequence).
     virtual void EndScriptCoroutine(uint64_t script_id);
 
+    /// Poll a `WaitUntil` / `WaitWhile` predicate the script yielded.
+    ///
+    /// `predicate_id` is the same integer `StartScriptCoroutine` handed out:
+    /// there is at most one live predicate per running generator, so reusing
+    /// the script id keeps the bookkeeping in one table instead of two that
+    /// can drift apart.
+    ///
+    /// Returns false when this behaviour has no script side, when `id` names a
+    /// slot that holds no predicate, or when the call threw. The caller must
+    /// read that as "the predicate said no": a coroutine that stops being
+    /// polled is a coroutine that hangs forever, and it runs inside the frame
+    /// loop where nobody can catch an exception.
+    virtual bool EvalScriptPredicate(uint64_t predicate_id, bool& out_value);
+
     /// Called by the pump when the body ends on its own, so the generator does
     /// not wait for a prune that may never come.
     ///

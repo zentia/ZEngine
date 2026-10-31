@@ -56,6 +56,15 @@ class Mover extends Behaviour {
         this.routineDone = false;
         this.routineHandleOk = false;
         this.lastRoutineSnapshot = "";
+        // ---- WaitUntil / WaitWhile -------------------------------------------
+        //
+        // 这两个带**闭包**，是 Unity 的 YieldInstruction 家族里唯一不能被"标记 +
+        // 常量"表达完的两个：谓词必须每帧被问一次，直到它翻面。所以这里除了位
+        // （1 / 2 / 4）之外还数了 `untilPolls` —— 只在 yield 那一帧问一次的实现，
+        // 位最终也能走到 7，但 polls 会停在 1。
+        this.gateReady = false;
+        this.untilSteps = 0;
+        this.untilPolls = 0;
         // ---- Bounds / Color32 -------------------------------------------------
         //
         // 这两个是 Unity 里仅剩、而引擎里此前**零命中**的值类型。C++ 侧的 BC 组
@@ -86,6 +95,32 @@ class Mover extends Behaviour {
         this.routineSteps = this.routineSteps + 4;
         this.routineKinds = this.routineKinds + "c";
         this.routineDone = true;
+    }
+    StartUntilRoutine() {
+        this.untilSteps = 0;
+        this.untilPolls = 0;
+        this.gateReady = false;
+        this.StartCoroutine("WaitUntilRoutine");
+    }
+    *WaitUntilRoutine() {
+        this.untilSteps = this.untilSteps + 1;
+        // 箭头函数：this 是词法捕获的，C++ 侧拿到的只是一个可调用值。
+        yield new WaitUntil(() => {
+            this.untilPolls = this.untilPolls + 1;
+            return this.gateReady;
+        });
+        this.untilSteps = this.untilSteps + 2;
+        // 反过来的一半：gateReady 现在是 true，所以 WaitWhile 必须**挡住**。
+        // 只测 WaitUntil 的话，"把 WaitWhile 当 WaitUntil 转发"这种实现是绿的。
+        //
+        // 这个闭包也要数 `untilPolls`：轮询计数是"每帧都在问"的判据，而它必须
+        // 覆盖**两个**等待 —— 只数 WaitUntil 那个，WaitWhile 这一段的轮询
+        // 频率就完全没被观测到。
+        yield new WaitWhile(() => {
+            this.untilPolls = this.untilPolls + 1;
+            return this.gateReady;
+        });
+        this.untilSteps = this.untilSteps + 4;
     }
     /// 从 TypeScript 里画 gizmo。C++ 侧的 GZ 组断言的是"画出了什么"，
     /// ScriptVMSmokeTest 的 L 组断言的是"脚本看不看得见 Gizmos" —— 只有这里

@@ -47,6 +47,10 @@ enum class ScriptYieldKind : uint8_t
     kLateUpdate,
     /// `WaitForEndOfFrame`.
     kEndOfFrame,
+    /// `WaitUntil(predicate)` -- resume the first frame the predicate is true.
+    kUntil,
+    /// `WaitWhile(predicate)` -- resume the first frame the predicate is false.
+    kWhile,
 };
 
 struct ScriptYield
@@ -59,4 +63,19 @@ struct ScriptYield
     /// True when the generator body ran to its return. `kind` / `seconds` are
     /// meaningless then, and the caller must stop pumping.
     bool done = false;
+
+    /// Only meaningful for kUntil / kWhile: a **strong ref** to the script-side
+    /// predicate, as an opaque pointer so this header stays free of pesapi.
+    ///
+    /// Ownership: `ScriptEnv::GeneratorNext` creates it and hands it over;
+    /// whoever called GeneratorNext (TypeScriptComponent::StepScriptCoroutine)
+    /// must either store it or release it -- there is no RAII here because the
+    /// owner is a component whose destruction order relative to the VM is not
+    /// guaranteed.
+    ///
+    /// Why it is a ref and not "call it once and cache the bool": the closure
+    /// captures `this` of the script behaviour, and Unity's contract is that
+    /// the predicate is *polled every frame* until it flips. A snapshot would
+    /// make `WaitUntil(() => this.ready)` wait forever.
+    void* predicate = nullptr;
 };
