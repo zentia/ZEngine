@@ -7403,8 +7403,15 @@ namespace
               "BF43", "the script component answers the predicate poll");
         // 谓词的强引用必须有释放点：`yield new WaitUntil(() => ...)` 在循环里
         // 每帧造一个新闭包，只放生成器不放谓词就是每帧一个 GC 看不见的泄漏。
-        Check(CountOccurrences(ts_component, "SetCoroutinePredicate") >= 3,
-              "BF44", "the predicate ref is released on replace, on end and on teardown");
+        // 4 = 定义 1 + StepScriptCoroutine 两条分支各 1 + EndScriptCoroutine 1。
+        // 泄漏在运行期**不可观测**（GC 看不见强引用），所以只能靠数调用点：
+        // 少了 EndScriptCoroutine 那一次，协程结束时谓词就永远挂着。
+        Check(CountOccurrences(ts_component, "SetCoroutinePredicate") >= 4,
+              "BF44", "the predicate ref is replaced, released on end and cleared on teardown");
+        // 5 = EndScriptCoroutine 的生成器 1 + SetCoroutinePredicate 的两条释放
+        // 分支 2 + TearDown 的两趟循环 2。同样是纯泄漏守卫。
+        Check(CountOccurrences(ts_component, "ReleaseCoroutineValue") >= 5,
+              "BF48", "every value-ref release path is present (leak guard)");
 
         Check(CountOccurrences(binding_source, "declare class WaitUntil") >= 1,
               "BF45", "the .d.ts declares WaitUntil");
