@@ -218,6 +218,8 @@ namespace
         "    distance: number;\n"
         "    bodyId: number;\n"
         "    layer: number;\n"
+        "    /** 打中的 body 属于哪个对象。纯几何体（没有 RigidBodyComponent 的）为 null。 */\n"
+        "    gameObject: GameObject | null;\n"
         "}\n"
         "\n"
         "/** Engine-side logging facade. Routes to the [ZScripting] log category. */\n"

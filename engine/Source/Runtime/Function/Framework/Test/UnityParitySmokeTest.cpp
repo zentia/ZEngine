@@ -55,6 +55,8 @@
 #include "Runtime/Function/Render/RenderCamera.h"
 #include "Runtime/Function/Render/RenderSystem.h"
 #include "Runtime/Scripting/ScriptCamera/ScriptCamera.h"
+#include "Runtime/Scripting/ScriptCollider/ScriptCollider.h"
+#include "Runtime/Resource/ResType/Data/BasicShape.h"
 #include "Runtime/Scripting/ScriptDebug/ScriptDebug.h"
 #include "Runtime/Scripting/ScriptRandom/ScriptRandom.h"
 #include "Runtime/Scripting/ScriptScene/ScriptScene.h"
@@ -85,6 +87,14 @@ template<> void RegisterKlass<Ray>();
 // 本 exe 不编 .gen.cpp（/WHOLEARCHIVE 会把它带进来），但 RegisterKlass 必须显式
 // 调一次 —— 否则 TypeContainer<Capsule>::m_Type 还是空，Cast 一解引用就崩。
 template<> void RegisterKlass<Capsule>();
+// Collider 门面要 `Cast<Box/Sphere/Capsule>`（读几何）和 `Cast<RigidBodyComponent>`
+// （找形状挂在哪），同样需要显式注册一次，否则 TypeContainer 是空的。
+template<> void RegisterKlass<Box>();
+template<> void RegisterKlass<Sphere>();
+template<> void RegisterKlass<Geometry>();
+template<> void RegisterKlass<RigidBodyShape>();
+template<> void RegisterKlass<RigidBodyComponent>();
+template<> void RegisterKlass<Collider>();
 
 #include <cmath>
 #include <cstdio>
@@ -1985,6 +1995,12 @@ namespace
         RegisterKlass<Camera>();
         RegisterKlass<Ray>();
         RegisterKlass<Capsule>();
+        RegisterKlass<Box>();
+        RegisterKlass<Sphere>();
+        RegisterKlass<Geometry>();
+        RegisterKlass<RigidBodyShape>();
+        RegisterKlass<RigidBodyComponent>();
+        RegisterKlass<Collider>();
         type_manager.InitializeAllTypes();
     }
 
@@ -3378,6 +3394,236 @@ namespace
               "the height/halfHeight relation is written down where it is implemented");
     }
 
+    // --------------------------------------------------------------- AC ----
+    /// 碰撞体（`Collider` 门面）+ "命中带回对象"。
+    ///
+    /// `Collider` 是绑在 GameObject 上的**视图**（同 `Camera`），不是新组件 ——
+    /// 本引擎的碰撞形状就住在 `RigidBodyComponent` 的资源里。这一组全部走资源
+    /// 读，不碰物理场景，所以能真正断言形状尺寸和包围盒。
+    void TestCollider()
+    {
+        ObjectManager* om = GET_SYSTEM(ObjectManager);
+        if (om == nullptr)
+        {
+            om = new ObjectManager();
+            SystemRegistry::GetInstance().RegisterSystem(om);
+            om->Initialize();
+        }
+        Check(om != nullptr, "AC0", "ObjectManager is reachable");
+        if (om == nullptr)
+        {
+            return;
+        }
+
+        // --- 空对象：有视图，但没有碰撞体 -------------------------------
+        GameObject* empty_go = new GameObject();
+        om->AllocateAndAssignInstanceID(empty_go);
+        Transform* empty_transform = new Transform();
+        om->AllocateAndAssignInstanceID(empty_transform);
+        empty_go->addComponent(empty_transform);
+        empty_transform->PostLoadResource(empty_go);
+
+        Collider* none_col = Collider::FromGameObject(empty_go);
+        Check(none_col != nullptr, "AC1", "FromGameObject never returns null for a live object");
+        Check(none_col != nullptr && !none_col->IsValid(), "AC2",
+              "an object with no RigidBody has an INVALID collider (not a null one)");
+        Check(none_col != nullptr && none_col->GetShapeCount() == 0, "AC3", "and zero shapes");
+        Check(Collider::FromGameObject(nullptr) == nullptr, "AC4",
+              "but a null object does return null — the two cases stay distinguishable");
+        Check(Collider::FromGameObject(empty_go) == none_col, "AC5",
+              "the same object always yields the same Collider instance (safe to cache)");
+
+        // --- 一个盒子 ----------------------------------------------------
+        GameObject* go = new GameObject();
+        om->AllocateAndAssignInstanceID(go);
+        Transform* transform = new Transform();
+        om->AllocateAndAssignInstanceID(transform);
+        go->addComponent(transform);
+        transform->PostLoadResource(go);
+
+        RigidBodyComponent* rigidbody = new RigidBodyComponent();
+        om->AllocateAndAssignInstanceID(rigidbody);
+        go->addComponent(rigidbody);
+        rigidbody->PostLoadResource(go);
+
+        Box* box = om->NewObject<Box>();
+        box->m_HalfExtents = Vector3(1.f, 2.f, 3.f);
+        RigidBodyShape* box_shape = om->NewObject<RigidBodyShape>();
+        box_shape->m_Type = RigidBodyShapeType::box;
+        box_shape->m_Geometry = box;
+        box_shape->m_LocalTransform = TransformTRS(Vector3(0.f, 0.f, 5.f), Quaternion::IDENTITY, Vector3::UNIT_SCALE);
+        rigidbody->GetRigidbodyResMutable().m_Shapes.push_back(box_shape);
+
+        Collider* col = Collider::FromGameObject(go);
+        Check(col != nullptr && col->IsValid(), "AC6", "adding a shape makes the collider valid");
+        Check(col->GetShapeCount() == 1, "AC7", "one shape is one shape");
+        Check(col->GetShapeType(0) == static_cast<int32_t>(ColliderShapeType::box), "AC8",
+              "and it reports ColliderShapeType.box");
+        // Unity 的 BoxCollider.size 是**全尺寸**，资源里存的是半尺寸。
+        Check(Near(col->GetShapeSize(0), Vector3(2.f, 4.f, 6.f), 0.001f), "AC9",
+              "BoxCollider.size is the FULL size, not the half extents");
+        Check(Near(col->GetShapeCenter(0), Vector3(0.f, 0.f, 5.f), 0.001f), "AC10",
+              "and center is the local offset");
+        Check(col->GetAttachedRigidbody() == rigidbody, "AC11", "attachedRigidbody is the owner's RigidBody");
+        Check(col->GetGameObject() == go, "AC12", "and gameObject points back at the object");
+
+        // --- 包围盒 ------------------------------------------------------
+        transform->SetPosition(Vector3(10.f, 0.f, 0.f));
+        Check(Near(col->GetBoundsCenter(), Vector3(10.f, 0.f, 5.f), 0.001f), "AC13",
+              "bounds follow the object's position");
+        Check(Near(col->GetBoundsSize(), Vector3(2.f, 4.f, 6.f), 0.001f), "AC14",
+              "and keep the full size");
+        Check(col->Contains(Vector3(10.f, 0.f, 5.f)), "AC15", "Contains is true at the centre");
+        Check(!col->Contains(Vector3(10.f, 0.f, 20.f)), "AC16", "and false well outside");
+        // 顶面上方 12 米 ⇒ 最近点落在顶面（z = 5 + 3 = 8）。
+        Check(Near(col->ClosestPoint(Vector3(10.f, 0.f, 20.f)), Vector3(10.f, 0.f, 8.f), 0.001f), "AC17",
+              "ClosestPoint clamps onto the box surface");
+
+        // --- 旋转必须参与包围盒 ------------------------------------------
+        // 一个 4x1x1 的盒子绕 Z 转 90° 之后，世界 AABB 应该是 1x4x1。少了旋转这一
+        // 步的话包围盒还是 4x1x1 —— 一个歪着放的碰撞体会"看起来是正的"。
+        box->m_HalfExtents = Vector3(2.f, 0.5f, 0.5f);
+        transform->SetRotation(Quaternion::IDENTITY);
+        transform->RotateAxis(Vector3::UNIT_Z, 90.f);
+        const Vector3 rotated_size = col->GetBoundsSize();
+        Check(Near(rotated_size, Vector3(1.f, 4.f, 1.f), 0.001f), "AC18",
+              "a rotated box gets a rotated AABB (not the local one)");
+        transform->SetRotation(Quaternion::IDENTITY);
+
+        // --- 球与胶囊 ----------------------------------------------------
+        Sphere* sphere = om->NewObject<Sphere>();
+        sphere->m_Radius = 2.f;
+        RigidBodyShape* sphere_shape = om->NewObject<RigidBodyShape>();
+        sphere_shape->m_Type = RigidBodyShapeType::sphere;
+        sphere_shape->m_Geometry = sphere;
+        rigidbody->GetRigidbodyResMutable().m_Shapes.push_back(sphere_shape);
+
+        Capsule* capsule = om->NewObject<Capsule>();
+        capsule->m_Radius = 0.5f;
+        capsule->m_HalfHeight = 1.f;
+        RigidBodyShape* capsule_shape = om->NewObject<RigidBodyShape>();
+        capsule_shape->m_Type = RigidBodyShapeType::capsule;
+        capsule_shape->m_Geometry = capsule;
+        rigidbody->GetRigidbodyResMutable().m_Shapes.push_back(capsule_shape);
+
+        Check(col->GetShapeCount() == 3, "AC19", "a rigid body can carry several shapes (Unity same)");
+        Check(col->GetShapeType(1) == static_cast<int32_t>(ColliderShapeType::sphere), "AC20", "shape 1 is a sphere");
+        Check(Near(col->GetShapeRadius(1), 2.f, 0.001f), "AC21", "SphereCollider.radius round-trips");
+        Check(Near(col->GetShapeSize(1), Vector3::ZERO, 0.0001f), "AC22",
+              "and a sphere reports no box size (0, not the sphere's)");
+        Check(col->GetShapeType(2) == static_cast<int32_t>(ColliderShapeType::capsule), "AC23", "shape 2 is a capsule");
+        Check(Near(col->GetShapeRadius(2), 0.5f, 0.001f), "AC24", "CapsuleCollider.radius round-trips");
+        // 同 CharacterController.height：含两端半球帽。
+        Check(Near(col->GetShapeHeight(2), 3.0f, 0.001f), "AC25",
+              "CapsuleCollider.height includes both caps: 2 * (1.0 + 0.5)");
+        Check(!Near(col->GetShapeHeight(2), 2.0f, 0.001f), "AC26",
+              "and is NOT the cylinder height (a 2.0 here is the classic off-by-caps bug)");
+        // 越界：必须是 invalid，不能是 UB，也不能悄悄返回 0 号形状。
+        Check(col->GetShapeType(99) == static_cast<int32_t>(ColliderShapeType::invalid), "AC27",
+              "an out-of-range index reports invalid");
+        Check(Near(col->GetShapeCenter(-1), Vector3::ZERO, 0.0001f), "AC28",
+              "and a negative one yields zero rather than reading out of bounds");
+
+        // --- 包围盒是所有形状的并集 --------------------------------------
+        // 球半径 2 在盒子（顶面 z=8）之上 ⇒ 并集的 z 上界被推高。
+        const Vector3 union_size = col->GetBoundsSize();
+        Check(union_size.z > 6.0f, "AC29", "bounds are the union of every shape, not just the first");
+
+        // --- 降级：没有物理场景时 ----------------------------------------
+        Check(!col->GetIsTrigger(), "AC30", "isTrigger reads false with no physics scene (not a crash, not true)");
+        col->SetIsTrigger(true);
+        Check(!col->GetIsTrigger(), "AC31", "and the setter is a no-op rather than a hang");
+
+        // --- 没有碰撞体时 ClosestPoint 必须返回点自己 --------------------
+        // 返回零向量会被当成"包围盒在原点" —— 那是一个完全错误的答案，而且看
+        // 起来像"碰撞体在原点"而不是"没有碰撞体"。
+        Check(Near(none_col->ClosestPoint(Vector3(7.f, 8.f, 9.f)), Vector3(7.f, 8.f, 9.f), 0.0001f), "AC37",
+              "ClosestPoint on an invalid collider returns the point itself (not zero)");
+
+        // --- body id -> 对象 --------------------------------------------
+        PhysicsManager* physics_manager = GET_SYSTEM(PhysicsManager);
+        Check(physics_manager != nullptr, "AC32", "PhysicsManager is reachable");
+        if (physics_manager != nullptr)
+        {
+            physics_manager->RegisterBodyOwner(4242u, go);
+            Check(physics_manager->FindBodyOwner(4242u) == go, "AC33", "a registered body resolves to its owner");
+            Check(physics_manager->FindBodyOwner(4243u) == nullptr, "AC34", "an unknown body resolves to null");
+            Check(Collider::FromBodyId(4242u) == col, "AC35",
+                  "Collider.FromBodyId lands on the same view as FromGameObject");
+            Check(Collider::FromBodyId(kInvalidPhysicsBodyId) == nullptr, "AC36",
+                  "and the sentinel body id returns null");
+            physics_manager->UnregisterBodyOwner(4242u);
+        }
+    }
+
+    // --------------------------------------------------------------- AD ----
+    /// 碰撞体的接线门：`RaycastHit.gameObject` 那条链（命中 → 绑定 → d.ts）断在
+    /// 任何一环都是"脚本拿到 undefined"，而 C++ 侧一切正常。
+    void TestColliderWiring()
+    {
+        const std::string query_header = ReadFile("Source/Runtime/Function/Physics/PhysicsQuery.h");
+        Check(!query_header.empty(), "AD0", "PhysicsQuery.h is readable");
+        Check(CountOccurrences(query_header, "GameObject* gameObject") >= 1, "AD1",
+              "RaycastHit carries a GameObject back-pointer");
+
+        const std::string physics_source = ReadFile("Source/Runtime/Function/Physics/Physics.cpp");
+        Check(!physics_source.empty(), "AD2", "Physics.cpp is readable");
+        // 只在一个汇流点赋值 —— 20 个查询方法全靠它。改成逐个方法赋值迟早漏一个。
+        Check(CountOccurrences(physics_source, "out.gameObject = ResolveBodyOwner(in_hit.body_id)") >= 1, "AD3",
+              "the single ToRaycastHit funnel fills gameObject");
+        Check(CountOccurrences(physics_source, "FindBodyOwner(") >= 1, "AD4",
+              "and resolves it through PhysicsManager's body-owner table");
+
+        const std::string binding_header = ReadFile("Source/Runtime/Scripting/Binding/ScriptBinding.h");
+        Check(!binding_header.empty(), "AD5", "ScriptBinding.h is readable");
+        // 数 **ToJs 那一行**：只数 `"gameObject"` 的话，FromJs 那一行也命中，
+        // 于是"转换出去时漏了这个字段"的实现是全绿的（变异 M13 就是这么过的）。
+        Check(CountOccurrences(binding_header, "Converter<GameObject*>::ToJs") >= 1, "AD6",
+              "the RaycastHit converter writes gameObject to JS");
+        // ⚠️ 声明顺序：`Converter<GameObject*>` 是非依赖名字，在模板**定义点**绑定。
+        // Converter<RaycastHit> 必须排在 Object 派生指针那个特化之后，否则它绑到
+        // 主模板上、static_assert 直接红。这个门守的是结构，不是字符串。
+        Check(binding_header.find("Object-derived pointers") < binding_header.find("struct Converter<RaycastHit>"),
+              "AD7", "Converter<RaycastHit> is declared AFTER the Object-pointer specialization");
+
+        const std::string binding_source = ReadFile("Source/Runtime/Scripting/Binding/ScriptBinding.cpp");
+        Check(!binding_source.empty(), "AD8", "ScriptBinding.cpp is readable");
+        Check(CountOccurrences(binding_source, "gameObject: GameObject | null;") >= 1, "AD9",
+              "and the .d.ts declares it (else TypeScript sees undefined)");
+
+        const std::string collider_header = ReadFile("Source/Runtime/Scripting/ScriptCollider/ScriptCollider.h");
+        Check(!collider_header.empty(), "AD10", "ScriptCollider.h is readable");
+        Check(CountOccurrences(collider_header, "ZFUNCTION(") == 17, "AD11",
+              "Collider exposes exactly 17 script methods");
+        Check(CountOccurrences(collider_header, "ZSCRIPTPROPERTY(") == 6, "AD12",
+              "and exactly 6 script properties");
+        Check(CountOccurrences(collider_header, "ZENUM()") >= 1 &&
+                  CountOccurrences(collider_header, "box = 0") >= 1 &&
+                  CountOccurrences(collider_header, "sphere = 1") >= 1 &&
+                  CountOccurrences(collider_header, "capsule = 2") >= 1,
+              "AD13", "ColliderShapeType is published with explicit values");
+        // Unity 的拼写。
+        Check(CountOccurrences(collider_header, "\"isTrigger\"") >= 1, "AD14", "isTrigger is published");
+        Check(CountOccurrences(collider_header, "\"attachedRigidbody\"") >= 1, "AD15",
+              "attachedRigidbody is published");
+        Check(CountOccurrences(collider_header, "\"boundsCenter\"") >= 1 &&
+                  CountOccurrences(collider_header, "\"boundsSize\"") >= 1,
+              "AD16", "bounds are published as center + size");
+        // 本引擎"Collider 不是组件"这件事必须写在门面文件里，否则下一个人会去
+        // GetComponent("Collider") 然后得到 null。
+        Check(CountOccurrences(collider_header, "不是独立组件") >= 1, "AD17",
+              "the header explains why Collider is a view, not a component");
+
+        const std::string collider_source = ReadFile("Source/Runtime/Scripting/ScriptCollider/ScriptCollider.cpp");
+        Check(!collider_source.empty(), "AD18", "ScriptCollider.cpp is readable");
+        // 包围盒从资源算，不查场景 —— 这条决定了本组能不能测。
+        Check(CountOccurrences(collider_source, "shape->m_LocalTransform.m_Position") >= 1, "AD19",
+              "bounds are computed from the authored shapes (not from a physics query)");
+        // ClosestPoint 是 AABB 上的，不是精确几何 —— 差别必须记录在案。
+        Check(CountOccurrences(collider_header, "AABB") >= 1, "AD20",
+              "the AABB (not exact-geometry) nature of ClosestPoint is documented");
+    }
+
     // ---------------------------------------------------------------- B ----
     void TestWiringGate()
     {
@@ -3501,6 +3747,8 @@ int main()
     TestRigidbodyWiring();
     TestCharacterController();
     TestCharacterControllerWiring();
+    TestCollider();
+    TestColliderWiring();
     TestWiringGate();
 
     std::printf("\n=== %d checks, %d failures ===\n", g_Checks, g_Failures);

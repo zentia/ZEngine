@@ -16,6 +16,11 @@
 
 #include "Runtime/Core/Math/Vector3.h"
 
+// 只当指针用（命中记录里存一个反向引用），前向声明即可。这与本文件"尽量不拖
+// 依赖"的立场合得来：GameObject.h 会带进 Component / TagLayerManager 一整串，
+// 而这里需要的只是一个指针的大小。
+class GameObject;
+
 /// Body id handed back by a query when there was no hit. Same sentinel as
 /// `s_InvalidRigidbodyId` in PhysicsScene.h, redeclared here so this header
 /// stays free of the Jolt include.
@@ -89,4 +94,18 @@ struct RaycastHit
     uint32_t bodyId {kInvalidPhysicsBodyId};
     /// Unity layer of the body that was hit.
     int32_t layer {0};
+
+    /// 打中的那个 body 属于哪个 GameObject。nullptr 表示"这个 body 没有主人"
+    /// —— 纯几何体（脚本直接往 Jolt 里塞的、没有 RigidBodyComponent 的）就是
+    /// 这种，不是错误。
+    ///
+    /// 为什么放在命中记录里而不是让脚本拿 `bodyId` 自己去查
+    /// ---------------------------------------------------
+    /// Unity 的 `hit.collider.gameObject` / `hit.transform` 是**每次射线回来最
+    /// 先被读的两个字段**（"我打中了谁"）。只给一个 bodyId 的话，脚本得再调一
+    /// 次查询接口把 id 换回对象 —— 不是写不出来，而是每个 Unity 工程贴过来的
+    /// `if (hit.transform.CompareTag("Enemy"))` 都得改写。
+    ///
+    /// 不持有所有权：对象的生命周期归关卡 / ObjectManager，命中记录是值类型。
+    GameObject* gameObject {nullptr};
 };

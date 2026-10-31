@@ -44,6 +44,22 @@ namespace
         return Vector3::UNIT_Y.getRotationTo(axis.normalisedCopy(), Vector3::UNIT_X);
     }
 
+    /// body id -> GameObject。查 `PhysicsManager::m_BodyOwners`，那是
+    /// `RigidBodyComponent` 在建成 body 之后自己登记的表。
+    ///
+    /// 拿不到就返回 nullptr，不报错：一个 body 完全可以没有主人（工具直接往
+    /// Jolt 里塞的几何体、或者组件已经析构而 body 还在的那一帧）。对脚本来说
+    /// "没有主人"是合法状态，`hit.gameObject` 就是 null。
+    GameObject* ResolveBodyOwner(uint32_t body_id)
+    {
+        if (body_id == kInvalidPhysicsBodyId)
+        {
+            return nullptr;
+        }
+        PhysicsManager* manager = GET_SYSTEM(PhysicsManager);
+        return (manager != nullptr) ? manager->FindBodyOwner(body_id) : nullptr;
+    }
+
     RaycastHit ToRaycastHit(const PhysicsHitInfo& in_hit)
     {
         RaycastHit out;
@@ -53,6 +69,9 @@ namespace
         out.distance = in_hit.hit_distance;
         out.bodyId = in_hit.body_id;
         out.layer = in_hit.layer;
+        // 所有的查询（Raycast / *Cast / Overlap*）都汇流到这一个函数，所以"命中
+        // 带回对象"只要在这里补一次，20 个脚本方法一起生效 —— 不用逐个改。
+        out.gameObject = ResolveBodyOwner(in_hit.body_id);
         return out;
     }
 

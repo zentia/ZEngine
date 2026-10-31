@@ -25,6 +25,15 @@
 // =====================================================================
 
 #include "Runtime/BaseClasses/Object.h"
+// `RaycastHit::gameObject` 的 Converter 要用 `Converter<GameObject*>`，而那个
+// 特化要求 `std::is_base_of<Object, T>` —— 只有前向声明的话它会静默退回
+// "no ZScript::Converter for this type"。Object 已经包含在上面，这里补
+// GameObject 的完整定义。
+//
+// 循环依赖检查：GameObject.h -> Component.h -> Object.h，都不反过来包含本文件
+// （只有 GameObject.cpp 包含），所以没有环。本文件也只被 10 个翻译单元引入，
+// 不是全量 .gen.cpp。
+#include "Runtime/BaseClasses/GameObject.h"
 #include "Runtime/Core/Math/Matrix4.h"
 #include "Runtime/Core/Math/Quaternion.h"
 #include "Runtime/Core/Math/Vector2.h"
@@ -675,39 +684,6 @@ namespace ZScript
         }
     };
 
-    // RaycastHit -- Unity's hit record, returned by value from every
-    // `Physics.*` query. `valid` is the field Unity expresses as the bool
-    // return of Physics.Raycast: TypeScript gets no out-parameters here, so the
-    // record carries its own validity instead.
-    //
-    // FromJs exists only so a signature *could* take one; queries never do, and
-    // a caller-written object simply round-trips.
-    template <>
-    struct Converter<RaycastHit>
-    {
-        static pesapi_value ToJs(pesapi_ffi* apis, pesapi_env env, const RaycastHit& v)
-        {
-            pesapi_value o = apis->create_object(env);
-            apis->set_property(env, o, "valid", Converter<bool>::ToJs(apis, env, v.valid));
-            apis->set_property(env, o, "point", Converter<Vector3>::ToJs(apis, env, v.point));
-            apis->set_property(env, o, "normal", Converter<Vector3>::ToJs(apis, env, v.normal));
-            apis->set_property(env, o, "distance", Converter<float>::ToJs(apis, env, v.distance));
-            apis->set_property(env, o, "bodyId", Converter<uint32_t>::ToJs(apis, env, v.bodyId));
-            apis->set_property(env, o, "layer", Converter<int32_t>::ToJs(apis, env, v.layer));
-            return o;
-        }
-        static RaycastHit FromJs(pesapi_ffi* apis, pesapi_env env, pesapi_value v)
-        {
-            RaycastHit out;
-            out.valid = Converter<bool>::FromJs(apis, env, apis->get_property(env, v, "valid"));
-            out.point = Converter<Vector3>::FromJs(apis, env, apis->get_property(env, v, "point"));
-            out.normal = Converter<Vector3>::FromJs(apis, env, apis->get_property(env, v, "normal"));
-            out.distance = Converter<float>::FromJs(apis, env, apis->get_property(env, v, "distance"));
-            out.bodyId = Converter<uint32_t>::FromJs(apis, env, apis->get_property(env, v, "bodyId"));
-            out.layer = Converter<int32_t>::FromJs(apis, env, apis->get_property(env, v, "layer"));
-            return out;
-        }
-    };
 
     // --- enums ----------------------------------------------------------
     //
@@ -751,6 +727,47 @@ namespace ZScript
             if (apis->is_null(env, value) || apis->is_undefined(env, value))
                 return nullptr;
             return static_cast<T*>(apis->get_native_object_ptr(env, value));
+        }
+    };
+
+    // `Converter<RaycastHit>` 必须排在 Object 派生指针那个特化**之后**：
+    // `Converter<GameObject*>` 是非依赖名字，在模板定义点就要绑定。放在前面的话
+    // 它会绑到主模板上，于是 `static_assert: no ZScript::Converter for this type`
+    // —— 报错落在绑定表深处，看上去像"GameObject 没有绑定"，实际是声明顺序。
+
+    // RaycastHit -- Unity's hit record, returned by value from every
+    // `Physics.*` query. `valid` is the field Unity expresses as the bool
+    // return of Physics.Raycast: TypeScript gets no out-parameters here, so the
+    // record carries its own validity instead.
+    //
+    // FromJs exists only so a signature *could* take one; queries never do, and
+    // a caller-written object simply round-trips.
+    template <>
+    struct Converter<RaycastHit>
+    {
+        static pesapi_value ToJs(pesapi_ffi* apis, pesapi_env env, const RaycastHit& v)
+        {
+            pesapi_value o = apis->create_object(env);
+            apis->set_property(env, o, "valid", Converter<bool>::ToJs(apis, env, v.valid));
+            apis->set_property(env, o, "point", Converter<Vector3>::ToJs(apis, env, v.point));
+            apis->set_property(env, o, "normal", Converter<Vector3>::ToJs(apis, env, v.normal));
+            apis->set_property(env, o, "distance", Converter<float>::ToJs(apis, env, v.distance));
+            apis->set_property(env, o, "bodyId", Converter<uint32_t>::ToJs(apis, env, v.bodyId));
+            apis->set_property(env, o, "layer", Converter<int32_t>::ToJs(apis, env, v.layer));
+            apis->set_property(env, o, "gameObject", Converter<GameObject*>::ToJs(apis, env, v.gameObject));
+            return o;
+        }
+        static RaycastHit FromJs(pesapi_ffi* apis, pesapi_env env, pesapi_value v)
+        {
+            RaycastHit out;
+            out.valid = Converter<bool>::FromJs(apis, env, apis->get_property(env, v, "valid"));
+            out.point = Converter<Vector3>::FromJs(apis, env, apis->get_property(env, v, "point"));
+            out.normal = Converter<Vector3>::FromJs(apis, env, apis->get_property(env, v, "normal"));
+            out.distance = Converter<float>::FromJs(apis, env, apis->get_property(env, v, "distance"));
+            out.bodyId = Converter<uint32_t>::FromJs(apis, env, apis->get_property(env, v, "bodyId"));
+            out.layer = Converter<int32_t>::FromJs(apis, env, apis->get_property(env, v, "layer"));
+            out.gameObject = Converter<GameObject*>::FromJs(apis, env, apis->get_property(env, v, "gameObject"));
+            return out;
         }
     };
 
