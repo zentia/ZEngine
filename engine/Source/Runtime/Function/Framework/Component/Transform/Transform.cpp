@@ -1460,5 +1460,28 @@ bool Transform::SetParent(Transform* new_parent, SetParentOptions options)
         owner->BroadcastAppEvent(AppEventKind::kParentChanged, false);
     }
 
+    // Unity 的 `OnTransformChildrenChanged()`：同一件事的**另一半**，发给两个
+    // **父级**（旧的少了这个孩子、新的多了这个孩子），不是发给这个孩子本身。
+    //
+    // `old_father == new_parent` 的情况在函数开头就 return 了，所以这里的两个
+    // 是**一定不同**的两个对象 —— 不存在"同一对象收两次"的问题。
+    //
+    // ⚠️ 判空不是防御性编程：脱离父级（`SetParent(nullptr)`）时 new_parent 就是
+    // 空的，此时只有旧父级该收到"少了一个孩子"。
+    if (old_father != nullptr)
+    {
+        if (GameObject* const old_owner = old_father->GetParentObject())
+        {
+            old_owner->BroadcastAppEvent(AppEventKind::kChildrenChanged, false);
+        }
+    }
+    if (new_parent != nullptr)
+    {
+        if (GameObject* const new_owner = new_parent->GetParentObject())
+        {
+            new_owner->BroadcastAppEvent(AppEventKind::kChildrenChanged, false);
+        }
+    }
+
     return true;
 }

@@ -439,6 +439,9 @@ void ScriptEnv::InstallConsoleAndDebugGlobals()
         "  g.Behaviour.prototype.OnApplicationPause = function(pauseStatus) {};"
         "  g.Behaviour.prototype.OnApplicationQuit = function() {};"
         "  g.Behaviour.prototype.OnTransformParentChanged = function() {};"
+        // 与上一行是同一件事的两半，但收的人不同（父级 vs 子级）—— 少了这一行，
+        // 没重写它的脚本会在"孩子挂上来"的那一刻抛 TypeError。
+        "  g.Behaviour.prototype.OnTransformChildrenChanged = function() {};"
         "  g.Behaviour.prototype.OnValidate = function() {};"
         "  g.Behaviour.prototype.OnDestroy = function() {};"
         // Unity 的 `Invoke` 家族：TS 侧写 `this.Invoke(...)`，这里转发到

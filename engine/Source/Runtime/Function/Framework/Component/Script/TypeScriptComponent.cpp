@@ -180,6 +180,15 @@ void TypeScriptComponent::OnTransformParentChanged()
     InvokeMethod("OnTransformParentChanged");
 }
 
+void TypeScriptComponent::OnTransformChildrenChanged()
+{
+    // ⚠️ 名字与上面那个只差一个词，但收的人完全不是同一个：那个是"我换父级
+    // 了"（发给子对象），这个是"我的孩子多了/少了一个"（发给父对象）。把这里
+    // 写成 `InvokeMethod("OnTransformParentChanged")` 是最容易犯也最难发现的
+    // 错 —— 脚本侧两个回调都在，只是该来的那个永远不来。
+    InvokeMethod("OnTransformChildrenChanged");
+}
+
 void TypeScriptComponent::OnSerializedFieldsUpdated()
 {
     // Unity 的 `OnValidate()`：编辑器里 Inspector 改了序列化字段之后调用

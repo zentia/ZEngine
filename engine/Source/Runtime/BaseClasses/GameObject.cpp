@@ -151,6 +151,9 @@ void GameObject::BroadcastAppEvent(AppEventKind kind, bool arg)
             case AppEventKind::kParentChanged:
                 component->OnTransformParentChanged();
                 break;
+            case AppEventKind::kChildrenChanged:
+                component->OnTransformChildrenChanged();
+                break;
         }
     }
 }

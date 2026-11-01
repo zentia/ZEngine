@@ -105,6 +105,9 @@ namespace
         "    OnApplicationPause(pause_status: boolean): void;",
         "    OnApplicationQuit(): void;",
         "    OnTransformParentChanged(): void;",
+        // 同一件事的另一半：这个是"我的孩子多了/少了一个"（发给**父级**），
+        // 上一个是"我换父级了"（发给**子级**）。名字只差一个词，别合并。
+        "    OnTransformChildrenChanged(): void;",
         // Unity 的 `OnValidate`：编辑器里序列化字段被改之后调用（编辑器专用，
         // Player 里不会来）。
         "    OnValidate(): void;",

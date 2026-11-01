@@ -163,6 +163,7 @@ class Mover extends Behaviour {
     pauseLog: string = "";
     quitCount: number = 0;
     parentChanged: number = 0;
+    childrenChanged: number = 0;
     validateCount: number = 0;
 
     OnApplicationFocus(hasFocus: boolean): void {
@@ -185,6 +186,17 @@ class Mover extends Behaviour {
     OnTransformParentChanged(): void {
         this.parentChanged = this.parentChanged + 1;
         this.parentWasNullAtCallback = this.transform.parent === null;
+    }
+
+    // 与上面那条是同一件事的**两半**，但收的人不同：上面是"我换父级了"（发给
+    // 被搬的对象），这一个是"我的孩子多了/少了一个"（发给父级）。名字只差一个
+    // 词，所以这边的判据也照抄一份结构：回调里读一次 `transform.childCount`，
+    // 值必须是**新的**（1 / 0），否则"派发早了一步"照样计数对得上。
+    childCountAtCallback: number = -1;
+
+    OnTransformChildrenChanged(): void {
+        this.childrenChanged = this.childrenChanged + 1;
+        this.childCountAtCallback = this.transform.childCount;
     }
 
     OnValidate(): void {

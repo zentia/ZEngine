@@ -8359,6 +8359,7 @@ namespace
         int pause_false = 0;
         int quits = 0;
         int parent_changes = 0;
+        int children_changes = 0;
         int validates = 0;
 
         /// Unity 的 `Behaviour.enabled`：基类没有 setter，这里自己记一个。
@@ -8369,7 +8370,7 @@ namespace
         {
             focus_true = focus_false = 0;
             pause_true = pause_false = 0;
-            quits = parent_changes = validates = 0;
+            quits = parent_changes = children_changes = validates = 0;
         }
 
         void OnApplicationFocus(bool has_focus) override
@@ -8384,6 +8385,9 @@ namespace
         }
         void OnApplicationQuit() override { ++quits; Append('q'); }
         void OnTransformParentChanged() override { ++parent_changes; Append('r'); }
+        // 与上面那个是同一件事的两半，但收的人不同（父级 vs 子级）—— 探针里
+        // 分开记，正是为了能在同一个对象上同时看到"只来了一个"。
+        void OnTransformChildrenChanged() override { ++children_changes; Append('c'); }
         void OnSerializedFieldsUpdated() override { ++validates; Append('v'); }
 
     private:
@@ -8530,6 +8534,245 @@ namespace
         delete other;
     }
 
+    // ---------------------------------------------------------------- CH ---
+    // Unity 的 `OnTransformChildrenChanged()`：`OnTransformParentChanged()` 的
+    // 互补半边。那一个发给"被搬的对象"，这一个发给"孩子的个数变了的对象"。
+
+    void TestTransformChildrenChanged()
+    {
+        ObjectManager* om = GET_SYSTEM(ObjectManager);
+        Check(om != nullptr, "CH0", "ObjectManager is reachable");
+        if (om == nullptr) { return; }
+
+        Level level;
+        level.setLevelResUrl("Assets/Scenes/ChildrenChanged.level");
+        level.LoadObjectGraph({}, false);
+        Check(level.IsLoaded(), "CH1", "the synthetic level is loaded");
+
+        std::string log;
+
+        struct Node
+        {
+            GameObject* object {nullptr};
+            Transform* transform {nullptr};
+        };
+
+        // 这一组要五个这样的对象，抄五遍就会在某一份里少一行（少注册 = 静默
+        // 收不到任何消息，而且看起来跟"没实现"一模一样）。
+        auto make_node = [&](Node& out) -> bool
+        {
+            out.object = new GameObject(ObjectIDAllocator::Alloc());
+            om->AllocateAndAssignInstanceID(out.object);
+            out.transform = new Transform();
+            om->AllocateAndAssignInstanceID(out.transform);
+            out.object->addComponent(out.transform);
+            out.transform->PostLoadResource(out.object);
+            return level.RegisterRuntimeGObject(out.object);
+        };
+        auto add_probe = [&](Node& node, char tag) -> AppEventProbe*
+        {
+            AppEventProbe* probe = new AppEventProbe(&log, tag);
+            probe->InitializeRuntimeTypeInfo();
+            om->AllocateAndAssignInstanceID(probe);
+            node.object->addComponent(probe);
+            return probe;
+        };
+
+        Node a, b, c, s, d;
+        Check(make_node(a), "CH2", "node A is in the level's runtime table");
+        Check(make_node(b), "CH3", "node B too");
+        Check(make_node(c), "CH4", "node C (the one that gets reparented) too");
+        Check(make_node(s), "CH5", "node S (a sibling, for the reorder case) too");
+
+        // A 上挂**两个**探针：单探针的实现只发给第一个组件也照样过。
+        AppEventProbe* pa1 = add_probe(a, 'A');
+        AppEventProbe* pa2 = add_probe(a, 'a');
+        AppEventProbe* pb = add_probe(b, 'B');
+        AppEventProbe* pc = add_probe(c, 'C');
+
+        // --- 挂上来：父级收，子级不收 --------------------------------------
+        Check(c.transform->SetParent(a.transform, true), "CH6", "attaching C to A succeeds");
+        Check(pa1->children_changes == 1, "CH7", "the new PARENT gets OnTransformChildrenChanged");
+        Check(pa2->children_changes == 1, "CH8", "every component on it gets it, not just the first");
+        Check(pc->children_changes == 0, "CH9",
+              "the CHILD does NOT get it (it gets the other half instead)");
+        Check(pc->parent_changes == 1, "CH10", "the child gets OnTransformParentChanged");
+        Check(pb->children_changes == 0, "CH11", "an uninvolved object gets nothing");
+        Check(a.transform->GetChildrenCount() == 1, "CH12", "A really has one child now");
+
+        // --- 换父级：新旧两个父级各一次 ------------------------------------
+        pa1->Reset(); pa2->Reset(); pb->Reset(); pc->Reset();
+        log.clear();
+        Check(c.transform->SetParent(b.transform, true), "CH13", "moving C from A to B succeeds");
+        Check(pa1->children_changes == 1, "CH14", "the OLD parent is told it lost a child");
+        Check(pb->children_changes == 1, "CH15", "the NEW parent is told it gained one");
+        Check(pc->children_changes == 0, "CH16", "the child itself is still not told");
+        Check(a.transform->GetChildrenCount() == 0 && b.transform->GetChildrenCount() == 1,
+              "CH17", "the hierarchy really moved");
+        // 顺序：子对象自己的那条先走，再旧父级，再新父级。四条各一次（A 上有
+        // 两个探针，所以是 "Ac" + "ac"）—— 重复发或漏发都会让这个串对不上。
+        Check(log == "CrAcacBc", "CH18", "one notification per affected component, in one walk");
+
+        // --- 脱离：只有旧父级收到 ------------------------------------------
+        pa1->Reset(); pa2->Reset(); pb->Reset(); pc->Reset();
+        Check(c.transform->SetParent(nullptr, true), "CH19", "detaching to the scene root succeeds");
+        Check(pb->children_changes == 1, "CH20", "the old parent is told");
+        Check(pa1->children_changes == 0, "CH21", "the previous one is not (it already let go)");
+        Check(b.transform->GetChildrenCount() == 0, "CH22", "B has no children now");
+
+        // --- 重排**不发**：只认成员增减，不认顺序 --------------------------
+        Check(s.transform->SetParent(b.transform, true), "CH23", "S is attached to B");
+        Check(c.transform->SetParent(b.transform, true), "CH24", "and C too (B now has two)");
+        Check(b.transform->GetChildrenCount() == 2, "CH25", "B really has two children");
+        pa1->Reset(); pa2->Reset(); pb->Reset(); pc->Reset();
+        Check(c.transform->GetSiblingIndex() == 1, "CH26", "C is the second child before the reorder");
+        c.transform->SetSiblingIndex(0);
+        Check(c.transform->GetSiblingIndex() == 0, "CH27", "SetSiblingIndex really reordered");
+        Check(b.transform->GetChild(0) == c.transform, "CH28", "B's first child is C now");
+        // ⚠️ 顺序探针必须在断言 0 之前：SetSiblingIndex 要是空操作，下面这条
+        // 也是 0，门就白设了。
+        Check(pb->children_changes == 0, "CH29",
+              "reordering does NOT fire it (the list of children did not change)");
+        // ⚠️ 互补的一半：真的少一个成员**要**发。断言 0 是最容易空转的一种门 ——
+        // 一个"从来不发"的实现同样给出 0，而 CH7..CH20 验的是"挂上来/摘下去"
+        // 这两个动作，正好绕过了"重排之后紧接着摘一个"这条路径。
+        pa1->Reset(); pa2->Reset(); pb->Reset(); pc->Reset();
+        Check(s.transform->SetParent(a.transform, true), "CH29a",
+              "moving S away from B succeeds");
+        Check(pb->children_changes == 1, "CH29b",
+              "and losing a member DOES fire it (CH29's 0 is not 'never fires')");
+
+        // --- 与三趟 Tick 相反：不判 enabled / activeInHierarchy ------------
+        pa1->Reset(); pa2->Reset(); pb->Reset(); pc->Reset();
+        pa1->SetProbeEnabled(false);
+        Check(c.transform->SetParent(a.transform, true), "CH30", "moving C back to A succeeds");
+        Check(pa1->children_changes == 1, "CH31", "a DISABLED component still gets it");
+        pa1->SetProbeEnabled(true);
+
+        pa1->Reset(); pa2->Reset(); pb->Reset(); pc->Reset();
+        a.object->SetActive(false);
+        Check(!a.object->IsActiveInHierarchy(), "CH32", "A is really inactive");
+        Check(c.transform->SetParent(b.transform, true), "CH33", "moving C to B succeeds");
+        Check(pa1->children_changes == 1, "CH34", "an INACTIVE object still gets it");
+        a.object->SetActive(true);
+
+        // --- 搬整棵子树：被搬的那个自己"孩子没变" --------------------------
+        Check(make_node(d), "CH35", "node D is in the runtime table");
+        AppEventProbe* pd = add_probe(d, 'D');
+        Check(d.transform->SetParent(c.transform, true), "CH36", "D is attached under C");
+        Check(pc->children_changes == 1, "CH37", "C hears about its own new child");
+
+        pa1->Reset(); pa2->Reset(); pb->Reset(); pc->Reset(); pd->Reset();
+        Check(c.transform->SetParent(a.transform, true), "CH38", "the C+D subtree moves to A");
+        Check(pc->children_changes == 0, "CH39",
+              "C does NOT hear: its own child list is unchanged (D is still there)");
+        Check(pc->parent_changes == 1, "CH40", "C hears the other half instead (it was moved)");
+        Check(pb->children_changes == 1, "CH41", "the old parent B hears (it lost C)");
+        Check(pa1->children_changes == 1, "CH42", "the new parent A hears (it gained C)");
+        Check(pd->children_changes == 0, "CH43", "the grandchild hears nothing at all");
+
+        // --- DetachChildren 走的是 SetParent，所以也要发 --------------------
+        pa1->Reset(); pa2->Reset(); pb->Reset(); pc->Reset(); pd->Reset();
+        Check(c.transform->GetChildrenCount() == 1, "CH44", "C still has D before detaching");
+        c.transform->DetachChildren();
+        Check(c.transform->GetChildrenCount() == 0, "CH45", "DetachChildren emptied C");
+        Check(pc->children_changes == 1, "CH46", "and fires it once (per removed child)");
+
+        level.UnregisterRuntimeGObject(a.object->GetID());
+        level.UnregisterRuntimeGObject(b.object->GetID());
+        level.UnregisterRuntimeGObject(c.object->GetID());
+        level.UnregisterRuntimeGObject(s.object->GetID());
+        level.UnregisterRuntimeGObject(d.object->GetID());
+        delete pa1;
+        delete pa2;
+        delete pb;
+        delete pc;
+        delete pd;
+        delete a.object;
+        delete b.object;
+        delete c.object;
+        delete s.object;
+        delete d.object;
+    }
+
+    void TestTransformChildrenChangedWiring()
+    {
+        const std::string component_header =
+            ReadFile("Source/Runtime/Function/Framework/Component/Component.h");
+        Check(!component_header.empty(), "CW0", "Component.h is readable");
+        Check(CountOccurrences(component_header, "kChildrenChanged") >= 1,
+              "CW1", "AppEventKind has a kChildrenChanged entry");
+        Check(CountOccurrences(component_header, "virtual void OnTransformChildrenChanged(") >= 1,
+              "CW2", "OnTransformChildrenChanged is a virtual hook");
+        // ⚠️ 两个回调是同一件事的两半，但**收的人不同**。这里守的是"两个都在"，
+        // 而不是"至少有一个"：只声明一个的实现能过 >= 1 的那种门。
+        Check(CountOccurrences(component_header, "virtual void OnTransformParentChanged(") >= 1,
+              "CW3", "and OnTransformParentChanged is still declared (a pair, not one merged hook)");
+
+        const std::string go_source = ReadFile("Source/Runtime/BaseClasses/GameObject.cpp");
+        Check(!go_source.empty(), "CW4", "GameObject.cpp is readable");
+        {
+            const std::size_t at = go_source.find("void GameObject::BroadcastAppEvent");
+            Check(at != std::string::npos, "CW5", "BroadcastAppEvent is implemented");
+            const std::string body = go_source.substr(at, go_source.find("\n}\n", at) - at);
+            Check(CountOccurrences(body, "AppEventKind::k") >= 5, "CW6",
+                  "all five kinds are dispatched (the fifth is the new one)");
+            // 加了 case 却调错函数是这一层最容易犯的错：五个 case 长得一模一样，
+            // 少一个也照样编译、照样运行，只是那条消息永远没人收。
+            Check(CountOccurrences(body, "OnTransformChildrenChanged()") >= 1, "CW7",
+                  "and the new case calls the children hook");
+        }
+
+        const std::string transform_source =
+            ReadFile("Source/Runtime/Function/Framework/Component/Transform/Transform.cpp");
+        Check(!transform_source.empty(), "CW8", "Transform.cpp is readable");
+        // ⚠️ 必须**两处**：旧父级一次、新父级一次。只写一处的话"挂上来"和"摘
+        // 下去"各有一半的观察者永远收不到 —— 而两处文本完全一样，>= 1 抓不到。
+        Check(CountOccurrences(transform_source, "AppEventKind::kChildrenChanged") >= 2,
+              "CW9", "SetParent dispatches it to BOTH the old and the new parent");
+        {
+            const std::size_t at = transform_source.find("bool Transform::SetParent");
+            Check(at != std::string::npos, "CW10", "SetParent is implemented");
+            const std::string body = transform_source.substr(
+                at, transform_source.find("\n}\n", at) - at);
+            Check(body.find("AppEventKind::kChildrenChanged") != std::string::npos, "CW11",
+                  "the dispatch lives INSIDE SetParent (not in a helper nobody calls)");
+            // 两处判空缺一不可：脱离父级时 new_parent 就是 nullptr。
+            Check(CountOccurrences(body, "old_father != nullptr") >= 1, "CW12",
+                  "the old-parent dispatch is null-guarded");
+            Check(CountOccurrences(body, "new_parent != nullptr") >= 1, "CW13",
+                  "and so is the new-parent one (detaching passes nullptr)");
+        }
+        // 反向门：SetSiblingIndex **不许**发它。读成"顺序变了"的实现会让编辑器
+        // 拖一次排序给脚本灌进几十次回调。
+        {
+            const std::size_t at = transform_source.find("void Transform::SetSiblingIndex");
+            Check(at != std::string::npos, "CW14", "SetSiblingIndex is implemented");
+            const std::string body = transform_source.substr(
+                at, transform_source.find("\n}\n", at) - at);
+            Check(body.find("kChildrenChanged") == std::string::npos, "CW15",
+                  "SetSiblingIndex does NOT fire it (reordering is not a membership change)");
+        }
+
+        const std::string ts_source =
+            ReadFile("Source/Runtime/Function/Framework/Component/Script/TypeScriptComponent.cpp");
+        Check(!ts_source.empty(), "CW16", "TypeScriptComponent.cpp is readable");
+        Check(CountOccurrences(ts_source, "\"OnTransformChildrenChanged\"") >= 1, "CW17",
+              "the script component forwards OnTransformChildrenChanged");
+        // 名字只差一个词，写错成 Parent 是这一层最容易犯也最难发现的错。
+        Check(CountOccurrences(ts_source, "\"OnTransformParentChanged\"") >= 1, "CW18",
+              "and still forwards OnTransformParentChanged (they are not merged)");
+
+        const std::string env_source = ReadFile("Source/Runtime/Scripting/Wrapper/ScriptEnv.cpp");
+        Check(CountOccurrences(env_source, "g.Behaviour.prototype.OnTransformChildrenChanged") >= 1,
+              "CW19", "the JS prototype has a no-op default for it");
+
+        const std::string binding_source =
+            ReadFile("Source/Runtime/Scripting/Binding/ScriptBinding.cpp");
+        Check(CountOccurrences(binding_source, "OnTransformChildrenChanged(): void;") >= 1,
+              "CW20", "the .d.ts declares OnTransformChildrenChanged");
+    }
+
     void TestApplicationMessagesWiring()
     {
         const std::string component_header =
@@ -8564,9 +8807,9 @@ namespace
                   "it does NOT gate on activeInHierarchy (unlike the three ticks)");
             Check(body.find("shouldComponentTick") == std::string::npos, "AW9",
                   "nor on the edit-mode whitelist");
-            // 四个 case 都要有：少一个就是"某条消息永远收不到"。
-            Check(CountOccurrences(body, "AppEventKind::k") >= 4, "AW10",
-                  "all four kinds are dispatched");
+            // 五个 case 都要有：少一个就是"某条消息永远收不到"。
+            Check(CountOccurrences(body, "AppEventKind::k") >= 5, "AW10",
+                  "all five kinds are dispatched");
         }
 
         const std::string world_source =
@@ -8840,6 +9083,8 @@ int main()
     TestEnabledCallbacksWiring();
     TestApplicationMessages();
     TestApplicationMessagesWiring();
+    TestTransformChildrenChanged();
+    TestTransformChildrenChangedWiring();
     TestValueTypeFacades();
     TestValueTypeFacadeWiring();
     TestWiringGate();

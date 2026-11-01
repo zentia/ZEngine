@@ -870,6 +870,37 @@ int main(int argc, char** argv)
         CheckEq("P7b", "回调里读到的父级已经是新的（不是旧的 null）",
                 mover_value("parentWasNullAtCallback"), "false");
 
+        // --- 互补的另一半：OnTransformChildrenChanged ----------------------
+        //
+        // 与 P7 是同一件事的两半，但**收的人不同**：那一个发给"被搬的对象"
+        // （go2），这一个是"我的孩子多了/少了一个"，所以这次必须让 go2 当
+        // **父级**。名字只差一个词，转发写反（两个都写成 Parent）在这里是唯一
+        // 能看见的地方 —— 写反的话 P7 和 P10 会一起红。
+        auto* kid = MakeGameObject(object_manager, "Kid");
+        CheckTrue("P10", "Kid 造出来了", kid != nullptr);
+        kid->AddComponentByTypeName("Transform");
+        CheckTrue("P11", "把 Kid 挂到 go2 下面成功",
+                  kid->GetTransform()->SetParent(go2->GetTransform(), true));
+        CheckEq("P12", "孩子挂上来时**父级**的脚本收到 OnTransformChildrenChanged",
+                mover_value("childrenChanged"), "1");
+        // 同一条"派发点必须在层级更新之后"的判据，换到这一半上再验一次：
+        // 只看次数的话，早一步派发照样是 1。
+        CheckEq("P13", "回调里读到的 childCount 已经是新的（1）",
+                mover_value("childCountAtCallback"), "1");
+        // 互补的一半：摘走也要发。只做"加"不做"减"的实现在这里才露。
+        CheckTrue("P14", "把 Kid 摘走成功", kid->GetTransform()->SetParent(nullptr, true));
+        CheckEq("P15", "孩子摘走时旧父级同样收到", mover_value("childrenChanged"), "2");
+        CheckEq("P16", "摘走后回调里 childCount 是 0", mover_value("childCountAtCallback"), "0");
+        // 收的人必须**不是**被搬的对象自己：把 go2 再搬一次（与 P7 同款操作），
+        // 它作为"被搬的那个"不该收到 childrenChanged —— 那一条是发给它父级的。
+        // 两个回调合成一条（谁都发）的实现在这里才露。
+        CheckTrue("P17", "把 go2 摘回场景根成功", go2->GetTransform()->SetParent(nullptr, true));
+        CheckEq("P18", "搬自己不会给自己发 OnTransformChildrenChanged（收的是父级）",
+                mover_value("childrenChanged"), "2");
+        // 还原 P7 之后的层级：下面几段不依赖它，但保持"P 段结束时 go2 还在
+        // go 下面"更好追。
+        go2->GetTransform()->SetParent(go->GetTransform(), true);
+
         // --- OnValidate：编辑器那条路（OnSerializedFieldsUpdated）----------
         //
         // 互补的一对：Player 里（g_isEditor=false）**不该**发，编辑器里该发。

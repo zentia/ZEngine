@@ -30,6 +30,13 @@ enum class AppEventKind : uint8_t
     kQuit,
     /// `OnTransformParentChanged()` —— 宿主 Transform 换了父级。bool 参数无意义。
     kParentChanged,
+    /// `OnTransformChildrenChanged()` —— 本对象的子级**列表**变了（加了一个或
+    /// 少了一个）。bool 参数无意义。
+    ///
+    /// 与 kParentChanged 是一对互补的半边：改父级时，**子对象**收 kParentChanged、
+    /// **新旧两个父对象**收 kChildrenChanged。只发一边的话，"把东西挂上来"这件
+    /// 事有一半的观察者永远不知道。
+    kChildrenChanged,
 };
 
 // Component
@@ -180,6 +187,20 @@ public:
     /// 只发给**宿主对象自己**的组件，不发给子树 —— Unity 也是这样（改父级的是
     /// 这个对象，子对象的 `transform.parent` 没动）。
     virtual void OnTransformParentChanged() {}
+
+    /// 本对象的子级**列表**刚变了：加了一个或掉了一个。Unity 的
+    /// `OnTransformChildrenChanged()`。
+    ///
+    /// ⚠️ 与 `OnTransformParentChanged` 是同一件事的两半，但收的人**不同**：
+    /// 那个发给子对象，这个发给**父对象**（旧的那个和新的那个各一次）。
+    /// 搞反成"发给子对象"是最容易犯的错 —— 两边都是"层级变了"，而且子对象上
+    /// 已经有一个同名相近的回调了，看起来非常合理。
+    ///
+    /// ⚠️ 只认**成员增减**，不认重排：`SetSiblingIndex` 改动的是顺序而不是
+    /// "有几个孩子"，刻意不发。Unity 文档的说法是 "the list of children has
+    /// changed"，读成成员增减；若读成顺序变化，编辑器里拖一次排序就会给脚本
+    /// 灌进几十次回调。判断错了改一行即可，所以这里写死成增减。
+    virtual void OnTransformChildrenChanged() {}
 
     bool IsDirty() const { return m_IsDirty; }
 

@@ -83,11 +83,17 @@ class Mover extends Behaviour {
         this.pauseLog = "";
         this.quitCount = 0;
         this.parentChanged = 0;
+        this.childrenChanged = 0;
         this.validateCount = 0;
         // 回调里读一次 `transform.parent`：派发点必须在层级**更新之后**。早一步
         // 派发的话这里读到的还是旧父级，而回调本身照样被调用一次 —— 只看调用
         // 次数完全分不出来。
         this.parentWasNullAtCallback = true;
+        // 与上面那条是同一件事的**两半**，但收的人不同：上面是"我换父级了"（发给
+        // 被搬的对象），这一个是"我的孩子多了/少了一个"（发给父级）。名字只差一个
+        // 词，所以这边的判据也照抄一份结构：回调里读一次 `transform.childCount`，
+        // 值必须是**新的**（1 / 0），否则"派发早了一步"照样计数对得上。
+        this.childCountAtCallback = -1;
         // ---- 值类型的静态门面：Vector2 / Vector4 / Matrix4x4 ------------------
         //
         // 这段的价值**在 tsc**：`Vector2.zero` 这种写法只有 d.ts 里同时存在
@@ -187,6 +193,10 @@ class Mover extends Behaviour {
     OnTransformParentChanged() {
         this.parentChanged = this.parentChanged + 1;
         this.parentWasNullAtCallback = this.transform.parent === null;
+    }
+    OnTransformChildrenChanged() {
+        this.childrenChanged = this.childrenChanged + 1;
+        this.childCountAtCallback = this.transform.childCount;
     }
     OnValidate() {
         this.validateCount = this.validateCount + 1;

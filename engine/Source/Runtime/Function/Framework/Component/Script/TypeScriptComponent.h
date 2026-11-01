@@ -119,6 +119,7 @@ public:
     void OnApplicationPause(bool paused) override;
     void OnApplicationQuit() override;
     void OnTransformParentChanged() override;
+    void OnTransformChildrenChanged() override;
 
     /// Unity 的 `OnValidate()`：编辑器里序列化字段被改之后。只在 `g_isEditor`
     /// 下发（Player 里这条路径唯一的调用方是反序列化，那时脚本还没绑上）。
