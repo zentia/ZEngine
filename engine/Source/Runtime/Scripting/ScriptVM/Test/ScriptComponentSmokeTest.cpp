@@ -931,10 +931,13 @@ int main(int argc, char** argv)
         CheckEq("I0b", "Gizmos 在这个 env 里是可见的", EvalToResult(*sm->GetEnv(), "globalThis.__zResult = typeof Gizmos;"),
                 "function");
         CheckTrue("I1", "DrawGizmo 送到了 JS 侧", comp2->InvokeMethod("DrawGizmo"));
-        CheckEq("I2", "一条线 + 一个球（后端真的收到了）",
+        // 1 条线 + 视锥 12 条 = 13。用视锥而不是再画一条线，是因为 12 是个
+        // **有结构**的数：少一个循环（近/远/侧棱）就变成 9 或 8，而"1 条线"
+        // 那种样本看不出少画了哪一组。
+        CheckEq("I2", "一条线 + 一个视锥（12 条）+ 一个球（后端真的收到了）",
                 std::to_string(gizmo_group->GetLineCount(false)) + "/" +
                     std::to_string(gizmo_group->GetUniformDynamicDataCount()),
-                "1/1");
+                "13/1");
         gizmo_group->ClearData();
     }
     else

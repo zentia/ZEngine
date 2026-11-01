@@ -36,8 +36,8 @@
 // 还没做的 Unity 成员
 // --------------------
 //   * `DrawIcon` —— 没有图标资源管线。
-//   * `DrawMesh` / `DrawFrustum` / `DrawGUITexture` —— 需要一次性的网格 / 相机
-//     句柄，绑定层搬不动。
+//   * `DrawMesh` / `DrawGUITexture` —— 需要一次性的网格 / 贴图句柄，绑定层搬不动。
+//     （`DrawFrustum` 不需要：它是 8 个角点 + 12 条线，纯几何，不碰资源。）
 //   * `DrawSphere` 与 `DrawWireSphere` 目前**画出来是一样的**：后端的球体图元
 //     没有 FillMode（`DebugDrawSphere` 结构体没有该字段，`DrawWireFrameObject`
 //     一律按线框渲染）。API 分开保留，等后端有实心光栅化路径时再接上；在那之前
@@ -108,5 +108,29 @@ namespace Runtime
         /// 份数据换个参数，所以计数上能区分，测试也就能区分。
         ZFUNCTION()
         static void DrawCube(const ::Vector3& center, const ::Vector3& size);
+
+        // ---- 视锥 ------------------------------------------------------
+
+        /// 相机视锥的**线框**：近平面 4 条 + 远平面 4 条 + 4 条侧棱，共 12 条线。
+        /// Unity 的 `Gizmos.DrawFrustum`。
+        ///
+        /// ⚠️ 两条与 Unity **数字不同但语义相同**的约定：
+        ///   * 张开方向是 **forward = -Y**（本引擎的语义前，与 `Vector3.forward`
+        ///     / `Transform::GetForward()` 一致），不是 Unity 的 +Z。照抄 +Z 会得到
+        ///     一个朝天上指的视锥 —— 而且它仍然是 12 条线、仍然是个台体，只数图元
+        ///     数完全看不出来。
+        ///   * up = +Z、right = forward × up = **-X**，同样与 `Vector3.up` /
+        ///     `Vector3.right` 对齐（`TestAxisConventionAgreement` 那套）。
+        ///
+        /// `fov` 是**竖直**视野角、**度**（Unity 同），`aspect` = 宽/高。
+        /// 参数退化（fov 不在 (0,180)、near<=0、far<=near、aspect<=0）时**一条线
+        /// 都不画**：与其把 inf / NaN 写进顶点缓冲污染整条 draw call，不如什么都不
+        /// 画 —— "某个 gizmo 没出现"比"整屏乱掉"好查得多。
+        ZFUNCTION()
+        static void DrawFrustum(const ::Vector3& center,
+                                float fov,
+                                float far_clip_plane,
+                                float near_clip_plane,
+                                float aspect);
     };
 }  // namespace Runtime

@@ -6888,6 +6888,192 @@ namespace
         group->ClearData();
     }
 
+    // ---------------------------------------------------------------- FR ---
+    // `Gizmos.DrawFrustum`（Unity 的相机视锥线框）。
+    //
+    // 这一组最容易"看起来对"的错是**轴向**：照 Unity 抄成 +Z 张开，得到的仍然是
+    // 12 条线、仍然是个台体、角点仍然两两对称 —— 所有计数型断言全绿。只有"远端
+    // 落在 -Y 那一侧"这种**带符号**的断言才分得出来（FR7）。
+    void TestGizmosFrustum()
+    {
+        auto* manager = GET_SYSTEM(DebugDrawManager);
+        Check(manager != nullptr, "FR0", "DebugDrawManager is reachable");
+        if (manager == nullptr)
+        {
+            return;
+        }
+
+        auto* group = manager->TryGetOrCreateDebugDrawGroup("gizmos");
+#if defined(Z_HAS_VULKAN)
+        Check(group != nullptr, "FR1", "the gizmo group exists");
+#else
+        Check(group == nullptr, "FR1", "no debug-draw backend: the group is absent by design");
+#endif
+        if (group == nullptr)
+        {
+            // 没有后端时必须是 no-op 而不是崩 —— 走到这一行本身就是证明。
+            Runtime::Gizmos::SetColor(::Color(1.0f, 1.0f, 1.0f, 1.0f));
+            Runtime::Gizmos::SetMatrix(Matrix4x4::IDENTITY);
+            Runtime::Gizmos::DrawFrustum(::Vector3(0.0f, 0.0f, 0.0f), 90.0f, 4.0f, 2.0f, 1.0f);
+            Check(true, "FR2", "DrawFrustum survives a missing backend");
+            return;
+        }
+
+        Runtime::Gizmos::SetColor(::Color(1.0f, 1.0f, 1.0f, 1.0f));
+        Runtime::Gizmos::SetMatrix(Matrix4x4::IDENTITY);
+
+        // fov=90°, near=2, far=4, aspect=1 ⇒ tan(45°)=1：
+        //   近平面半高 = 2、远平面半高 = 4（宽同）。
+        //   张开方向 -Y：近平面 y = -2、远平面 y = -4。up = +Z、right = -X。
+        group->ClearData();
+        Runtime::Gizmos::DrawFrustum(::Vector3(0.0f, 0.0f, 0.0f), 90.0f, 4.0f, 2.0f, 1.0f);
+        Check(group->GetLineCount(false) == 12, "FR3",
+              "DrawFrustum is 12 wire lines (4 near + 4 far + 4 side)");
+        Check(group->GetLineCount(true) == 0, "FR4", "and depth-tested, like every other gizmo");
+        Check(group->GetTriangleCount(false) == 0, "FR5",
+              "it is a WIRE frustum -- no solid triangles (DrawCube is the solid one)");
+
+        std::vector<DebugDrawVertex> verts;
+        group->WriteLineData(verts, false);
+        Check(verts.size() == 24, "FR6", "12 lines are 24 vertices");
+        if (verts.size() != 24)
+        {
+            group->ClearData();
+            return;
+        }
+
+        // --- 轴向：远端在 **-Y**，不是 +Y ---------------------------------
+        // 这是这一组唯一的真判据：张开方向写成 +Y，FR3/FR4/FR5/FR6 全部照绿。
+        float min_y = verts[0].pos.y;
+        float max_y = verts[0].pos.y;
+        float max_abs_x = 0.0f;
+        float max_abs_z = 0.0f;
+        for (const auto& v : verts)
+        {
+            min_y = std::min(min_y, v.pos.y);
+            max_y = std::max(max_y, v.pos.y);
+            max_abs_x = std::max(max_abs_x, std::fabs(v.pos.x));
+            max_abs_z = std::max(max_abs_z, std::fabs(v.pos.z));
+        }
+        Check(Near(max_y, -2.0f) && Near(min_y, -4.0f), "FR7",
+              "the frustum opens along -Y (this engine's forward): near at y=-2, far at y=-4");
+        Check(Near(max_abs_x, 4.0f) && Near(max_abs_z, 4.0f), "FR8",
+              "far plane is 4 wide and 4 tall (fov 90 deg => half-height == distance)");
+
+        // --- 台体而不是盒子：侧棱同时在 y 和 z 上变化 ----------------------
+        // 盒子的每条边只沿一个轴走。只数图元数的话，`DrawFrustum` 退化成
+        // `DrawWireCube` 是绿的（两个都是 12 条线）。
+        bool has_diagonal_edge = false;
+        for (size_t i = 0; i + 1 < verts.size(); i += 2)
+        {
+            const ::Vector3& a = verts[i].pos;
+            const ::Vector3& b = verts[i + 1].pos;
+            if (!Near(a.y, b.y) && !Near(a.z, b.z))
+            {
+                has_diagonal_edge = true;
+            }
+        }
+        Check(has_diagonal_edge, "FR9",
+              "some edge moves in y AND z -- it is a truncated pyramid, not a box");
+
+        // --- aspect：只拉宽，不拉高 ---------------------------------------
+        group->ClearData();
+        Runtime::Gizmos::DrawFrustum(::Vector3(0.0f, 0.0f, 0.0f), 90.0f, 4.0f, 2.0f, 2.0f);
+        verts.clear();
+        group->WriteLineData(verts, false);
+        float wide_x = 0.0f;
+        float wide_z = 0.0f;
+        for (const auto& v : verts)
+        {
+            wide_x = std::max(wide_x, std::fabs(v.pos.x));
+            wide_z = std::max(wide_z, std::fabs(v.pos.z));
+        }
+        Check(Near(wide_x, 8.0f) && Near(wide_z, 4.0f), "FR10",
+              "aspect 2 doubles the width only (8 x 4), it does not scale the height");
+
+        // --- fov 是**度**：90 度 vs 90 弧度差 1.6 倍 ------------------------
+        group->ClearData();
+        // near=1 / far=2（⚠️ 不能取 far==near，那会被退化守卫挡掉，于是变成
+        // "0 条线" 而不是 "角度单位错了" —— 一条自相矛盾的断言）。
+        Runtime::Gizmos::DrawFrustum(::Vector3(0.0f, 0.0f, 0.0f), 60.0f, 2.0f, 1.0f, 1.0f);
+        verts.clear();
+        group->WriteLineData(verts, false);
+        float fov60_z = 0.0f;
+        for (const auto& v : verts)
+        {
+            fov60_z = std::max(fov60_z, std::fabs(v.pos.z));
+        }
+        // 远平面半高 = 2 * tan(30°) ≈ 1.1547（当成弧度算会得到 2*|tan(30 rad)| ≈ 12.9）。
+        Check(Near(fov60_z, 1.1547005f, 1.0e-3f), "FR11",
+              "fov is in DEGREES: 60 deg at distance 2 gives half-height 2*tan(30) = 1.155");
+
+        // --- Gizmos.matrix / Gizmos.color 照常生效 -------------------------
+        // ⚠️ 平移量选 +Z：视锥的 z 本来是 -4..+4，平移后变成 1..9。用"min z 变成
+        // 1"来验，比"y 没变"强得多 —— 后者在"矩阵根本没被用上"的实现下也是绿的。
+        group->ClearData();
+        Matrix4x4 translate = Matrix4x4::IDENTITY;
+        translate.makeTrans(::Vector3(0.0f, 0.0f, 5.0f));
+        Runtime::Gizmos::SetMatrix(translate);
+        Runtime::Gizmos::SetColor(::Color(1.0f, 0.0f, 0.0f, 1.0f));
+        Runtime::Gizmos::DrawFrustum(::Vector3(0.0f, 0.0f, 0.0f), 90.0f, 4.0f, 2.0f, 1.0f);
+        verts.clear();
+        group->WriteLineData(verts, false);
+        float shift_min_z = verts.empty() ? 0.0f : verts[0].pos.z;
+        float shift_max_z = shift_min_z;
+        for (const auto& v : verts)
+        {
+            shift_min_z = std::min(shift_min_z, v.pos.z);
+            shift_max_z = std::max(shift_max_z, v.pos.z);
+        }
+        Check(verts.size() == 24 && Near(shift_min_z, 1.0f) && Near(shift_max_z, 9.0f), "FR12",
+              "Gizmos.matrix moves the frustum (+Z by 5: z range -4..4 becomes 1..9)");
+        Check(verts.size() == 24 && Near(verts[0].color, ::Vector4(1.0f, 0.0f, 0.0f, 1.0f)),
+              "FR13", "Gizmos.color reaches the frustum's vertices");
+
+        Runtime::Gizmos::SetMatrix(Matrix4x4::IDENTITY);
+        Runtime::Gizmos::SetColor(::Color(1.0f, 1.0f, 1.0f, 1.0f));
+
+        // --- 退化参数：一条线都不画，且绝不写 NaN ---------------------------
+        // 四种退化各来一次。忘了守卫的话 `fov=180` 给出 tan(90°) = inf，一个 inf
+        // 顶点会污染整条 draw call —— "某个 gizmo 没了"远好过"整屏乱掉"。
+        struct
+        {
+            const char* what;
+            float fov;
+            float far_c;
+            float near_c;
+            float aspect;
+        } degenerate[] = {
+            {"fov == 0", 0.0f, 4.0f, 2.0f, 1.0f},
+            {"fov == 180 (tan(90) diverges)", 180.0f, 4.0f, 2.0f, 1.0f},
+            {"near <= 0", 90.0f, 4.0f, 0.0f, 1.0f},
+            {"far <= near", 90.0f, 2.0f, 2.0f, 1.0f},
+            {"aspect == 0", 90.0f, 4.0f, 2.0f, 0.0f},
+        };
+        for (const auto& d : degenerate)
+        {
+            group->ClearData();
+            Runtime::Gizmos::DrawFrustum(::Vector3(0.0f, 0.0f, 0.0f), d.fov, d.far_c, d.near_c,
+                                         d.aspect);
+            verts.clear();
+            group->WriteLineData(verts, false);
+            bool any_non_finite = false;
+            for (const auto& v : verts)
+            {
+                if (std::isnan(v.pos.x) || std::isnan(v.pos.y) || std::isnan(v.pos.z) ||
+                    std::isinf(v.pos.x) || std::isinf(v.pos.y) || std::isinf(v.pos.z))
+                {
+                    any_non_finite = true;
+                }
+            }
+            Check(group->GetLineCount(false) == 0 && !any_non_finite, "FR14",
+                  "a degenerate frustum draws nothing (and no NaN/inf)");
+            (void)d.what;
+        }
+
+        group->ClearData();
+    }
+
     void TestGizmosWiring()
     {
         const std::string header =
@@ -6920,6 +7106,25 @@ namespace
               "DrawCube does not call AddQuad (the backend never writes solid quads)");
         Check(CountOccurrences(source, "group->AddTriangle(") >= 2, "GW10",
               "it emits solid triangles instead");
+
+        // ---- DrawFrustum ----
+        Check(CountOccurrences(header, "static void DrawFrustum(") >= 1, "GW11",
+              "DrawFrustum is declared");
+        // 12 条线 = 近 4 + 远 4 + 侧棱 4。少一个循环就是 8 条，而 8 条看起来
+        // "也像个框"，只有计数能分出来。
+        Check(CountOccurrences(source, "add_edge(") >= 3, "GW12",
+              "all three edge loops exist (near, far, and the four side edges)");
+        // ⚠️ 轴向：张开方向必须是 -Y（语义前），不是 Unity 分量里的 +Z。写成
+        // `UNIT_Z` 的话 FR7 会红，但 FR3/FR5/FR6 全绿 —— 所以这里也钉一道。
+        Check(CountOccurrences(source, "::Vector3::NEGATIVE_UNIT_Y") >= 1, "GW13",
+              "the frustum opens along -Y (this engine's forward), not Unity's +Z");
+        Check(CountOccurrences(source, "::Vector3::UNIT_Z") >= 1, "GW14",
+              "up is +Z, matching Vector3.up");
+        // 退化守卫。没有它 `fov=180` 会把 inf 写进顶点缓冲。
+        Check(CountOccurrences(source, "fov >= 180.0f") >= 1, "GW15",
+              "a degenerate fov is rejected instead of producing inf");
+        Check(CountOccurrences(source, "Math::DegreesToRadians(fov)") >= 1, "GW16",
+              "fov is converted from degrees (Unity's unit)");
 
         // "声明了"不等于"脚本看得见"。发布那一半（绑定表里真的有 `Gizmos`、
         // 且是静态的）由 ScriptVMSmokeTest 的 L 组从 JS 里 `typeof Gizmos` 验
@@ -8624,6 +8829,7 @@ int main()
     TestVectorFacadeWiring();
     TestAxisConventionAgreement();
     TestGizmos();
+    TestGizmosFrustum();
     TestGizmosWiring();
     TestBoundsAndColor32();
     TestBoundsAndColor32Wiring();

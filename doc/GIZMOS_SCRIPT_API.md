@@ -7,6 +7,7 @@ Gizmos.DrawRay(here, direction);
 Gizmos.DrawWireSphere(center, 1.5);
 Gizmos.DrawWireCube(center, { x: 2, y: 2, z: 2 });
 Gizmos.DrawCube(center, { x: 2, y: 2, z: 2 });
+Gizmos.DrawFrustum(center, 90, /*far*/ 1000, /*near*/ 0.3, /*aspect*/ 16 / 9);
 ```
 
 | TypeScript | C++ |
@@ -19,6 +20,7 @@ Gizmos.DrawCube(center, { x: 2, y: 2, z: 2 });
 | `Gizmos.DrawSphere(center, radius)` | solid（见下） |
 | `Gizmos.DrawWireCube(center, size)` | 12 条边的 box 图元 |
 | `Gizmos.DrawCube(center, size)` | 12 个实心三角形 |
+| `Gizmos.DrawFrustum(center, fov, farClipPlane, nearClipPlane, aspect)` | 12 条线的视锥（见下） |
 
 `color` 与 `matrix` 是**静态属性**（走 pesapi 的 `Variables` 表，装在构造器上，
 不是 prototype）。默认值与 Unity 一致：白色、单位矩阵。
@@ -72,13 +74,48 @@ AddTriangle(..., _FillMode_solid) →  真的画出来
 染。所以 `DrawSphere` 现在转发给 `DrawWireSphere`。API 分开保留，等后端有实心光栅
 化路径再接上 —— 在这之前两者行为一致这件事写在这里，不藏在实现里。
 
+## 三之二、`DrawFrustum`：轴向与 Unity 不同，语义相同
+
+近平面 4 条 + 远平面 4 条 + 4 条侧棱 = **12 条线**（不是实心，与 `DrawCube` 不同
+图元类型）。
+
+```
+        far (半高 = far * tan(fov/2))
+       +--------+
+      /|       /|
+     / |      / |
+near+---+----+  |          forward
+    |  +----|---+
+    | /     | /
+    +-------+/
+
+forward = -Y      up = +Z      right = forward × up = -X
+```
+
+⚠️ Unity 的 `DrawFrustum` 沿 **+Z** 张开（那是 Unity 相机的 forward）。本引擎的
+语义前是 **-Y**（`Vector3.forward` / `Transform::GetForward()` 都是它），所以这里
+照**语义**对齐而不是照 Unity 的分量数字 —— 理由与 `Vector3.forward` 一致。
+
+照抄 +Z 是最难发现的一类错：结果仍然是 12 条线、仍然是台体、角点仍然两两对称，
+所有计数型断言（FR3 / FR4 / FR5 / FR6）**全绿**。只有"远端落在 -Y 那一侧"这种
+带符号的断言分得出来 —— 那就是 **FR7**。
+
+`fov` 是**竖直**视野角、**度**（Unity 同）；`aspect` = 宽/高，只拉宽不拉高
+（FR10）。
+
+### 退化参数：一条线都不画
+
+`fov ∉ (0,180)`、`near <= 0`、`far <= near`、`aspect <= 0` 时直接返回。忘了这个
+守卫的话 `fov = 180` 会给出 `tan(90°) = inf`，而**一个 inf 顶点会污染整条 draw
+call** —— "某个 gizmo 没出现"比"整屏乱掉"好查得多（与 `Matrix4x4.Inverse` 对奇异
+矩阵的处理同一个道理）。FR14 逐个验这四种退化，且额外断言没有 NaN / inf 落进顶点。
+
 ## 四、没做的 Unity 成员
 
 | Unity | 状态 |
 |---|---|
 | `Gizmos.DrawIcon` | 没有图标资源管线 |
 | `Gizmos.DrawMesh` | 绑定层搬不动网格句柄 |
-| `Gizmos.DrawFrustum` | 需要一次性相机句柄 |
 | `Gizmos.DrawGUITexture` | 没有 IMGUI 层 |
 | `Gizmos.exposure` / `probeSize` | HDRP 专属 |
 
@@ -87,8 +124,9 @@ AddTriangle(..., _FillMode_solid) →  真的画出来
 | 位置 | 覆盖 |
 |---|---|
 | `UnityParitySmokeTest` GZ | 几何：顶点位置、颜色、图元计数。后端是 `DebugDrawGroup`，计数与 `WriteLineData` 都能在无 GPU 下读出来 |
-| `UnityParitySmokeTest` GW | 接线门（声明 / 判空 / 文件级静态 / 不用 AddQuad） |
+| `UnityParitySmokeTest` FR | `DrawFrustum`：12 条线、轴向（-Y）、台体而非盒、aspect、fov 单位、matrix / color、五种退化参数 |
+| `UnityParitySmokeTest` GW | 接线门（声明 / 判空 / 文件级静态 / 不用 AddQuad / 视锥的轴向与三个循环） |
 | `ScriptVMSmokeTest` L | 发布面：脚本里 `typeof Gizmos`、`Gizmos.color` 读写真的生效 |
 | `ScriptComponentSmokeTest` F3 | 端到端：`Mover.ts` 里的 `Gizmos.*` 过 tsc 类型检查，再从 JS 画到后端 |
 
-变异用例见 `.mutate_gz.py`。
+变异用例见 `.mutate_gz.py`（Gizmos 本体）与 `.mutate_fr.py`（`DrawFrustum`）。

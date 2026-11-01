@@ -251,6 +251,10 @@ class Mover extends Behaviour {
         Gizmos.color = { r: 1, g: 0, b: 0, a: 1 };
         Gizmos.DrawLine({ x: 0, y: 0, z: 0 }, { x: 1, y: 0, z: 0 });
         Gizmos.DrawWireSphere({ x: 0, y: 0, z: 0 }, 1);
+        // 视锥 12 条线 + 上面那条 = 13。用 12 而不是 1，是为了让"DrawFrustum 只
+        // 画了近平面那 4 条"这种实现在脚本这一层也红 —— 光有一条线的话，
+        // 4 条和 12 条都只表现为"有东西"。
+        Gizmos.DrawFrustum({ x: 0, y: 0, z: 0 }, 90, 4, 2, 1);
         Gizmos.color = { r: 1, g: 1, b: 1, a: 1 };
     }
 

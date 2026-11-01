@@ -8,6 +8,8 @@
 
 #include <EASTL/string.h>
 
+#include <cmath>
+
 namespace
 {
     /// 所有 gizmo 进同一个 group。
@@ -220,6 +222,78 @@ namespace Runtime
                                k_debug_draw_one_frame,
                                kDepthTested,
                                _FillMode_solid);
+        }
+    }
+
+    // ---- 视锥 ---------------------------------------------------------------
+
+    void Gizmos::DrawFrustum(const ::Vector3& center,
+                             float fov,
+                             float far_clip_plane,
+                             float near_clip_plane,
+                             float aspect)
+    {
+        auto* group = GetGizmoGroup();
+        if (group == nullptr)
+        {
+            return;
+        }
+
+        // 退化参数：一条线都不画，而不是把 inf / NaN 交给后端。
+        // `fov >= 180` 时 tan(fov/2) 发散，`near <= 0` 时近平面跑到眼睛后面，
+        // `far <= near` 时台体反过来 —— 三种都只会产出一个没人看得懂的形状。
+        if (!(fov > 0.0f) || fov >= 180.0f || !(near_clip_plane > 0.0f) ||
+            !(far_clip_plane > near_clip_plane) || !(aspect > 0.0f))
+        {
+            return;
+        }
+
+        const ::Matrix4x4 matrix = GetMatrix();
+        const ::Vector4 color = ToVec4(GetColor());
+
+        // ⚠️ 语义轴，不是 Unity 的分量：前是 -Y、上是 +Z、右是 -X。这三个常量与
+        // `Vector3.forward` / `up` / `right` 必须是同一套（FR7 就是钉这一条的）。
+        const ::Vector3& forward = ::Vector3::NEGATIVE_UNIT_Y;
+        const ::Vector3& up = ::Vector3::UNIT_Z;
+        const ::Vector3 right = forward.crossProduct(up);
+
+        const float tan_half_fov = std::tan(Math::DegreesToRadians(fov) * 0.5f);
+
+        // 四个角的顺序固定 (-r,-u) (+r,-u) (+r,+u) (-r,+u)：下面用 (i, i+1)%4
+        // 连边，绕序错了会变成两个交叉的蝴蝶面而不是一个矩形。
+        ::Vector3 near_c[4];
+        ::Vector3 far_c[4];
+        for (int i = 0; i < 4; ++i)
+        {
+            const float sx = ((i == 1) || (i == 2)) ? 1.0f : -1.0f;
+            const float sy = (i >= 2) ? 1.0f : -1.0f;
+
+            const ::Vector3 n_off = right * (sx * near_clip_plane * tan_half_fov * aspect) +
+                                    up * (sy * near_clip_plane * tan_half_fov);
+            const ::Vector3 f_off = right * (sx * far_clip_plane * tan_half_fov * aspect) +
+                                    up * (sy * far_clip_plane * tan_half_fov);
+
+            near_c[i] = matrix * (center + forward * near_clip_plane + n_off);
+            far_c[i] = matrix * (center + forward * far_clip_plane + f_off);
+        }
+
+        auto add_edge = [group, &color](const ::Vector3& a, const ::Vector3& b) {
+            group->AddLine(a, b, color, color, k_debug_draw_one_frame, kDepthTested);
+        };
+
+        for (int i = 0; i < 4; ++i)
+        {
+            const int j = (i + 1) % 4;
+            add_edge(near_c[i], near_c[j]);  // 近平面
+        }
+        for (int i = 0; i < 4; ++i)
+        {
+            const int j = (i + 1) % 4;
+            add_edge(far_c[i], far_c[j]);  // 远平面
+        }
+        for (int i = 0; i < 4; ++i)
+        {
+            add_edge(near_c[i], far_c[i]);  // 侧棱
         }
     }
 }  // namespace Runtime
