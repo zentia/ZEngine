@@ -54,6 +54,29 @@ def mutate(path, old, new):
     io.open(path, "w", encoding="utf-8", newline="\n").write(text)
 
 
+def mutate_in(path, func_sig, old, new):
+    """Replace only inside `func_sig`'s body.
+
+    锚点必须限定在函数内：`if (m_WorldPartition.IsEnabled()) { for (auto&
+    level_pair : m_LoadedLevels)` 在 WorldManager.cpp 里出现 **4 次**，只做全局
+    replace(old, new, 1) 会改到前面另一个函数上 —— 于是得到一个"什么也没改到"
+    的变异体，报 SURVIVED（AM6 第一次就是这么存活的）。
+    """
+    with io.open(path, "r", encoding="utf-8") as f:
+        text = f.read()
+    i = text.find(func_sig)
+    if i < 0:
+        raise SystemExit("FUNC NOT FOUND in %s:\n%r" % (path, func_sig))
+    j = text.find("\n}\n", i)
+    if j < 0:
+        raise SystemExit("END OF FUNC NOT FOUND: %r" % func_sig)
+    region = text[i:j]
+    if old not in region:
+        raise SystemExit("PATTERN NOT FOUND in %s [%s]:\n%r" % (path, func_sig, old))
+    io.open(path, "w", encoding="utf-8", newline="\n").write(
+        text[:i] + region.replace(old, new, 1) + text[j:])
+
+
 def run(exe):
     r = subprocess.run([os.path.join(ROOT, exe)], cwd=ROOT, env=ENV,
                        capture_output=True, text=True, errors="replace", timeout=300)
@@ -159,16 +182,13 @@ MUTATIONS = [
     # 行为上观测不到（单元测试里没有已加载的世界），只有 AW13 这个函数体扫描
     # 能抓到 —— 这正是 AW13 存在的理由。
     ("AM6 WorldManager early-returns when the world is not loaded", WORLD_CPP,
-     "    if (m_WorldPartition.IsEnabled())\n"
-     "    {\n"
-     "        for (auto& level_pair : m_LoadedLevels)",
+     "void WorldManager::BroadcastAppEvent(AppEventKind kind, bool arg)",
+     "    if (m_WorldPartition.IsEnabled())",
      "    if (!m_IsWorldLoaded)\n"
      "    {\n"
      "        return;\n"
      "    }\n"
-     "    if (m_WorldPartition.IsEnabled())\n"
-     "    {\n"
-     "        for (auto& level_pair : m_LoadedLevels)"),
+     "    if (m_WorldPartition.IsEnabled())"),
 
     # ---- pause 的推导 --------------------------------------------------------
     # Pause 退化成 Focus 的别名：runInBackground=true 时失焦也会"暂停"。
@@ -264,7 +284,13 @@ def main():
     results = []
     touched = set()
     try:
-        for name, path, old, new in MUTATIONS:
+        for entry in MUTATIONS:
+            if len(entry) == 5:
+                # (name, path, func_sig, old, new)：只在那个函数体内替换。
+                name, path, func_sig, old, new = entry
+            else:
+                name, path, old, new = entry
+                func_sig = None
             if only and name.split()[0] not in only:
                 continue
             print("=== %s ===" % name)
@@ -272,7 +298,10 @@ def main():
             subprocess.run(["git", "show", "HEAD:" + os.path.relpath(path, ROOT).replace("\\", "/")],
                            cwd=ROOT, env=ENV, stdout=io.open(bak, "wb"), stderr=subprocess.DEVNULL)
             try:
-                mutate(path, old, new)
+                if func_sig is not None:
+                    mutate_in(path, func_sig, old, new)
+                else:
+                    mutate(path, old, new)
                 verdict = "BUILD FAILED"
                 for _ in range(3):
                     verdict = build_and_run()
