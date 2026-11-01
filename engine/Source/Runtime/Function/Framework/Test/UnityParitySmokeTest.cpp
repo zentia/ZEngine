@@ -32,6 +32,9 @@
 #include "Runtime/BaseClasses/TypeManager.h"
 #include "Runtime/Core/Base/SystemRegistry.h"
 #include "Runtime/Core/Math/Matrix4.h"
+#include "Runtime/Core/Math/Frustum.h"
+#include "Runtime/Core/Math/Plane.h"
+#include "Runtime/Core/Math/Math.h"
 #include "Runtime/Core/Math/UnityRandom.h"
 #include "Runtime/Core/Math/Vector4.h"
 #include "Runtime/Function/Render/DebugDraw/DebugDrawGroup.h"
@@ -4696,6 +4699,154 @@ namespace
                   CountOccurrences(facade_header, "static ::Quaternion EulerVector(") >= 1 &&
                   CountOccurrences(facade_header, "static ::Vector3 GetEulerAngles(") >= 1, "QW9",
               "the three new entries are declared on the facade");
+    }
+
+    // --------------------------------------------------------------- FV ----
+    // Unity 的 `GeometryUtility.CalculateFrustumPlanes` / `TestPlanesAABB`
+    // 与 `UnityEngine.Plane`。
+    //
+    // 这一组能测，是因为视锥是**纯几何**：拿一张自己拼的 `P * V` 就能验证六个
+    // 平面的朝向、深度区间、以及盒子判据。它不依赖 RenderSystem（headless 下恒
+    // 为 nullptr），也不依赖任何资产 —— 这正好是 `Renderer.isVisible` 那种
+    // "得等真渲染一遍才知道"的判据的对立面。
+    //
+    // ⚠️ 夹具一律**不对称**：相机放在 `eye = (2, 0, 0)` 而不是原点。相机在原点的
+    // 话，"view 矩阵没乘进去"和"乘进去了"对中心点给出同一个答案。
+    void TestFrustumCulling()
+    {
+        const float znear = 0.1f;
+        const float zfar = 100.f;
+
+        // --- FV0：先钉死深度区间 ----------------------------------------
+        // `Math::MakePerspectiveMatrix` 出来的是 **z/w ∈ [0,1]**（DirectX /
+        // Vulkan 默认），不是 OpenGL 的 [-1,1]。这条断言就是"默认参数为什么是
+        // kZeroToOne"的理由；将来引擎换约定，它会第一个红。
+        {
+            const Matrix4x4 proj = Math::MakePerspectiveMatrix(
+                Radian(Math::DegreesToRadians(60.f)), 1.f, znear, zfar);
+            const Vector4 at_near = proj * Vector4(0.f, 0.f, -znear, 1.f);
+            const Vector4 at_far = proj * Vector4(0.f, 0.f, -zfar, 1.f);
+            Check(std::fabs(at_near.z / at_near.w - 0.f) < 1e-4f, "FV0",
+                  "the engine's perspective matrix maps the near plane to z/w = 0");
+            Check(std::fabs(at_far.z / at_far.w - 1.f) < 1e-4f, "FV1",
+                  "and the far plane to z/w = 1 (so DepthRange::kZeroToOne is the right default)");
+        }
+
+        // 相机在 (2,0,0)，朝 -Y（本引擎的 forward），上为 +Z。
+        auto make_frustum = [&](const Vector3& eye, float fov_degrees, float aspect)
+        {
+            const Matrix4x4 view = Math::MakeLookAtMatrix(eye, eye + Vector3(0.f, -10.f, 0.f),
+                                                          Vector3::UNIT_Z);
+            const Matrix4x4 proj = Math::MakePerspectiveMatrix(
+                Radian(Math::DegreesToRadians(fov_degrees)), aspect, znear, zfar);
+            return Frustum::FromViewProjection(proj * view);
+        };
+
+        const Frustum f60 = make_frustum(Vector3(2.f, 0.f, 0.f), 60.f, 1.f);
+
+        // --- 六个面各自的判据 -------------------------------------------
+        Check(f60.ContainsPoint(Vector3(2.f, -5.f, 0.f)), "FV2", "a point dead ahead is inside");
+        Check(!f60.ContainsPoint(Vector3(2.f, 5.f, 0.f)), "FV3", "a point behind the eye is outside");
+        Check(!f60.ContainsPoint(Vector3(102.f, -5.f, 0.f)), "FV4", "and so is one far off to the side");
+        // 近裁剪：0.05 在 znear=0.1 之前。
+        Check(!f60.ContainsPoint(Vector3(2.f, -0.05f, 0.f)), "FV5", "a point in front of near is outside");
+        Check(f60.ContainsPoint(Vector3(2.f, -0.11f, 0.f)), "FV6", "and just past near is inside");
+        // 远裁剪。
+        Check(f60.ContainsPoint(Vector3(2.f, -99.f, 0.f)), "FV7", "a point just inside far is inside");
+        Check(!f60.ContainsPoint(Vector3(2.f, -101.f, 0.f)), "FV8", "and just past far is outside");
+
+        // --- ⚠️ 不对称夹具：view 的平移真的算进去了 ------------------------
+        // fov 30°、距离 5 时半宽只有 5*tan(15°) ≈ 1.34，所以"正前方"是 (2,-5,0)
+        // 而 (0,-5,0) 已经出画。相机若在原点，(0,-5,0) 反而是正中心 —— 这条就是
+        // 用来区分这两种实现的。
+        const Frustum f30 = make_frustum(Vector3(2.f, 0.f, 0.f), 30.f, 1.f);
+        Check(f30.ContainsPoint(Vector3(2.f, -5.f, 0.f)), "FV9", "the narrow frustum is centred on the eye");
+        Check(!f30.ContainsPoint(Vector3(0.f, -5.f, 0.f)), "FV10",
+              "and the world origin is off-screen (the eye offset is really applied)");
+
+        // --- 盒子 ---------------------------------------------------------
+        Check(f60.Intersects(Bounds::FromCenterSize(Vector3(2.f, -5.f, 0.f), Vector3(1.f, 1.f, 1.f))),
+              "FV11", "a box in front intersects");
+        Check(!f60.Intersects(Bounds::FromCenterSize(Vector3(2.f, 500.f, 0.f), Vector3(1.f, 1.f, 1.f))),
+              "FV12", "a box behind the eye does not");
+        // ⚠️ 保守性：一个把相机整个包进去的大盒子**算相交**（中心在相机后面也
+        // 一样）。这是 TestPlanesAABB 的既定精度，写反成"必须全在锥内"会让
+        // 大物体凭空消失。
+        Check(f60.Intersects(Bounds::FromCenterSize(Vector3(2.f, 0.f, 0.f), Vector3(100.f, 100.f, 100.f))),
+              "FV13", "a box enclosing the camera counts as intersecting (the test is conservative)");
+
+        // --- 退化输入 ------------------------------------------------------
+        Check(!f60.HasDegeneratePlane(), "FV14", "a real frustum has no degenerate plane");
+        Check(Frustum::FromViewProjection(Matrix4x4::ZERO).HasDegeneratePlane(), "FV15",
+              "a zero matrix does (and then everything counts as visible, not nothing)");
+
+        // --- Plane 本身 ----------------------------------------------------
+        const Plane ground = Plane(Vector3::UNIT_Z, Vector3::ZERO);
+        Check(std::fabs(ground.GetDistanceToPoint(Vector3(0.f, 0.f, 3.f)) - 3.f) < 1e-5f, "FV16",
+              "a plane's signed distance is dot(normal, p) + distance");
+        Check(ground.GetSide(Vector3(0.f, 0.f, 0.0001f)) && !ground.GetSide(Vector3(0.f, 0.f, -0.0001f)),
+              "FV17", "GetSide is true on the normal side (the boundary counts as inside)");
+        Plane flipped = ground;
+        flipped.Flip();
+        Check(std::fabs(flipped.distance - 0.f) < 1e-5f && flipped.normal.z < 0.f, "FV18",
+              "Flip negates both (the plane itself is unchanged)");
+
+        // ⚠️ 符号判据：Translate 是 `distance -= dot(normal, t)`。写成 `+=` 的话
+        // 平面会往反方向跑，而它仍然是一个自洽的平面 —— 只在实际裁剪时才现形。
+        Plane moved = ground;
+        moved.Translate(Vector3(0.f, 0.f, 2.f));
+        Check(std::fabs(moved.GetDistanceToPoint(Vector3(0.f, 0.f, 2.f))) < 1e-5f, "FV19",
+              "Translate moves the plane along the translation, not against it");
+
+        float hit_t = 0.f;
+        Check(ground.Raycast(Vector3(0.f, 0.f, 5.f), Vector3(0.f, 0.f, -1.f), hit_t) &&
+                  std::fabs(hit_t - 5.f) < 1e-4f, "FV20", "Raycast hits the front face at t = 5");
+        Check(!ground.Raycast(Vector3(0.f, 0.f, 5.f), Vector3(0.f, 0.f, 1.f), hit_t), "FV21",
+              "and refuses to hit from behind");
+        Check(!ground.Raycast(Vector3(0.f, 0.f, 5.f), Vector3(1.f, 0.f, 0.f), hit_t), "FV22",
+              "or when the ray is parallel (no NaN, no phantom hit)");
+    }
+
+    void TestFrustumWiring()
+    {
+        const std::string frustum_source = ReadFile("Source/Runtime/Core/Math/Frustum.cpp");
+        Check(!frustum_source.empty(), "FW0", "Frustum.cpp is readable");
+        if (!frustum_source.empty())
+        {
+            // ⚠️ 头条：near 平面必须走 [0,1] 那条分支。写成 `m[w] + m[z]`（GL）
+            // 的话"贴近相机的东西会被剔掉"，而 far 平面照样是对的 —— 所以只能
+            // 靠源码门，不能靠"看起来没出问题"。
+            const std::size_t at = frustum_source.find("Frustum Frustum::FromViewProjection");
+            Check(at != std::string::npos, "FW1", "FromViewProjection is there");
+            if (at != std::string::npos)
+            {
+                Check(BodyIsBounded(frustum_source, at), "FW2", "its body slice is bounded");
+                const std::string body = SliceFunctionBody(frustum_source, at);
+                Check(CountOccurrences(body, "kZeroToOne") >= 1, "FW3",
+                      "the depth range is an explicit, named choice");
+                Check(CountOccurrences(body, "m[z][0], m[z][1], m[z][2], m[z][3]") >= 1, "FW4",
+                      "and the near plane is row2 alone (0 <= z), not row3 + row2");
+            }
+            // 盒子判据必须是"正顶点"，不是"测八个角"也不是"只测中心"。
+            const std::size_t at_box = frustum_source.find("bool Frustum::Intersects");
+            Check(at_box != std::string::npos, "FW5", "Intersects is there");
+            if (at_box != std::string::npos)
+            {
+                const std::string body = SliceFunctionBody(frustum_source, at_box);
+                Check(CountOccurrences(body, "positive_vertex") >= 2, "FW6",
+                      "it builds the positive vertex (one corner per plane), not all eight");
+            }
+        }
+        const std::string plane_header = ReadFile("Source/Runtime/Core/Math/Plane.h");
+        Check(!plane_header.empty(), "FW7", "Plane.h is readable");
+        if (!plane_header.empty())
+        {
+            // 符号：写反的 `Translate` 依然是一个自洽的平面（见 FV19）。
+            Check(CountOccurrences(plane_header, "distance -= normal.dotProduct(translation)") >= 1,
+                  "FW8", "Plane::Translate subtracts (sign is the whole ballgame)");
+            Check(CountOccurrences(plane_header, "normal.dotProduct(point) + distance") >= 1, "FW9",
+                  "and the plane equation is + distance, not - distance");
+        }
     }
 
     // --------------------------------------------------------------- AM ----
@@ -10425,6 +10576,8 @@ int main()
     TestValueTypeFacadeWiring();
     TestQuaternionEuler();
     TestQuaternionEulerWiring();
+    TestFrustumCulling();
+    TestFrustumWiring();
     TestWiringGate();
 
     std::printf("\n=== %d checks, %d failures ===\n", g_Checks, g_Failures);

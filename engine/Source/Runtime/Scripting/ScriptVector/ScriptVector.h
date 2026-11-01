@@ -551,10 +551,22 @@ namespace Runtime
 
     /// Unity 的 `Matrix4x4` 静态面。
     ///
-    /// 构造类函数（`Perspective` / `Ortho` / `LookAt`）走引擎 `Math::Make*`，与
-    /// Unity 一样是 **OpenGL 约定**：右手系、裁剪空间 z ∈ [-1,1]（`Math.cpp` 里
-    /// `MakePerspectiveMatrix` 的 `ret[2][2] = zfar / (znear - zfar)`、`ret[3][2] = -1`
-    /// 就是这个意思）。⚠️ 所以 `Perspective` 的 fov 是**竖直** fov、**度**。
+    /// 构造类函数（`Perspective` / `Ortho` / `LookAt`）走引擎 `Math::Make*`。
+    ///
+    /// ⚠️⚠️ **深度区间是 z/w ∈ [0,1]，不是 OpenGL 的 [-1,1]** —— 这里以前写着
+    /// "与 Unity 一样是 OpenGL 约定"，是错的。`Math::MakePerspectiveMatrix` 里
+    /// `ret[2][2] = zfar/(znear - zfar)`、`ret[2][3] = zfar*znear/(znear - zfar)`：
+    /// 代入 `z_eye = -znear` 得 `z/w = 0`、`-zfar` 得 `z/w = 1`（DX / Vulkan 默认）。
+    /// OpenGL 的那份是 `ret[2][2] = (zfar+znear)/(znear-zfar)`、
+    /// `ret[2][3] = 2*zfar*znear/(znear-zfar)`，映射到 [-1,1]。
+    ///
+    /// 这条注释错了很久没人发现，因为"矩阵对不对"只在**深度精度**上体现，而
+    /// 画面看起来完全正常。真正会被它坑到的是从矩阵反推平面的人（视锥剔除）：
+    /// 按 [-1,1] 抽 near 平面会得到 `w + z >= 0`，近处的东西就莫名被剔掉。
+    /// `Frustum::FromViewProjection` 因此把深度区间做成了显式参数，并由
+    /// `UnityParitySmokeTest` FV0/FV1 钉住引擎实际用的是哪一条。
+    ///
+    /// 另外：`Perspective` 的 fov 是**竖直** fov、**度**（Unity 同）。
     ZCLASS()
     class Matrix4x4 : public Object
     {
