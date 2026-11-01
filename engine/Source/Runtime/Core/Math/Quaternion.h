@@ -170,6 +170,24 @@ public:
     */
     Radian GetYaw(bool reproject_axis = true) const;
 
+    // ---- 欧拉角（度）------------------------------------------------------
+    //
+    // ⚠️ 合成顺序是 **X -> Y -> Z**（矩阵形式是 Rz·Ry·Rx），与
+    // `GetYaw / GetPitch / GetRoll` 那三个**不是同一套约定**：那是 Ogre 遗产，
+    // 按 Y-up 定义（yaw 绕 Y、pitch 绕 X、roll 绕 Z），在 Z-up 的 ZEngine 里
+    // 名字与语义对不上（那边的 "yaw" 其实是绕 Y，也就是翻滚），比没有更危险。
+    // 这一对是按 ZEngine 自己的轴显式定义的，并且**互为逆**
+    // （`ToEulerAngles(FromEulerAngles(v)) ≈ v`，非退化时）。
+    //
+    // 放在这里而不是某个组件里，是因为两处都要它：`Transform` 的
+    // `eulerAngles` 读写，和脚本面 `Quaternion.Euler(...)`。分家的话两边迟早
+    // 会漂移 —— 而"设进去的欧拉角和读出来的不是一组"是静默的。
+    static Quaternion FromEulerAngles(const Vector3& euler_degrees);
+
+    /// `FromEulerAngles` 的分解。万向锁时把 x 取 0、剩下的全记到 z 上（与
+    /// Unity 的处理一致，至少是**一个**合法解）。
+    static Vector3 ToEulerAngles(const Quaternion& rotation);
+
     /** Performs Spherical linear interpolation between two quaternions, and returns the result.
         SLerp ( 0.0f, A, B ) = A
         SLerp ( 1.0f, A, B ) = B

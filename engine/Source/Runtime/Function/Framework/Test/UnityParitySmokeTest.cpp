@@ -4459,6 +4459,245 @@ namespace
               "the degenerate-case guards are documented as NaN avoidance");
     }
 
+    // --------------------------------------------------------------- QE ----
+    // Unity 的 `Quaternion.Euler` / `q.eulerAngles`。
+    //
+    // 这一族以前是**故意空着**的（ScriptMath.h 里写着"反向要先定死旋转顺序，定错
+    // 一样是静默算错"）。现在定的是引擎自己的 X -> Y -> Z（矩阵 Rz·Ry·Rx），
+    // 因为它必须与 `Transform.eulerAngles` **同源**：两套欧拉角约定一旦漂移，
+    // `Quaternion.Euler(v)` 与 `transform.eulerAngles = v` 会给出两个不同的朝向，
+    // 而脚本里看不出来 —— 这正是"定错 = 静默算错"的那一类。
+    //
+    // ⚠️ 夹具一律**不对称**：(20, 30, 40) 而不是 (30, 30, 30)。对称夹具下
+    // "把顺序写成 Y->X->Z"和正确答案在数值上碰巧相等，是最容易漏的一种。
+    void TestQuaternionEuler()
+    {
+        const Vector3 unit_x = Vector3::UNIT_X;
+        const Vector3 unit_y = Vector3::UNIT_Y;
+        const Vector3 unit_z = Vector3::UNIT_Z;
+
+        auto q_near = [](const Quaternion& a, const Quaternion& b, float eps = 1e-4f)
+        {
+            // 四元数取反表示同一个旋转，所以两个方向都要认。
+            return (std::fabs(a.w - b.w) < eps && std::fabs(a.x - b.x) < eps &&
+                    std::fabs(a.y - b.y) < eps && std::fabs(a.z - b.z) < eps) ||
+                   (std::fabs(a.w + b.w) < eps && std::fabs(a.x + b.x) < eps &&
+                    std::fabs(a.y + b.y) < eps && std::fabs(a.z + b.z) < eps);
+        };
+        auto v_near = [](const Vector3& a, const Vector3& b, float eps = 1e-3f)
+        {
+            return std::fabs(a.x - b.x) < eps && std::fabs(a.y - b.y) < eps &&
+                   std::fabs(a.z - b.z) < eps;
+        };
+        auto q_len = [](const Quaternion& q)
+        {
+            return std::sqrt(q.w * q.w + q.x * q.x + q.y * q.y + q.z * q.z);
+        };
+        auto axis_angle = [](float degrees, const Vector3& axis)
+        {
+            Quaternion q;
+            q.FromAngleAxis(Radian(degrees * Math_fDeg2Rad), axis);
+            return q;
+        };
+
+        // --- 退化与单轴 ------------------------------------------------
+        Check(q_near(Quaternion::FromEulerAngles(Vector3(0.f, 0.f, 0.f)), Quaternion::IDENTITY),
+              "QT0", "Euler(0,0,0) is the identity");
+        // 单轴时必须与 AngleAxis 完全一致 —— 这是"x 绕 X、y 绕 Y、z 绕 Z"的判据。
+        Check(q_near(Quaternion::FromEulerAngles(Vector3(37.f, 0.f, 0.f)),
+                     axis_angle(37.f, unit_x)), "QT1", "x rotates about X");
+        Check(q_near(Quaternion::FromEulerAngles(Vector3(0.f, 37.f, 0.f)),
+                     axis_angle(37.f, unit_y)), "QT2", "y rotates about Y");
+        Check(q_near(Quaternion::FromEulerAngles(Vector3(0.f, 0.f, 37.f)),
+                     axis_angle(37.f, unit_z)), "QT3", "z rotates about Z");
+
+        // --- ⚠️ 合成顺序：必须是 qz * qy * qx -------------------------------
+        const Quaternion euler_20_30_40 =
+            Quaternion::FromEulerAngles(Vector3(20.f, 30.f, 40.f));
+        const Quaternion order_xyz =
+            axis_angle(40.f, unit_z) * axis_angle(30.f, unit_y) * axis_angle(20.f, unit_x);
+        Check(q_near(euler_20_30_40, order_xyz), "QT4",
+              "the composition is qz*qy*qx (X first, then Y, then Z)");
+        // 互补的一半：写成"照抄参数顺序的 qz... 反过来"必须**不**相等。只测上面
+        // 那条的话，任何顺序都能被 q_near 的 ± 判断蒙混过去？不能 —— 但少了这条
+        // 就分不出"顺序对了"和"顺序反了但碰巧对称"。
+        const Quaternion order_zyx =
+            axis_angle(20.f, unit_x) * axis_angle(30.f, unit_y) * axis_angle(40.f, unit_z);
+        Check(!q_near(euler_20_30_40, order_zyx), "QT5",
+              "and NOT the other order (the fixture is asymmetric on purpose)");
+        // 顺序的**可观测**后果：交换两次旋转，结果不同。
+        Check(!q_near(Quaternion::FromEulerAngles(Vector3(90.f, 90.f, 0.f)),
+                      Quaternion::FromEulerAngles(Vector3(0.f, 90.f, 90.f))), "QT6",
+              "Euler(90,90,0) != Euler(0,90,90)");
+
+        // --- ⚠️ 90° 时基向量必须落到另一根基向量上（右手系）------------------
+        // 绕 +X 转 +90°：Y -> Z。这条不是抄实现，是右手系的定义；写反成 Y -> -Z
+        // 就是"欧拉角整体镜像"的那种静默错。
+        Check(v_near((Quaternion::FromEulerAngles(Vector3(90.f, 0.f, 0.f)) * unit_y),
+                     unit_z), "QT7", "90 about X takes +Y to +Z");
+        Check(v_near((Quaternion::FromEulerAngles(Vector3(0.f, 0.f, 90.f)) * unit_x),
+                     unit_y), "QT8", "90 about Z takes +X to +Y");
+        Check(v_near((Quaternion::FromEulerAngles(Vector3(0.f, 90.f, 0.f)) * unit_z),
+                     unit_x), "QT9", "90 about Y takes +Z to +X");
+
+        // --- 往返：ToEulerAngles(FromEulerAngles(v)) ≈ v ---------------------
+        // 两组不对称的值。只测一组的话，"把 x 和 z 换一下"这种实现在对称夹具下
+        // 是绿的。
+        const Vector3 samples[2] = {Vector3(10.f, 20.f, 30.f), Vector3(-35.f, 70.f, -15.f)};
+        for (int i = 0; i < 2; ++i)
+        {
+            const Vector3 back = Quaternion::ToEulerAngles(
+                Quaternion::FromEulerAngles(samples[i]));
+            Check(v_near(back, samples[i], 1e-2f), ("QT10_" + std::to_string(i)).c_str(),
+                  "the Euler round trip is the identity");
+        }
+        // 归一化：任意输入出来的都必须是单位四元数（Euler 里显式 normalise 了）。
+        Check(std::fabs(q_len(Quaternion::FromEulerAngles(Vector3(123.f, -456.f, 789.f))) -
+                        1.f) < 1e-4f, "QT11",
+              "FromEulerAngles returns a unit quaternion for any input");
+
+        // 万向锁：|y| == 90 时 x 与 z 无法分离，惯例是 x 取 0。
+        const Vector3 locked = Quaternion::ToEulerAngles(
+            Quaternion::FromEulerAngles(Vector3(30.f, 90.f, 45.f)));
+        Check(std::fabs(std::fabs(locked.y) - 90.f) < 1e-2f && std::fabs(locked.x) < 1e-2f, "QT12",
+              "gimbal lock puts everything on z and zeroes x (Unity's convention)");
+
+        // --- 脚本面 ---------------------------------------------------------
+        Check(q_near(Runtime::Quaternion::Euler(20.f, 30.f, 40.f), euler_20_30_40), "QT13",
+              "Quaternion.Euler(x,y,z) is the same rotation");
+        Check(q_near(Runtime::Quaternion::EulerVector(Vector3(20.f, 30.f, 40.f)),
+                     euler_20_30_40), "QT14", "and so is EulerVector(v)");
+        Check(v_near(Runtime::Quaternion::GetEulerAngles(euler_20_30_40),
+                     Vector3(20.f, 30.f, 40.f), 1e-2f), "QT15",
+              "GetEulerAngles reads it back");
+        // Normalize：零四元数必须退回单位而不是 NaN（NaN 参与的比较恒为 false，
+        // 最后表现为"物体莫名不转了"）。
+        const Quaternion normalized_zero = Runtime::Quaternion::Normalize(Quaternion::ZERO);
+        Check(q_near(normalized_zero, Quaternion::IDENTITY) &&
+                  !std::isnan(normalized_zero.w), "QT16",
+              "Normalize of a zero quaternion is the identity, not a NaN");
+        Quaternion scaled = axis_angle(30.f, unit_y);
+        scaled.w *= 5.f; scaled.x *= 5.f; scaled.y *= 5.f; scaled.z *= 5.f;
+        Check(std::fabs(q_len(Runtime::Quaternion::Normalize(scaled)) - 1.f) < 1e-4f, "QT17",
+              "Normalize really normalizes");
+        // Mul：先转 b 再转 a。
+        const Quaternion qa = axis_angle(40.f, unit_x);
+        const Quaternion qb = axis_angle(25.f, unit_z);
+        Check(v_near((Runtime::Quaternion::Mul(qa, qb) * unit_y),
+                     (qa * (qb * unit_y))), "QT18",
+              "Mul(a,b) applies b first, then a");
+        // Nlerp：端点必须精确命中。
+        Check(q_near(Runtime::Quaternion::Nlerp(qa, qb, 0.f), qa) &&
+                  q_near(Runtime::Quaternion::Nlerp(qa, qb, 1.f), qb), "QT19",
+              "Nlerp hits both endpoints");
+        // ⚠️ Unclamped 的意义就在 t > 1：必须**超过** b，而不是被夹住。
+        const float span = Runtime::Quaternion::Angle(qa, qb);
+        Check(Runtime::Quaternion::Angle(qa, Runtime::Quaternion::SlerpUnclamped(qa, qb, 2.f)) >
+                  span + 1.f, "QT20", "SlerpUnclamped extrapolates past b");
+        Check(Runtime::Quaternion::Angle(qa, Runtime::Quaternion::LerpUnclamped(qa, qb, 2.f)) >
+                  span + 1.f, "QT21", "and so does LerpUnclamped");
+        // 反过来的一半：夹住的那两个不能超过。
+        Check(Runtime::Quaternion::Angle(qa, Runtime::Quaternion::Slerp(qa, qb, 2.f)) <
+                  span + 1.f, "QT22", "while Slerp clamps t");
+        // 180° 的 Euler 与 identity 的夹角就是 180。
+        Check(std::fabs(Runtime::Quaternion::Angle(
+                  Quaternion::IDENTITY, Runtime::Quaternion::Euler(0.f, 180.f, 0.f)) - 180.f) <
+                  1e-2f, "QT23", "Euler(0,180,0) is a half turn");
+        // Lerp 同样要夹。⚠️ 没有这条的话，"只给 Slerp 加了 ClampT、Lerp 忘了"
+        // 完全测不出来 —— 两条实现相邻，抄漏一半是最可能的错。
+        Check(Runtime::Quaternion::Angle(qa, Runtime::Quaternion::Lerp(qa, qb, 2.f)) <
+                  span + 1.f, "QT24", "and so does Lerp");
+
+        // --- ⚠️ Unclamped 的另一半：不许翻到短弧 ----------------------------
+        // `SLerp` / `NLerp` 的 `shortest_path` 打开时，dot < 0 会把 b 取反再插。
+        // 取反是**同一个旋转**，所以"看朝向"分不出来 —— 只有看 dot 的符号能看见。
+        const Quaternion qn_a = Quaternion::IDENTITY;
+        const Quaternion qn_b = axis_angle(190.f, unit_y);
+        // 夹具自检：这一对的 dot 必须真的是负的，否则下面两条是空转的。
+        Check(Runtime::Quaternion::Dot(qn_a, qn_b) < 0.f, "QT25",
+              "(the antiparallel fixture pair really does have a negative dot)");
+        Check(Runtime::Quaternion::Dot(
+                  Runtime::Quaternion::SlerpUnclamped(qn_a, qn_b, 1.f), qn_b) > 0.f, "QT26",
+              "SlerpUnclamped lands on b at t=1, not on -b (shortest_path is off)");
+        Check(Runtime::Quaternion::Dot(
+                  Runtime::Quaternion::LerpUnclamped(qn_a, qn_b, 1.f), qn_b) > 0.f, "QT27",
+              "and so does LerpUnclamped");
+
+        // --- ⚠️ 已知盲区，钉在这里 -----------------------------------------
+        // `FromEulerAngles` 末尾那句 `result.normalise()` 是**防御性**的：三个
+        // 单位四元数相乘在数学上仍是单位四元数，float 下的漂移实测 < 1e-7，远
+        // 小于 QT11 的 1e-4。也就是说**删掉它没有任何测试会红**（变异 QE02 存活）。
+        //
+        // 这个盲区不打算靠"再加一条断言"补（再紧的容差也只是把同一个结论换个
+        // 说法），而是把结论本身固定下来：漂移必须**真的**小于 1e-6。哪天某个
+        // 改动让中间量不再是单位（比如 FromAngleAxis 不再归一化），这条会先红，
+        // 那时候 normalise 就从"防御"变成"必需"了。
+        Check(std::fabs(q_len(Quaternion::FromEulerAngles(Vector3(20.f, 30.f, 40.f))) - 1.f) <
+                  1e-6f, "QT28",
+              "the composition is unit to 1e-6 even before the defensive normalise");
+    }
+
+    void TestQuaternionEulerWiring()
+    {
+        // ⚠️ 这条是本切片的头条：`Transform` 的欧拉角与 `Quaternion.Euler` 必须
+        // 共用**同一个**实现。两边各写一遍的话，"设进去的欧拉角"和
+        // "Quaternion.Euler 算出来的朝向"迟早会漂成两回事，而且完全静默。
+        const std::string transform_source =
+            ReadFile("Source/Runtime/Function/Framework/Component/Transform/Transform.cpp");
+        Check(!transform_source.empty(), "QW0", "Transform.cpp is readable");
+        if (!transform_source.empty())
+        {
+            const std::size_t at = transform_source.find("Quaternion EulerToQuaternion");
+            Check(at != std::string::npos, "QW1", "Transform still has its euler helper");
+            if (at != std::string::npos)
+            {
+                Check(BodyIsBounded(transform_source, at), "QW2", "its body slice is bounded");
+                const std::string body = SliceFunctionBody(transform_source, at);
+                Check(CountOccurrences(body, "Quaternion::FromEulerAngles") >= 1, "QW3",
+                      "it delegates to Quaternion::FromEulerAngles (one convention, one owner)");
+                // 反向门：实现不许再就地展开一遍（展开 = 第二套约定）。
+                Check(body.find("UNIT_X") == std::string::npos, "QW4",
+                      "and does not inline its own axis composition");
+            }
+            // ⚠️ **反方向**同样要同源。只盯 EulerToQuaternion 的话，
+            // `EulerFromQuaternion` 悄悄退回 `GetYaw/GetPitch/GetRoll`（那三个是
+            // Ogre 遗产、按 Y-up 定义）是**完全静默**的：读出来的数还是"某个
+            // 欧拉角"，只是不再是你设进去的那个 —— 而且没有一条 QT 会红。
+            const std::size_t at_rev = transform_source.find("Vector3 EulerFromQuaternion");
+            Check(at_rev != std::string::npos, "QW10", "Transform's reverse euler helper is there");
+            if (at_rev != std::string::npos)
+            {
+                Check(BodyIsBounded(transform_source, at_rev), "QW11", "its body slice is bounded");
+                const std::string body_rev = SliceFunctionBody(transform_source, at_rev);
+                Check(CountOccurrences(body_rev, "Quaternion::ToEulerAngles") >= 1, "QW12",
+                      "and it delegates to Quaternion::ToEulerAngles (the same owner, backwards)");
+                Check(body_rev.find("GetYaw") == std::string::npos, "QW13",
+                      "and does not fall back to the Y-up GetYaw/GetPitch/GetRoll");
+            }
+        }
+        const std::string script_source =
+            ReadFile("Source/Runtime/Scripting/ScriptVector/ScriptVector.cpp");
+        Check(!script_source.empty(), "QW5", "ScriptVector.cpp is readable");
+        if (!script_source.empty())
+        {
+            const std::size_t at = script_source.find("::Quaternion Quaternion::Euler(");
+            Check(at != std::string::npos, "QW6", "the script face has Euler");
+            if (at != std::string::npos)
+            {
+                Check(BodyIsBounded(script_source, at), "QW7", "its body slice is bounded");
+                const std::string body = SliceFunctionBody(script_source, at);
+                Check(CountOccurrences(body, "FromEulerAngles") >= 1, "QW8",
+                      "and it goes through the same owner (not a private copy)");
+            }
+        }
+        const std::string facade_header =
+            ReadFile("Source/Runtime/Scripting/ScriptVector/ScriptVector.h");
+        Check(CountOccurrences(facade_header, "static ::Quaternion Euler(") >= 1 &&
+                  CountOccurrences(facade_header, "static ::Quaternion EulerVector(") >= 1 &&
+                  CountOccurrences(facade_header, "static ::Vector3 GetEulerAngles(") >= 1, "QW9",
+              "the three new entries are declared on the facade");
+    }
+
     // --------------------------------------------------------------- AM ----
     /// 对象生命周期：`Destroy(obj, delay)` / `DestroyImmediate` / 按类型全场查找。
     ///
@@ -10184,6 +10423,8 @@ int main()
     TestFixedUpdateWiring();
     TestValueTypeFacades();
     TestValueTypeFacadeWiring();
+    TestQuaternionEuler();
+    TestQuaternionEulerWiring();
     TestWiringGate();
 
     std::printf("\n=== %d checks, %d failures ===\n", g_Checks, g_Failures);

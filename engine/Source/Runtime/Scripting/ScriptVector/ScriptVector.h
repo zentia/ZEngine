@@ -236,11 +236,15 @@ namespace Runtime
         static ::Quaternion LookRotation(const ::Vector3& forward, const ::Vector3& up);
 
         /// 球面插值。Unity 的 `Quaternion.Slerp`。
+        ///
+        /// ⚠️ **`t` 夹在 [0,1]**（Unity 就是夹的）。要外插用 `SlerpUnclamped`。
+        /// 引擎的 `SLerp` 本身不夹，所以这里必须显式夹一次 —— 不夹的话
+        /// `Slerp(a, b, 2)` 会转到 b 之外，而 Unity 里它等于 `Slerp(a, b, 1)`。
         ZFUNCTION()
         static ::Quaternion Slerp(const ::Quaternion& a, const ::Quaternion& b, float t);
 
         /// 归一化线性插值（比 Slerp 便宜，角度大时角速度不均匀）。
-        /// Unity 的 `Quaternion.Lerp`。
+        /// Unity 的 `Quaternion.Lerp`。同样**夹住 `t`**。
         ZFUNCTION()
         static ::Quaternion Lerp(const ::Quaternion& a, const ::Quaternion& b, float t);
 
@@ -269,6 +273,59 @@ namespace Runtime
         /// 重载，所以这里是个函数。
         ZFUNCTION()
         static ::Vector3 Rotate(const ::Quaternion& q, const ::Vector3& v);
+
+        // ---- Unity 的 `Quaternion.Euler` ------------------------------------
+        //
+        // 在此之前这一族是**故意空着**的（ScriptMath.h 里写了"反向要先定死旋转
+        // 顺序，定错一样是静默算错"）。现在定的顺序是引擎自己的那一套：
+        // **X -> Y -> Z**（矩阵 Rz·Ry·Rx），与 `Transform.eulerAngles` 完全同源
+        // —— 两者共用 `Quaternion::FromEulerAngles` / `::ToEulerAngles`，所以
+        // `Quaternion.Euler(v)` 与 `transform.eulerAngles = v` 得到的朝向是同一
+        // 个，且 `GetEulerAngles(...)` 能原样读回来。
+        //
+        // ⚠️ 与 Unity 的**合成顺序**不同（Unity 是 Z->X->Y），但轴的名字与含义一
+        // 致（x 绕 X、y 绕 Y、z 绕 Z）。跟着 Unity 的顺序写会让
+        // `Quaternion.Euler(v)` 和 `transform.eulerAngles = v` 给出两个不同的朝
+        // 向 —— 那是脚本里最难查的一类错位，所以这里选"与本引擎的欧拉角同源"
+        // 而不是"与 Unity 的内部顺序同形"。
+
+        /// Unity 的 `Quaternion.Euler(x, y, z)`。参数是**度数**。
+        ZFUNCTION()
+        static ::Quaternion Euler(float x, float y, float z);
+
+        /// Unity 的 `Quaternion.Euler(Vector3)`。绑定表按脚本名索引，同名重载
+        /// 后者覆盖前者，所以只能另起一个名字（同 `Bounds.EncapsulateBounds`）。
+        ZFUNCTION()
+        static ::Quaternion EulerVector(const ::Vector3& euler_degrees);
+
+        /// Unity 的 `q.eulerAngles`：`Euler(...)` 的反向分解，度数。
+        ///
+        /// 非退化时 `GetEulerAngles(Euler(v)) ≈ v`；万向锁时 x 取 0、剩下的全
+        /// 记到 z 上（与 Unity 的处理一致）。
+        ZFUNCTION()
+        static ::Vector3 GetEulerAngles(const ::Quaternion& q);
+
+        // ---- 剩下几个 Unity 有、这边缺的 ------------------------------------
+
+        /// 归一化。长度接近 0 时**返回单位四元数**而不是 NaN：NaN 参与的任何
+        /// 比较都是 false，会一路静默传到"这个物体莫名不转了"。
+        ZFUNCTION()
+        static ::Quaternion Normalize(const ::Quaternion& q);
+
+        /// 旋转复合：先转 b，再转 a（与 Unity 的 `a * b` 同序）。
+        ZFUNCTION()
+        static ::Quaternion Mul(const ::Quaternion& a, const ::Quaternion& b);
+
+        /// 归一化线性插值。比 `Slerp` 便宜，但角速度不均匀。
+        ZFUNCTION()
+        static ::Quaternion Nlerp(const ::Quaternion& a, const ::Quaternion& b, float t);
+
+        /// **`t` 不夹在 [0,1]**：外插。夹住的版本是 `Slerp` / `Lerp`。
+        ZFUNCTION()
+        static ::Quaternion SlerpUnclamped(const ::Quaternion& a, const ::Quaternion& b, float t);
+
+        ZFUNCTION()
+        static ::Quaternion LerpUnclamped(const ::Quaternion& a, const ::Quaternion& b, float t);
     };
 
     /// Unity 的 `Vector2` 静态面：UI / 屏幕平面那套二维向量。

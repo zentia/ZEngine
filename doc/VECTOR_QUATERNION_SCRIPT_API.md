@@ -112,7 +112,41 @@ Angle(a, b): number             // 度数
 RotateTowards(from, to, max_degrees): Quaternion
 FromToRotation(a, b): Quaternion
 Rotate(q, v): Vector3           // TS 没有运算符重载，Unity 的 `q * v`
+Euler(x, y, z): Quaternion      EulerVector(v): Quaternion
+GetEulerAngles(q): Vector3      // 度；万向锁时 x 取 0
+Normalize(q): Quaternion        // 零四元数返回单位，不是 NaN
+Mul(a, b): Quaternion           // 先转 b 再转 a
+Nlerp(a, b, t): Quaternion      // 不夹 t
+SlerpUnclamped(a, b, t): Quaternion   LerpUnclamped(a, b, t): Quaternion
+                                // ⚠️ 两个都关 shortest_path
 ```
+
+Unity 的 `Quaternion.Slerp` / `Lerp` **夹** `t`，`SlerpUnclamped` /
+`LerpUnclamped` 不夹。引擎的 `SLerp` / `NLerp` 都不夹，所以门面里有一个
+`ClampT`。漏掉它是静默的：朝向"看着在往那个方向转"，只是转过了头。
+
+`Unclamped` 那一对还额外关掉了 `shortest_path`。开着的话 `dot(a,b) < 0` 时
+会把 `b` 取反再插 —— 取反是**同一个旋转**，所以看朝向分不出来，只有 `dot`
+的符号能看见（QT25/QT26/QT27）。
+
+## 4.1 ⚠️ `Euler` 的旋转顺序：X -> Y -> Z，且只有一处定义
+
+`Quaternion.Euler(x, y, z)` 合成的是 `qz * qy * qx`（矩阵 `Rz·Ry·Rx`），
+**先绕 X，再 Y，再 Z**。与 `Transform.eulerAngles` 是同一套 —— 实现只有
+`Quaternion::FromEulerAngles` / `Quaternion::ToEulerAngles` 一处，
+`Transform.cpp` 的两个 helper 只做转发。
+
+为什么必须是同一处：两套约定一旦漂移，`Quaternion.Euler(v)` 和
+`transform.eulerAngles = v` 会给出两个不同的朝向，而脚本里看不出来（两边都
+"能转"，也都能往返）。这正是"定错 = 静默算错"的那一类，所以除了行为断言
+（QT4/QT5）还有四条源码级门（QW3/QW4/QW8/QW12/QW13）盯着 owner 唯一。
+
+不做 `GetYaw/GetPitch/GetRoll`：那三个是 Ogre 遗产，按 **Y-up** 定义（yaw 绕
+Y、pitch 绕 X、roll 绕 Z）。ZEngine 是 Z-up，绕 Y 在这里是翻滚不是转向 ——
+名字与语义对不上，比没有更危险。
+
+万向锁（`|y| == 90`）时 `x` 与 `z` 无法分离，惯例是 `x` 取 0、剩下的全记到
+`z` 上（与 Unity 一致）。
 
 Unity 的 `Vector3.magnitude` / `normalized` / `sqrMagnitude` 是**实例**成员；
 脚本侧的 Vector3 是 plain object（没有原型），挂不了实例方法，所以这里只能
@@ -124,3 +158,6 @@ Unity 的 `Vector3.magnitude` / `normalized` / `sqrMagnitude` 是**实例**成�
 | --- | --- |
 | `ScriptVMSmokeTest` K1–K11 | 真 QuickJS：常量、轴向（K2/K3 三个方向互不相等）、`Lerp` 夹不夹、四元数旋转方向 |
 | `UnityParitySmokeTest` BC0–BC10 | 源码级：门面在命名空间里、值类型写全 `::`、实现是转发（不许抄第二份）、`Lerp` 夹 t |
+| `UnityParitySmokeTest` QT0–QT28 | 欧拉角：单轴对轴、`qz*qy*qx` 顺序（不对称夹具 20/30/40）、90° 基向量落点、往返、万向锁、`Slerp`/`Lerp` 夹 t、`Unclamped` 不翻短弧 |
+| `UnityParitySmokeTest` QW0–QW13 | 源码级：`Transform` 与脚本面共用同一个 owner（不许各写一份、不许退回 `GetYaw`） |
+| `.mutate_qe.py` QE01–QE19 | 19 个变异体，18 杀。QE02（`FromEulerAngles` 漏 `normalise`）是**已记录的可接受存活项**：三个单位四元数相乘仍近乎单位，漂移 < 1e-7，由 QT28 钉住这个上界 |

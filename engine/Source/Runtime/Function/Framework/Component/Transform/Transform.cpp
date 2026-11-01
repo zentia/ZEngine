@@ -38,46 +38,17 @@ namespace
     float Rad(float degrees) { return Math::DegreesToRadians(degrees); }
     float Deg(float radians) { return Math::RadiansToDegrees(radians); }
 
+    // ⚠️ 实现搬到 `Quaternion::FromEulerAngles` / `Quaternion::ToEulerAngles`
+    // 去了：脚本面的 `Quaternion.Euler(...)` 与这里必须是**同一套**约定，否则
+    // "设进去的欧拉角"和"Quaternion.Euler 算出来的朝向"会静默地不是一回事。
     Quaternion EulerToQuaternion(const Vector3& euler_degrees)
     {
-        Quaternion qx;
-        qx.FromAngleAxis(Radian(Rad(euler_degrees.x)), Vector3::UNIT_X);
-        Quaternion qy;
-        qy.FromAngleAxis(Radian(Rad(euler_degrees.y)), Vector3::UNIT_Y);
-        Quaternion qz;
-        qz.FromAngleAxis(Radian(Rad(euler_degrees.z)), Vector3::UNIT_Z);
-
-        // 先绕 X，再 Y，再 Z。四元数乘法与矩阵一致：(qz*qy*qx) 作用于向量时
-        // 先 qx 后 qy 再 qz。
-        Quaternion result = qz * qy * qx;
-        result.normalise();
-        return result;
+        return Quaternion::FromEulerAngles(euler_degrees);
     }
 
-    // R = Rz(c)·Ry(b)·Rx(a) 展开后（下标是 [行][列]）：
-    //   R[2][0] = -sin(b)              => b = asin(-R20)
-    //   R[2][1] =  cos(b)·sin(a)       => a = atan2(R21, R22)
-    //   R[1][0] =  cos(b)·sin(c)       => c = atan2(R10, R00)
     Vector3 EulerFromQuaternion(const Quaternion& rotation)
     {
-        Matrix4x4 matrix = Matrix4x4::IDENTITY;
-        rotation.ToRotationMatrix(matrix);
-        const float (&r)[4][4] = matrix.m_Mat;
-
-        // 浮点误差会把 sin(b) 推出 [-1,1]，不夹一下 asin 返回 NaN。
-        const float sin_b = -Math::Clamp(r[2][0], -1.0f, 1.0f);
-
-        // 万向锁：cos(b) == 0 时 a 与 c 无法分离。惯例是把 a 取 0，剩下的全部
-        // 记到 c 上 —— 与 Unity 的处理一致，而且至少是**一个**合法解。
-        if (std::fabs(sin_b) > 0.9999f)
-        {
-            const float b = Math_HALF_PI * (sin_b < 0.0f ? -1.0f : 1.0f);
-            return Vector3(0.0f, Deg(b), Deg(Math::atan2(-r[0][1], r[1][1]).valueRadians()));
-        }
-
-        return Vector3(Deg(Math::atan2(r[2][1], r[2][2]).valueRadians()),
-                       Deg(Math::asin(sin_b).valueRadians()),
-                       Deg(Math::atan2(r[1][0], r[0][0]).valueRadians()));
+        return Quaternion::ToEulerAngles(rotation);
     }
 
     bool IsAnyNaN(const Quaternion& q)

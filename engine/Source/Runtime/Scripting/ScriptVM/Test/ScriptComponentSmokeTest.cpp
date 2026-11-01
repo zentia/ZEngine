@@ -1042,6 +1042,19 @@ int main(int argc, char** argv)
         CheckTrue("T2", "OnUpdate 也照常来了", mover_value("ticks") != ticks_before);
         CheckTrue("T3", "OnFixedUpdate 的步长与 OnUpdate 的帧间隔不是同一个数",
                   mover_value("lastFixedDt") != mover_value("lastDt"));
+        // --- Unity 的 `Quaternion.Euler`（U 段）---------------------------
+        //
+        // 与 T 段同一类理由：引擎里此前**没有**反向的 Euler(x, y, z)，脚本只能拿
+        // `AngleAxis` 自己拼，而拼出来的朝向是不是与 `transform.eulerAngles`
+        // 同一套约定，编译期和运行期都看不出来。这一段钉的是"两处同源"。
+        CheckTrue("U0", "ProbeQuaternionEuler 送到了 JS 侧",
+                  comp2->InvokeMethod("ProbeQuaternionEuler"));
+        // 往返：设进去再读回来必须还是 (20, 30, 40)。
+        CheckEq("U1", "GetEulerAngles(Euler(v)) == v —— 与 Transform.eulerAngles 同源",
+                mover_value("quatRoundTrip"), "20.0,30.0,40.0");
+        // 90° 绕 X 把 +Y 抬到 +Z：Vector3.up 是 (0,0,1)，转完应该是 (0,-1,0)。
+        CheckEq("U2", "90 度绕 X 把 +Z 转到 -Y（右手系，不是抄实现）",
+                mover_value("quatYToZ"), "0,-1,0");
         // ⚠️ 与 Tick 同一套判据：enabled / activeInHierarchy 都要挡。
         // 只测"发了"的话，"FixedUpdate 不判 enabled"这种实现是绿的 —— 而它正是
         // "Update 停了但物理还在推"那一类 bug。

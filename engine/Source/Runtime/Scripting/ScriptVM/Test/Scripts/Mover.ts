@@ -348,6 +348,29 @@ class Mover extends Behaviour {
         ].join("|");
     }
 
+    // ---- Unity 的 `Quaternion.Euler` ---------------------------------------
+    //
+    // ⚠️ 这段的价值在 **tsc** 与"两处同源"：此前引擎里根本没有反向的
+    // Euler(x, y, z)（"定错旋转顺序一样是静默算错"），所以脚本只能靠
+    // `AngleAxis` 自己拼。拼出来的是不是和 `transform.eulerAngles` 同一套
+    // 约定，编译期看不出来，运行期也看不出来 —— 只有"设进去再读回来"能看见。
+    //
+    // 判据是**往返**而不是"调用成功了"：`GetEulerAngles(Euler(v))` 必须等于 v。
+    // 少任何一边（Euler 用了另一套顺序 / GetEulerAngles 换了轴）这里立刻不相等。
+    quatRoundTrip: string = "";
+    quatYToZ: string = "";
+
+    ProbeQuaternionEuler(): void {
+        const q: Quaternion = Quaternion.Euler(20, 30, 40);
+        const e: Vector3 = Quaternion.GetEulerAngles(q);
+        this.quatRoundTrip = e.x.toFixed(1) + "," + e.y.toFixed(1) + "," + e.z.toFixed(1);
+        // 90° 绕 X 必须把 +Y 抬到 +Z（右手系的定义，不是抄实现）。
+        const r: Vector3 = Quaternion.Rotate(Quaternion.Euler(90, 0, 0), Vector3.up);
+        // ⚠️ `Math.round` 不是装饰：浮点残差让本来该是 0 的分量是 -4e-8，
+        // 直接 `toFixed(0)` 会得到 "-0"，和想要的 "0" 不相等。
+        this.quatYToZ = Math.round(r.x) + "," + Math.round(r.y) + "," + Math.round(r.z);
+    }
+
     /// 走 **JS shim** 的那条停止路径（`g.Behaviour.prototype.StopAllCoroutines`）。
     /// C++ 直接调 comp.StopAllCoroutines() 是测不到 shim 的 —— 少一行转发
     /// 照样全绿（变异 SC16 就是这么漏的）。

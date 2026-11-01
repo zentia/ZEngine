@@ -200,14 +200,23 @@ namespace Runtime
         return QuaternionMath::LookRotation(forward, up);
     }
 
+    // ⚠️ Unity 的 `Quaternion.Slerp` / `Quaternion.Lerp` **夹住** t（要外插有
+    // `SlerpUnclamped` / `LerpUnclamped`）。引擎的 SLerp / NLerp 不夹 —— 直接
+    // 转发的话 `Slerp(a, b, 2)` 会走到 b 之外，而 Unity 里它等于 `Slerp(a, b, 1)`。
+    // 这个差别完全是静默的：朝向"看起来在往那个方向转"，只是转过了头。
+    namespace
+    {
+        float ClampT(float t) { return t < 0.f ? 0.f : (t > 1.f ? 1.f : t); }
+    }  // namespace
+
     ::Quaternion Quaternion::Slerp(const ::Quaternion& a, const ::Quaternion& b, float t)
     {
-        return QuaternionMath::Slerp(a, b, t);
+        return QuaternionMath::Slerp(a, b, ClampT(t));
     }
 
     ::Quaternion Quaternion::Lerp(const ::Quaternion& a, const ::Quaternion& b, float t)
     {
-        return QuaternionMath::Nlerp(a, b, t);
+        return QuaternionMath::Nlerp(a, b, ClampT(t));
     }
 
     ::Quaternion Quaternion::Inverse(const ::Quaternion& q)
@@ -239,6 +248,48 @@ namespace Runtime
     ::Vector3 Quaternion::Rotate(const ::Quaternion& q, const ::Vector3& v)
     {
         return QuaternionMath::Rotate(q, v);
+    }
+
+    ::Quaternion Quaternion::Euler(float x, float y, float z)
+    {
+        return ::Quaternion::FromEulerAngles(::Vector3(x, y, z));
+    }
+
+    ::Quaternion Quaternion::EulerVector(const ::Vector3& euler_degrees)
+    {
+        return ::Quaternion::FromEulerAngles(euler_degrees);
+    }
+
+    ::Vector3 Quaternion::GetEulerAngles(const ::Quaternion& q)
+    {
+        return ::Quaternion::ToEulerAngles(q);
+    }
+
+    ::Quaternion Quaternion::Normalize(const ::Quaternion& q)
+    {
+        return QuaternionMath::Normalize(q);
+    }
+
+    ::Quaternion Quaternion::Mul(const ::Quaternion& a, const ::Quaternion& b)
+    {
+        return QuaternionMath::Mul(a, b);
+    }
+
+    ::Quaternion Quaternion::Nlerp(const ::Quaternion& a, const ::Quaternion& b, float t)
+    {
+        return QuaternionMath::Nlerp(a, b, t);
+    }
+
+    ::Quaternion Quaternion::SlerpUnclamped(const ::Quaternion& a, const ::Quaternion& b, float t)
+    {
+        // ⚠️ shortest_path 关掉：开了之后 `t = 2` 会被当成"走过头再折回来"，
+        // 外插就不再是外插了。
+        return ::Quaternion::SLerp(t, a, b, /*shortest_path=*/false);
+    }
+
+    ::Quaternion Quaternion::LerpUnclamped(const ::Quaternion& a, const ::Quaternion& b, float t)
+    {
+        return ::Quaternion::NLerp(t, a, b, /*shortest_path=*/false);
     }
 
     // ---- Vector2 ----
