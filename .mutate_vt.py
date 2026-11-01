@@ -25,6 +25,9 @@ ROOT = r"E:\Engine\ZEngine"
 
 SV_H = os.path.join(ROOT, r"engine\Source\Runtime\Scripting\ScriptVector\ScriptVector.h")
 SV_CPP = os.path.join(ROOT, r"engine\Source\Runtime\Scripting\ScriptVector\ScriptVector.cpp")
+# zengine.d.ts 是**生成物**且被 .gitignore 忽略（`git show HEAD:` 拿不到），所以
+# 备份只能靠工作副本拷贝 —— 见 main() 里的 restore。
+DTS = os.path.join(ROOT, r"engine\Source\Runtime\Scripting\ScriptVM\Test\Typings\zengine.d.ts")
 
 PARITY_EXE = r"build\engine\Source\Runtime\Function\Framework\Test\Debug\UnityParitySmokeTest.exe"
 VM_EXE = r"build\engine\Source\Runtime\Scripting\ScriptVM\Test\Debug\ScriptVMSmokeTest.exe"
@@ -125,7 +128,7 @@ MUTATIONS = [
      "    ::Vector2 Vector2::GetRight()\n    {\n        return ::Vector2(-1.0f, 0.0f);"),
 
     ("VTM02 Vector2.Angle returns radians, not degrees", SV_CPP,
-     "::Vector2 Vector2::Angle(",
+     "float Vector2::Angle(",
      "        return Math::RadiansToDegrees(std::acos(ClampCos(a.x * b.x + a.y * b.y)));",
      "        return std::acos(ClampCos(a.x * b.x + a.y * b.y));"),
 
@@ -279,9 +282,23 @@ MUTATIONS = [
      "        return VectorMath::Scale(v, 1.0f);"),
 
     # ---- 接线门本身 --------------------------------------------------------
-    ("VTM34 the Matrix4x4 facade loses its ZCLASS", SV_H,
-     "    ZCLASS()\n    class Matrix4x4 : public Object",
-     "    class Matrix4x4 : public Object"),
+    #
+    # 这几条不是"功能错了"，而是"门禁本身会不会响"。一个从不响的门禁与没有门禁
+    # 无法区分，所以每个门禁至少要有一个能编过的变异体证明它会红。
+    #
+    # ⚠️ 去掉 `ZCLASS()` 是不行的：`ZGENERATED_BODY` 少了它直接编译不过
+    # （试过，报 invalid）。所以改成动 ZSCRIPTPROPERTY 那一行。
+    ("VTM34 one of the two `identity` script properties is dropped", SV_H,
+     '        ZSCRIPTPROPERTY(Name = "identity", Getter = "GetIdentity")\n',
+     ""),
+
+    ("VTM35 the shipped .d.ts loses its `declare class Matrix4x4`", DTS,
+     "declare class Matrix4x4 {",
+     "declare class Matrix4x4Facade {"),
+
+    ("VTM36 the .d.ts types Matrix4x4.identity as `any`", DTS,
+     "    static readonly identity: Matrix4x4;",
+     "    static readonly identity: any;"),
 ]
 
 LOCK = os.path.join(BAK, "zengine_mutate_vt.lock")
@@ -305,9 +322,13 @@ def main():
             if only and name.split()[0] not in only:
                 continue
             print("=== %s ===" % name)
+            # 备份**工作副本**，不是 `git show HEAD:`。两个理由：
+            #   1. zengine.d.ts 被 .gitignore 忽略，git show 拿到的是空文件 —— 从它
+            #      恢复等于把这个文件删掉；
+            #   2. 切片提交之后工作副本 == HEAD，用 git 没有额外收益，反而多一条
+            #      "忘了提交就被静默回滚"的失败模式。
             bak = os.path.join(BAK, os.path.basename(path) + ".vtbak")
-            subprocess.run(["git", "show", "HEAD:" + os.path.relpath(path, ROOT).replace("\\", "/")],
-                           cwd=ROOT, env=ENV, stdout=io.open(bak, "wb"), stderr=subprocess.DEVNULL)
+            shutil.copy2(path, bak)
             try:
                 if func_sig is not None:
                     mutate_in(path, func_sig, old, new)

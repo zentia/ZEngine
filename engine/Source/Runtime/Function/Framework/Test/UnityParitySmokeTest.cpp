@@ -6694,8 +6694,10 @@ namespace
               "VW3", "the new facades return fully-qualified value types");
         Check(CountOccurrences(source, "::Matrix4x4::IDENTITY") >= 2, "VW4",
               "the matrix constants are read off ::Matrix4x4, not the facade class");
-        Check(CountOccurrences(header, "ZSCRIPTPROPERTY(Name = \"identity\", Getter = \"GetIdentity\")") >= 1,
-              "VW5", "Matrix4x4.identity is a static script property");
+        // >= 2：Quaternion.identity 与 Matrix4x4.identity 是**同一串文本**。写成
+        // >= 1 的话，谁删掉其中一个门禁仍然绿（变异 VTM34 就是这么存活的）。
+        Check(CountOccurrences(header, "ZSCRIPTPROPERTY(Name = \"identity\", Getter = \"GetIdentity\")") >= 2,
+              "VW5", "BOTH Quaternion.identity and Matrix4x4.identity are static script properties");
 
         // 轴向：Vector2.right = +X（与 Vector3.right = -X 故意不同）。
         Check(CountOccurrences(source, "::Vector2(1.0f, 0.0f)") >= 1, "VW6",
