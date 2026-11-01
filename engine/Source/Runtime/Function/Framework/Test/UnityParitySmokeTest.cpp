@@ -6729,12 +6729,15 @@ namespace
         // 少了 interface 就没有值类型，两边缺一边 TS 侧都是"能编译但形状不对"。
         const std::string dts = ReadFile("Source/Runtime/Scripting/ScriptVM/Test/Typings/zengine.d.ts");
         Check(!dts.empty(), "VW14", "the generated zengine.d.ts is readable");
-        Check(CountOccurrences(dts, "declare interface Vector2") >= 1 &&
-                  CountOccurrences(dts, "declare class Vector2") >= 1 &&
-                  CountOccurrences(dts, "declare interface Vector4") >= 1 &&
-                  CountOccurrences(dts, "declare class Vector4") >= 1 &&
-                  CountOccurrences(dts, "declare interface Matrix4x4") >= 1 &&
-                  CountOccurrences(dts, "declare class Matrix4x4") >= 1,
+        // ⚠️ 一律带上 ` {`：`declare class Matrix4x4` 是 `declare class
+        // Matrix4x4Facade` 的**子串**，光数前者会把"门面被改名了"当成还在
+        // （变异 VTM35 第一次就是这么存活的）。
+        Check(CountOccurrences(dts, "declare interface Vector2 {") >= 1 &&
+                  CountOccurrences(dts, "declare class Vector2 {") >= 1 &&
+                  CountOccurrences(dts, "declare interface Vector4 {") >= 1 &&
+                  CountOccurrences(dts, "declare class Vector4 {") >= 1 &&
+                  CountOccurrences(dts, "declare interface Matrix4x4 {") >= 1 &&
+                  CountOccurrences(dts, "declare class Matrix4x4 {") >= 1,
               "VW15", "interface AND class are declared for all three (declaration merging)");
         // 静态面返回的是**合并出来的类型**：`identity: Matrix4x4` 而不是
         // `identity: any`，否则脚本里 `let m: Matrix4x4 = Matrix4x4.identity` 直接红。
