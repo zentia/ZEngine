@@ -883,6 +883,25 @@ int main(int argc, char** argv)
         CheckEq("P9", "编辑态下它转发成 OnValidate", mover_value("validateCount"), "1");
         g_isEditor = was_editor;
 
+        // ---- 值类型的静态门面（Vector2 / Vector4 / Matrix4x4）------------
+        //
+        // C++ 侧的 VT 组（UnityParitySmokeTest）断言的是**算术**；这一段断言的是
+        // "脚本真的拿得到" —— 中间隔着 `declare interface X` 与 `declare class X`
+        // 的同名合并。合并失败时 tsc 是红的（Mover.ts 编不过），但**只有**在一个
+        // 真的类型检查器跑过之后才会知道；这里读回来的快照是对那条链的运行时确认。
+        std::printf("\n--- 值类型静态门面（TypeScript -> Vector2/Vector4/Matrix4x4）---\n");
+        CheckTrue("Q0", "ProbeValueTypes 送到了 JS 侧", comp2->InvokeMethod("ProbeValueTypes"));
+        // 一条串钉住 16 个值。拆成 16 条 CheckEq 读起来更友好，但那会让
+        // "其中一个错了"变成"一次只能看见一个" —— 而且 mover_value 每次都要
+        // 重新枚举字段。这里要的是"全对"，所以合成一条。
+        CheckEq("Q1", "Vector2/Vector4/Matrix4x4 的静态面在 TS 里全对",
+                mover_value("vtSnapshot"),
+                "00|11|10|01|5.000|90.0|-90.0|10.0|20.0|5.000|0.800|234|111|true|false|323");
+        // 跨平面那条：Vector2.right = +X，Vector3.right = -X。被"统一"成一个符号
+        // 时 Q1 里那两个值也会跟着变，但那要读到第 3 段才看得出来 —— 单独拎一条。
+        CheckEq("Q2", "Vector2.right 是 +X 而 Vector3.right 是 -X（不同平面，故意的）",
+                mover_value("vtAxis"), "1/-1");
+
         scheduler->StopAll();
     }
 

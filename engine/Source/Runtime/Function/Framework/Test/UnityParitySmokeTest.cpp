@@ -1777,6 +1777,11 @@ namespace
 
     bool Near(float a, float b, float tolerance = 1.0e-3f) { return std::fabs(a - b) < tolerance; }
 
+    bool Near(const Vector2& a, const Vector2& b, float tolerance = 1.0e-3f)
+    {
+        return std::fabs(a.x - b.x) < tolerance && std::fabs(a.y - b.y) < tolerance;
+    }
+
     bool Near(const Vector4& a, const Vector4& b, float tolerance = 1.0e-3f)
     {
         return std::fabs(a.x - b.x) < tolerance && std::fabs(a.y - b.y) < tolerance &&
@@ -6395,6 +6400,351 @@ namespace
               "BD8", "up x right == forward (right-handed, same as transform)");
     }
 
+    // ---------------------------------------------------------------- VT ---
+    // `Vector2` / `Vector4` / `Matrix4x4` 三个值类型的静态门面（Unity 拼写）。
+    //
+    // 与 `Vector3` / `Quaternion` 同一套做法（同名 class + interface 合并），只是
+    // 晚做了一步。这里钉的是**各自平面/各自维度**的真值：
+    //   * `Vector2.right` 是 +X，而 `Vector3.right` 是 -X —— 两边故意不同（屏幕
+    //     平面 vs Z-up 世界），一条断言同时盯住两边，谁被"统一"了谁就红。
+    //   * `Vector4` 的长度/normalize 是**四维**的，引擎值类型自带的
+    //     `Vector4::normalise()` 只动 xyz（Ogre 平面语义）—— 直接转发会静默算错 w。
+    //   * `Matrix4x4` 的 Perspective/Ortho 是 **OpenGL 约定**（z ∈ [-1,1]），
+    //     与 Unity 一致；矩阵乘法的**顺序**（T*R*S，不是 S*R*T）必须验出来。
+    void TestValueTypeFacades()
+    {
+        // ---- Vector2：常量 ----
+        Check(Near(Runtime::Vector2::GetZero(), ::Vector2(0.0f, 0.0f)), "VT0",
+              "Vector2.zero == (0,0)");
+        Check(Near(Runtime::Vector2::GetOne(), ::Vector2(1.0f, 1.0f)), "VT1",
+              "Vector2.one == (1,1)");
+        Check(Near(Runtime::Vector2::GetUp(), ::Vector2(0.0f, 1.0f)), "VT2",
+              "Vector2.up == (0,1) (screen plane)");
+        Check(Near(Runtime::Vector2::GetDown(), ::Vector2(0.0f, -1.0f)), "VT3",
+              "Vector2.down == (0,-1)");
+        Check(Near(Runtime::Vector2::GetLeft(), ::Vector2(-1.0f, 0.0f)), "VT4",
+              "Vector2.left == (-1,0)");
+        // ⚠️ 与 Vector3.right **相反**：屏幕平面 x 朝右，世界的 local +X 是左。
+        // 写成 -X 就与 Vector3 一致了，但那不是 Unity 的 Vector2.right。
+        Check(Near(Runtime::Vector2::GetRight(), ::Vector2(1.0f, 0.0f)) &&
+                  Near(Runtime::Vector3::GetRight(), ::Vector3(-1.0f, 0.0f, 0.0f)),
+              "VT5", "Vector2.right is +X while Vector3.right is -X (different planes, on purpose)");
+        Check(Runtime::Vector2::GetPositiveInfinity().x > 0.0f &&
+                  std::isinf(Runtime::Vector2::GetPositiveInfinity().y),
+              "VT6", "Vector2.positiveInfinity is +inf in both components");
+        Check(std::isinf(Runtime::Vector2::GetNegativeInfinity().x) &&
+                  Runtime::Vector2::GetNegativeInfinity().x < 0.0f,
+              "VT7", "Vector2.negativeInfinity is -inf in both components");
+        Check(Near(Runtime::Vector2::GetEpsilon(), 0.00001f, 1.0e-9f), "VT8",
+              "Vector2.kEpsilon == 1e-5 (Unity's value)");
+
+        // ---- Vector2：运算 ----
+        const ::Vector2 a34(3.0f, 4.0f);
+        Check(Near(Runtime::Vector2::Magnitude(a34), 5.0f), "VT9", "|(3,4)| == 5");
+        Check(Near(Runtime::Vector2::SqrMagnitude(a34), 25.0f), "VT10", "|(3,4)|^2 == 25");
+        // 零向量必须返回零向量，不是 NaN：NaN 一旦进 transform 就再也看不出来。
+        Check(Near(Runtime::Vector2::Normalize(::Vector2(0.0f, 0.0f)), ::Vector2(0.0f, 0.0f)) &&
+                  !std::isnan(Runtime::Vector2::Normalize(::Vector2(0.0f, 0.0f)).x),
+              "VT11", "Normalize(0,0) == (0,0), not NaN");
+        Check(Near(Runtime::Vector2::Normalize(a34), ::Vector2(0.6f, 0.8f)), "VT12",
+              "Normalize(3,4) == (0.6,0.8)");
+        Check(Near(Runtime::Vector2::Dot(::Vector2(1.0f, 2.0f), ::Vector2(3.0f, 4.0f)), 11.0f),
+              "VT13", "Dot((1,2),(3,4)) == 11");
+        Check(Near(Runtime::Vector2::Distance(::Vector2(1.0f, 1.0f), ::Vector2(4.0f, 5.0f)), 5.0f),
+              "VT14", "Distance((1,1),(4,5)) == 5");
+        Check(Near(Runtime::Vector2::Angle(::Vector2(1.0f, 0.0f), ::Vector2(0.0f, 1.0f)), 90.0f),
+              "VT15", "Angle((1,0),(0,1)) == 90 (unsigned)");
+        Check(Near(Runtime::Vector2::Angle(::Vector2(1.0f, 0.0f), ::Vector2(-1.0f, 0.0f)), 180.0f),
+              "VT16", "Angle((1,0),(-1,0)) == 180");
+        // 有符号：逆时针为正。反向断言同时钉住符号**和**大小（只钉大小的话 sign 写反
+        // 全绿）。
+        Check(Near(Runtime::Vector2::SignedAngle(::Vector2(1.0f, 0.0f), ::Vector2(0.0f, 1.0f)),
+                   90.0f) &&
+                  Near(Runtime::Vector2::SignedAngle(::Vector2(0.0f, 1.0f), ::Vector2(1.0f, 0.0f)),
+                       -90.0f),
+              "VT17", "SignedAngle is counter-clockwise positive (90 / -90)");
+        // 夹 vs 不夹：t=2 时两者差一整个 b，是这个区别唯一能被看见的地方。
+        Check(Near(Runtime::Vector2::Lerp(::Vector2(0.0f, 0.0f), ::Vector2(10.0f, 10.0f), 2.0f),
+                   ::Vector2(10.0f, 10.0f)) &&
+                  Near(Runtime::Vector2::LerpUnclamped(::Vector2(0.0f, 0.0f),
+                                                       ::Vector2(10.0f, 10.0f), 2.0f),
+                       ::Vector2(20.0f, 20.0f)),
+              "VT18", "Vector2.Lerp clamps t at 1, LerpUnclamped extrapolates");
+        Check(Near(Runtime::Vector2::Perpendicular(::Vector2(1.0f, 2.0f)), ::Vector2(-2.0f, 1.0f)),
+              "VT19", "Perpendicular((1,2)) == (-2,1)");
+        // 法线**故意不是单位向量**（(0,3)）：Unity 的 Reflect 要求法线已归一化，
+        // 但这里的实现自己归一化一遍。忘了归一化一层的话，单位法线这条断言是绿的。
+        Check(Near(Runtime::Vector2::Reflect(::Vector2(1.0f, -1.0f), ::Vector2(0.0f, 3.0f)),
+                   ::Vector2(1.0f, 1.0f)),
+              "VT20", "Reflect((1,-1),(0,3)) == (1,1) -- normal is normalized inside");
+        Check(Near(Runtime::Vector2::Scale(::Vector2(2.0f, 3.0f), ::Vector2(4.0f, 5.0f)),
+                   ::Vector2(8.0f, 15.0f)),
+              "VT21", "Vector2.Scale is component-wise (Unity)");
+        Check(Near(Runtime::Vector2::ScaleUniform(::Vector2(2.0f, 3.0f), 3.0f),
+                   ::Vector2(6.0f, 9.0f)),
+              "VT22", "ScaleUniform(2,3) == (6,9)");
+        // 两个方向都要有：短于上限的原样返回，长于上限的才缩。只测"缩"的话，
+        // 去掉提前返回的实现（无条件归一化到上限）是绿的。
+        Check(Near(Runtime::Vector2::ClampMagnitude(a34, 2.5f), ::Vector2(1.5f, 2.0f)) &&
+                  Near(Runtime::Vector2::ClampMagnitude(::Vector2(1.0f, 0.0f), 5.0f),
+                       ::Vector2(1.0f, 0.0f)),
+              "VT23", "ClampMagnitude((3,4),2.5) shrinks to (1.5,2) but leaves a short vector alone");
+        // 够得到就直接落 b（不然会在终点附近永远抖），够不到才走 max_distance。
+        Check(Near(Runtime::Vector2::MoveTowards(::Vector2(0.0f, 0.0f), ::Vector2(10.0f, 0.0f),
+                                                 3.0f),
+                   ::Vector2(3.0f, 0.0f)) &&
+                  Near(Runtime::Vector2::MoveTowards(::Vector2(0.0f, 0.0f), ::Vector2(1.0f, 0.0f),
+                                                     5.0f),
+                       ::Vector2(1.0f, 0.0f)),
+              "VT24", "MoveTowards steps by max_distance and snaps when close enough");
+        Check(Near(Runtime::Vector2::Min(::Vector2(1.0f, 5.0f), ::Vector2(3.0f, 2.0f)),
+                   ::Vector2(1.0f, 2.0f)) &&
+                  Near(Runtime::Vector2::Max(::Vector2(1.0f, 5.0f), ::Vector2(3.0f, 2.0f)),
+                       ::Vector2(3.0f, 5.0f)),
+              "VT25", "Min/Max are component-wise (both components must differ)");
+
+        // ---- Vector4：四维 ----
+        Check(Near(Runtime::Vector4::GetZero(), ::Vector4(0.0f, 0.0f, 0.0f, 0.0f)), "VT26",
+              "Vector4.zero == (0,0,0,0)");
+        Check(Near(Runtime::Vector4::GetOne(), ::Vector4(1.0f, 1.0f, 1.0f, 1.0f)), "VT27",
+              "Vector4.one == (1,1,1,1)");
+        // (1,2,2,4)：三维 hypot 是 3，四维是 5 —— 用这个 3-4-5 把两种长度分开。
+        const ::Vector4 v1224(1.0f, 2.0f, 2.0f, 4.0f);
+        Check(Near(Runtime::Vector4::Magnitude(v1224), 5.0f), "VT28",
+              "|(1,2,2,4)| == 5 -- FOUR dimensional (3-D hypot would say 3)");
+        Check(Near(Runtime::Vector4::SqrMagnitude(v1224), 25.0f), "VT29", "|(1,2,2,4)|^2 == 25");
+        Check(Near(Runtime::Vector4::Normalize(v1224), ::Vector4(0.2f, 0.4f, 0.4f, 0.8f)), "VT30",
+              "Normalize((1,2,2,4)) divides by the 4-D length, w included");
+        // 与引擎值类型自带的 `Vector4::normalise()`（只动 xyz）必须不同 —— 用 w 分得开：
+        // 那个版本给出 w = 4/3 ≈ 1.333，Unity 的给 0.8。
+        ::Vector4 ogre = v1224;
+        ogre.normalise();
+        Check(Near(ogre, ::Vector4(0.0f, 0.0f, 0.0f, 0.0f)) == false &&
+                  !Near(ogre, Runtime::Vector4::Normalize(v1224)),
+              "VT31", "Vector4.Normalize != Vector4::normalise() (the latter is Ogre's plane form)");
+        Check(Near(Runtime::Vector4::Dot(::Vector4(1.0f, 2.0f, 3.0f, 4.0f),
+                                         ::Vector4(5.0f, 6.0f, 7.0f, 8.0f)),
+                   70.0f),
+              "VT32", "Vector4.Dot is 4-D (70, not 1*5+2*6+3*7=38)");
+        Check(Near(Runtime::Vector4::Distance(::Vector4(0.0f, 0.0f, 0.0f, 0.0f), v1224), 5.0f),
+              "VT33", "Vector4.Distance is 4-D");
+        Check(Near(Runtime::Vector4::Lerp(::Vector4(0.0f, 0.0f, 0.0f, 0.0f),
+                                          ::Vector4(10.0f, 10.0f, 10.0f, 10.0f), 2.0f),
+                   ::Vector4(10.0f, 10.0f, 10.0f, 10.0f)) &&
+                  Near(Runtime::Vector4::LerpUnclamped(::Vector4(0.0f, 0.0f, 0.0f, 0.0f),
+                                                       ::Vector4(10.0f, 10.0f, 10.0f, 10.0f), 2.0f),
+                       ::Vector4(20.0f, 20.0f, 20.0f, 20.0f)),
+              "VT34", "Vector4.Lerp clamps t at 1, LerpUnclamped extrapolates");
+        Check(Near(Runtime::Vector4::Project(::Vector4(1.0f, 1.0f, 1.0f, 1.0f),
+                                             ::Vector4(0.0f, 2.0f, 0.0f, 0.0f)),
+                   ::Vector4(0.0f, 1.0f, 0.0f, 0.0f)),
+              "VT35", "Project((1,1,1,1),(0,2,0,0)) == (0,1,0,0)");
+        Check(Near(Runtime::Vector4::Project(::Vector4(1.0f, 1.0f, 1.0f, 1.0f),
+                                             ::Vector4(0.0f, 0.0f, 0.0f, 0.0f)),
+                   ::Vector4(0.0f, 0.0f, 0.0f, 0.0f)),
+              "VT36", "Project onto the zero vector is zero, not NaN");
+        Check(Near(Runtime::Vector4::Scale(::Vector4(1.0f, 2.0f, 3.0f, 4.0f),
+                                           ::Vector4(2.0f, 3.0f, 4.0f, 5.0f)),
+                   ::Vector4(2.0f, 6.0f, 12.0f, 20.0f)),
+              "VT37", "Vector4.Scale is component-wise");
+        Check(Near(Runtime::Vector4::Max(::Vector4(1.0f, 9.0f, 2.0f, 8.0f),
+                                         ::Vector4(4.0f, 3.0f, 7.0f, 5.0f)),
+                   ::Vector4(4.0f, 9.0f, 7.0f, 8.0f)) &&
+                  Near(Runtime::Vector4::Min(::Vector4(1.0f, 9.0f, 2.0f, 8.0f),
+                                             ::Vector4(4.0f, 3.0f, 7.0f, 5.0f)),
+                       ::Vector4(1.0f, 3.0f, 2.0f, 5.0f)),
+              "VT38", "Vector4 Min/Max are component-wise (every component differs)");
+
+        // ---- Matrix4x4 ----
+        const ::Matrix4x4 ident = Runtime::Matrix4x4::GetIdentity();
+        const ::Matrix4x4 zero = Runtime::Matrix4x4::GetZero();
+        Check(Runtime::Matrix4x4::IsIdentity(ident) && !Runtime::Matrix4x4::IsIdentity(zero),
+              "VT39", "identity is identity, zero is not");
+        Check(Near(Runtime::Matrix4x4::Determinant(ident), 1.0f) &&
+                  Near(Runtime::Matrix4x4::Determinant(zero), 0.0f),
+              "VT40", "det(I) == 1 and det(0) == 0");
+        const ::Matrix4x4 scale234 = Runtime::Matrix4x4::Scale(::Vector3(2.0f, 3.0f, 4.0f));
+        Check(Near(Runtime::Matrix4x4::Determinant(scale234), 24.0f), "VT41",
+              "det(Scale(2,3,4)) == 24");
+        // 奇异矩阵：返回零矩阵，不许把 NaN 传下去（NaN 会在几十帧后才在别处炸）。
+        const ::Matrix4x4 singular_inv = Runtime::Matrix4x4::Inverse(zero);
+        Check(Near(singular_inv, zero), "VT42",
+              "Inverse of a singular matrix is the zero matrix (no NaN propagation)");
+        // 真逆：M⁻¹·M == I。
+        Check(Near(Runtime::Matrix4x4::Multiply(Runtime::Matrix4x4::Inverse(scale234), scale234),
+                   ident),
+              "VT43", "Inverse(M) * M == I");
+        // 转置：平移列跑到平移行去了 —— 用 (1,2,3) 三个不同值，转置前后位置不同。
+        const ::Matrix4x4 trans123 = Runtime::Matrix4x4::Translate(::Vector3(1.0f, 2.0f, 3.0f));
+        Check(Near(trans123.m_Mat[0][3], 1.0f) && Near(trans123.m_Mat[1][3], 2.0f) &&
+                  Near(trans123.m_Mat[2][3], 3.0f),
+              "VT44", "Translate puts the offset in column 3 (column-vector convention)");
+        const ::Matrix4x4 transposed = Runtime::Matrix4x4::Transpose(trans123);
+        Check(Near(transposed.m_Mat[3][0], 1.0f) && Near(transposed.m_Mat[3][1], 2.0f) &&
+                  Near(transposed.m_Mat[3][2], 3.0f) && Near(transposed.m_Mat[0][3], 0.0f),
+              "VT45", "Transpose moves the offset to row 3");
+        // 点 vs 方向：平移影响点，不影响方向。同一个矩阵、同一个输入，两条断言互相
+        // 咬住 —— 只钉"点对"的话 MultiplyVector 退化成 MultiplyPoint 也全绿。
+        Check(Near(Runtime::Matrix4x4::MultiplyPoint(trans123, ::Vector3(1.0f, 1.0f, 1.0f)),
+                   ::Vector3(2.0f, 3.0f, 4.0f)) &&
+                  Near(Runtime::Matrix4x4::MultiplyPoint3x4(trans123, ::Vector3(1.0f, 1.0f, 1.0f)),
+                       ::Vector3(2.0f, 3.0f, 4.0f)) &&
+                  Near(Runtime::Matrix4x4::MultiplyVector(trans123, ::Vector3(1.0f, 1.0f, 1.0f)),
+                       ::Vector3(1.0f, 1.0f, 1.0f)),
+              "VT46", "MultiplyPoint/Point3x4 add the translation, MultiplyVector does not");
+        const ::Matrix4x4 rot_z90 = Runtime::Matrix4x4::Rotate(
+            Runtime::Quaternion::AngleAxis(90.0f, ::Vector3(0.0f, 0.0f, 1.0f)));
+        Check(Near(Runtime::Matrix4x4::MultiplyVector(rot_z90, ::Vector3(1.0f, 0.0f, 0.0f)),
+                   ::Vector3(0.0f, 1.0f, 0.0f)),
+              "VT47", "Rotate(90 deg about +Z) maps +X to +Y (right-handed)");
+        // TRS == T * R * S（不是 S * R * T）：先用纯缩放+平移验顺序，再用旋转验。
+        const ::Matrix4x4 trs = Runtime::Matrix4x4::TRS(::Vector3(1.0f, 2.0f, 3.0f),
+                                                        Runtime::Quaternion::GetIdentity(),
+                                                        ::Vector3(2.0f, 2.0f, 2.0f));
+        Check(Near(Runtime::Matrix4x4::MultiplyPoint(trs, ::Vector3(1.0f, 0.0f, 0.0f)),
+                   ::Vector3(3.0f, 2.0f, 3.0f)),
+              "VT48", "TRS scales first, then translates (T*R*S, not S*R*T)");
+        Check(Near(Runtime::Matrix4x4::Multiply(
+                       Runtime::Matrix4x4::Multiply(trans123, rot_z90),
+                       Runtime::Matrix4x4::Scale(::Vector3(2.0f, 2.0f, 2.0f))),
+                   Runtime::Matrix4x4::TRS(::Vector3(1.0f, 2.0f, 3.0f),
+                                           Runtime::Quaternion::AngleAxis(
+                                               90.0f, ::Vector3(0.0f, 0.0f, 1.0f)),
+                                           ::Vector3(2.0f, 2.0f, 2.0f))),
+              "VT49", "TRS == Translate * Rotate * Scale (with a real rotation in it)");
+        // 乘法顺序本身：T*S 与 S*T 不同 —— 只钉"乘出来是个矩阵"看不出来。
+        Check(Near(Runtime::Matrix4x4::MultiplyPoint(
+                       Runtime::Matrix4x4::Multiply(trans123, scale234), ::Vector3(1.0f, 1.0f, 1.0f)),
+                   ::Vector3(3.0f, 5.0f, 7.0f)) &&
+                  Near(Runtime::Matrix4x4::MultiplyPoint(
+                           Runtime::Matrix4x4::Multiply(scale234, trans123),
+                           ::Vector3(1.0f, 1.0f, 1.0f)),
+                       ::Vector3(4.0f, 9.0f, 16.0f)),
+              "VT50", "Multiply is ordered (T*S != S*T)");
+        // Perspective：竖直 fov、度、OpenGL z ∈ [-1,1]。m11 = 1/tan(fov/2)，
+        // m[3][2] = -1 就是"OpenGL 而不是 D3D"的那一条。
+        const ::Matrix4x4 persp = Runtime::Matrix4x4::Perspective(90.0f, 1.0f, 0.1f, 100.0f);
+        Check(Near(persp.m_Mat[1][1], 1.0f, 1.0e-4f) && Near(persp.m_Mat[0][0], 1.0f, 1.0e-4f),
+              "VT51", "Perspective(90, aspect 1) has 1 on both diagonals (fov in DEGREES)");
+        Check(Near(persp.m_Mat[3][2], -1.0f) && Near(persp.m_Mat[3][3], 0.0f),
+              "VT52", "Perspective is OpenGL-style (m32 == -1, not D3D's 0..1 depth)");
+        Check(Near(persp.m_Mat[2][2], 100.0f / (0.1f - 100.0f), 1.0e-3f), "VT53",
+              "Perspective maps z into [-1,1] (f/(n-f))");
+        // Ortho：左右不等宽时 m00/m03 都要跟着变，只验 m00 会漏掉偏移项。
+        const ::Matrix4x4 ortho = Runtime::Matrix4x4::Ortho(-1.0f, 3.0f, -2.0f, 2.0f, 0.1f, 100.0f);
+        Check(Near(ortho.m_Mat[0][0], 0.5f) && Near(ortho.m_Mat[0][3], -0.5f) &&
+                  Near(ortho.m_Mat[1][1], 0.5f) && Near(ortho.m_Mat[3][3], 1.0f),
+              "VT54", "Ortho(-1,3,-2,2) has the half-width and the centre offset right");
+        // z 那一行也钉住：zNear/zFar 只影响 m22/m23，漏看这行的 `Ortho` 会把
+        // 01 版（-1..0 深度）当成 -1..1 版用而看不出来。
+        Check(Near(ortho.m_Mat[2][2], -2.0f / 99.9f, 1.0e-4f) &&
+                  Near(ortho.m_Mat[2][3], -100.1f / 99.9f, 1.0e-3f),
+              "VT54b", "Ortho maps z into [-1,1] (not the 0..1 variant)");
+        // LookAt：相机在原点看向 -Y（本引擎的默认朝向），世界点 (0,-5,0) 应该落在
+        // 视图空间的 -Z（OpenGL：相机看向 -Z）。
+        Check(Near(Runtime::Matrix4x4::MultiplyPoint(
+                       Runtime::Matrix4x4::LookAt(::Vector3(0.0f, 0.0f, 0.0f),
+                                                  ::Vector3(0.0f, -1.0f, 0.0f),
+                                                  ::Vector3(0.0f, 0.0f, 1.0f)),
+                       ::Vector3(0.0f, -5.0f, 0.0f)),
+                   ::Vector3(0.0f, 0.0f, -5.0f)),
+              "VT55", "LookAt puts a point 5 units ahead at view-space z = -5");
+        Check(Near(Runtime::Matrix4x4::GetColumn(trans123, 3), ::Vector4(1.0f, 2.0f, 3.0f, 1.0f)) &&
+                  Near(Runtime::Matrix4x4::GetRow(trans123, 0), ::Vector4(1.0f, 0.0f, 0.0f, 1.0f)) &&
+                  Near(Runtime::Matrix4x4::GetRow(trans123, 2), ::Vector4(0.0f, 0.0f, 1.0f, 3.0f)),
+              "VT56", "GetColumn/GetRow return the right slice (transposed of each other)");
+        Check(Near(Runtime::Matrix4x4::GetColumn(trans123, 9), ::Vector4(0.0f, 0.0f, 0.0f, 0.0f)) &&
+                  Near(Runtime::Matrix4x4::GetRow(trans123, -1), ::Vector4(0.0f, 0.0f, 0.0f, 0.0f)),
+              "VT57", "GetColumn/GetRow out of range return zero, not out-of-bounds garbage");
+
+        // ---- Vector3.Scale 的 Unity 语义（本切片顺带改掉的那条）----
+        Check(Near(Runtime::Vector3::Scale(::Vector3(2.0f, 3.0f, 4.0f),
+                                           ::Vector3(5.0f, 7.0f, 11.0f)),
+                   ::Vector3(10.0f, 21.0f, 44.0f)),
+              "VT58", "Vector3.Scale is component-wise (Unity), not a uniform scale");
+        Check(Near(Runtime::Vector3::ScaleUniform(::Vector3(2.0f, 3.0f, 4.0f), 3.0f),
+                   ::Vector3(6.0f, 9.0f, 12.0f)),
+              "VT59", "Vector3.ScaleUniform is the scalar one");
+    }
+
+    // ---------------------------------------------------------------- VW ---
+    // 上面那组行为断言的**接线门**。
+    //
+    // 三个门面最容易出的问题不是算错，而是"根本没接上"：类写了、注册了、d.ts 里
+    // 也有 —— 但脚本侧拿到的是 interface 而不是合并出来的 class，于是
+    // `Vector2.zero` 编译不过。这类失败在没有 TS 用例的环境里完全静默，所以源码级
+    // 与 d.ts 级各钉一层。
+    void TestValueTypeFacadeWiring()
+    {
+        const std::string header = ReadFile("Source/Runtime/Scripting/ScriptVector/ScriptVector.h");
+        const std::string source = ReadFile("Source/Runtime/Scripting/ScriptVector/ScriptVector.cpp");
+        Check(!header.empty(), "VW0", "ScriptVector.h is readable");
+        Check(!source.empty(), "VW1", "ScriptVector.cpp is readable");
+
+        // 五个门面都在（ZCLASS 是 ZHeaderTool 的入口，没有它就没有任何绑定）。
+        Check(CountOccurrences(header, "class Vector2 : public Object") >= 1 &&
+                  CountOccurrences(header, "class Vector4 : public Object") >= 1 &&
+                  CountOccurrences(header, "class Matrix4x4 : public Object") >= 1,
+              "VW2", "Vector2 / Vector4 / Matrix4x4 all have Object-derived facades");
+        // 值类型一律全称：命名空间里裸 `Matrix4x4` 指的是门面类，漏 `::` 编译器会
+        // 立刻报错（不会静默），但 `m_Mat` 那种成员访问会**静默**拿到错的东西。
+        Check(CountOccurrences(header, "static ::Vector2 GetZero()") >= 1 &&
+                  CountOccurrences(header, "static ::Vector4 GetZero()") >= 1 &&
+                  CountOccurrences(header, "static ::Matrix4x4 GetIdentity()") >= 1,
+              "VW3", "the new facades return fully-qualified value types");
+        Check(CountOccurrences(source, "::Matrix4x4::IDENTITY") >= 2, "VW4",
+              "the matrix constants are read off ::Matrix4x4, not the facade class");
+        Check(CountOccurrences(header, "ZSCRIPTPROPERTY(Name = \"identity\", Getter = \"GetIdentity\")") >= 1,
+              "VW5", "Matrix4x4.identity is a static script property");
+
+        // 轴向：Vector2.right = +X（与 Vector3.right = -X 故意不同）。
+        Check(CountOccurrences(source, "::Vector2(1.0f, 0.0f)") >= 1, "VW6",
+              "Vector2.right is +X (the screen plane, unlike Vector3.right)");
+        // 四维，且**没有**转发引擎值类型的 `normalise()`（那个只动 xyz）。
+        Check(CountOccurrences(source, "v.w * v.w") >= 2, "VW7",
+              "Vector4 length is 4-D (w is squared too)");
+        Check(CountOccurrences(source, "normalise()") == 0, "VW8",
+              "Vector4.Normalize does NOT forward Vector4::normalise() (that one is 3-D)");
+        // Lerp 夹 t：三个门面都要夹，共用一个 Clamp01 才不会漏夹一个。
+        Check(CountOccurrences(source, "Clamp01(t)") >= 2, "VW9",
+              "Vector2/Vector4 Lerp clamp t through the shared Clamp01");
+        // 投影/视图矩阵转发引擎的 Math::Make*，不重写一份。
+        Check(CountOccurrences(source, "Math::MakePerspectiveMatrix") >= 1 &&
+                  CountOccurrences(source, "Math::MakeOrthographicProjectionMatrix") >= 1 &&
+                  CountOccurrences(source, "Math::MakeLookAtMatrix") >= 1,
+              "VW10", "the matrix builders forward Math::Make* (no second implementation)");
+        // 度 → 弧度。忘了一行，Perspective 会把 90 度当 90 弧度，画面缩成一个点。
+        Check(CountOccurrences(source, "Math::DegreesToRadians(fov)") >= 1, "VW11",
+              "Perspective converts fov from degrees to radians");
+        // 奇异矩阵守卫。
+        Check(CountOccurrences(source, "1.0e-12f") >= 1, "VW12",
+              "Inverse guards the singular case instead of emitting NaN");
+        // Vector3.Scale 走的是逐分量那个（VectorMath::Mul），不是标量的 Scale。
+        Check(CountOccurrences(source, "VectorMath::Mul(a, b)") >= 1, "VW13",
+              "Vector3.Scale forwards the component-wise VectorMath::Mul");
+
+        // d.ts：interface 与 class **都必须**在 —— 少了 class 就没有静态面，
+        // 少了 interface 就没有值类型，两边缺一边 TS 侧都是"能编译但形状不对"。
+        const std::string dts = ReadFile("Source/Runtime/Scripting/ScriptVM/Test/Typings/zengine.d.ts");
+        Check(!dts.empty(), "VW14", "the generated zengine.d.ts is readable");
+        Check(CountOccurrences(dts, "declare interface Vector2") >= 1 &&
+                  CountOccurrences(dts, "declare class Vector2") >= 1 &&
+                  CountOccurrences(dts, "declare interface Vector4") >= 1 &&
+                  CountOccurrences(dts, "declare class Vector4") >= 1 &&
+                  CountOccurrences(dts, "declare interface Matrix4x4") >= 1 &&
+                  CountOccurrences(dts, "declare class Matrix4x4") >= 1,
+              "VW15", "interface AND class are declared for all three (declaration merging)");
+        // 静态面返回的是**合并出来的类型**：`identity: Matrix4x4` 而不是
+        // `identity: any`，否则脚本里 `let m: Matrix4x4 = Matrix4x4.identity` 直接红。
+        Check(CountOccurrences(dts, "static readonly identity: Matrix4x4;") >= 1 &&
+                  CountOccurrences(dts, "static readonly zero: Vector2;") >= 1 &&
+                  CountOccurrences(dts, "static readonly one: Vector4;") >= 1,
+              "VW16", "the facades' static members are typed as the merged value type");
+        Check(CountOccurrences(dts, "static TRS(pos: Vector3, q: Quaternion, s: Vector3): Matrix4x4;") >= 1 &&
+                  CountOccurrences(dts, "static SignedAngle(from: Vector2, to: Vector2): number;") >= 1,
+              "VW17", "Unity's own spellings reach the .d.ts (TRS, SignedAngle)");
+    }
+
     // ---------------------------------------------------------------- GZ ---
     // Gizmos (Unity's `UnityEngine.Gizmos` static face).
     //
@@ -8279,6 +8629,8 @@ int main()
     TestEnabledCallbacksWiring();
     TestApplicationMessages();
     TestApplicationMessagesWiring();
+    TestValueTypeFacades();
+    TestValueTypeFacadeWiring();
     TestWiringGate();
 
     std::printf("\n=== %d checks, %d failures ===\n", g_Checks, g_Failures);

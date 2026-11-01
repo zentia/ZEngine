@@ -88,6 +88,17 @@ class Mover extends Behaviour {
         // 派发的话这里读到的还是旧父级，而回调本身照样被调用一次 —— 只看调用
         // 次数完全分不出来。
         this.parentWasNullAtCallback = true;
+        // ---- 值类型的静态门面：Vector2 / Vector4 / Matrix4x4 ------------------
+        //
+        // 这段的价值**在 tsc**：`Vector2.zero` 这种写法只有 d.ts 里同时存在
+        // `declare interface Vector2`（值类型形状）和 `declare class Vector2`（静态
+        // 面）时才编译得过 —— 两者同名合并。C++ 侧的 VT 组断言算术，ScriptVM 侧断言
+        // 发布面存在，只有这里证明"合出来的那个类型真的能当值用"。
+        //
+        // ⚠️ 夹具一律不对称：(3,4) 而不是 (1,1)，`SignedAngle` 两个方向都取，Lerp 的
+        // 夹与不夹各来一次。对称夹具分不出对错。
+        this.vtSnapshot = "";
+        this.vtAxis = "";
         // ---- Bounds / Color32 -------------------------------------------------
         //
         // 这两个是 Unity 里仅剩、而引擎里此前**零命中**的值类型。C++ 侧的 BC 组
@@ -179,6 +190,40 @@ class Mover extends Behaviour {
     }
     OnValidate() {
         this.validateCount = this.validateCount + 1;
+    }
+    ProbeValueTypes() {
+        const a = { x: 3, y: 4 };
+        const parts = [];
+        // Vector2：常量 + 长度 + 有符号夹角（负号那个方向才是真判据）。
+        parts.push(Vector2.zero.x.toFixed(0) + Vector2.zero.y.toFixed(0));
+        parts.push(Vector2.one.x.toFixed(0) + Vector2.one.y.toFixed(0));
+        parts.push(Vector2.right.x.toFixed(0) + Vector2.right.y.toFixed(0));
+        parts.push(Vector2.up.x.toFixed(0) + Vector2.up.y.toFixed(0));
+        parts.push(Vector2.Magnitude(a).toFixed(3));
+        parts.push(Vector2.SignedAngle({ x: 1, y: 0 }, { x: 0, y: 1 }).toFixed(1));
+        parts.push(Vector2.SignedAngle({ x: 0, y: 1 }, { x: 1, y: 0 }).toFixed(1));
+        // 夹 vs 不夹：t=2 时两者差一整个 b，是这个区别唯一能被看见的地方。
+        parts.push(Vector2.Lerp(Vector2.zero, { x: 10, y: 10 }, 2).x.toFixed(1));
+        parts.push(Vector2.LerpUnclamped(Vector2.zero, { x: 10, y: 10 }, 2).x.toFixed(1));
+        // Vector4：四维长度（(1,2,2,4) 的三维 hypot 是 3，四维才是 5）。
+        const v4 = { x: 1, y: 2, z: 2, w: 4 };
+        parts.push(Vector4.Magnitude(v4).toFixed(3));
+        parts.push(Vector4.Normalize(v4).w.toFixed(3));
+        // Matrix4x4：平移影响点、不影响方向；TRS 是 T*R*S 不是 S*R*T。
+        const t = Matrix4x4.Translate({ x: 1, y: 2, z: 3 });
+        const p = Matrix4x4.MultiplyPoint(t, { x: 1, y: 1, z: 1 });
+        parts.push(p.x.toFixed(0) + p.y.toFixed(0) + p.z.toFixed(0));
+        const d = Matrix4x4.MultiplyVector(t, { x: 1, y: 1, z: 1 });
+        parts.push(d.x.toFixed(0) + d.y.toFixed(0) + d.z.toFixed(0));
+        parts.push(String(Matrix4x4.IsIdentity(Matrix4x4.identity)));
+        parts.push(String(Matrix4x4.IsIdentity(Matrix4x4.zero)));
+        const trs = Matrix4x4.TRS({ x: 1, y: 2, z: 3 }, Quaternion.identity, { x: 2, y: 2, z: 2 });
+        const q = Matrix4x4.MultiplyPoint(trs, { x: 1, y: 0, z: 0 });
+        parts.push(q.x.toFixed(0) + q.y.toFixed(0) + q.z.toFixed(0));
+        this.vtSnapshot = parts.join("|");
+        // 跨平面那条：Vector2.right 是 +X，Vector3.right 是 -X。两边**故意**不同，
+        // 被"统一"成一个符号就是错的（各自的平面里才是右）。
+        this.vtAxis = Vector2.right.x.toFixed(0) + "/" + Vector3.right.x.toFixed(0);
     }
     /// 从 TypeScript 里画 gizmo。C++ 侧的 GZ 组断言的是"画出了什么"，
     /// ScriptVMSmokeTest 的 L 组断言的是"脚本看不看得见 Gizmos" —— 只有这里

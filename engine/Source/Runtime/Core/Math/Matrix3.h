@@ -97,30 +97,16 @@ public:
         m_Mat[2][2] = row2.z;
     }
 
-    Matrix3x3(const Quaternion& q)
-    {
-        float yy = q.y * q.y;
-        float zz = q.z * q.z;
-        float xy = q.x * q.y;
-        float zw = q.z * q.w;
-        float xz = q.x * q.z;
-        float yw = q.y * q.w;
-        float xx = q.x * q.x;
-        float yz = q.y * q.z;
-        float xw = q.x * q.w;
-
-        m_Mat[0][0] = 1 - 2 * yy - 2 * zz;
-        m_Mat[0][1] = 2 * xy + 2 * zw;
-        m_Mat[0][2] = 2 * xz - 2 * yw;
-
-        m_Mat[1][0] = 2 * xy - 2 * zw;
-        m_Mat[1][1] = 1 - 2 * xx - 2 * zz;
-        m_Mat[1][2] = 2 * yz + 2 * xw;
-
-        m_Mat[2][0] = 2 * xz + 2 * yw;
-        m_Mat[2][1] = 2 * yz - 2 * xw;
-        m_Mat[2][2] = 1 - 2 * xx - 2 * yy;
-    }
+    /// ⚠️ 以前这份构造把手写展开抄在了这里，而抄的那份是 `ToRotationMatrix` 的
+    /// **转置** —— 也就是绕同一根轴转**相反**的角度。`Matrix3x3(q)` 于是与
+    /// `Quaternion::ToRotationMatrix`（`Matrix4x4::MakeTransform` 用的那一份）
+    /// 矛盾，也与本文件顶部注释里写死的右手系 `RZ` 矛盾：RZ(90°) 该把 (1,0,0)
+    /// 转到 (0,1,0)，转置版给 (0,-1,0)。
+    ///
+    /// 当时没人发现是因为这个构造**全工程零调用点**（唯一一个调用点是
+    /// `Matrix4x4::Rotate` 门面，加它的那天就红了）。现在改成委托给唯一真源，
+    /// 让"四元数 → 矩阵"只有一份实现。
+    Matrix3x3(const Quaternion& q) { q.ToRotationMatrix(*this); }
 
     void fromData(float (&float_array)[9])
     {
