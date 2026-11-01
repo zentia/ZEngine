@@ -95,6 +95,19 @@ namespace
                         return self->EvalScriptPredicate(script_id, value) && value;
                     }};
                     break;
+                case ScriptYieldKind::kCoroutine:
+                    // `yield this.StartCoroutine("Other")`。
+                    //
+                    // 不需要 TypeScriptComponent 记账：`coroutine_id` 是调度器
+                    // id，不是 JS 值，没有强引用要释放。也不需要判 0 —— 那个
+                    // 降级发生在 GeneratorNext 里，能走到这里说明 id > 0。
+                    //
+                    // 语义与 Unity 一致：内层协程**结束**才恢复，而且它是在
+                    // 外层执行到这一行时就 start 了（JS shim 里
+                    // `StartCoroutine` 先跑，返回句柄，然后才 yield），所以不
+                    // 存在"等一个还没开始的协程"的窗口。
+                    co_yield WaitForCoroutine {yielded.coroutine_id};
+                    break;
                 case ScriptYieldKind::kNull:
                 default:
                     // 未知标记在 ScriptEnv 里已经降级成 kNull 并记了日志，这里

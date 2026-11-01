@@ -122,6 +122,38 @@ class Mover extends Behaviour {
         this.untilSteps = this.untilSteps + 4;
     }
 
+    // ---- yield return StartCoroutine(other) ------------------------------
+    //
+    // Unity 的嵌套协程：外层不是"等一帧"，而是"等那个协程整个跑完"。
+    //
+    // ⚠️ 内层必须**多于一帧**（这里是两段 yield）：`yield this.StartCoroutine(...)`
+    // 被当成 `yield null` 的实现，外层也只晚一帧就继续了，step 位最终照样能
+    // 走到 7。只有"内层还在跑的时候外层必须停住"这一条能区分两者。
+    nestedSteps: number = 0;
+    nestedInner: number = 0;
+
+    StartNestedRoutine(): void {
+        this.nestedSteps = 0;
+        this.nestedInner = 0;
+        this.StartCoroutine("NestedOuterRoutine");
+    }
+
+    *NestedOuterRoutine(): Generator<YieldInstruction | null, void, unknown> {
+        this.nestedSteps = this.nestedSteps + 1;   // 1，同步段
+        yield this.StartCoroutine("NestedInnerRoutine");
+        this.nestedSteps = this.nestedSteps + 2;   // 3，内层结束后才到
+        yield null;
+        this.nestedSteps = this.nestedSteps + 4;   // 7
+    }
+
+    *NestedInnerRoutine(): Generator<YieldInstruction | null, void, unknown> {
+        this.nestedInner = this.nestedInner + 1;   // 1
+        yield null;
+        this.nestedInner = this.nestedInner + 2;   // 3
+        yield null;
+        this.nestedInner = this.nestedInner + 4;   // 7，跑完
+    }
+
     /// 从 TypeScript 里画 gizmo。C++ 侧的 GZ 组断言的是"画出了什么"，
     /// ScriptVMSmokeTest 的 L 组断言的是"脚本看不看得见 Gizmos" —— 只有这里
     /// 证明 `Gizmos.DrawLine(...)` 在 **.ts 里也能通过类型检查**（d.ts 里那

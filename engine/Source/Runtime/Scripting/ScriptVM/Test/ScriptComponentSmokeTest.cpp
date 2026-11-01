@@ -791,6 +791,40 @@ int main(int argc, char** argv)
         // 协程体走完了：调度器里不该还留着它。
         CheckEq("K13", "协程结束后台数清零",
                 std::to_string(scheduler->GetRunningCount()), "0");
+
+        // ---- `yield return StartCoroutine(other)` ------------------------
+        //
+        // 唯一能区分"真的在等内层"与"把句柄当成 yield null"的判据是**内层还在
+        // 跑的那一帧外层必须停住**：内层两段 yield（跨 3 帧），而"当成 null"
+        // 的实现只让外层晚一帧，最后 nestedSteps 照样走到 7。所以 N5 是这组里
+        // 唯一的真判据，N7/N8 只是收尾。
+        scheduler->StopAll();
+        CheckTrue("N0", "InvokeMethod(\"StartNestedRoutine\") 送到了 JS 侧",
+                  comp2->InvokeMethod("StartNestedRoutine"));
+        CheckEq("N1", "外层第一段同步跑了（nestedSteps=1）", mover_value("nestedSteps"), "1");
+        // 内层是在外层执行到那一行时同步 start 的（Unity 同），所以这里已经是 1。
+        CheckEq("N2", "内层也同步跑了第一段（nestedInner=1）", mover_value("nestedInner"), "1");
+        CheckEq("N3", "两个协程都进了调度器",
+                std::to_string(scheduler->GetRunningCount()), "2");
+
+        scheduler->TickUpdate(0.1f, 0.1f);
+        CheckEq("N4", "内层推进到第二段（nestedInner=3）", mover_value("nestedInner"), "3");
+        CheckEq("N5", "内层还没跑完时外层必须停住（nestedSteps 仍是 1）",
+                mover_value("nestedSteps"), "1");
+
+        scheduler->TickUpdate(0.1f, 0.1f);
+        CheckEq("N6", "内层跑完（nestedInner=7）", mover_value("nestedInner"), "7");
+        // 补一条互补的：调度器的 Stop 发生在 resume 循环**之后**，所以内层跑完
+        // 的这一帧外层还醒不过来。缺了这条，"外层在 T2 就恢复"的实现是绿的 ——
+        // 那本身无害，但它说明帧序被改动过，N7 的帧数就得跟着改。
+        CheckEq("N6b", "内层收尾这一帧外层还没恢复", mover_value("nestedSteps"), "1");
+
+        scheduler->TickUpdate(0.1f, 0.1f);
+        CheckEq("N7", "内层结束后外层才继续（nestedSteps=3）", mover_value("nestedSteps"), "3");
+        scheduler->TickUpdate(0.1f, 0.1f);
+        CheckEq("N8", "外层收尾（nestedSteps=7）", mover_value("nestedSteps"), "7");
+        CheckEq("N9", "两个都结束后调度器空了",
+                std::to_string(scheduler->GetRunningCount()), "0");
         scheduler->StopAll();
     }
 

@@ -51,6 +51,9 @@ enum class ScriptYieldKind : uint8_t
     kUntil,
     /// `WaitWhile(predicate)` -- resume the first frame the predicate is false.
     kWhile,
+    /// `yield return StartCoroutine("Other")` -- resume once that coroutine is
+    /// over. Unity spells this "yield the Coroutine handle".
+    kCoroutine,
 };
 
 struct ScriptYield
@@ -78,4 +81,11 @@ struct ScriptYield
     /// the predicate is *polled every frame* until it flips. A snapshot would
     /// make `WaitUntil(() => this.ready)` wait forever.
     void* predicate = nullptr;
+
+    /// Only meaningful for kCoroutine: the scheduler id of the coroutine being
+    /// waited on. 0 means "not a real id", which must degrade to kNull -- a
+    /// wait on id 0 would otherwise read as "that coroutine is not running",
+    /// i.e. resume immediately, which silently turns a nested wait into no wait
+    /// at all.
+    uint64_t coroutine_id = 0;
 };

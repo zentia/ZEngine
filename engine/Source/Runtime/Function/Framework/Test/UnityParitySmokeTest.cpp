@@ -7419,6 +7419,40 @@ namespace
               "BF46", "and WaitWhile");
         Check(CountOccurrences(binding_source, "constructor(predicate: () => boolean);") >= 2,
               "BF47", "and both constructors take a predicate (the whole point)");
+
+        // --- `yield return StartCoroutine(other)` --------------------------
+        //
+        // 这一类 yield 与前面六个的差别是：句柄**不带** `__zWait` 标记（Unity
+        // 里就是直接 yield 那个句柄）。所以"读标记"这条通用路径认不出它，缺了
+        // 按形状认的分支就退化成"下一帧继续"——一个**静默**的语义降级：外层
+        // 不等内层了，测试里看起来只是快了一帧。
+        Check(CountOccurrences(env_source, "__zId") >= 2,
+              "BF49", "the Coroutine handle carries a numeric id (shim writes, GeneratorNext reads)");
+        Check(CountOccurrences(env_source, "pesapi_get_property(m_Papis, env, yielded, \"__zId\")") >= 1,
+              "BF50", "GeneratorNext recognises the handle by shape, not by __zWait");
+        // 顺序门：`__zId` 必须在读 `__zWait` **之前**判。反过来的话句柄上
+        // `__zWait` 是 undefined，落到"未知对象 ⇒ 下一帧继续"，嵌套等待整个
+        // 消失，而且没有日志。位置比较是这里唯一能抓到它的判据。
+        const std::size_t id_at = env_source.find("__zId\")");
+        const std::size_t wait_at = env_source.find("pesapi_get_property(m_Papis, env, yielded, \"__zWait\")");
+        Check(id_at != std::string::npos && wait_at != std::string::npos && id_at < wait_at,
+              "BF51", "the __zId check comes before the __zWait tag read (order gate)");
+
+        Check(CountOccurrences(yield_header, "kCoroutine") >= 1,
+              "BF52", "ScriptYield carries the nested-wait kind");
+        Check(CountOccurrences(yield_header, "coroutine_id") >= 1,
+              "BF53", "and a slot for the id being waited on");
+        // 槽位声明了不等于被读了：pump 里不写 `yielded.coroutine_id` 而写个常量
+        // 的话，BF54 的 `WaitForCoroutine {` 照样命中。所以两边各判一次。
+        Check(CountOccurrences(pump_source, "yielded.coroutine_id") >= 1,
+              "BF53b", "and the pump reads that slot (not a hardcoded id)");
+        Check(CountOccurrences(pump_source, "WaitForCoroutine {") >= 1,
+              "BF54", "the pump forwards kCoroutine to WaitForCoroutine");
+        // 名义类型门：`YieldInstruction` 带私有字段，只有真子类才能塞进
+        // `Generator<YieldInstruction | null>`。不 extends 的话用户必须写
+        // `as any`，等于把类型检查关掉 —— 而这行是唯一能抓到它的地方。
+        Check(CountOccurrences(binding_source, "declare class Coroutine extends YieldInstruction") >= 1,
+              "BF55", "the .d.ts makes Coroutine a YieldInstruction (so it can be yielded)");
     }
 
     // ---------------------------------------------------------------- LU ---

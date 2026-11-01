@@ -330,8 +330,17 @@ namespace
         "    constructor(predicate: () => boolean);\n"
         "}\n"
         "\n"
-        "/** What `StartCoroutine` hands back; feed it to `StopCoroutine`. */\n"
-        "declare class Coroutine {\n"
+        // Unity 里 `Coroutine` 是 `YieldInstruction` 的子类 —— 这是
+        // `yield return StartCoroutine(other)` 能编译的唯一原因。这里的
+        // `extends` 不是装饰：`YieldInstruction` 带私有字段 ⇒ TS 用名义类型
+        // 判定，只有真子类才能塞进 `Generator<YieldInstruction | null>`。
+        // 不 extends 的话用户必须写 `yield c as any`，等于把类型检查关掉。
+        //
+        // 运行期它不带 `__zWait`（Unity 也是直接 yield 句柄、没有第二个构造
+        // 器），所以 GeneratorNext 按 `__zId` 的形状认，且必须在读 `__zWait`
+        // 之前判。
+        "/** What `StartCoroutine` hands back: feed it to `StopCoroutine`, or `yield` it. */\n"
+        "declare class Coroutine extends YieldInstruction {\n"
         "    private __zId: number;\n"
         "    private __zMethod: string;\n"
         "}\n"

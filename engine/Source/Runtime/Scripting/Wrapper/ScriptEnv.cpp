@@ -1639,6 +1639,36 @@ bool ScriptEnv::GeneratorNext(pesapi_value_ref generator, ScriptYield& out)
             ok = true;
             break;
         }
+        // `yield this.StartCoroutine("Other")` —— 句柄是 g.Coroutine 造的普通
+        // 对象（带数字 `__zId`），**不带** `__zWait` 标记，因为 Unity 里就是
+        // 直接 yield 那个句柄、没有第二个构造器。所以按形状认，且必须在读
+        // `__zWait` 之前先判。
+        //
+        // `__zId` 是调度器 id（不是 JS 值），没有生命周期问题：内层协程被
+        // StopCoroutine 掉以后 id 不再对应任何运行中的协程，
+        // WaitForCoroutine 的语义就是"那个协程跑完了" ⇒ 恢复。这与 Unity 一致
+        // （Unity 里 StopCoroutine 掉的 Coroutine 句柄再 yield 也是立即过）。
+        pesapi_value id_val = pesapi_get_property(m_Papis, env, yielded, "__zId");
+        if (id_val && zIsNumber(m_Papis, env, id_val))
+        {
+            const double id = pesapi_get_value_double(m_Papis, env, id_val);
+            if (id > 0.0)
+            {
+                out.kind = ScriptYieldKind::kCoroutine;
+                out.coroutine_id = static_cast<uint64_t>(id);
+            }
+            else
+            {
+                // id 0 = "StartCoroutine 失败了，shim 返回 null"。降级成下一帧，
+                // 绝不能当作"等一个 id 为 0 的协程"——那样内层其实没在跑，
+                // 嵌套等待会静默退化成不等待。
+                LOG_ERROR(ZScripting, "coroutine yielded a Coroutine handle with id 0 -- "
+                                      "resuming next frame instead of hanging");
+                out.kind = ScriptYieldKind::kNull;
+            }
+            ok = true;
+            break;
+        }
         // 对象：读 `__zWait`（由 WaitForSeconds / WaitForEndOfFrame 这些全局类
         // 打上的标记）。用标记而不是 instanceof —— C++ 侧拿不到 JS 的构造器。
         pesapi_value tag = pesapi_get_property(m_Papis, env, yielded, "__zWait");
