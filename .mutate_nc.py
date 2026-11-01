@@ -47,6 +47,24 @@ def mutate(path, old, new):
     io.open(path, "w", encoding="utf-8", newline="\n").write(text.replace(old, new, 1))
 
 
+def mutate_span(path, start, end):
+    """Remove [start .. end] inclusive -- for deleting a whole block.
+
+    Deleting only the `if (...) {` header leaves the body dangling, which is a
+    mutant that does not build and therefore proves nothing. Whole-block
+    deletion is the mutant that actually models "this branch was never added".
+    """
+    with io.open(path, "r", encoding="utf-8") as f:
+        text = f.read()
+    i = text.find(start)
+    if i < 0:
+        raise SystemExit("SPAN START NOT FOUND in %s:\n%r" % (path, start))
+    j = text.find(end, i)
+    if j < 0:
+        raise SystemExit("SPAN END NOT FOUND in %s:\n%r" % (path, end))
+    io.open(path, "w", encoding="utf-8", newline="\n").write(text[:i] + text[j + len(end):])
+
+
 def run(exe):
     r = subprocess.run([os.path.join(ROOT, exe)], cwd=ROOT, env=ENV,
                        capture_output=True, text=True, errors="replace", timeout=300)
@@ -90,11 +108,8 @@ def build_and_run():
     return "caught"
 
 
-NC_BRANCH = (
-    "        pesapi_value id_val = pesapi_get_property(m_Papis, env, yielded, \"__zId\");\n"
-    "        if (id_val && zIsNumber(m_Papis, env, id_val))\n"
-    "        {\n"
-)
+NC_SPAN_START = "        pesapi_value id_val = pesapi_get_property(m_Papis, env, yielded, \"__zId\");"
+NC_SPAN_END = "            break;\n        }\n"
 
 MUTATIONS = [
     # ---- shim：句柄上的 id ---------------------------------------------------
@@ -115,7 +130,10 @@ MUTATIONS = [
 
     # ---- GeneratorNext：按形状认 --------------------------------------------
     # 整段删掉：句柄上 __zWait 是 undefined => "未知对象" => kNull。
-    ("NC4 GeneratorNext has no __zId branch at all", ENV_CPP, NC_BRANCH, ""),
+    # ⚠️ 必须整块删。只删 `if (...) {` 那两行会把 body 留在原地，得到一个编译
+    # 不过的变异体 —— 它证明不了任何东西（第一次跑就是这么"存活"的）。
+    ("NC4 GeneratorNext has no __zId branch at all", ENV_CPP, "span",
+     NC_SPAN_START, NC_SPAN_END),
 
     # 只认到形状、不把 id 带出来：WaitForCoroutine{0} 与"下一帧"等价。
     ("NC5 the id is recognised but not carried", ENV_CPP,
@@ -177,15 +195,23 @@ def main():
     results = []
     touched = set()
     try:
-        for name, path, old, new in MUTATIONS:
+        for entry in MUTATIONS:
+            if len(entry) == 5:
+                name, path, kind, old, new = entry
+            else:
+                name, path, old, new = entry
+                kind = "replace"
             if only and name.split()[0] not in only:
                 continue
             print("=== %s ===" % name)
+            apply_mutation = ((lambda: mutate_span(path, old, new))
+                              if kind == "span"
+                              else (lambda: mutate(path, old, new)))
             bak = os.path.join(BAK, os.path.basename(path) + ".ncbak")
             subprocess.run(["git", "show", "HEAD:" + os.path.relpath(path, ROOT).replace("\\", "/")],
                            cwd=ROOT, env=ENV, stdout=io.open(bak, "wb"), stderr=subprocess.DEVNULL)
             try:
-                mutate(path, old, new)
+                apply_mutation()
                 verdict = "BUILD FAILED"
                 for _ in range(3):
                     verdict = build_and_run()
