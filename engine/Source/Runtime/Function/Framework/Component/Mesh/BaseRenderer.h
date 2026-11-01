@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Runtime/Core/Math/Bounds.h"
+#include "Runtime/Core/Math/Frustum.h"
 #include "Runtime/Function/Framework/Component/Component.h"
 #include "Runtime/Function/Framework/Component/Mesh/MaterialCustomParamNames.h"
 #include "Runtime/Function/Framework/Component/Mesh/MaterialInstanceOverride.h"
@@ -17,7 +19,9 @@ class BaseRenderer : public Component
     ZGENERATED_BODY(BaseRenderer)
 
 public:
-    BaseRenderer() = default;
+    /// 登记进 `UpdateVisibilityForAll()` 要扫的那张表（见 .cpp 里的理由）。
+    BaseRenderer();
+    ~BaseRenderer() override;
 
     void SetSubMeshes(const std::vector<SubMeshRes>& sub_meshes);
     void SetSharedMaterialAssets(const std::vector<eastl::string>& shared_material_assets);
@@ -202,6 +206,63 @@ public:
     ZFUNCTION()
     void ClearKeywords(int slot);
 
+    // =========================================================================
+    // 包围盒与可见性（Unity 的 `Renderer.bounds` / `localBounds` / `isVisible`）
+    // =========================================================================
+
+    /// Unity 的 `renderer.localBounds`：**对象空间**的盒，可读写。
+    ///
+    /// 默认（没有显式设过）由 sub-mesh 的网格资产算出来，缓存到 sub-mesh 列表
+    /// 变化为止。资产读不到（headless / 还没导入）时退回**零盒**—— 中心原点、
+    /// 尺寸为 0，与 Unity 的 `default(Bounds)` 同形。
+    ///
+    /// ⚠️ 退回零盒而不是"单位立方体"：零盒一眼就看得出"没算出来"，而单位立方
+    /// 体是一个**完全合理**的包围盒，会让 `bounds` 看起来是对的、剔除却悄悄
+    /// 多画或少画。宁可明显地错，不可看似对地错。
+    ZFUNCTION()
+    Bounds GetLocalBounds() const;
+    ZFUNCTION()
+    void SetLocalBounds(const Bounds& local_bounds);
+    ZSCRIPTPROPERTY(Name="localBounds", Getter="GetLocalBounds", Setter="SetLocalBounds")
+
+    /// Unity 的 `renderer.bounds`：**世界空间**的 AABB，只读。
+    ///
+    /// 做法是把 `localBounds` 的八个角用 `GetLocalToWorldMatrix()` 变换掉再重新
+    /// 求 AABB —— 旋转过的盒在世界空间里仍然是轴对齐盒（可能变大），这是 Unity
+    /// 的语义，也是"包围盒"该有的行为（只能多包不能漏包）。
+    ///
+    /// 不用 `Transform::GetLossyScale` 那种"缩放 extents"的近似：非均匀缩放下
+    /// 它给出的盒比真的小，斜着放的长条会露出一部分。
+    ZFUNCTION()
+    Bounds GetBounds() const;
+    ZSCRIPTPROPERTY(Name="bounds", Getter="GetBounds")
+
+    /// Unity 的 `renderer.isVisible`：上一帧有没有被**任何一台场景相机**看到。
+    ///
+    /// ⚠️ 与 Unity 的差别（写在注释里，别以后悄悄改）：Unity 是真的"有没有被渲
+    /// 染到"（所以场景视图也算、编辑器里也算）。这里问的是**场景里的
+    /// `CameraComponent`**，因为 `RenderCamera` 归 RenderSystem 管，headless 下
+    /// 恒为 nullptr —— 用它会得到一个在测试里永远返回 false 的 API，而"永远
+    /// false"和"真的看不见"是分不开的。
+    ZFUNCTION()
+    bool IsVisible() const { return m_VisibleLastFrame; }
+    ZSCRIPTPROPERTY(Name="isVisible", Getter="IsVisible")
+
+    /// 重算可见性，并在**变化**那一帧派发 `OnBecameVisible` / `OnBecameInvisible`。
+    ///
+    /// 由 `UpdateVisibilityForAll()` 每帧调一次；`SetEnabled` 与
+    /// `OnOwnerActiveChanged` 变化时也要立刻调一次 —— 否则"关掉渲染器"要等下
+    /// 一帧才生效，而下一帧它可能已经不会再被扫到了。
+    void UpdateVisibilityAndNotify();
+
+    /// 全场渲染器各刷一次可见性。主循环每帧调一次（与 `MouseEventDispatcher::Tick`
+    /// 同一层）。
+    ///
+    /// ⚠️ 为什么不能挂在 `BaseRenderer::Tick` 上：Tick 在 transform 不脏时直接
+    /// return（那是渲染状态提交的优化，不能为了可见性去掉），可见性就只剩
+    /// "物体动了才更新" —— 相机转开时它不会变，于是"相机看不到"永远报不出来。
+    static void UpdateVisibilityForAll();
+
     void PostLoadResource(GameObject* parent_object) override;
     void OnSerializedFieldsUpdated() override;
     void Tick(float delta_time) override;
@@ -212,6 +273,9 @@ public:
     /// 直接 return，本组件的 Tick 不会再被调到，而下面 SubmitRenderState 里那条
     /// "提交空 parts 撤掉渲染实体"的分支只有在 Tick 里被触发 —— 死路一条。
     void OnOwnerActiveChanged(bool active) override;
+
+    /// 启用状态一变就重算一次可见性（理由见 `UpdateVisibilityAndNotify`）。
+    void SetEnabled(bool enabled) override;
 
     void RefreshRenderStateFromTransformDispatch() const;
 
@@ -250,4 +314,18 @@ private:
     /// 在画的值"（override 优先，否则资产值），而资产值只在 BuildRenderParts 里
     /// 现算，getter 再算一遍等于每次读都去 loadAsset。所以这里缓存一份。
     mutable std::vector<GameObjectMaterialDesc> m_LastMaterialDescs;
+
+    // ---- 包围盒 / 可见性 ----
+
+    /// 脚本显式设过的对象空间包围盒。`SetLocalBounds` 之后一律用它。
+    Bounds m_LocalBoundsOverride;
+    bool m_HasLocalBoundsOverride {false};
+
+    /// 从网格资产算出来的那份的缓存。算一次要去 loadAsset 每个 sub-mesh，
+    /// `bounds` 又是每帧都可能被读的，所以必须有缓存。
+    mutable Bounds m_CachedMeshLocalBounds;
+    mutable bool m_CachedMeshLocalBoundsValid {false};
+
+    /// 上一帧的可见性。`isVisible` 读它；变化时派发 OnBecameVisible/Invisible。
+    bool m_VisibleLastFrame {false};
 };

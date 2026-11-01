@@ -130,6 +130,10 @@ namespace
         "    OnMouseDrag(): void;",
         "    OnMouseUp(): void;",
         "    OnMouseUpAsButton(): void;",
+        // Unity 的两条可见性消息。判据与鼠标那一组相同（只判
+        // activeInHierarchy、不判 enabled），派发方是 BaseRenderer。
+        "    OnBecameVisible(): void;",
+        "    OnBecameInvisible(): void;",
         // Unity 的 `OnValidate`：编辑器里序列化字段被改之后调用（编辑器专用，
         // Player 里不会来）。
         "    OnValidate(): void;",

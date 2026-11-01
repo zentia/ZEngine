@@ -6,11 +6,14 @@
 #include "Runtime/Function/Framework/Component/Transform/TransformChangeDispatch.h"
 #include "Runtime/Function/Render/RenderSwapContext.h"
 #include "Runtime/Function/Render/RenderSystem.h"
+#include "Runtime/Function/Framework/Component/Camera/CameraComponent.h"
 #include "Runtime/Resource/Asset/AssetManager.h"
 #include "Runtime/Resource/ResType/Data/Material.h"
+#include "Runtime/Resource/ResType/Data/MeshData.h"
 #include "Runtime/Resource/ResType/Data/Shader.h"
 
 #include <algorithm>
+#include <limits>
 
 
 
@@ -46,6 +49,26 @@ namespace
                 }
             });
     }
+
+    /// 场景里活着的 `BaseRenderer`。
+    ///
+    /// 为什么需要它：可见性得**每帧**比一次，而 `BaseRenderer::Tick` 在
+    /// transform 不脏时直接 return（那条早退是渲染状态提交的优化，不能为了可见
+    /// 性去掉）。所以可见性走"推"：由 `UpdateVisibilityForAll()` 从主循环里
+    /// 统一过一遍 —— 与 `MouseEventDispatcher` 同一套路。
+    ///
+    /// 没有这张表就得靠 `Level` 遍历，而 headless 下没有活动关卡（见
+    /// `TestObjectLifecycle` 的 AM1），于是永远找不到任何渲染器 —— "没有渲染器"
+    /// 和"渲染器不可见"长得一模一样。
+    struct BaseRendererRegistry
+    {
+        std::vector<BaseRenderer*> renderers;
+        static BaseRendererRegistry& Get()
+        {
+            static BaseRendererRegistry registry;
+            return registry;
+        }
+    };
 
     eastl::string resolveAssetPath(const eastl::string& asset_path)
     {
@@ -402,11 +425,194 @@ namespace
     }
 }  // namespace
 
+BaseRenderer::BaseRenderer()
+{
+    BaseRendererRegistry::Get().renderers.push_back(this);
+}
+
+BaseRenderer::~BaseRenderer()
+{
+    auto& renderers = BaseRendererRegistry::Get().renderers;
+    renderers.erase(std::remove(renderers.begin(), renderers.end(), this), renderers.end());
+}
+
+// =============================================================================
+// 包围盒
+// =============================================================================
+//
+// 为什么 `localBounds` 是**可写**的而不只是"从网格算出来的只读量"
+// ---------------------------------------------------------------------------
+// 从网格资产算要 `loadAsset<MeshData>` 每个 sub-mesh —— headless（测试 / 工具 /
+// 专用服务器）下资产系统要么没有、要么读不到，算出来必然是空。若把它做成只读
+// 的"自动量"，那这些环境里 `renderer.bounds` 就恒等于零盒，而 `bounds` 恒等于
+// 零盒和"这个物体真的没有体积"是分不开的。
+//
+// Unity 自己的 `Renderer.localBounds` 也是可写的（粒子、`SkinnedMeshRenderer`
+// 就是自己设的），所以这里照 Unity：默认走网格，脚本/导入器随时可以接管。
+
+namespace
+{
+    /// 从一个 sub-mesh 的网格资产算出它在**渲染器对象空间**里的角点范围。
+    /// 读不到资产返回 false（调用方决定怎么退）。
+    bool AppendSubMeshCorners(const SubMeshRes& sub_mesh, Vector3& io_min, Vector3& io_max)
+    {
+        AssetManager* asset_manager = GET_SYSTEM(AssetManager);
+        if (asset_manager == nullptr || sub_mesh.m_MeshAsset.empty())
+        {
+            return false;
+        }
+
+        MeshData* mesh = asset_manager->loadAsset<MeshData>(sub_mesh.m_MeshAsset);
+        if (mesh == nullptr || mesh->vertex_buffer.empty())
+        {
+            return false;
+        }
+
+        const Matrix4x4 local = sub_mesh.m_Transform.getMatrix();
+        for (const Vertex& vertex : mesh->vertex_buffer)
+        {
+            const Vector3 p = local * Vector3(vertex.px, vertex.py, vertex.pz);
+            io_min.makeFloor(p);
+            io_max.makeCeil(p);
+        }
+        return true;
+    }
+}  // namespace
+
+Bounds BaseRenderer::GetLocalBounds() const
+{
+    if (m_HasLocalBoundsOverride)
+    {
+        return m_LocalBoundsOverride;
+    }
+
+    if (m_CachedMeshLocalBoundsValid)
+    {
+        return m_CachedMeshLocalBounds;
+    }
+
+    // 初值是"反的"（min = +MAX / max = -MAX），这样"一个顶点都没装进去"能被
+    // `min <= max` 看出来 —— 用零盒做初值的话，空网格和"一个在原点的点"就
+    // 分不开了。
+    Vector3 min_corner(std::numeric_limits<float>::max(), std::numeric_limits<float>::max(),
+                       std::numeric_limits<float>::max());
+    Vector3 max_corner(-std::numeric_limits<float>::max(), -std::numeric_limits<float>::max(),
+                       -std::numeric_limits<float>::max());
+    bool any = false;
+    for (const SubMeshRes& sub_mesh : m_SubMeshes)
+    {
+        if (AppendSubMeshCorners(sub_mesh, min_corner, max_corner))
+        {
+            any = true;
+        }
+    }
+
+    m_CachedMeshLocalBounds = any ? Bounds::FromMinMax(min_corner, max_corner) : Bounds();
+    m_CachedMeshLocalBoundsValid = true;
+    return m_CachedMeshLocalBounds;
+}
+
+void BaseRenderer::SetLocalBounds(const Bounds& local_bounds)
+{
+    m_LocalBoundsOverride = local_bounds;
+    m_HasLocalBoundsOverride = true;
+}
+
+Bounds BaseRenderer::GetBounds() const
+{
+    const Bounds local = GetLocalBounds();
+
+    const Transform* transform_component =
+        m_ParentObject != nullptr ? m_ParentObject->tryGetComponent(Transform) : nullptr;
+    // 没有 Transform 时对象空间就是世界空间（不是"返回零盒"：那会让"没挂
+    // Transform"看起来和"零体积"一样）。
+    if (transform_component == nullptr)
+    {
+        return local;
+    }
+
+    const Matrix4x4 to_world = transform_component->GetLocalToWorldMatrix();
+
+    // 八个角全变换一遍再重新求 AABB。只变换 center + 缩放 extents 是**错**的：
+    // 非均匀缩放 + 旋转下那样算出来的盒比真的小，斜着放的长条会露一截出来。
+    const Vector3 min_corner = local.GetMin();
+    const Vector3 max_corner = local.GetMax();
+    Vector3 world_min(std::numeric_limits<float>::max(), std::numeric_limits<float>::max(),
+                      std::numeric_limits<float>::max());
+    Vector3 world_max(-std::numeric_limits<float>::max(), -std::numeric_limits<float>::max(),
+                      -std::numeric_limits<float>::max());
+    for (int corner = 0; corner < 8; ++corner)
+    {
+        const Vector3 p((corner & 1) != 0 ? max_corner.x : min_corner.x,
+                        (corner & 2) != 0 ? max_corner.y : min_corner.y,
+                        (corner & 4) != 0 ? max_corner.z : min_corner.z);
+        const Vector3 world = to_world * p;
+        world_min.makeFloor(world);
+        world_max.makeCeil(world);
+    }
+    return Bounds::FromMinMax(world_min, world_max);
+}
+
+// =============================================================================
+// 可见性
+// =============================================================================
+
+void BaseRenderer::UpdateVisibilityAndNotify()
+{
+    bool visible = false;
+
+    // 停用的渲染器不渲染 ⇒ 不可见；对象不在层级里同理。
+    if (isEnabled() && m_ParentObject != nullptr && m_ParentObject->IsActiveInHierarchy())
+    {
+        const Bounds world_bounds = GetBounds();
+        for (CameraComponent* camera : CameraComponent::GetAllCameraComponents())
+        {
+            if (camera == nullptr || !camera->CanSeeAnything())
+            {
+                continue;
+            }
+            const Frustum frustum =
+                Frustum::FromViewProjection(camera->GetWorldToClipMatrix());
+            if (frustum.Intersects(world_bounds))
+            {
+                visible = true;
+                break;
+            }
+        }
+    }
+
+    if (visible == m_VisibleLastFrame)
+    {
+        return;
+    }
+    m_VisibleLastFrame = visible;
+    if (m_ParentObject != nullptr)
+    {
+        m_ParentObject->BroadcastVisibilityChange(visible);
+    }
+}
+
+void BaseRenderer::UpdateVisibilityForAll()
+{
+    // ⚠️ 拷一份再遍历：`OnBecameVisible` 里脚本完全可以销毁别的对象（甚至自己），
+    // 那会改动 `renderers`。正序遍历一边改一边走是最经典的 use-after-free。
+    const std::vector<BaseRenderer*> snapshot = BaseRendererRegistry::Get().renderers;
+    for (BaseRenderer* renderer : snapshot)
+    {
+        if (renderer != nullptr)
+        {
+            renderer->UpdateVisibilityAndNotify();
+        }
+    }
+}
+
 void BaseRenderer::SetSubMeshes(const std::vector<SubMeshRes>& sub_meshes)
 {
     m_SubMeshes = sub_meshes;
     MigrateLegacyMaterialAssets();
     SyncMaterialOverrideCount();
+    // sub-mesh 列表变了 ⇒ 缓存的那份对象空间包围盒已经不是这堆网格的了。
+    m_CachedMeshLocalBoundsValid = false;
 
     if (m_ParentObject != nullptr)
     {
@@ -478,6 +684,7 @@ void BaseRenderer::PostLoadResource(GameObject* parent_object)
     Component::PostLoadResource(parent_object);
     MigrateLegacyMaterialAssets();
     SyncMaterialOverrideCount();
+    m_CachedMeshLocalBoundsValid = false;
 
     EnsureRendererTransformDispatchRegistered();
     if (Transform* transform_component = parent_object != nullptr ? parent_object->tryGetComponent(Transform) : nullptr)
@@ -493,6 +700,7 @@ void BaseRenderer::OnSerializedFieldsUpdated()
 {
     MigrateLegacyMaterialAssets();
     SyncMaterialOverrideCount();
+    m_CachedMeshLocalBoundsValid = false;
 
     if (m_ParentObject != nullptr)
     {
@@ -597,6 +805,16 @@ void BaseRenderer::OnOwnerActiveChanged(bool active)
     // 值本身不用读：SubmitRenderState 会重新问一次 IsActiveInHierarchy()，
     // 传进来的这个只是给"不关心方向的组件"用的。
     SubmitRenderState();
+    // ⚠️ 可见性必须在这里也刷一次：层级一变，Tick 可能就再也不会被调到（对象
+    // 未激活时 GameObject::Tick 直接返回），可见性会永远停在旧值上。
+    UpdateVisibilityAndNotify();
+}
+
+void BaseRenderer::SetEnabled(bool enabled)
+{
+    Component::SetEnabled(enabled);
+    // 同上：停用的渲染器不渲染 ⇒ 不可见，而这一帧之后 Tick 已经不会再来了。
+    UpdateVisibilityAndNotify();
 }
 
 void BaseRenderer::Tick(float delta_time)

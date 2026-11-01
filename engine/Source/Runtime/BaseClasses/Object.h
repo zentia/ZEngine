@@ -87,7 +87,21 @@ public:
     virtual void VirtualRedirectTransfer(GenerateTypeTreeTransfer&) {}
     virtual void VirtualRedirectTransfer(SafeBinaryRead&) {}
     const Type* GetType() const { return TypeManager::GetInstance().GetRuntimeTypes().types[m_CachedTypeIndex]; }
-    const char* GetTypeName() const { return GetType()->GetName(); }
+
+    /// ⚠️ 没跑过 `InitializeRuntimeTypeInfo()` 的对象在这里会拿到**空** `Type*`
+    /// —— 直接 `->GetName()` 就是一次空指针解引用。
+    ///
+    /// 这类对象最典型的来源是 `new T()`：`ObjectManager::Produce` /
+    /// `MemoryManager::CreateObject` 都会替调用方跑那一步，裸 `new` 不会。而
+    /// 症状离现场极远 —— 崩的是**别人遍历到它**的那一行（`GameObject::Tick`
+    /// 的类型白名单、序列化、`Cast<T>`），对象自己的方法全都正常，于是很难
+    /// 往回追到"这个对象是 new 出来的"。退化成一个能看见的名字，至少让它
+    /// 在日志里能被认出来，而不是把进程带崩。
+    const char* GetTypeName() const
+    {
+        const Type* type = GetType();
+        return type != nullptr ? type->GetName() : "<uninitialized-type>";
+    }
     void InitializeRuntimeTypeInfo();
 
     /// The most-derived Type of this instance, via a virtual call.

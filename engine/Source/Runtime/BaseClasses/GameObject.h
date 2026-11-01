@@ -107,6 +107,20 @@ public:
     /// "停用的对象收不到 OnMouseExit"这种只有一半生效的状态。
     virtual void BroadcastMouseEvent(MouseEventKind kind);
 
+    /// 派发 `OnBecameVisible` / `OnBecameInvisible` 给本对象的**全部**组件。
+    ///
+    /// 判据是第三种组合里的那一套：**只判 `IsActiveInHierarchy()`**，不判
+    /// `enabled`。依据是 MonoBehaviour 参考页那句"enabled 只挡 Start / Awake /
+    /// Update / FixedUpdate / OnGUI" —— 可见性消息不在那份清单里。
+    ///
+    /// ⚠️ "渲染器被停用"和"脚本被停用"是两件事：前者让可见性根本不会变 true
+    /// （不渲染 ⇒ 不可见），由 `BaseRenderer` 自己把关；后者不影响消息送达。
+    /// 把这两件混在一起会得到"停用了渲染器却还收到 OnBecameVisible"或者反过来。
+    ///
+    /// ⚠️ 只在**变化**的那一帧发一次（派发方负责比较上一帧），与
+    /// `OnMouseEnter`/`OnMouseExit` 同一类，不是每帧一次的 `OnMouseOver`。
+    virtual void BroadcastVisibilityChange(bool visible);
+
     bool load(const GameObject& object_instance_res);
     void save(GameObject& out_object_instance_res);
 

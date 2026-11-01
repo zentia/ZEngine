@@ -137,6 +137,12 @@ public:
     void OnMouseUp() override;
     void OnMouseUpAsButton() override;
 
+    // Unity 的两条可见性消息。判据与上面那七条**相同**（只判
+    // `activeInHierarchy`，不判 enabled）—— 派发方 `GameObject::BroadcastVisibilityChange`
+    // 已经把关了，这里只是转发。
+    void OnBecameVisible() override;
+    void OnBecameInvisible() override;
+
     /// Unity 的 `OnValidate()`：编辑器里序列化字段被改之后。只在 `g_isEditor`
     /// 下发（Player 里这条路径唯一的调用方是反序列化，那时脚本还没绑上）。
     void OnSerializedFieldsUpdated() override;

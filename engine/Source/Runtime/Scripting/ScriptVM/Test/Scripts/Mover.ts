@@ -259,6 +259,16 @@ class Mover extends Behaviour {
     OnMouseUp(): void { this.mouseLog = this.mouseLog + "U"; }
     OnMouseUpAsButton(): void { this.mouseLog = this.mouseLog + "B"; }
 
+    // ---- Unity 的两条可见性消息 ------------------------------------------
+    //
+    // 与鼠标那七条同一套判据（只判 activeInHierarchy，不判 enabled），但**只在
+    // 变化那一帧来一次**。两个字母必须不同：共用一个计数的话"进和出转发到了
+    // 同一个 JS 名字"是绿的（计数照样 +2）。
+    visibilityLog: string = "";
+
+    OnBecameVisible(): void { this.visibilityLog = this.visibilityLog + "+"; }
+    OnBecameInvisible(): void { this.visibilityLog = this.visibilityLog + "-"; }
+
     // ---- 值类型的静态门面：Vector2 / Vector4 / Matrix4x4 ------------------
     //
     // 这段的价值**在 tsc**：`Vector2.zero` 这种写法只有 d.ts 里同时存在

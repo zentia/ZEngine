@@ -63,6 +63,8 @@
 #include "Runtime/Function/Framework/Coroutine/Coroutine.h"
 #include "Runtime/Function/Framework/Component/Script/TypeScriptComponent.h"
 #include "Runtime/Function/Framework/Component/Transform/Transform.h"
+#include "Runtime/Function/Framework/Component/Camera/CameraComponent.h"
+#include "Runtime/Function/Framework/Component/Mesh/BaseRenderer.h"
 #include "Runtime/Function/Render/DebugDraw/DebugDrawManager.h"
 #include "Runtime/Project/ProjectInfo.h"
 #include "Runtime/Scripting/Native/PuertsNative.h"
@@ -263,6 +265,26 @@ namespace
         GameObject* go = static_cast<GameObject*>(raw);
         go->SetName(eastl::string(name));
         return go;
+    }
+
+    /// 与 MakeGameObject 同一套分配路径造组件。
+    ///
+    /// ⚠️ 不能图省事直接 `new T()`：`Produce` 之外造出来的对象没跑过
+    /// `InitializeRuntimeTypeInfo()`，于是 `Object::GetTypeName()` 里的
+    /// `types[m_CachedTypeIndex]` 还是空 —— 一问名字就是一次空指针解引用。
+    /// 而崩点离现场极远（`GameObject::FixedTick` 的白名单查询、序列化、
+    /// `Cast<T>`），看起来跟"刚 new 出来的这个组件"一点关系都没有；直接的
+    /// 用法（调它自己的方法）又全是好的，所以只在别人遍历到它时才炸。
+    template<typename T>
+    T* MakeComponent(ObjectManager* object_manager)
+    {
+        Object* raw = object_manager->Produce(TypeOf<T>(), 0);
+        if (raw == nullptr)
+        {
+            return nullptr;
+        }
+        object_manager->AllocateAndAssignInstanceID(raw);
+        return static_cast<T*>(raw);
     }
 }  // namespace
 
@@ -1055,6 +1077,62 @@ int main(int argc, char** argv)
         // 90° 绕 X 把 +Y 抬到 +Z：Vector3.up 是 (0,0,1)，转完应该是 (0,-1,0)。
         CheckEq("U2", "90 度绕 X 把 +Z 转到 -Y（右手系，不是抄实现）",
                 mover_value("quatYToZ"), "0,-1,0");
+
+        // --- Unity 的 OnBecameVisible / OnBecameInvisible（V 段）------------
+        //
+        // 与 T / U 段同一类理由：派发链是 `BaseRenderer` -> `GameObject` ->
+        // `TypeScriptComponent` -> JS，任何一环断了的表现都只是"什么都不发生"。
+        // 这里端到端走一遍，用 visibilityLog 里**字母的顺序**判方向 —— 合成一个
+        // 计数器的话"进和出转发到了同一个 JS 名字"是绿的。
+        {
+            GameObject* camera_host = MakeGameObject(object_manager, "VisCameraHost");
+            CheckTrue("V0", "可见性测试的相机宿主造出来了", camera_host != nullptr);
+            if (camera_host != nullptr)
+            {
+                Transform* camera_transform = MakeComponent<Transform>(object_manager);
+                camera_host->addComponent(camera_transform);
+                camera_transform->PostLoadResource(camera_host);
+                CameraComponent* camera = MakeComponent<CameraComponent>(object_manager);
+                camera_host->addComponent(camera);
+                camera->PostLoadResource(camera_host);
+                camera->SetNearClipPlane(0.1f);
+                camera->SetFarClipPlane(100.f);
+
+                BaseRenderer* renderer_v = MakeComponent<BaseRenderer>(object_manager);
+                go2->addComponent(renderer_v);
+                renderer_v->PostLoadResource(go2);
+                renderer_v->SetLocalBounds(
+                    Bounds::FromCenterSize(Vector3::ZERO, Vector3(2.f, 2.f, 2.f)));
+
+                // 相机默认在原点朝 -Y；把对象挪到正前方 10 米。
+                go2->GetTransform()->SetPosition(Vector3(0.f, -10.f, 0.f));
+                BaseRenderer::UpdateVisibilityForAll();
+                CheckEq("V1", "进入视锥：OnBecameVisible 到了 JS 侧",
+                        mover_value("visibilityLog"), "+");
+                // 再刷一帧：不该再来（是"变化"事件，不是每帧事件）。
+                BaseRenderer::UpdateVisibilityForAll();
+                CheckEq("V2", "第二帧什么都不发（只在变化那一帧来一次）",
+                        mover_value("visibilityLog"), "+");
+                // 挪到相机背后 ⇒ 离开视锥。
+                go2->GetTransform()->SetPosition(Vector3(0.f, 10.f, 0.f));
+                BaseRenderer::UpdateVisibilityForAll();
+                CheckEq("V3", "离开视锥：OnBecameInvisible 到了 JS 侧（方向没丢）",
+                        mover_value("visibilityLog"), "+-");
+
+                // 收尾：可见性是**全局**扫描（遍历所有渲染器 × 所有相机），
+                // 所以这台临时相机和这个临时渲染器必须真的从两张表里摘掉，
+                // 否则后面任何一组只要再调一次 UpdateVisibilityForAll 就会
+                // 撞见它们 —— 而"多了一台相机"的表现只是"多一个对象突然
+                // 变可见了"，跟这一段毫无关系，极难往回追。
+                // 顺序：先从宿主上摘（宿主不拥有组件），再逐个 Destroy。
+                go2->EditorRemoveComponent(renderer_v);
+                object_manager->Destroy(renderer_v);
+                object_manager->Destroy(camera_host);
+                object_manager->Destroy(camera);
+                object_manager->Destroy(camera_transform);
+                go2->GetTransform()->SetPosition(Vector3::ZERO);
+            }
+        }
         // ⚠️ 与 Tick 同一套判据：enabled / activeInHierarchy 都要挡。
         // 只测"发了"的话，"FixedUpdate 不判 enabled"这种实现是绿的 —— 而它正是
         // "Update 停了但物理还在推"那一类 bug。

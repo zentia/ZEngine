@@ -16,7 +16,9 @@
 #include "Runtime/Function/Render/RenderSwapContext.h"
 #include "Runtime/Function/Render/RenderSystem.h"
 #include "Runtime/BaseClasses/Cast.h"
+#include "Runtime/Function/Render/WindowSystem.h"
 
+#include <algorithm>
 #include <mutex>
 #include <unordered_map>
 #include <vector>
@@ -92,10 +94,46 @@ namespace
         RenderSystem* render_system = GET_SYSTEM(RenderSystem);
         return render_system != nullptr ? &render_system->GetSwapContext() : nullptr;
     }
+    /// 场景里活着的 `CameraComponent`。
+    ///
+    /// 为什么需要它：`GameObject::FindObjectsOfType` 要活动关卡，headless 下
+    /// `WorldManager::getCurrentActiveLevel()` 恒为 nullptr（见
+    /// `TestObjectLifecycle` 的 AM1），于是那条路在测试里永远返回空 —— "没找到
+    /// 相机"和"相机看不见"长得一模一样，是最难查的那类假阴性。
+    ///
+    /// 用 `vector` 而不是 `set`：数量是个位数，而且顺序得稳定（第 0 台就是第 0
+    /// 台，`isVisible` 的判定顺序因此可复现）。
+    struct CameraComponentRegistry
+    {
+        std::mutex mutex;
+        std::vector<CameraComponent*> cameras;
+
+        static CameraComponentRegistry& Get()
+        {
+            static CameraComponentRegistry registry;
+            return registry;
+        }
+        void Add(CameraComponent* camera)
+        {
+            std::lock_guard<std::mutex> lock_guard(mutex);
+            cameras.push_back(camera);
+        }
+        void Remove(CameraComponent* camera)
+        {
+            std::lock_guard<std::mutex> lock_guard(mutex);
+            cameras.erase(std::remove(cameras.begin(), cameras.end(), camera), cameras.end());
+        }
+    };
 }  // namespace
+
+CameraComponent::CameraComponent()
+{
+    CameraComponentRegistry::Get().Add(this);
+}
 
 CameraComponent::~CameraComponent()
 {
+    CameraComponentRegistry::Get().Remove(this);
     ReleaseOwnedDefaultParameter();
 }
 
@@ -172,6 +210,65 @@ void CameraComponent::Initialize(CameraMode mode, CameraParameter* parameter)
 CameraParameter* CameraComponent::GetCameraParameter() const
 {
     return m_CameraRes.m_Parameter;
+}
+
+//-------------------------------------------------------------------------------
+Vector3 CameraComponent::GetEyePosition() const
+{
+    if (m_ParentObject != nullptr)
+    {
+        if (const Transform* transform_component = m_ParentObject->tryGetComponent(Transform))
+        {
+            return transform_component->GetPosition();
+        }
+    }
+    return m_Position;
+}
+
+float CameraComponent::GetFieldOfView() const
+{
+    const CameraParameter* parameter = GetCameraParameter();
+    // 50 是 `CameraParameter::m_Fov` 的初值；没有参数对象时与它保持一致，
+    // 免得"没初始化"和"设了 50"给出两个不同的视锥。
+    return parameter != nullptr ? parameter->m_Fov : 50.f;
+}
+
+float CameraComponent::GetAspect() const
+{
+    if (const WindowSystem* window_system = GET_SYSTEM(WindowSystem))
+    {
+        const std::array<int, 2> size = window_system->GetWindowSize();
+        if (size[1] > 0)
+        {
+            return static_cast<float>(size[0]) / static_cast<float>(size[1]);
+        }
+    }
+    return 16.f / 9.f;
+}
+
+Matrix4x4 CameraComponent::GetWorldToClipMatrix() const
+{
+    const Vector3 eye = GetEyePosition();
+    const Matrix4x4 view = Math::MakeLookAtMatrix(eye, eye + m_Forward, m_Up);
+    const Matrix4x4 projection = Math::MakePerspectiveMatrix(
+        Radian(Math::DegreesToRadians(GetFieldOfView())), GetAspect(), m_NearClipPlane,
+        m_FarClipPlane);
+    return projection * view;
+}
+
+bool CameraComponent::CanSeeAnything() const
+{
+    // 停用的相机不渲染 —— 那它就不该让任何东西"可见"。
+    if (!isEnabled())
+    {
+        return false;
+    }
+    return m_ParentObject == nullptr || m_ParentObject->IsActiveInHierarchy();
+}
+
+const std::vector<CameraComponent*>& CameraComponent::GetAllCameraComponents()
+{
+    return CameraComponentRegistry::Get().cameras;
 }
 
 void CameraComponent::OnSerializedFieldsUpdated()

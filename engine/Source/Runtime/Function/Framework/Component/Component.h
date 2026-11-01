@@ -277,6 +277,24 @@ public:
     /// 松手，且松手时鼠标**仍在**按下时那个对象上（按钮语义）。
     virtual void OnMouseUpAsButton() {}
 
+    // ---- Unity 的可见性消息 ----------------------------------------------
+    //
+    // `OnBecameVisible` / `OnBecameInvisible`。派发方是 `BaseRenderer`（每帧比一
+    // 次"这帧看得见吗"，只在**变化**那一帧发一次）。
+    //
+    // 判据与 gizmo / 鼠标那一组**相同**：只判 `activeInHierarchy`，不判 enabled。
+    // 依据还是 MonoBehaviour 参考页那句 "enabled will only prevent Start, Awake,
+    // Update, FixedUpdate, and OnGUI" —— 可见性消息不在那份清单里。
+    //
+    // ⚠️ 别和"渲染器被停用"混为一谈：停用渲染器 ⇒ 不渲染 ⇒ 可见性根本不会变
+    // true，那是 `BaseRenderer::UpdateVisibilityAndNotify` 里判的。这里说的是
+    // 收到消息的**脚本**自己被停用时照样收得到。
+
+    /// 这个对象上的渲染器刚进入某台相机的视锥。
+    virtual void OnBecameVisible() {}
+    /// 刚离开**所有**相机的视锥。
+    virtual void OnBecameInvisible() {}
+
     /// Unity 的 `OnDrawGizmosSelected()`：只在宿主对象**被选中**时来。
     ///
     /// "额外"是关键：选中时**两个都会收到**（先 `OnDrawGizmos()` 再

@@ -242,6 +242,33 @@ void GameObject::BroadcastMouseEvent(MouseEventKind kind)
     }
 }
 
+void GameObject::BroadcastVisibilityChange(bool visible)
+{
+    // 判据与 `BroadcastMouseEvent` 逐字相同，理由也相同（见 Component 那两个虚函数
+    // 的注释）：enabled 挡不了可见性消息，只有"整个对象已经不在层级里"才挡。
+    if (!IsActiveInHierarchy())
+    {
+        return;
+    }
+
+    for (auto& component : m_Components)
+    {
+        if (component == nullptr)
+        {
+            continue;
+        }
+
+        if (visible)
+        {
+            component->OnBecameVisible();
+        }
+        else
+        {
+            component->OnBecameInvisible();
+        }
+    }
+}
+
 // Both lookups go through TypeManager::ClassNameToType + Type::IsBaseOf rather
 // than `GetTypeName() == name`: the latter reads Object::GetType(), i.e.
 // m_CachedTypeIndex, which is only meaningful after InitializeRuntimeTypeInfo()

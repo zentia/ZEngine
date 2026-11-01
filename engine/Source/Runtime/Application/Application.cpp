@@ -7,6 +7,7 @@
 #include "Runtime/Core/Time/TimeState.h"
 #include "Runtime/BaseClasses/GameObject.h"
 #include "Runtime/Function/Console/RuntimeConsoleCommands.h"
+#include "Runtime/Function/Framework/Component/Mesh/BaseRenderer.h"
 #include "Runtime/Function/Framework/Component/MouseEventDispatcher.h"
 #include "Runtime/Function/Framework/Level/Level.h"
 #include "Runtime/Function/Framework/World/WorldManager.h"
@@ -273,6 +274,17 @@ void Application::LogicalTick(float delta_time)
         mouse_state.released = Input::GetMouseButtonUp(0);
         MouseEventDispatcher::Tick(mouse_state);
     }
+
+    // 可见性：每帧比一次"这帧看得见吗"，只在**变化**的那一帧发
+    // `OnBecameVisible` / `OnBecameInvisible`。
+    //
+    // 放在 Update **之前**，与鼠标同一层：脚本于是能在同一帧的 OnUpdate 里读
+    // 到新的 `isVisible`，而不是晚一帧。相机本帧的位姿是上一帧末的（相机组件
+    // 的 Tick 在 Update 里），这是一帧的量级，与鼠标拾取同一个取舍。
+    //
+    // ⚠️ 不能挂在 `BaseRenderer::Tick` 上：那个 Tick 在 transform 不脏时直接
+    // return，于是"相机转开了"永远不会被发现（物体没动）。
+    BaseRenderer::UpdateVisibilityForAll();
 
     // 固定步在 Update 之前。
     //

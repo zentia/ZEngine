@@ -49,6 +49,8 @@
 #include "Runtime/Function/Framework/Component/Audio/AudioSourceComponent.h"
 #include "Runtime/Function/Command/CommandSystem.h"
 #include "Runtime/Function/Framework/Component/Behaviour.h"
+#include "Runtime/Function/Framework/Component/Camera/CameraComponent.h"
+#include "Runtime/Function/Framework/Component/Mesh/BaseRenderer.h"
 #include "Runtime/Function/Framework/Component/MouseEventDispatcher.h"
 #include "Runtime/Function/Framework/Level/Level.h"
 #include "Runtime/Function/Framework/Object/ObjectIdAllocator.h"
@@ -109,6 +111,8 @@ template<> void RegisterKlass<GameObject>();
 template<> void RegisterKlass<Random>();
 template<> void RegisterKlass<Camera>();
 template<> void RegisterKlass<Ray>();
+template<> void RegisterKlass<BaseRenderer>();
+template<> void RegisterKlass<CameraComponent>();
 // 角色控制器那组要 `Cast<Capsule>`：`PhysicsScene::IsOverlap` 走 toShape()，而
 // toShape 按运行时类型分发。`TypeOf<Capsule>()` 的实体在 Capsule.gen.cpp 里，
 // 本 exe 不编 .gen.cpp（/WHOLEARCHIVE 会把它带进来），但 RegisterKlass 必须显式
@@ -2122,6 +2126,8 @@ namespace
         RegisterKlass<Random>();
         RegisterKlass<Camera>();
         RegisterKlass<Ray>();
+        RegisterKlass<BaseRenderer>();
+        RegisterKlass<CameraComponent>();
         RegisterKlass<Capsule>();
         RegisterKlass<Box>();
         RegisterKlass<Sphere>();
@@ -8839,6 +8845,11 @@ namespace
         int mouse_up = 0;
         int mouse_up_as_button = 0;
 
+        // Unity 的两条可见性消息。分开记：合成一个"收到了消息"会把"进还是出"
+        // 抹掉，而这一族的复杂度全在方向和时间点上。
+        int became_visible = 0;
+        int became_invisible = 0;
+
         /// Unity 的 `Behaviour.enabled`：基类没有 setter，这里自己记一个。
         void SetProbeEnabled(bool on) { m_ProbeEnabled = on; }
         bool isEnabled() const override { return m_ProbeEnabled; }
@@ -8852,7 +8863,11 @@ namespace
             ticks = 0;
             mouse_enter = mouse_over = mouse_exit = 0;
             mouse_down = mouse_drag = mouse_up = mouse_up_as_button = 0;
+            became_visible = became_invisible = 0;
         }
+
+        void OnBecameVisible() override { ++became_visible; }
+        void OnBecameInvisible() override { ++became_invisible; }
 
         void OnApplicationFocus(bool has_focus) override
         {
@@ -9308,6 +9323,272 @@ namespace
     // ⚠️ 每一帧的派发都依赖**跨帧状态**（悬停的是谁、按下的是谁），所以每个
     // 子用例开头都要 `MouseEventDispatcher::Reset()` —— 否则上一用例的悬停对象
     // 会漏进来，表现为"多了一条 Exit"，而且只在整组一起跑的时候出现。
+
+    // --------------------------------------------------------------- RV ----
+    // Unity 的 `Renderer.bounds` / `localBounds` / `isVisible` 与
+    // `OnBecameVisible` / `OnBecameInvisible`。
+    //
+    // 这一组能测，靠的是把可见性判据压成**纯几何**：相机用场景里的
+    // `CameraComponent`（不是 `RenderCamera`，后者 headless 下恒为 nullptr），
+    // 包围盒用脚本设的 `localBounds`（不是从网格资产算的，headless 下算不出来）。
+    // 于是"有没有相机" / "相机在哪" / "盒子在哪"全是可控输入。
+    //
+    // ⚠️ 夹具一律**不对称**：相机放在 `(2, 0, 0)` 而不是原点，盒子尺寸取
+    // `(4, 2, 2)` 而不是立方体。对称夹具下"没用上 view 的平移"和"旋转把两个
+    // 轴换了"这两类错都是绿的。
+    void TestRendererVisibility()
+    {
+        ObjectManager* om = GET_SYSTEM(ObjectManager);
+        if (om == nullptr)
+        {
+            om = new ObjectManager();
+            SystemRegistry::GetInstance().RegisterSystem(om);
+            om->Initialize();
+        }
+        Check(om != nullptr, "RV0", "ObjectManager is reachable");
+
+        Level level;
+        level.setLevelResUrl("Assets/Scenes/RendererVisibility.level");
+
+        // --- 一台相机 ------------------------------------------------------
+        GameObject* camera_object = new GameObject(ObjectIDAllocator::Alloc());
+        om->AllocateAndAssignInstanceID(camera_object);
+        Transform* camera_transform = new Transform();
+        om->AllocateAndAssignInstanceID(camera_transform);
+        camera_object->addComponent(camera_transform);
+        camera_transform->PostLoadResource(camera_object);
+        CameraComponent* camera = new CameraComponent();
+        om->AllocateAndAssignInstanceID(camera);
+        camera_object->addComponent(camera);
+        camera->PostLoadResource(camera_object);
+        level.RegisterRuntimeGObject(camera_object);
+
+        camera_transform->SetPosition(Vector3(2.f, 0.f, 0.f));
+        camera->SetNearClipPlane(0.1f);
+        camera->SetFarClipPlane(100.f);
+        // 默认朝向是 -Y（本引擎的 forward），默认 up 是 +Z，headless 下 Tick
+        // 不会改它们。钉一下，免得以后改了初值而这条测试悄悄变成别的意思。
+        Check(camera->getForward().y < -0.9f, "RV1", "(the test camera looks down -Y, as the default says)");
+
+        // --- 一个渲染器 ----------------------------------------------------
+        GameObject* object = new GameObject(ObjectIDAllocator::Alloc());
+        om->AllocateAndAssignInstanceID(object);
+        Transform* transform_component = new Transform();
+        om->AllocateAndAssignInstanceID(transform_component);
+        object->addComponent(transform_component);
+        transform_component->PostLoadResource(object);
+        BaseRenderer* renderer = new BaseRenderer();
+        om->AllocateAndAssignInstanceID(renderer);
+        object->addComponent(renderer);
+        renderer->PostLoadResource(object);
+        level.RegisterRuntimeGObject(object);
+
+        std::string log;
+        AppEventProbe* probe = new AppEventProbe(&log, 'V');
+        probe->InitializeRuntimeTypeInfo();
+        om->AllocateAndAssignInstanceID(probe);
+        object->addComponent(probe);
+
+        // 没有网格资产（headless）⇒ 默认的 localBounds 是零盒。这条是"默认回
+        // 退成零盒而不是单位立方体"的判据。
+        const Bounds default_local = renderer->GetLocalBounds();
+        Check(default_local.extents.length() < 1e-5f && default_local.center.length() < 1e-5f,
+              "RV2", "with no mesh asset the default localBounds is the zero box, not a unit cube");
+
+        renderer->SetLocalBounds(Bounds::FromCenterSize(Vector3::ZERO, Vector3(2.f, 2.f, 2.f)));
+        Check(renderer->GetLocalBounds().GetMax().x > 0.99f, "RV3", "SetLocalBounds takes over");
+
+        // --- 包围盒：平移 + 缩放 ---------------------------------------------
+        transform_component->SetPosition(Vector3(0.f, 0.f, 0.f));
+        transform_component->SetLocalScale(Vector3(2.f, 2.f, 2.f));
+        renderer->SetLocalBounds(Bounds::FromCenterSize(Vector3(1.f, 0.f, 0.f), Vector3(2.f, 2.f, 2.f)));
+        {
+            const Bounds world = renderer->GetBounds();
+            Check(std::fabs(world.center.x - 2.f) < 1e-3f && std::fabs(world.GetSize().x - 4.f) < 1e-3f,
+                  "RV4", "world bounds follows the transform (centre 1 -> 2, size 2 -> 4)");
+        }
+
+        // --- ⚠️ 包围盒：旋转把两个轴换过来 -----------------------------------
+        // 尺寸 (4,2,2) 绕 Z 转 90°：+X 到 +Y（见 QT8），于是 extents 从 (2,1,1)
+        // 变成 (1,2,1)，size 从 (4,2,2) 变成 (2,4,2)。用立方体测不出这个。
+        transform_component->SetPosition(Vector3::ZERO);
+        transform_component->SetLocalScale(Vector3::UNIT_SCALE);
+        transform_component->SetLocalEulerAngles(Vector3(0.f, 0.f, 90.f));
+        renderer->SetLocalBounds(Bounds::FromCenterSize(Vector3::ZERO, Vector3(4.f, 2.f, 2.f)));
+        {
+            const Bounds world = renderer->GetBounds();
+            const Vector3 size = world.GetSize();
+            Check(std::fabs(size.x - 2.f) < 1e-3f && std::fabs(size.y - 4.f) < 1e-3f &&
+                      std::fabs(size.z - 2.f) < 1e-3f, "RV5",
+                  "a 90-degree turn about Z swaps the box's x and y extents (asymmetric fixture)");
+        }
+        transform_component->SetLocalEulerAngles(Vector3::ZERO);
+
+        // --- 可见性：只在**变化**那一帧发一次 ---------------------------------
+        renderer->SetLocalBounds(Bounds::FromCenterSize(Vector3::ZERO, Vector3(2.f, 2.f, 2.f)));
+        transform_component->SetPosition(Vector3(2.f, -10.f, 0.f));  // 相机正前方
+        probe->Reset();
+        BaseRenderer::UpdateVisibilityForAll();
+        Check(renderer->IsVisible(), "RV6", "a renderer in front of the camera is visible");
+        Check(probe->became_visible == 1 && probe->became_invisible == 0, "RV7",
+              "and OnBecameVisible fires exactly once");
+
+        probe->Reset();
+        BaseRenderer::UpdateVisibilityForAll();
+        Check(renderer->IsVisible() && probe->became_visible == 0 && probe->became_invisible == 0,
+              "RV8", "the next frame sends nothing (it is a transition, not a per-frame event)");
+
+        // 挪到相机背后。
+        transform_component->SetPosition(Vector3(2.f, 10.f, 0.f));
+        probe->Reset();
+        BaseRenderer::UpdateVisibilityForAll();
+        Check(!renderer->IsVisible(), "RV9", "a renderer behind the eye is not visible");
+        Check(probe->became_invisible == 1 && probe->became_visible == 0, "RV10",
+              "and OnBecameInvisible fires exactly once (direction is not lost)");
+
+        // 超出 far。
+        transform_component->SetPosition(Vector3(2.f, -500.f, 0.f));
+        BaseRenderer::UpdateVisibilityForAll();
+        Check(!renderer->IsVisible(), "RV11", "nor is one beyond the far clip plane");
+
+        // --- ⚠️ near 平面：盒子**不是点**，两条断言互补 -----------------------
+        // 半边长 1 的盒子中心离眼 0.05 ⇒ 它**跨过** near=0.1，保守判据算可见。
+        // 这不是 bug（`TestPlanesAABB` 就是这个精度），但"跨过近裁剪面算可见"
+        // 必须写成断言，否则后人会以为是漏了什么"顺手修好"。
+        transform_component->SetPosition(Vector3(2.f, -0.05f, 0.f));
+        BaseRenderer::UpdateVisibilityForAll();
+        Check(renderer->IsVisible(), "RV12",
+              "a box that STRADDLES the near plane counts as visible (bounds are not points)");
+        // 互补的一半：把盒子缩到完全在 near 之前，它就真的不可见了。
+        renderer->SetLocalBounds(Bounds::FromCenterSize(Vector3::ZERO, Vector3(0.01f, 0.01f, 0.01f)));
+        BaseRenderer::UpdateVisibilityForAll();
+        Check(!renderer->IsVisible(), "RV12b",
+              "while a box entirely in front of the near plane is not");
+
+        // --- ⚠️ 停用：渲染器停用 ⇒ 不渲染 ⇒ 不可见 ----------------------------
+        transform_component->SetPosition(Vector3(2.f, -10.f, 0.f));
+        BaseRenderer::UpdateVisibilityForAll();
+        Check(renderer->IsVisible(), "RV13", "(back in front of the camera)");
+        probe->Reset();
+        renderer->SetEnabled(false);
+        Check(!renderer->IsVisible() && probe->became_invisible == 1, "RV14",
+              "disabling the renderer makes it invisible right away (no wait for the next Tick)");
+        probe->Reset();
+        renderer->SetEnabled(true);
+        Check(renderer->IsVisible() && probe->became_visible == 1, "RV15",
+              "and re-enabling brings it back");
+
+        // --- ⚠️ 脚本被停用照样收得到（与 Unity 的 enabled 语义一致）----------
+        probe->SetProbeEnabled(false);
+        transform_component->SetPosition(Vector3(2.f, 10.f, 0.f));
+        probe->Reset();
+        BaseRenderer::UpdateVisibilityForAll();
+        Check(probe->became_invisible == 1, "RV16",
+              "a disabled SCRIPT still receives the message (enabled only blocks Update and friends)");
+        probe->SetProbeEnabled(true);
+
+        // --- 对象不在层级里 ⇒ 不可见 -----------------------------------------
+        transform_component->SetPosition(Vector3(2.f, -10.f, 0.f));
+        BaseRenderer::UpdateVisibilityForAll();
+        probe->Reset();
+        object->SetActive(false);
+        BaseRenderer::UpdateVisibilityForAll();
+        Check(!renderer->IsVisible(), "RV17", "a deactivated object is not visible");
+        // ⚠️ 互补的一半：上一条只看 `IsVisible()`，而那个值在
+        // `UpdateVisibilityAndNotify` 里就算出来了 —— `BroadcastVisibilityChange`
+        // 里那条 `IsActiveInHierarchy()` 判据被删掉时 RV17 照样是绿的。必须证明
+        // 消息**没有**发出去。
+        Check(probe->became_invisible == 0 && probe->became_visible == 0, "RV17b",
+              "and it is not even told about it (the broadcast gates on activeInHierarchy)");
+        probe->Reset();
+        object->SetActive(true);
+        // ⚠️ 不先扫一帧就断言：`OnOwnerActiveChanged` 里那次刷新是"层级变了但
+        // Transform 没脏"这唯一一条能走到可见性的路（Tick 那时已经不会来了）。
+        Check(renderer->IsVisible() && probe->became_visible == 1, "RV18",
+              "reactivating brings it back without waiting for the next scan");
+        probe->Reset();
+        BaseRenderer::UpdateVisibilityForAll();
+        Check(renderer->IsVisible() && probe->became_visible == 0, "RV18b",
+              "and the next scan is then a no-op (the two paths agree)");
+
+        // --- ⚠️ 停用的相机不算数 ---------------------------------------------
+        // 少了这条的话，"相机停用了"会表现成"物体还在画"（可见性停在 true）。
+        camera->SetEnabled(false);
+        BaseRenderer::UpdateVisibilityForAll();
+        Check(!renderer->IsVisible(), "RV19", "a disabled camera does not make anything visible");
+        camera->SetEnabled(true);
+        BaseRenderer::UpdateVisibilityForAll();
+        Check(renderer->IsVisible(), "RV20", "and enabling it back does");
+
+        // 收尾：把这台相机停用，别让它影响后面几组测试（可见性是全局扫描）。
+        camera->SetEnabled(false);
+    }
+
+    void TestRendererVisibilityWiring()
+    {
+        const std::string app_source = ReadFile("Source/Runtime/Application/Application.cpp");
+        Check(!app_source.empty(), "RW0", "Application.cpp is readable");
+        if (!app_source.empty())
+        {
+            // ⚠️ 头条：接线门。可见性**必须**每帧被扫一次，而
+            // `BaseRenderer::Tick` 在 transform 不脏时直接 return —— 挂在 Tick
+            // 上就只剩"物体动了才更新"，相机转开永远发现不了。
+            Check(CountOccurrences(app_source, "BaseRenderer::UpdateVisibilityForAll()") >= 1, "RW1",
+                  "the main loop drives visibility every frame (it cannot live in Tick)");
+        }
+        const std::string renderer_header =
+            ReadFile("Source/Runtime/Function/Framework/Component/Mesh/BaseRenderer.h");
+        Check(!renderer_header.empty(), "RW2", "BaseRenderer.h is readable");
+        if (!renderer_header.empty())
+        {
+            Check(CountOccurrences(renderer_header, "Name=\"bounds\"") >= 1 &&
+                      CountOccurrences(renderer_header, "Name=\"localBounds\"") >= 1 &&
+                      CountOccurrences(renderer_header, "Name=\"isVisible\"") >= 1, "RW3",
+                  "the three Unity spellings are published");
+        }
+        const std::string game_object_source = ReadFile("Source/Runtime/BaseClasses/GameObject.cpp");
+        Check(!game_object_source.empty(), "RW4", "GameObject.cpp is readable");
+        if (!game_object_source.empty())
+        {
+            const std::size_t at = game_object_source.find("void GameObject::BroadcastVisibilityChange");
+            Check(at != std::string::npos, "RW5", "the visibility broadcast is there");
+            if (at != std::string::npos)
+            {
+                Check(BodyIsBounded(game_object_source, at), "RW6", "its body slice is bounded");
+                const std::string body = SliceFunctionBody(game_object_source, at);
+                // ⚠️ 判据必须是"只判层级激活"，与鼠标 / gizmo 那两组一致。
+                Check(CountOccurrences(body, "IsActiveInHierarchy") >= 1, "RW7",
+                      "it gates on activeInHierarchy");
+                Check(CountOccurrences(body, "isEnabled()") == 0, "RW8",
+                      "and NOT on enabled (Unity's enabled does not block visibility messages)");
+            }
+        }
+        // --- 发布面 ----------------------------------------------------------
+        //
+        // 这两个名字只有"发布"这一步把它们交给 TS。Behaviour 是**合成**脚本类
+        // （不在 C++ 反射里），所以漏掉 `.d.ts` 那行的表现不是"调用失败"，而是
+        // tsc 在**用户工程**里报"属性不存在" —— 错误离原因十万八千里。
+        const std::string binding_source =
+            ReadFile("Source/Runtime/Scripting/Binding/ScriptBinding.cpp");
+        Check(!binding_source.empty(), "RW9", "ScriptBinding.cpp is readable");
+        if (!binding_source.empty())
+        {
+            Check(CountOccurrences(binding_source, "\"    OnBecameVisible(): void;\"") >= 1 &&
+                      CountOccurrences(binding_source, "\"    OnBecameInvisible(): void;\"") >= 1,
+                  "RW10", "both visibility hooks are declared on Behaviour's .d.ts");
+        }
+        const std::string env_source = ReadFile("Source/Runtime/Scripting/Wrapper/ScriptEnv.cpp");
+        Check(!env_source.empty(), "RW11", "ScriptEnv.cpp is readable");
+        if (!env_source.empty())
+        {
+            // 缺了空默认，每个**没写**这两个钩子的类在进出视锥时都要走一次
+            // 属性查找失败 —— 而写了钩子的类一切正常，于是只有项目里"那个没
+            // 写钩子的"才炸。
+            Check(CountOccurrences(env_source, "g.Behaviour.prototype.OnBecameVisible") >= 1 &&
+                      CountOccurrences(env_source, "g.Behaviour.prototype.OnBecameInvisible") >= 1,
+                  "RW12", "both have a no-op default on the Behaviour prototype");
+        }
+    }
 
     void TestMouseEvents()
     {
@@ -10578,6 +10859,8 @@ int main()
     TestQuaternionEulerWiring();
     TestFrustumCulling();
     TestFrustumWiring();
+    TestRendererVisibility();
+    TestRendererVisibilityWiring();
     TestWiringGate();
 
     std::printf("\n=== %d checks, %d failures ===\n", g_Checks, g_Failures);

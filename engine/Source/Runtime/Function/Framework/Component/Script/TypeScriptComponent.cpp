@@ -243,6 +243,18 @@ void TypeScriptComponent::OnMouseUpAsButton()
     InvokeMethod("OnMouseUpAsButton");
 }
 
+void TypeScriptComponent::OnBecameVisible()
+{
+    // ⚠️ 与 `OnBecameInvisible` 只差一个词，转发串了的话脚本里表现为"进出视锥
+    // 计数同时 +1"，而两个回调都在被调到 —— 没有任何报错。
+    InvokeMethod("OnBecameVisible");
+}
+
+void TypeScriptComponent::OnBecameInvisible()
+{
+    InvokeMethod("OnBecameInvisible");
+}
+
 void TypeScriptComponent::OnSerializedFieldsUpdated()
 {
     // Unity 的 `OnValidate()`：编辑器里 Inspector 改了序列化字段之后调用
