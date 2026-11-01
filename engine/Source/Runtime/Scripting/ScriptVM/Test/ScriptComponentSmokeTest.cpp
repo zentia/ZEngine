@@ -66,6 +66,7 @@
 #include "Runtime/Function/Render/DebugDraw/DebugDrawManager.h"
 #include "Runtime/Project/ProjectInfo.h"
 #include "Runtime/Scripting/Native/PuertsNative.h"
+#include "Runtime/Scripting/ScriptTime/ScriptTime.h"
 #include "Runtime/Scripting/ScriptGizmos/ScriptGizmos.h"
 #include "Runtime/Scripting/ScriptRegistry.h"
 #include "Runtime/Scripting/ScriptingManager.h"
@@ -74,6 +75,11 @@
 // `g_isEditor` 由编辑器侧写入（与 g_isPlaying 同一机制：Runtime 不能依赖
 // Editor 模块）。P8 / P9 要临时把它翻成 true 才能验 OnValidate 的编辑器语义。
 extern bool g_isEditor;
+// `GameObject::Tick` / `FixedTick` 都过 `shouldComponentTick`，而它在非播放态下
+// 只放行 `g_editorTickComponentTypes` 白名单里的类型。T 段要验的是"固定步那条
+// 链在 Player 下的行为"，所以要临时翻它（与上面 P8 / P9 翻 g_isEditor 同一手
+// 法），用完立刻还原。
+extern bool g_isPlaying;
 
 #include <cstdio>
 #include <cstring>
@@ -1007,6 +1013,57 @@ int main(int argc, char** argv)
         go2->BroadcastMouseEvent(MouseEventKind::kDown);
         CheckEq("S10", "停用的对象一个都不发", mover_value("mouseLog"), "EOXDGUBE");
         go2->SetActive(true);
+
+        // --- Unity 的 FixedUpdate（T 段）----------------------------------
+        //
+        // ⚠️ 这一段存在的全部理由是**发布面**：C++ 侧 `TypeScriptComponent::FixedTick`
+        // 每个固定步都在调 `OnFixedUpdate`，但它在 d.ts 与 JS 原型里长期缺着 ——
+        // 于是 TS 里写 `OnFixedUpdate(...)` **过不了 tsc**，而任何 C++ 测试都发现
+        // 不了（`InvokeInstanceMethodNumber` 对"方法不存在"是静默无事发生的）。
+        // Mover.ts 里那段 `OnFixedUpdate` 能过 `npx tsc`，才是这条链的判据。
+        // ⚠️ 判据走 `go2->` 而不是 `comp2->`：enabled / 层级激活那两道判据活在
+        // **GameObject** 的 Tick / FixedTick 里，直接调组件等于绕过它们，
+        // T4 / T5 就会变成"永远绿"。
+        const bool was_playing = g_isPlaying;
+        g_isPlaying = true;
+        const float fixed_step = ::Time::GetFixedDeltaTime();
+        const std::string fixed_before = mover_value("fixedTicks");
+        go2->FixedTick(fixed_step);
+        CheckTrue("T0", "FixedTick 送到了 JS 的 OnFixedUpdate",
+                  mover_value("fixedTicks") != fixed_before);
+        CheckEq("T1", "回调里拿到的是 Time.fixedDeltaTime 本身（不是帧间隔）",
+                mover_value("fixedDtMatches"), "true");
+        // 同一帧里两个 delta **不是同一个数**：Update 吃帧间隔、FixedUpdate 吃
+        // 固定步长。喂一个与固定步长明显不同的帧间隔，两者必须不相等 ——
+        // 只数调用次数的话"把帧 delta 传下去"是绿的。
+        const float frame_step = (fixed_step > 0.0f ? fixed_step * 0.5f : 0.016f);
+        const std::string ticks_before = mover_value("ticks");
+        go2->Tick(frame_step);
+        CheckTrue("T2", "OnUpdate 也照常来了", mover_value("ticks") != ticks_before);
+        CheckTrue("T3", "OnFixedUpdate 的步长与 OnUpdate 的帧间隔不是同一个数",
+                  mover_value("lastFixedDt") != mover_value("lastDt"));
+        // ⚠️ 与 Tick 同一套判据：enabled / activeInHierarchy 都要挡。
+        // 只测"发了"的话，"FixedUpdate 不判 enabled"这种实现是绿的 —— 而它正是
+        // "Update 停了但物理还在推"那一类 bug。
+        comp2->SetEnabled(false);
+        go2->FixedTick(fixed_step);
+        CheckEq("T4", "停用的脚本不收 OnFixedUpdate",
+                mover_value("fixedTicks"), "1");
+        comp2->SetEnabled(true);
+        go2->SetActive(false);
+        go2->FixedTick(fixed_step);
+        CheckEq("T5", "停用的对象同样不收", mover_value("fixedTicks"), "1");
+        go2->SetActive(true);
+        go2->FixedTick(fixed_step);
+        CheckEq("T6", "恢复之后照样来（不是一次性熔断）",
+                mover_value("fixedTicks"), "2");
+        // ⚠️ 互补的一半：上面几条是在 `g_isPlaying = true` 下过的，所以必须证明
+        // 它们**真的是从那条路进来的** —— 还原之后同样的调用必须什么都不发。
+        // 少了这一条，T0 在"FixedTick 压根没接进 GameObject"时也是绿的。
+        g_isPlaying = was_playing;
+        go2->FixedTick(fixed_step);
+        CheckEq("T7", "非播放态下不走白名单就什么都不发（T0 是从那条路来的）",
+                mover_value("fixedTicks"), "2");
 
         // ---- 值类型的静态门面（Vector2 / Vector4 / Matrix4x4）------------
         //

@@ -379,6 +379,27 @@ class Mover extends Behaviour {
         this.hasGameObject = (this.gameObject != null);
     }
 
+    // ---- Unity 的 FixedUpdate ---------------------------------------------
+    //
+    // 这一段存在的理由不只是"多一个钩子"：在此之前 `OnFixedUpdate` 在 d.ts 里
+    // **根本没有声明**（C++ 侧每个固定步都在调，脚本侧却看不见） —— 于是 TS 里
+    // 写 `OnFixedUpdate(...)` 过不了 tsc，而这个洞靠任何 C++ 测试都发现不了
+    // （InvokeInstanceMethodNumber 对"方法不存在"是静默无事发生的）。
+    //
+    // ⚠️ 判据是**步长**，不是"调用了几次"：`OnUpdate` 拿帧间隔、`OnFixedUpdate`
+    // 拿固定步长。传错的话计数照样 +1，只有 `lastFixedDt` 能看出来。
+    fixedTicks: number = 0;
+    lastFixedDt: number = 0;
+    fixedDtMatches: boolean = false;
+
+    OnFixedUpdate(fixed_delta_time: number): void {
+        this.fixedTicks = this.fixedTicks + 1;
+        this.lastFixedDt = fixed_delta_time;
+        // 固定步长 vs 帧间隔：用 `!==` 而不是 `<` —— 前者能抓住"把帧 delta
+        // 传下来"这种实现，后者在帧率恰好等于固定步率时是绿的。
+        this.fixedDtMatches = (fixed_delta_time === Time.fixedDeltaTime);
+    }
+
     OnUpdate(delta_time: number): void {
         this.ticks = this.ticks + 1;
         this.lastDt = delta_time;

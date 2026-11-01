@@ -95,6 +95,13 @@ namespace
         "    OnDisable(): void;",
         "    OnStart(): void;",
         "    OnUpdate(delta_time: number): void;",
+        // Unity 的 FixedUpdate。每**固定步**一次，一帧内可能 0 次（掉帧补步时
+        // 也可能多次）。⚠️ 参数是**固定步长**（`Time.fixedDeltaTime`），不是
+        // 帧间隔 —— 与 OnUpdate / OnLateUpdate 的那个 deltaTime 不是同一个数。
+        //
+        // 名字故意带 `fixed_` 前缀：写成 `delta_time` 的话，读签名的人会以为
+        // 它和上面那条一样是帧间隔，于是拿它去做"每帧一次"的事。
+        "    OnFixedUpdate(fixed_delta_time: number): void;",
         // Unity 的 LateUpdate。每帧一次，在所有 OnUpdate 之后。C++ 侧拿的
         // 是帧间隔（与 OnUpdate 同一个 deltaTime），不是固定步长。
         "    OnLateUpdate(delta_time: number): void;",

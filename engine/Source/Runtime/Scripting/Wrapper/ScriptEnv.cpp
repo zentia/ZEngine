@@ -427,6 +427,9 @@ void ScriptEnv::InstallConsoleAndDebugGlobals()
         "  g.Behaviour.prototype.OnDisable = function() {};"
         "  g.Behaviour.prototype.OnStart = function() {};"
         "  g.Behaviour.prototype.OnUpdate = function(dt) {};"
+        // Unity 的 FixedUpdate。空实现同样是必需的：`TypeScriptComponent::FixedTick`
+        // 每个固定步无条件调它，一帧可能调 0 次或多次。
+        "  g.Behaviour.prototype.OnFixedUpdate = function(dt) {};"
         // Unity 的 LateUpdate。空实现是**必需的**：TypeScriptComponent::LateTick
         // 每帧无条件调 OnLateUpdate，而 InvokeInstanceMethodNumber 对"方法不
         // 存在"是静默无事发生的 —— 但 TS 编译期有 kBehaviourMethodLines 的声明

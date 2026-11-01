@@ -122,6 +122,7 @@ template<> void RegisterKlass<Collider>();
 template<> void RegisterKlass<PlayerPrefs>();
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -9297,6 +9298,160 @@ namespace
               "and OnMouseUpAsButton");
     }
 
+    // ---------------------------------------------------------------- PU ---
+    // "引擎在调，脚本却看不见"这一类洞的**通用**门。
+    //
+    // 这一条是为一个真实的洞写的：`TypeScriptComponent::FixedTick` 每个固定步
+    // 都在调 `OnFixedUpdate`，但 `ScriptBinding.cpp` 的 d.ts 行与 `ScriptEnv.cpp`
+    // 的原型兜底两边都缺着。后果是 TS 里写 `OnFixedUpdate(...)` **过不了 tsc**，
+    // 而任何 C++ 测试都发现不了 —— `InvokeInstanceMethodNumber` 对"方法不存在"
+    // 是静默无事发生的。
+    //
+    // 所以这里的做法不是再补一条"OnFixedUpdate 在不在"，而是把
+    // `TypeScriptComponent.cpp` 里**所有**被调用到脚本实例上的名字抽出来，逐条
+    // 要求它同时出现在 d.ts 与 JS 原型上。以后再加任何钩子，忘了发两边都会红。
+    void TestScriptMethodPublishing()
+    {
+        const std::string ts_source = ReadFile(
+            "Source/Runtime/Function/Framework/Component/Script/TypeScriptComponent.cpp");
+        const std::string binding_source =
+            ReadFile("Source/Runtime/Scripting/Binding/ScriptBinding.cpp");
+        const std::string env_source =
+            ReadFile("Source/Runtime/Scripting/Wrapper/ScriptEnv.cpp");
+        Check(!ts_source.empty(), "PU0", "TypeScriptComponent.cpp is readable");
+        Check(!binding_source.empty(), "PU1", "ScriptBinding.cpp is readable");
+        Check(!env_source.empty(), "PU2", "ScriptEnv.cpp is readable");
+        if (ts_source.empty() || binding_source.empty() || env_source.empty()) { return; }
+
+        // 抽 `InvokeMethod("X")` 与 `InvokeInstanceMethod*(ref, "X"` 里的名字。
+        // 两个锚点都扫：`InvokeInstanceMethodNumber` 那一族名字在 `(` 之前，
+        // 只认 `InvokeMethod("` 会整族漏掉。
+        // ⚠️ 抽到的必须是**合法标识符**：注释里提到 `InvokeInstanceMethod` 时，
+        // "下一个引号"可能是后面某条日志文案（"…: ScriptingManager not
+        // initialised"）或某个 `#include "…"`。不过滤的话就会凭空多出两条
+        // 永远满足不了的断言 —— 看起来像"有人忘了发布"，其实是扫描器自己
+        // 捞错了东西。
+        auto is_identifier = [](const std::string& s)
+        {
+            if (s.empty() || !(std::isalpha(static_cast<unsigned char>(s[0])) || s[0] == '_'))
+            {
+                return false;
+            }
+            for (const char c : s)
+            {
+                if (!(std::isalnum(static_cast<unsigned char>(c)) || c == '_'))
+                {
+                    return false;
+                }
+            }
+            return true;
+        };
+        auto collect = [&is_identifier](const std::string& src, const char* anchor)
+        {
+            std::vector<std::string> names;
+            std::size_t pos = 0;
+            while ((pos = src.find(anchor, pos)) != std::string::npos)
+            {
+                const std::size_t open = src.find('"', pos);
+                if (open == std::string::npos) { break; }
+                const std::size_t close = src.find('"', open + 1);
+                if (close == std::string::npos) { break; }
+                const std::string name = src.substr(open + 1, close - open - 1);
+                if (is_identifier(name) &&
+                    std::find(names.begin(), names.end(), name) == names.end())
+                {
+                    names.push_back(name);
+                }
+                pos = close + 1;
+            }
+            return names;
+        };
+        std::vector<std::string> names = collect(ts_source, "InvokeMethod(\"");
+        for (const auto& extra : collect(ts_source, "InvokeInstanceMethod"))
+        {
+            if (std::find(names.begin(), names.end(), extra) == names.end())
+            {
+                names.push_back(extra);
+            }
+        }
+
+        // ⚠️ 扫描本身也要有门：抽不到名字时下面每一条都是"没有可判的"，全绿而
+        // 什么都没验 —— 锚点被改坏 / 文件搬走都会是这个样子。
+        Check(names.size() >= 18, "PU3",
+              ("the scan found the hooks (" + std::to_string(names.size()) + ")").c_str());
+
+        for (const auto& name : names)
+        {
+            // 四条缩进 + 左括号：既是"声明在 Behaviour 里"，也避开了
+            // `OnMouseUp` 是 `OnMouseUpAsButton` 前缀那个坑。
+            Check(CountOccurrences(binding_source, ("    " + name + "(").c_str()) >= 1,
+                  ("PU4_" + name).c_str(), (name + " is declared in the .d.ts").c_str());
+            Check(CountOccurrences(env_source,
+                                   ("g.Behaviour.prototype." + name + " = function").c_str()) >= 1,
+                  ("PU5_" + name).c_str(),
+                  (name + " has a no-op default on the JS prototype").c_str());
+        }
+    }
+
+    // ---------------------------------------------------------------- FU ---
+    // Unity 的 `FixedUpdate` 那条链路的接线门（行为那一半在
+    // ScriptComponentSmokeTest 的 T 段 —— 那里能真的跑到 JS）。
+    void TestFixedUpdateWiring()
+    {
+        const std::string go_source = ReadFile("Source/Runtime/BaseClasses/GameObject.cpp");
+        Check(!go_source.empty(), "FU0", "GameObject.cpp is readable");
+        if (!go_source.empty())
+        {
+            // ⚠️ 两条循环必须**同构**：判定不一致就会出现"FixedUpdate 跑了但
+            // Update 没跑"（或反之），组件状态在两套节奏之间静默错位。
+            const std::size_t at_tick = go_source.find("void GameObject::Tick");
+            const std::size_t at_fixed = go_source.find("void GameObject::FixedTick");
+            Check(at_tick != std::string::npos && at_fixed != std::string::npos, "FU1",
+                  "both Tick and FixedTick are implemented");
+            if (at_tick != std::string::npos && at_fixed != std::string::npos)
+            {
+                Check(BodyIsBounded(go_source, at_tick) &&
+                          BodyIsBounded(go_source, at_fixed), "FU2",
+                      "both body slices are bounded");
+                const std::string tick_body = SliceFunctionBody(go_source, at_tick);
+                const std::string fixed_body = SliceFunctionBody(go_source, at_fixed);
+                const char* kGates[] = {"IsActiveInHierarchy", "isEnabled",
+                                        "shouldComponentTick"};
+                for (int i = 0; i < 3; ++i)
+                {
+                    Check(CountOccurrences(tick_body, kGates[i]) >= 1,
+                          ("FU3_" + std::to_string(i)).c_str(),
+                          (std::string("Tick gates on ") + kGates[i]).c_str());
+                    Check(CountOccurrences(fixed_body, kGates[i]) >= 1,
+                          ("FU4_" + std::to_string(i)).c_str(),
+                          (std::string("FixedTick gates on ") + kGates[i]).c_str());
+                }
+                Check(CountOccurrences(fixed_body, "FixedTick(fixed_delta_time)") >= 1, "FU5",
+                      "FixedTick forwards the fixed step (not the frame delta)");
+            }
+        }
+
+        const std::string ts_source = ReadFile(
+            "Source/Runtime/Function/Framework/Component/Script/TypeScriptComponent.cpp");
+        Check(!ts_source.empty(), "FU6", "TypeScriptComponent.cpp is readable");
+        if (!ts_source.empty())
+        {
+            const std::size_t at = ts_source.find("void TypeScriptComponent::FixedTick");
+            Check(at != std::string::npos, "FU7", "the script component has a FixedTick");
+            if (at != std::string::npos)
+            {
+                Check(BodyIsBounded(ts_source, at), "FU8", "its body slice is bounded");
+                const std::string body = SliceFunctionBody(ts_source, at);
+                // ⚠️ 复制粘贴最容易错的一处：三个 Tick 长得一模一样，把 OnUpdate
+                // 抄进 FixedTick 之后"物理推了但每帧一次"，且计数照样 +1。
+                Check(CountOccurrences(body, "\"OnFixedUpdate\"") >= 1, "FU9",
+                      "it forwards OnFixedUpdate");
+                Check(body.find("\"OnUpdate\"") == std::string::npos, "FU10",
+                      "and not OnUpdate (the copy-paste slip)");
+            }
+        }
+    }
+
     // ---------------------------------------------------------------- DG ---
     // Unity 的 `OnDrawGizmos()` / `OnDrawGizmosSelected()`。
     //
@@ -10025,6 +10180,8 @@ int main()
     TestDrawGizmosWiring();
     TestMouseEvents();
     TestMouseEventsWiring();
+    TestScriptMethodPublishing();
+    TestFixedUpdateWiring();
     TestValueTypeFacades();
     TestValueTypeFacadeWiring();
     TestWiringGate();
