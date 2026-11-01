@@ -203,6 +203,34 @@ class Mover extends Behaviour {
         this.validateCount = this.validateCount + 1;
     }
 
+    // ---- Unity 的 gizmo 消息 ---------------------------------------------
+    //
+    // ⚠️ 判据与三趟 Tick **相反**：派发只判 `activeInHierarchy`，**不判 enabled**
+    // —— 停用的脚本照样画辅助线。Unity 在 MonoBehaviour 参考页是明文写了的
+    // （"The checkbox for disabling a MonoBehavior will only prevent Start,
+    // Awake, Update, FixedUpdate, and OnGUI from executing"）。
+    //
+    // 这段计数的价值就在这一条：C++ 侧的 DG22 断言的是引擎自己的组件，这里断言
+    // 的是**脚本**那条链路也照样不判 enabled。两边缺任何一边都测不到"TS 侧
+    // 被某个中途加回来的判据挡住"。
+    gizmoDraws: number = 0;
+    gizmoSelectedDraws: number = 0;
+    gizmoAtDraw: string = "";
+
+    OnDrawGizmos(): void {
+        this.gizmoDraws = this.gizmoDraws + 1;
+        // 回调里真的画一次，并且读回 `Gizmos.color` —— 证明这次派发发生在
+        // "gizmo 后端可用"的上下文里（后端缺失时是 no-op，不抛）。
+        Gizmos.color = { r: 0, g: 1, b: 0, a: 1 };
+        Gizmos.DrawWireSphere({ x: 0, y: 0, z: 0 }, 1);
+        this.gizmoAtDraw = String(Gizmos.color.g);
+        Gizmos.color = { r: 1, g: 1, b: 1, a: 1 };
+    }
+
+    OnDrawGizmosSelected(): void {
+        this.gizmoSelectedDraws = this.gizmoSelectedDraws + 1;
+    }
+
     // ---- 值类型的静态门面：Vector2 / Vector4 / Matrix4x4 ------------------
     //
     // 这段的价值**在 tsc**：`Vector2.zero` 这种写法只有 d.ts 里同时存在

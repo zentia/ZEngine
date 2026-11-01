@@ -158,6 +158,36 @@ void GameObject::BroadcastAppEvent(AppEventKind kind, bool arg)
     }
 }
 
+void GameObject::BroadcastDrawGizmos(bool selected)
+{
+    // 判据只有一条，而且**故意**只有一条。
+    //
+    // 删掉这个 return ⇒ "停用的对象也在画 gizmo"（画面上出现不该有的线）。
+    // 补一条"组件自己开没开"的判断 ⇒ "停用的脚本不画了" —— 后者看起来更"合理"，
+    // 但与 Unity 相反（见 Component::OnDrawGizmos 引的那句文档），也是最容易被
+    // 后来者"顺手修掉"的那一行。
+    if (!IsActiveInHierarchy())
+    {
+        return;
+    }
+
+    for (auto& component : m_Components)
+    {
+        if (component == nullptr)
+        {
+            continue;
+        }
+
+        // 选中时两个都发，且顺序固定：先常驻的，再仅选中的。倒过来的话脚本里
+        // 依赖后者覆盖前者颜色 / 矩阵的写法会静默失效。
+        component->OnDrawGizmos();
+        if (selected)
+        {
+            component->OnDrawGizmosSelected();
+        }
+    }
+}
+
 // Both lookups go through TypeManager::ClassNameToType + Type::IsBaseOf rather
 // than `GetTypeName() == name`: the latter reads Object::GetType(), i.e.
 // m_CachedTypeIndex, which is only meaningful after InitializeRuntimeTypeInfo()

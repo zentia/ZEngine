@@ -564,6 +564,49 @@ void Level::BroadcastAppEvent(AppEventKind kind, bool arg)
     }
 }
 
+void Level::DrawGizmos(const std::vector<GameObject*>& selected_objects)
+{
+    if (!m_IsLoaded)
+    {
+        return;
+    }
+
+    // 选中判定是线性查找，不是先建一张 unordered_set。
+    //
+    // 这一趟要走遍全关卡（N 个对象），而选中项通常是 0 到几个 —— 建 set 是
+    // O(S) 再加每对象 O(1)，线性是每对象 O(S)。S 这么小的时候线性更快，也
+    // 不必为一个参数多引一个容器头文件。
+    auto is_selected = [&selected_objects](const GameObject* object) {
+        for (const GameObject* selected : selected_objects)
+        {
+            if (selected == object)
+            {
+                return true;
+            }
+        }
+        return false;
+    };
+
+    for (const auto& id_object_pair : m_Gobjects)
+    {
+        if (id_object_pair.second)
+        {
+            id_object_pair.second->BroadcastDrawGizmos(is_selected(id_object_pair.second.get()));
+        }
+    }
+
+    // 运行时生成的对象（Instantiate 产物）不在主表里 —— 与 BroadcastAppEvent
+    // 同一个理由、同一张表。漏掉这一趟的话，脚本刚 Instantiate 出来的对象
+    // 在编辑器里永远画不出自己的辅助线。
+    for (const auto& id_object_pair : m_RuntimeGObjects)
+    {
+        if (id_object_pair.second != nullptr)
+        {
+            id_object_pair.second->BroadcastDrawGizmos(is_selected(id_object_pair.second));
+        }
+    }
+}
+
 void Level::LateTick(float delta_time)
 {
     if (!m_IsLoaded)

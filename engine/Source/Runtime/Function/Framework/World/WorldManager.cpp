@@ -157,6 +157,25 @@ void WorldManager::BroadcastAppEvent(AppEventKind kind, bool arg)
     }
 }
 
+void WorldManager::DrawGizmos(const std::vector<GameObject*>& selected_objects)
+{
+    // 与 BroadcastAppEvent 同一条路由、同一句"不判 m_IsWorldLoaded"。
+    if (m_WorldPartition.IsEnabled())
+    {
+        for (auto& level_pair : m_LoadedLevels)
+        {
+            if (level_pair.second != nullptr)
+            {
+                level_pair.second->DrawGizmos(selected_objects);
+            }
+        }
+    }
+    else if (m_CurrentActiveLevel != nullptr)
+    {
+        m_CurrentActiveLevel->DrawGizmos(selected_objects);
+    }
+}
+
 eastl::vector<eastl::string> WorldManager::GetLoadedLevelUrls() const
 {
     eastl::vector<eastl::string> urls;

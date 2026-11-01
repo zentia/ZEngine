@@ -442,6 +442,11 @@ void ScriptEnv::InstallConsoleAndDebugGlobals()
         // 与上一行是同一件事的两半，但收的人不同（父级 vs 子级）—— 少了这一行，
         // 没重写它的脚本会在"孩子挂上来"的那一刻抛 TypeError。
         "  g.Behaviour.prototype.OnTransformChildrenChanged = function() {};"
+        // Unity 的 gizmo 消息。空实现同样是必需的：派发每帧无条件进行（只判
+        // activeInHierarchy，不判 enabled —— 见 Component::OnDrawGizmos），
+        // 缺了兜底就是每个没写这两个钩子的类每帧走一次属性查找失败。
+        "  g.Behaviour.prototype.OnDrawGizmos = function() {};"
+        "  g.Behaviour.prototype.OnDrawGizmosSelected = function() {};"
         "  g.Behaviour.prototype.OnValidate = function() {};"
         "  g.Behaviour.prototype.OnDestroy = function() {};"
         // Unity 的 `Invoke` 家族：TS 侧写 `this.Invoke(...)`，这里转发到

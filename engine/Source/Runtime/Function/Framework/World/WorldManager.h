@@ -59,6 +59,16 @@ public:
     /// 是 `OnApplicationQuit` 最常见的一次，判了就收不到。
     void BroadcastAppEvent(AppEventKind kind, bool arg);
 
+    /// 把 Unity 的两个 gizmo 消息发给所有已加载关卡里的所有对象。
+    ///
+    /// 与 `BroadcastAppEvent` 完全同一条路由（世界分区开 = 走所有已加载关卡，
+    /// 否则只走活动关卡），不判 `m_IsWorldLoaded` 的理由也一模一样。
+    ///
+    /// ⚠️ 这里**不**挑相机：Unity 的 `OnDrawGizmos` 是"场景视图 / 游戏视图
+    /// 重绘时"发的，与"有没有被某台相机看见"无关。可见性那件事属于
+    /// `OnBecameVisible` / `Renderer.isVisible`，是另一条链路。
+    void DrawGizmos(const std::vector<GameObject*>& selected_objects);
+
     Level* getCurrentActiveLevel() const { return m_CurrentActiveLevel; }
 
     bool IsWorldLoaded() const { return m_IsWorldLoaded; }

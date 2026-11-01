@@ -8429,7 +8429,12 @@ namespace
         int quits = 0;
         int parent_changes = 0;
         int children_changes = 0;
+        int gizmo_draws = 0;
+        int gizmo_selected_draws = 0;
         int validates = 0;
+        /// 只为 DG23/DG24 存在：证明"enabled"这个开关确实接在本探针上，于是
+        /// "gizmo 不判 enabled"那条断言不是空转的。
+        int ticks = 0;
 
         /// Unity 的 `Behaviour.enabled`：基类没有 setter，这里自己记一个。
         void SetProbeEnabled(bool on) { m_ProbeEnabled = on; }
@@ -8440,6 +8445,8 @@ namespace
             focus_true = focus_false = 0;
             pause_true = pause_false = 0;
             quits = parent_changes = children_changes = validates = 0;
+            gizmo_draws = gizmo_selected_draws = 0;
+            ticks = 0;
         }
 
         void OnApplicationFocus(bool has_focus) override
@@ -8453,10 +8460,16 @@ namespace
             Append(paused ? 'P' : 'p');
         }
         void OnApplicationQuit() override { ++quits; Append('q'); }
+        void Tick(float delta_time) override { (void)delta_time; ++ticks; }
         void OnTransformParentChanged() override { ++parent_changes; Append('r'); }
         // 与上面那个是同一件事的两半，但收的人不同（父级 vs 子级）—— 探针里
         // 分开记，正是为了能在同一个对象上同时看到"只来了一个"。
         void OnTransformChildrenChanged() override { ++children_changes; Append('c'); }
+        // Unity 的两个 gizmo 钩子。用两个不同的字符（'g' / 's'）是为了让"选中时
+        // 两个都发、且顺序固定"这件事在日志串里可读 —— 共用一个计数器的话，
+        // "只发 Selected" 和"两个都发"看起来一样。
+        void OnDrawGizmos() override { ++gizmo_draws; Append('g'); }
+        void OnDrawGizmosSelected() override { ++gizmo_selected_draws; Append('s'); }
         void OnSerializedFieldsUpdated() override { ++validates; Append('v'); }
 
     private:
@@ -8868,6 +8881,412 @@ namespace
               "CW20", "the .d.ts declares OnTransformChildrenChanged");
     }
 
+    // ---------------------------------------------------------------- DG ---
+    // Unity 的 `OnDrawGizmos()` / `OnDrawGizmosSelected()`。
+    //
+    // 这一组真正值钱的是**判据**：只判 activeInHierarchy，**不判 enabled**。
+    // 这与三趟 Tick（三个判据全上）和 `BroadcastAppEvent`（一个都不判）是
+    // 第三种组合，而 Unity 是明文规定了它的（MonoBehaviour 参考页："The
+    // checkbox for disabling a MonoBehavior will only prevent Start, Awake,
+    // Update, FixedUpdate, and OnGUI from executing"）。
+    //
+    // ⚠️ 因此"停用的脚本照样画 gizmo"这条断言必须有互补的一半：同一个探针在
+    // 同一状态下 **Tick 必须被跳过**。只断言前者的话，"enabled 这个开关压根
+    // 没接上"的实现也过 —— 门就白设了。
+
+    void TestDrawGizmos()
+    {
+        ObjectManager* om = GET_SYSTEM(ObjectManager);
+        Check(om != nullptr, "DG0", "ObjectManager is reachable");
+        if (om == nullptr) { return; }
+
+        Level level;
+        level.setLevelResUrl("Assets/Scenes/DrawGizmos.level");
+        level.LoadObjectGraph({}, false);
+        Check(level.IsLoaded(), "DG1", "the synthetic level is loaded");
+
+        std::string log;
+
+        struct Node
+        {
+            GameObject* object {nullptr};
+            Transform* transform {nullptr};
+        };
+        auto make_node = [&](Node& out) -> bool
+        {
+            out.object = new GameObject(ObjectIDAllocator::Alloc());
+            om->AllocateAndAssignInstanceID(out.object);
+            out.transform = new Transform();
+            om->AllocateAndAssignInstanceID(out.transform);
+            out.object->addComponent(out.transform);
+            out.transform->PostLoadResource(out.object);
+            return level.RegisterRuntimeGObject(out.object);
+        };
+        auto add_probe = [&](Node& node, char tag) -> AppEventProbe*
+        {
+            AppEventProbe* probe = new AppEventProbe(&log, tag);
+            probe->InitializeRuntimeTypeInfo();
+            om->AllocateAndAssignInstanceID(probe);
+            node.object->addComponent(probe);
+            return probe;
+        };
+
+        Node a, b, c;
+        Check(make_node(a), "DG2", "node A is in the level's runtime table");
+        Check(make_node(b), "DG3", "node B too");
+        Check(make_node(c), "DG4", "node C too");
+
+        // B 上挂**两个**探针：只发给第一个组件的实现也照样过单探针的夹具。
+        AppEventProbe* pa = add_probe(a, 'A');
+        AppEventProbe* pb1 = add_probe(b, 'B');
+        AppEventProbe* pb2 = add_probe(b, 'b');
+        AppEventProbe* pc = add_probe(c, 'C');
+
+        // --- 没有选中项：只有 OnDrawGizmos --------------------------------
+        level.DrawGizmos({});
+        Check(pa->gizmo_draws == 1, "DG5", "every component gets OnDrawGizmos once");
+        Check(pb1->gizmo_draws == 1 && pb2->gizmo_draws == 1, "DG6",
+              "every component on the SAME object gets it, not just the first");
+        Check(pc->gizmo_draws == 1, "DG7", "and every object in the level");
+        Check(pa->gizmo_selected_draws == 0, "DG8", "nothing selected: no OnDrawGizmosSelected");
+        Check(pb1->gizmo_selected_draws == 0 && pb2->gizmo_selected_draws == 0, "DG9",
+              "not even on B");
+
+        // --- 选中 B：两个都来，且顺序固定（先常驻，再仅选中）--------------
+        pa->Reset(); pb1->Reset(); pb2->Reset(); pc->Reset();
+        log.clear();
+        level.DrawGizmos({b.object});
+        Check(pb1->gizmo_draws == 1, "DG10", "the selected object still gets the always-on one");
+        Check(pb2->gizmo_draws == 1, "DG11", "on both its components");
+        Check(pb1->gizmo_selected_draws == 1 && pb2->gizmo_selected_draws == 1, "DG12",
+              "and the selected-only one on top of it (it is additive, not either/or)");
+        Check(pa->gizmo_draws == 1 && pa->gizmo_selected_draws == 0, "DG13",
+              "an unselected object gets only the always-on one");
+        Check(pc->gizmo_draws == 1 && pc->gizmo_selected_draws == 0, "DG14", "same for C");
+        // 顺序探针：同一个组件的两次派发在日志里是**相邻**的（Append 写两字符），
+        // 所以 "BgBs" 这个子串只存在于"先 g 再 s"的实现里。
+        Check(log.find("BgBs") != std::string::npos, "DG15",
+              "OnDrawGizmos comes BEFORE OnDrawGizmosSelected on the same component");
+        Check(log.find("BsBg") == std::string::npos, "DG16",
+              "and never the other way round");
+
+        // --- 多选：两个都被选中时两个都收 ----------------------------------
+        pa->Reset(); pb1->Reset(); pb2->Reset(); pc->Reset();
+        level.DrawGizmos({a.object, c.object});
+        Check(pa->gizmo_selected_draws == 1, "DG17", "multi-select: A is selected");
+        Check(pc->gizmo_selected_draws == 1, "DG18", "and C too");
+        Check(pb1->gizmo_selected_draws == 0, "DG19", "B is not, and gets nothing extra");
+
+        // --- 选中一个不在这张关卡里的对象：静默忽略 ------------------------
+        pa->Reset(); pb1->Reset(); pb2->Reset(); pc->Reset();
+        GameObject* stranger = new GameObject(ObjectIDAllocator::Alloc());
+        level.DrawGizmos({stranger});
+        delete stranger;
+        Check(pa->gizmo_selected_draws == 0 && pc->gizmo_selected_draws == 0, "DG20",
+              "a selected object from another level is simply not found (no crash, no callback)");
+        Check(pa->gizmo_draws == 1 && pc->gizmo_draws == 1, "DG21",
+              "and the always-on pass is unaffected by it");
+
+        // --- ⚠️ 核心：不判 enabled ----------------------------------------
+        pa->Reset();
+        pa->SetProbeEnabled(false);
+        level.DrawGizmos({});
+        Check(pa->gizmo_draws == 1, "DG22",
+              "a DISABLED component still gets OnDrawGizmos (Unity says so explicitly)");
+        // 互补的一半：证明上面那条不是"enabled 开关压根没接上"。同一状态下
+        // Tick 必须**不**来。
+        //
+        // ⚠️ 白名单：`Level::Tick` → `GameObject::Tick` 走 `shouldComponentTick`，
+        // 而本探针没有 REGISTER_CLASS，`GetTypeName()` 是 "Component"。不先白名
+        // 单一次的话 DG24 恒为 0，于是 DG23 变成空转门（"从来不 Tick"也给 0）。
+        const bool had_component_whitelisted =
+            g_editorTickComponentTypes.find("Component") != g_editorTickComponentTypes.end();
+        if (!had_component_whitelisted) { g_editorTickComponentTypes.insert("Component"); }
+
+        pa->ticks = 0;
+        level.Tick(0.016f);
+        Check(pa->ticks == 0, "DG23",
+              "…while its Tick really is skipped (so DG22 is not a dead 'enabled' flag)");
+        pa->SetProbeEnabled(true);
+        pa->ticks = 0;
+        level.Tick(0.016f);
+        Check(pa->ticks == 1, "DG24", "and comes back when it is enabled again");
+        // 门本身的门：证明 DG24 是靠白名单跑起来的，而不是"别的原因"（比如
+        // g_isPlaying 恰好为真）。撤掉白名单再 Tick 一次，必须变回 0 —— 否则
+        // DG23 那条"停用就不 Tick"也可能只是白名单没中的副产品。
+        pa->ticks = 0;
+        g_editorTickComponentTypes.erase("Component");
+        level.Tick(0.016f);
+        Check(pa->ticks == 0, "DG24b", "(that tick really came through the editor whitelist)");
+        if (had_component_whitelisted) { g_editorTickComponentTypes.insert("Component"); }
+
+        pa->Reset();
+
+        // --- 判 activeInHierarchy：停用的对象一个都不发 --------------------
+        a.object->SetActive(false);
+        Check(!a.object->IsActiveInHierarchy(), "DG25", "A is really inactive");
+        level.DrawGizmos({a.object});
+        Check(pa->gizmo_draws == 0, "DG26", "an inactive object draws no gizmos at all");
+        Check(pa->gizmo_selected_draws == 0, "DG27",
+              "…and being selected does NOT override that gate");
+        a.object->SetActive(true);
+
+        // --- 父级停用 ⇒ 子级也收不到（是 activeInHierarchy，不是 activeSelf）--
+        Check(c.transform->SetParent(a.transform, true), "DG28", "C is parented to A");
+        Check(c.object->IsActiveInHierarchy(), "DG29", "C is active while A is");
+        a.object->SetActive(false);
+        Check(!c.object->IsActiveInHierarchy(), "DG30",
+              "C is inactive in hierarchy too (its own activeSelf never changed)");
+        pc->Reset();
+        level.DrawGizmos({c.object});
+        Check(pc->gizmo_draws == 0, "DG31",
+              "a child of an inactive parent draws nothing (hierarchy, not self)");
+        a.object->SetActive(true);
+
+        // --- 没加载的关卡：不能崩，也不能发 --------------------------------
+        {
+            Level unloaded;
+            unloaded.setLevelResUrl("Assets/Scenes/NeverLoaded.level");
+            Check(!unloaded.IsLoaded(), "DG32", "the second level really is unloaded");
+            // ⚠️ 光有"没加载"还不够：这张关卡里得**真的有对象**。否则"派发被
+            // m_IsLoaded 拦下"和"压根没东西可派发"是同一件事，DG33 就成了空转门
+            // （DGM11 实测存活过一次）。
+            Node ghost;
+            ghost.object = new GameObject(ObjectIDAllocator::Alloc());
+            om->AllocateAndAssignInstanceID(ghost.object);
+            ghost.transform = new Transform();
+            om->AllocateAndAssignInstanceID(ghost.transform);
+            ghost.object->addComponent(ghost.transform);
+            ghost.transform->PostLoadResource(ghost.object);
+            Check(unloaded.RegisterRuntimeGObject(ghost.object), "DG32b",
+                  "a node really is in the unloaded level's runtime table");
+            AppEventProbe* pg = add_probe(ghost, 'G');
+            Check(pg->gizmo_draws == 0, "DG32c", "and it has not been drawn yet");
+            unloaded.DrawGizmos({ghost.object});
+            Check(pg->gizmo_draws == 0, "DG33",
+                  "an unloaded level dispatches nothing (m_Gobjects holds the previous level's debris)");
+            unloaded.UnregisterRuntimeGObject(ghost.object->GetID());
+            delete pg;
+            delete ghost.object;
+        }
+
+        // --- 一帧一次，没有内部状态：调两次就是两次 ------------------------
+        pa->Reset();
+        level.DrawGizmos({});
+        level.DrawGizmos({});
+        Check(pa->gizmo_draws == 2, "DG34", "one dispatch per call (gizmos are redrawn every frame)");
+
+        // --- Application 那一层：`SetGizmoSelection` 与 ID -> 指针的解析 ----
+        //
+        // ⚠️ 这一段测的是"选中项怎么从 ID 变成指针"，不是"整帧走一遍"：后者
+        // headless 下没有活动关卡（`m_CurrentActiveLevel` 只能由真实加载流程
+        // 设置），所以 `LogicalTick -> DrawGizmosFrame` 那条路由由 DW24/DW25
+        // 从源码级守。这里守的是那条链上唯一有判断、且能真的观测的一步。
+        {
+            Application::SetGizmoSelection({a.object->GetID(), c.object->GetID()});
+            Check(Application::GetGizmoSelection().size() == 2, "DG36",
+                  "the gizmo selection round-trips through the application");
+            // 解析：这两张表与 Level::DrawGizmos 走的两张必须一一对应，否则
+            // "选得中却画不出来" 或 "画得出来却选不中"。
+            const std::vector<GameObject*> resolved =
+                Application::ResolveGizmoSelection(&level);
+            Check(resolved.size() == 2, "DG37",
+                  "both selected IDs resolve against the level (runtime object table)");
+            Check(resolved.size() == 2 && resolved[0] == a.object && resolved[1] == c.object,
+                  "DG38", "and they resolve to the RIGHT objects");
+            // 一个不在这张关卡里的 ID：静默缺席，不崩也不塞 nullptr。
+            Application::SetGizmoSelection({a.object->GetID(), 0xDEADBEEFu});
+            Check(Application::ResolveGizmoSelection(&level).size() == 1, "DG39",
+                  "an unknown ID is simply absent (no crash, no null entry)");
+            Check(Application::ResolveGizmoSelection(nullptr).empty(), "DG40",
+                  "and a null level degrades to an empty selection");
+            Application::SetGizmoSelection({});
+            Check(Application::GetGizmoSelection().empty(), "DG41",
+                  "the selection can be cleared (an editor click on empty space)");
+        }
+
+        // --- WorldManager 那一层：没有活动关卡时不能崩 ----------------------
+        // 真正的"路由到已加载关卡"headless 测不到（要真实关卡文件），所以这里
+        // 只守降级路径；`WorldManager::DrawGizmos` 本身存在与否由 DW15 守。
+        if (WorldManager* world = GET_SYSTEM(WorldManager))
+        {
+            if (world->getCurrentActiveLevel() == nullptr)
+            {
+                pa->Reset();
+                world->DrawGizmos({a.object});
+                Check(pa->gizmo_draws == 0, "DG35",
+                      "a world with no active level dispatches nothing (and does not crash)");
+            }
+        }
+
+        level.UnregisterRuntimeGObject(a.object->GetID());
+        level.UnregisterRuntimeGObject(b.object->GetID());
+        level.UnregisterRuntimeGObject(c.object->GetID());
+        delete pa;
+        delete pb1;
+        delete pb2;
+        delete pc;
+        delete a.object;
+        delete b.object;
+        delete c.object;
+    }
+
+    void TestDrawGizmosWiring()
+    {
+        const std::string component_header =
+            ReadFile("Source/Runtime/Function/Framework/Component/Component.h");
+        Check(!component_header.empty(), "DW0", "Component.h is readable");
+        Check(CountOccurrences(component_header, "virtual void OnDrawGizmos(") >= 1,
+              "DW1", "OnDrawGizmos is a virtual hook");
+        // ⚠️ 子串陷阱：`OnDrawGizmosSelected(` 包含 `OnDrawGizmos` 但**不**包含
+        // `OnDrawGizmos(`（多了一个左括号），所以 DW1 不会被它单独满足 ——
+        // 反过来 DW2 才是 Selected 那条。
+        Check(CountOccurrences(component_header, "virtual void OnDrawGizmosSelected(") >= 1,
+              "DW2", "OnDrawGizmosSelected is a separate hook (not a parameter)");
+
+        const std::string go_source = ReadFile("Source/Runtime/BaseClasses/GameObject.cpp");
+        Check(!go_source.empty(), "DW3", "GameObject.cpp is readable");
+        const std::size_t at_broadcast = go_source.find("void GameObject::BroadcastDrawGizmos");
+        Check(at_broadcast != std::string::npos, "DW4", "BroadcastDrawGizmos is implemented");
+        if (at_broadcast != std::string::npos)
+        {
+            Check(BodyIsBounded(go_source, at_broadcast), "DW4b",
+                  "the BroadcastDrawGizmos body slice is bounded (the scan is not degenerate)");
+            const std::string body = SliceFunctionBody(go_source, at_broadcast);
+            // 正向门：必须判 activeInHierarchy。
+            Check(CountOccurrences(body, "IsActiveInHierarchy") >= 1, "DW5",
+                  "it gates on activeInHierarchy (an inactive object draws nothing)");
+            // ⚠️ 反向门：**不许**判 enabled。这是本切片最容易被"顺手修掉"的一行，
+            // 而 DG22 是运行时断言、这里是源码级断言 —— 两道门都要有：运行时那道
+            // 证明行为，源码这道证明"函数体里没有那行"。
+            Check(body.find("isEnabled") == std::string::npos, "DW6",
+                  "it does NOT gate on isEnabled (Unity: disabled scripts still draw gizmos)");
+            Check(body.find("shouldComponentTick") == std::string::npos, "DW7",
+                  "nor on the edit-mode whitelist (gizmos are an editor-frame concern)");
+            // 两个都发、且 Selected 是**额外**的（在 if 里，不在 else 里）。
+            Check(CountOccurrences(body, "OnDrawGizmos();") >= 1, "DW8",
+                  "the always-on hook is dispatched");
+            Check(CountOccurrences(body, "OnDrawGizmosSelected();") >= 1, "DW9",
+                  "and the selected-only one, additively");
+        }
+
+        const std::string level_source =
+            ReadFile("Source/Runtime/Function/Framework/Level/Level.cpp");
+        Check(!level_source.empty(), "DW10", "Level.cpp is readable");
+        const std::size_t at_level = level_source.find("void Level::DrawGizmos");
+        Check(at_level != std::string::npos, "DW11", "Level walks its objects for gizmos");
+        if (at_level != std::string::npos)
+        {
+            Check(BodyIsBounded(level_source, at_level), "DW11b",
+                  "the Level::DrawGizmos body slice is bounded (the scan is not degenerate)");
+            const std::string body = SliceFunctionBody(level_source, at_level);
+            // 两张表都要走：主表 + 运行时表（Instantiate 产物）。漏第二张的话，
+            // 脚本刚创建出来的对象在编辑器里永远画不出辅助线。
+            Check(CountOccurrences(body, "m_Gobjects") >= 1, "DW12",
+                  "it walks the loaded object table");
+            Check(CountOccurrences(body, "m_RuntimeGObjects") >= 1, "DW13",
+                  "and the runtime (Instantiate) table too");
+            // ⚠️ 两条 BroadcastDrawGizmos 调用文本**完全一样**，所以 >= 1 会在
+            // 删掉任意一条时照过。数 2 才是"两张表都派发"。
+            Check(CountOccurrences(body, "BroadcastDrawGizmos(") >= 2, "DW14",
+                  "both tables are dispatched (not just one)");
+        }
+
+        const std::string world_source =
+            ReadFile("Source/Runtime/Function/Framework/World/WorldManager.cpp");
+        Check(CountOccurrences(world_source, "void WorldManager::DrawGizmos") >= 1,
+              "DW15", "WorldManager routes gizmos to the loaded level(s)");
+
+        const std::string ts_source =
+            ReadFile("Source/Runtime/Function/Framework/Component/Script/TypeScriptComponent.cpp");
+        Check(!ts_source.empty(), "DW16", "TypeScriptComponent.cpp is readable");
+        Check(CountOccurrences(ts_source, "\"OnDrawGizmos\"") >= 1, "DW17",
+              "the script component forwards OnDrawGizmos");
+        // 名字只差一个词：写成 `"OnDrawGizmos"` 的话选中对象的常驻辅助线照来，
+        // 仅选中的那次永远不来 —— 没有任何报错，只有"多出来的那部分没画"。
+        Check(CountOccurrences(ts_source, "\"OnDrawGizmosSelected\"") >= 1, "DW18",
+              "and OnDrawGizmosSelected (they are not merged)");
+
+        const std::string ts_header =
+            ReadFile("Source/Runtime/Function/Framework/Component/Script/TypeScriptComponent.h");
+        Check(CountOccurrences(ts_header, "void OnDrawGizmos() override;") >= 1, "DW19",
+              "the header declares both overrides");
+
+        const std::string env_source = ReadFile("Source/Runtime/Scripting/Wrapper/ScriptEnv.cpp");
+        // ⚠️ 带 " = function" 而不是裸标识符：`…OnDrawGizmosSelected = function`
+        // **包含** `…OnDrawGizmos` 这个前缀，只数后者的话删掉 OnDrawGizmos 那
+        // 一行照样绿（DGM16 实测存活过一次）。
+        Check(CountOccurrences(env_source, "g.Behaviour.prototype.OnDrawGizmos = function") >= 1,
+              "DW20", "the JS prototype has an OnDrawGizmos default");
+        Check(CountOccurrences(env_source, "g.Behaviour.prototype.OnDrawGizmosSelected = function") >= 1,
+              "DW21", "and an OnDrawGizmosSelected default");
+
+        const std::string binding_source =
+            ReadFile("Source/Runtime/Scripting/Binding/ScriptBinding.cpp");
+        Check(CountOccurrences(binding_source, "OnDrawGizmos(): void;") >= 1, "DW22",
+              "the .d.ts declares OnDrawGizmos on Behaviour");
+        Check(CountOccurrences(binding_source, "OnDrawGizmosSelected(): void;") >= 1, "DW23",
+              "and OnDrawGizmosSelected");
+
+        // ---- 主循环那一层：实现了但没接进主循环 = 没实现 --------------------
+        //
+        // `Level::DrawGizmos` 本身的行为由 DG 组从运行时验，但"谁每帧调它"
+        // 在 headless 下测不到（`m_CurrentActiveLevel` 只能由真实加载流程设置）。
+        // 所以这一层用源码级门守 —— 少一条，整个特性就是一段没人调用的代码，
+        // 而且**静默**（没有任何报错，只是辅助线永远不出现）。
+        const std::string app_source =
+            ReadFile("Source/Runtime/Application/Application.cpp");
+        Check(!app_source.empty(), "DW24", "Application.cpp is readable");
+        {
+            const std::size_t at_tick = app_source.find("void Application::LogicalTick");
+            Check(at_tick != std::string::npos, "DW25", "LogicalTick is implemented");
+            if (at_tick != std::string::npos)
+            {
+                Check(BodyIsBounded(app_source, at_tick), "DW25b",
+                      "the LogicalTick body slice is bounded (the scan is not degenerate)");
+                const std::string body = SliceFunctionBody(app_source, at_tick);
+                Check(CountOccurrences(body, "DrawGizmosFrame();") >= 1, "DW26",
+                      "the logical tick drives the gizmo frame");
+                // 必须在 LateTick **之后**：gizmo 画的是这一帧的最终位姿。
+                Check(body.find("->LateTick(") < body.find("DrawGizmosFrame();"), "DW27",
+                      "and after LateTick (gizmos show the frame's final pose)");
+            }
+
+            const std::size_t at_frame = app_source.find("void Application::DrawGizmosFrame");
+            Check(at_frame != std::string::npos, "DW28", "DrawGizmosFrame is implemented");
+            if (at_frame != std::string::npos)
+            {
+                Check(BodyIsBounded(app_source, at_frame), "DW28b",
+                      "the DrawGizmosFrame body slice is bounded (the scan is not degenerate)");
+                const std::string body = SliceFunctionBody(app_source, at_frame);
+                Check(CountOccurrences(body, "->DrawGizmos(") >= 1, "DW29",
+                      "it dispatches through WorldManager");
+                // Player 里整趟跳过：这一趟要走遍全关卡。
+                //
+                // ⚠️ 数的是 **`if (!g_isEditor)` 这条语句**，不是 "g_isEditor"
+                // 这个字符串：本函数的注释里也要提到这个开关（说明为什么这么
+                // 判），只数裸标识符的话注释就足以让门恒真 —— 于是"把判据删掉"
+                // 的改动测不出来（DGM21 实测存活过一次）。
+                Check(CountOccurrences(body, "if (!g_isEditor)") >= 1, "DW30",
+                      "and the player skips the whole pass (gizmos are editor-only)");
+            }
+
+            // ID -> 指针的解析必须查**两张**表（关卡对象表 + Instantiate 表）。
+            const std::size_t at_resolve = app_source.find("Application::ResolveGizmoSelection");
+            Check(at_resolve != std::string::npos, "DW31", "the ID resolution is a step of its own");
+            if (at_resolve != std::string::npos)
+            {
+                Check(BodyIsBounded(app_source, at_resolve), "DW31b",
+                      "the ResolveGizmoSelection body slice is bounded");
+                const std::string body = SliceFunctionBody(app_source, at_resolve);
+                Check(CountOccurrences(body, "GetGObjectByID") >= 1, "DW32",
+                      "it looks in the level object table");
+                Check(CountOccurrences(body, "FindRuntimeGObject") >= 1, "DW33",
+                      "and in the Instantiate table too");
+            }
+        }
+    }
+
     void TestApplicationMessagesWiring()
     {
         const std::string component_header =
@@ -9186,6 +9605,8 @@ int main()
     TestApplicationMessagesWiring();
     TestTransformChildrenChanged();
     TestTransformChildrenChangedWiring();
+    TestDrawGizmos();
+    TestDrawGizmosWiring();
     TestValueTypeFacades();
     TestValueTypeFacadeWiring();
     TestWiringGate();

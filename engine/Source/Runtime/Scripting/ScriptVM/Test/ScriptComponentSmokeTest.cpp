@@ -914,6 +914,52 @@ int main(int argc, char** argv)
         CheckEq("P9", "编辑态下它转发成 OnValidate", mover_value("validateCount"), "1");
         g_isEditor = was_editor;
 
+        // --- Unity 的两个 gizmo 消息（R 段）--------------------------------
+        //
+        // C++ 侧的 DG 组（UnityParitySmokeTest）断言的是引擎自己的组件；这一段
+        // 断言的是**脚本**那条链路：`GameObject::BroadcastDrawGizmos` →
+        // `TypeScriptComponent::OnDrawGizmos` → JS。少中间任何一环，DG 全绿而
+        // 用户写的 `OnDrawGizmos()` 永远不来。
+        //
+        // 判据是这一段的重点：只判 activeInHierarchy，**不判 enabled**。
+
+        // 未选中：只来常驻的那一条。
+        go2->BroadcastDrawGizmos(false);
+        CheckEq("R0", "BroadcastDrawGizmos 送到了 JS 的 OnDrawGizmos",
+                mover_value("gizmoDraws"), "1");
+        CheckEq("R1", "没选中时 OnDrawGizmosSelected 不来",
+                mover_value("gizmoSelectedDraws"), "0");
+        CheckEq("R2", "回调里 Gizmos 面是可用的（读到的是刚设进去的绿色）",
+                mover_value("gizmoAtDraw"), "1");
+
+        // 选中：两个都来，且 Selected 是**额外**的（不是二选一）。
+        go2->BroadcastDrawGizmos(true);
+        CheckEq("R3", "选中时常驻那条照样来（是叠加，不是替换）",
+                mover_value("gizmoDraws"), "2");
+        CheckEq("R4", "并且额外来一次 OnDrawGizmosSelected",
+                mover_value("gizmoSelectedDraws"), "1");
+
+        // ⚠️ 核心差异：停用**不**挡 gizmo。
+        comp2->SetEnabled(false);
+        go2->BroadcastDrawGizmos(true);
+        CheckEq("R5", "停用的脚本照样收到 OnDrawGizmos（Unity 明文：enabled 只挡 "
+                      "Start/Awake/Update/FixedUpdate/OnGUI）",
+                mover_value("gizmoDraws"), "3");
+        CheckEq("R6", "Selected 那条同样不受 enabled 影响",
+                mover_value("gizmoSelectedDraws"), "2");
+        comp2->SetEnabled(true);
+
+        // 互补的一半：activeInHierarchy **要**挡。只做上面那对的话，"两个判据
+        // 全都不要了"这种实现也是绿的。
+        go2->SetActive(false);
+        CheckTrue("R7", "go2 真的停用了", !go2->IsActiveInHierarchy());
+        go2->BroadcastDrawGizmos(true);
+        CheckEq("R8", "停用的对象一个都不发（Selected 也不能覆盖这条判据）",
+                mover_value("gizmoDraws"), "3");
+        CheckEq("R9", "Selected 那条同样不发",
+                mover_value("gizmoSelectedDraws"), "2");
+        go2->SetActive(true);
+
         // ---- 值类型的静态门面（Vector2 / Vector4 / Matrix4x4）------------
         //
         // C++ 侧的 VT 组（UnityParitySmokeTest）断言的是**算术**；这一段断言的是

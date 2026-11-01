@@ -5,7 +5,9 @@
 #include "Runtime/Core/Base/ScopedAutoreleasePool.h"
 #include "Runtime/Core/Memory/MemoryManager.h"
 #include "Runtime/Core/Time/TimeState.h"
+#include "Runtime/BaseClasses/GameObject.h"
 #include "Runtime/Function/Console/RuntimeConsoleCommands.h"
+#include "Runtime/Function/Framework/Level/Level.h"
 #include "Runtime/Function/Framework/World/WorldManager.h"
 #include "Runtime/Function/Framework/Coroutine/Coroutine.h"
 #include "Runtime/Function/Input/InputSystem.h"
@@ -315,9 +317,76 @@ void Application::LogicalTick(float delta_time)
     {
         coroutines->TickLateUpdate();
     }
+
+    // Unity 的 `OnDrawGizmos()` / `OnDrawGizmosSelected()`：一帧一次，且在
+    // **LateUpdate 之后** —— gizmo 画的是这一帧的最终位姿，而相机跟随、骨骼
+    // 朝向修正这类逻辑恰好在 LateUpdate 里改 transform。挪到 LateUpdate 前面
+    // 会让辅助线永远落后一帧，表现为"线在物体旁边飘"。
+    Application::DrawGizmosFrame();
+
     // The runtime UI (UMG on ZSlate) is event-driven (input via GLFW callbacks)
     // and painted inside the UI render pass via UISystem::PreRender(); no
     // per-frame logic tick is required here.
+}
+
+void Application::SetGizmoSelection(const std::vector<std::size_t>& selected_ids)
+{
+    s_GizmoSelection = selected_ids;
+}
+
+const std::vector<std::size_t>& Application::GetGizmoSelection()
+{
+    return s_GizmoSelection;
+}
+
+void Application::DrawGizmosFrame()
+{
+    // Player 里不派发：Unity 的 gizmo 只画在编辑器里（官方文档原话是 "gizmos
+    // are only drawn in the Unity Editor, not in builds"），而这一趟要走遍
+    // **全关卡**。为一个画不出来的东西每帧走一遍全关卡，是纯亏。
+    //
+    // 编辑态下的 Play 模式（g_isEditor 仍为 true）照发 —— Unity 在 Play 时也
+    // 画 gizmo（场景视图开着的话）。
+    if (!g_isEditor)
+    {
+        return;
+    }
+
+    auto* world = GET_SYSTEM(WorldManager);
+    if (world == nullptr)
+    {
+        return;
+    }
+
+    world->DrawGizmos(ResolveGizmoSelection(world->getCurrentActiveLevel()));
+}
+
+std::vector<GameObject*> Application::ResolveGizmoSelection(Level* level)
+{
+    std::vector<GameObject*> selected;
+    if (level == nullptr)
+    {
+        return selected;
+    }
+
+    // ID -> 指针**每帧**解析，而不是缓存指针：关卡重载之后同一个 ID 是另一个
+    // 对象，缓存下来的那个已经悬空。解析不到就是"没选中"，不崩也不塞 nullptr。
+    selected.reserve(s_GizmoSelection.size());
+    for (std::size_t id : s_GizmoSelection)
+    {
+        if (auto shared_object = level->GetGObjectByID(id).lock())
+        {
+            selected.push_back(shared_object.get());
+            continue;
+        }
+        // Instantiate 产物在另一张表里 —— 与 `Level::DrawGizmos` 走的两张表
+        // 一一对应。只查前一张的话，脚本刚创建出来的对象永远"选不中"。
+        if (GameObject* runtime_object = level->FindRuntimeGObject(id))
+        {
+            selected.push_back(runtime_object);
+        }
+    }
+    return selected;
 }
 
 bool Application::RendererTick(float delta_time)
@@ -328,6 +397,7 @@ bool Application::RendererTick(float delta_time)
 }
 
 const float Application::s_Fpsalpha = 1.f / 100;
+std::vector<std::size_t> Application::s_GizmoSelection;
 
 // =============================================================================
 // 脚本门面实现

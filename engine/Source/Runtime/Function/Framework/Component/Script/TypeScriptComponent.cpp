@@ -189,6 +189,19 @@ void TypeScriptComponent::OnTransformChildrenChanged()
     InvokeMethod("OnTransformChildrenChanged");
 }
 
+void TypeScriptComponent::OnDrawGizmos()
+{
+    InvokeMethod("OnDrawGizmos");
+}
+
+void TypeScriptComponent::OnDrawGizmosSelected()
+{
+    // ⚠️ 与上面那个名字只差一个词，写错成 `"OnDrawGizmos"` 的话：选中对象的
+    // 常驻辅助线照常来一次、仅选中的那次永远不来 —— 脚本侧两个回调都在，
+    // 现场只表现为"选中之后多出来的那部分没画"，没有任何报错。
+    InvokeMethod("OnDrawGizmosSelected");
+}
+
 void TypeScriptComponent::OnSerializedFieldsUpdated()
 {
     // Unity 的 `OnValidate()`：编辑器里 Inspector 改了序列化字段之后调用

@@ -202,6 +202,37 @@ public:
     /// 灌进几十次回调。判断错了改一行即可，所以这里写死成增减。
     virtual void OnTransformChildrenChanged() {}
 
+    // ---- Unity 的 gizmo 消息 -------------------------------------------
+    //
+    // 脚本在这两个钩子里调 `Gizmos.DrawXxx`，画出来的东西活一帧（见
+    // ScriptGizmos.h 的后端说明）。
+    //
+    // ⚠️ **不判 enabled** —— 这与三个 Tick 正相反，而且是 Unity 明文写了的：
+    // MonoBehaviour 参考页说 "The checkbox for disabling a MonoBehavior will
+    // only prevent Start(), Awake(), Update(), FixedUpdate(), and OnGUI() from
+    // executing"。也就是说**停用的脚本照样画 gizmo**。
+    //
+    // 理由很直接：调试辅助线属于"我写在哪个对象上就该在那里看见"。被 enabled
+    // 静默藏掉的 gizmo 与"压根没写"长得一模一样 —— 你会在别处找原因，而这
+    // 一类 bug 的现场（一条该出现却没出现的线）本身不留下任何痕迹。
+    //
+    // 判据只剩 `activeInHierarchy`，由派发方把关
+    // （`GameObject::BroadcastDrawGizmos`）：整个对象在层级里都已经不在了，
+    // 画它的辅助线没有意义。
+    //
+    // 派发是"推"（整个关卡一趟走完），不是"拉"，与 kChildrenChanged 那一组
+    // 同类、与三趟 Tick 不同类。
+
+    /// Unity 的 `OnDrawGizmos()`：每帧（含编辑器帧）一次，无选中要求。
+    virtual void OnDrawGizmos() {}
+
+    /// Unity 的 `OnDrawGizmosSelected()`：只在宿主对象**被选中**时来。
+    ///
+    /// "额外"是关键：选中时**两个都会收到**（先 `OnDrawGizmos()` 再
+    /// `OnDrawGizmosSelected()`），不是二选一。写反成二选一的话，选中对象的
+    /// 常驻辅助线会消失 —— 又是"看起来像没写"的那一类。
+    virtual void OnDrawGizmosSelected() {}
+
     bool IsDirty() const { return m_IsDirty; }
 
     void setDirtyFlag(bool is_dirty) { m_IsDirty = is_dirty; }

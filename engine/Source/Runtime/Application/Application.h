@@ -8,8 +8,14 @@
 #include <chrono>
 #include <filesystem>
 #include <string>
+#include <vector>
 
 #include "Application.generated.h"
+
+// `ResolveGizmoSelection` 的返回值只需要指针大小，不需要完整类型 —— 真正在
+// 用它们的地方是 Application.cpp（那里才有 Level / GameObject 的定义）。
+class GameObject;
+class Level;
 
 extern bool g_isPlaying;
 extern std::unordered_set<std::string> g_editorTickComponentTypes;
@@ -57,6 +63,10 @@ public:
     friend class Editor;
 
     static const float s_Fpsalpha;
+
+    /// `SetGizmoSelection` 存的那份。进程级静态（`Selection` 是全局概念，不是
+    /// per-Application），与 `TimeState` / `Gizmos.color` 同一类。
+    static std::vector<std::size_t> s_GizmoSelection;
 
 public:
     std::string GetName() const override { return GET_CLASS_NAME(Application); }
@@ -233,6 +243,32 @@ public:
     {
         return !has_focus && !run_in_background;
     }
+
+    // ---- Unity 的 gizmo 帧（OnDrawGizmos / OnDrawGizmosSelected）--------
+    //
+    // 做成公开入口，理由与上面那条 `NotifyApplicationFocus` 一模一样：这条链
+    // 上唯一"真的在点窗口之外"的驱动点是编辑器，而 headless 测试里没有编辑器
+    // 也没有已加载的世界。留成内部细节的话，`WorldManager::DrawGizmos` 这条
+    // 路由永远只被"某一天有人手动打开编辑器画一条线"验证过。
+
+    /// 当前选中的对象（Unity 的 `Selection`）。
+    ///
+    /// ⚠️ 用**实例 ID** 而不是裸指针：关卡一卸载指针立刻变野，而一个找不到的
+    /// ID 只是"没选中"。编辑器在 Selection 变化时调一次，之后每帧复用。
+    static void SetGizmoSelection(const std::vector<std::size_t>& selected_ids);
+    static const std::vector<std::size_t>& GetGizmoSelection();
+
+    /// 把选中的 ID 解析成指针。
+    ///
+    /// ⚠️ 单独提出来（而不是塞在 `DrawGizmosFrame` 里）是因为：这是整条链上
+    /// 唯一**有判断**的一步（两张对象表、解析不到就跳过），而 `DrawGizmosFrame`
+    /// 剩下的部分在没有活动关卡的世界里是走空的。藏起来的话，headless 下没有
+    /// 任何一个断言能碰到它 —— 于是"运行时表忘了查"这种错永远测不到。
+    static std::vector<GameObject*> ResolveGizmoSelection(Level* level);
+
+    /// 一帧的 gizmo 派发。由 `LogicalTick` 末尾调用；单独提出来是为了让测试能
+    /// 在没有完整主循环的情况下验证"这条路由在"。
+    static void DrawGizmosFrame();
 
 protected:
     void LogicalTick(float deltaTime);

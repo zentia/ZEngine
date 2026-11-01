@@ -103,6 +103,16 @@ public:
     /// 要判的 —— 没加载的关卡里 m_Gobjects 是上一份的残留。
     void BroadcastAppEvent(AppEventKind kind, bool arg);
 
+    /// 把 Unity 的两个 gizmo 消息发给本关卡里**所有**对象（含运行时创建的）。
+    ///
+    /// `selected_objects` 里的那些额外收到 `OnDrawGizmosSelected()`；空数组就
+    /// 是"当前没有选中项"（编辑器里点了空白处正是这种）。
+    ///
+    /// 与 `BroadcastAppEvent` 同一条遍历语义（两张表都走、只判 m_IsLoaded），
+    /// 区别只在于多带一个"谁被选中"的参数 —— 所以没有塞进 AppEventKind：
+    /// 那是个 uint8 枚举，塞不进一个集合。
+    void DrawGizmos(const std::vector<GameObject*>& selected_objects);
+
     const eastl::string& getLevelResUrl() const { return m_LevelResUrl; }
     void setLevelResUrl(const eastl::string& level_res_url) { m_LevelResUrl = level_res_url; }
 

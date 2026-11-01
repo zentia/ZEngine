@@ -121,6 +121,12 @@ public:
     void OnTransformParentChanged() override;
     void OnTransformChildrenChanged() override;
 
+    // Unity 的 gizmo 消息。派发侧（`GameObject::BroadcastDrawGizmos`）只判
+    // `activeInHierarchy`、**不判 enabled** —— 所以这里的转发同样不能补判，
+    // 否则停用的脚本就画不出辅助线（与 Unity 相反，见 Component 里那两条注释）。
+    void OnDrawGizmos() override;
+    void OnDrawGizmosSelected() override;
+
     /// Unity 的 `OnValidate()`：编辑器里序列化字段被改之后。只在 `g_isEditor`
     /// 下发（Player 里这条路径唯一的调用方是反序列化，那时脚本还没绑上）。
     void OnSerializedFieldsUpdated() override;

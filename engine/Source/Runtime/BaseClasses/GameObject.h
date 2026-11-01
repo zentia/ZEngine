@@ -90,6 +90,16 @@ public:
     /// `arg` 对 kQuit / kParentChanged 无意义（传什么都会被忽略）。
     virtual void BroadcastAppEvent(AppEventKind kind, bool arg);
 
+    /// 派发 Unity 的两个 gizmo 消息给本对象的**全部**组件。
+    ///
+    /// 判据**只有** `IsActiveInHierarchy()` —— 不判 enabled，理由见
+    /// `Component::OnDrawGizmos`（Unity 明文：停用的脚本照样画 gizmo）。这跟
+    /// 上面三趟 Tick（三个判据全上）和 `BroadcastAppEvent`（一个都不判）都
+    /// 不一样，是**第三种**组合，别顺手抄成那两种里的任何一种。
+    ///
+    /// `selected` 决定是否**额外**发一次 `OnDrawGizmosSelected()`。
+    virtual void BroadcastDrawGizmos(bool selected);
+
     bool load(const GameObject& object_instance_res);
     void save(GameObject& out_object_instance_res);
 
