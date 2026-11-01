@@ -160,6 +160,35 @@ namespace
         }
     }
 
+    /// 把 `\r\n` / 裸 `\r` 统一成 `\n`。
+    ///
+    /// ⚠️ 这不是洁癖。仓库里两种行尾**同时存在**（`Component.h` 是 CRLF，
+    /// `GameObject.cpp` 是 LF），而且 `git checkout` 会按 `core.autocrlf` 把
+    /// 文件翻成 CRLF —— 同一个文件今天和明天行尾可能不一样。
+    ///
+    /// 而 `ReadFile` 是 `std::ios::binary` 打开的，原样读到 `\r\n`。于是任何
+    /// 用 `find("\n}\n")` 定位"函数尾"的接线门，在 CRLF 文件上**一律落空**：
+    /// `substr` 退化成"从锚点到文件末尾"。后果分两种，都是静默的：
+    ///   * 正向门（"这段里应该有什么"）→ 什么都找得到 → **永真**；
+    ///   * 反向门（"这段里不该有什么"）→ 永远找得到 → **永假**。
+    /// 实测就踩到了：`Transform.cpp` 被 `git checkout` 翻成 CRLF 之后，CW11
+    /// 变成永真、CW15 变成永假，而 1985 条里只有它俩的动静。
+    ///
+    /// 统一之后再切函数体，结果就只取决于源码内容，不取决于 git 怎么捡出它。
+    std::string NormalizeNewlines(const std::string& text)
+    {
+        std::string out;
+        out.reserve(text.size());
+        for (const char c : text)
+        {
+            if (c != '\r')
+            {
+                out.push_back(c);
+            }
+        }
+        return out;
+    }
+
     std::string ReadFile(const std::string& rel_path)
     {
         const std::string full = std::string(ZENGINE_ENGINE_ROOT_DIR) + "/" + rel_path;
@@ -170,7 +199,47 @@ namespace
         }
         std::ostringstream ss;
         ss << in.rdbuf();
-        return ss.str();
+        return NormalizeNewlines(ss.str());
+    }
+
+    /// 从 `at`（函数签名处）切到本函数的结尾。
+    ///
+    /// ⚠️ 找不到结尾时**故意**返回"从这里到文件末尾"，而不是空串 —— 反向门
+    /// （"这段里不该有什么"）在空串上是永真的，那是所有假绿里最安静的一种。
+    /// 退化成整段之后反向门会红，正向门则由调用方那条
+    /// `BodyIsBounded` 断言兜住，两个方向都不会静默。
+    /// 函数尾 = "与签名同一缩进的一个 `}`"。
+    ///
+    /// ⚠️ 不能写死 `"\n}\n"`：Runtime 那批文件函数顶格（`Transform.cpp` 的
+    /// `void Transform::SetParent` 在第 0 列），而**本文件**的函数缩进 4 格
+    /// （在匿名 namespace 里）。写死的话后者切出来的是"从这里到 namespace 结
+    /// 尾"，CW21c / CW22 于是恒真。按签名行的前导空白推导，两种风格都对。
+    std::string FunctionEndMarker(const std::string& text, std::size_t at)
+    {
+        std::size_t line_start = text.rfind('\n', at);
+        line_start = (line_start == std::string::npos) ? 0 : line_start + 1;
+        std::string indent;
+        for (std::size_t i = line_start; i < text.size() && (text[i] == ' ' || text[i] == '\t'); ++i)
+        {
+            indent.push_back(text[i]);
+        }
+        return "\n" + indent + "}\n";
+    }
+
+    std::string SliceFunctionBody(const std::string& text, std::size_t at)
+    {
+        const std::size_t end = text.find(FunctionEndMarker(text, at), at);
+        return (end == std::string::npos) ? text.substr(at) : text.substr(at, end - at);
+    }
+
+    /// `SliceFunctionBody` 切出来的真的是**一个函数**，不是"半个文件"。
+    ///
+    /// 行尾退化（CRLF 下 `"\n}\n"` 找不到）、函数名被改掉、或函数被搬到别处，
+    /// 都会让上面的 `SliceFunctionBody` 静默切错 —— 这条就是那个"门本身的门"。
+    bool BodyIsBounded(const std::string& text, std::size_t at)
+    {
+        const std::size_t end = text.find(FunctionEndMarker(text, at), at);
+        return end != std::string::npos && end > at;
     }
 
     /// Occurrences of `needle` in `haystack`, skipping nothing. Used by the
@@ -8714,7 +8783,9 @@ namespace
         {
             const std::size_t at = go_source.find("void GameObject::BroadcastAppEvent");
             Check(at != std::string::npos, "CW5", "BroadcastAppEvent is implemented");
-            const std::string body = go_source.substr(at, go_source.find("\n}\n", at) - at);
+            Check(BodyIsBounded(go_source, at), "CW5b",
+                  "the body slice is bounded (the scan is not degenerate)");
+            const std::string body = SliceFunctionBody(go_source, at);
             Check(CountOccurrences(body, "AppEventKind::k") >= 5, "CW6",
                   "all five kinds are dispatched (the fifth is the new one)");
             // 加了 case 却调错函数是这一层最容易犯的错：五个 case 长得一模一样，
@@ -8733,8 +8804,9 @@ namespace
         {
             const std::size_t at = transform_source.find("bool Transform::SetParent");
             Check(at != std::string::npos, "CW10", "SetParent is implemented");
-            const std::string body = transform_source.substr(
-                at, transform_source.find("\n}\n", at) - at);
+            Check(BodyIsBounded(transform_source, at), "CW10b",
+                  "the SetParent body slice is bounded (the scan is not degenerate)");
+            const std::string body = SliceFunctionBody(transform_source, at);
             Check(body.find("AppEventKind::kChildrenChanged") != std::string::npos, "CW11",
                   "the dispatch lives INSIDE SetParent (not in a helper nobody calls)");
             // 两处判空缺一不可：脱离父级时 new_parent 就是 nullptr。
@@ -8748,10 +8820,33 @@ namespace
         {
             const std::size_t at = transform_source.find("void Transform::SetSiblingIndex");
             Check(at != std::string::npos, "CW14", "SetSiblingIndex is implemented");
-            const std::string body = transform_source.substr(
-                at, transform_source.find("\n}\n", at) - at);
+            Check(BodyIsBounded(transform_source, at), "CW14b",
+                  "the SetSiblingIndex body slice is bounded (the scan is not degenerate)");
+            const std::string body = SliceFunctionBody(transform_source, at);
             Check(body.find("kChildrenChanged") == std::string::npos, "CW15",
                   "SetSiblingIndex does NOT fire it (reordering is not a membership change)");
+        }
+        // 门本身的门：**读文件的那一行**必须是归一化的那条。
+        //
+        // 上面 CW10b / CW14b 只在"文件恰好是 CRLF"时才红 —— 哪天 Transform.cpp
+        // 被统一成 LF，它们就变成"恒真"，再也证明不了 ReadFile 做过归一化。
+        // 所以再补一条不依赖任何文件行尾的接线门。
+        //
+        // ⚠️ 范围必须限定在 **ReadFile 的函数体内**：数整个文件里的
+        // "NormalizeNewlines" 会被这条门自己的字面量命中（自引用），变异体把
+        // 真正的调用删掉之后计数仍是 1 —— 一个看起来很合理、实际恒真的门。
+        // （同一类坑之前在 VW8 / 这里各栽一次：断言串出现在自己的注释或字面量里。）
+        {
+            const std::string self = ReadFile(
+                "Source/Runtime/Function/Framework/Test/UnityParitySmokeTest.cpp");
+            Check(!self.empty(), "CW21", "this test can read its own source");
+            const std::size_t at_read = self.find("std::string ReadFile(const std::string& rel_path)");
+            Check(at_read != std::string::npos, "CW21b", "ReadFile is implemented");
+            Check(BodyIsBounded(self, at_read), "CW21c",
+                  "the ReadFile body slice is bounded");
+            const std::string read_body = SliceFunctionBody(self, at_read);
+            Check(CountOccurrences(read_body, "NormalizeNewlines") >= 1, "CW22",
+                  "ReadFile normalizes line endings before anyone slices a function body");
         }
 
         const std::string ts_source =
@@ -8801,8 +8896,12 @@ namespace
         Check(at_broadcast != std::string::npos && at_tick != std::string::npos && at_broadcast > at_tick,
               "AW7", "BroadcastAppEvent is a separate walk (not folded into Tick)");
         {
-            const std::string body = go_source.substr(
-                at_broadcast, go_source.find("\n}\n", at_broadcast) - at_broadcast);
+            // ⚠️ "门本身的门"，同 CW5b / CW10b / CW14b：AW8 / AW9 是**反向门**，
+            // 切函数体退化成"半个文件"时它们变成永假（永远找得到那两行），看
+            // 起来像"有人把判据加回来了"，其实只是行尾变了。
+            Check(BodyIsBounded(go_source, at_broadcast), "AW7b",
+                  "the BroadcastAppEvent body slice is bounded (the scan is not degenerate)");
+            const std::string body = SliceFunctionBody(go_source, at_broadcast);
             Check(body.find("IsActiveInHierarchy") == std::string::npos, "AW8",
                   "it does NOT gate on activeInHierarchy (unlike the three ticks)");
             Check(body.find("shouldComponentTick") == std::string::npos, "AW9",
@@ -8821,8 +8920,10 @@ namespace
         {
             const std::size_t at = world_source.find("void WorldManager::BroadcastAppEvent");
             Check(at != std::string::npos, "AW12", "WorldManager::BroadcastAppEvent is implemented");
-            const std::string body = world_source.substr(
-                at, world_source.find("\n}\n", at) - at);
+            // 同 AW7b：AW13 是反向门，切片退化时它变永假。
+            Check(BodyIsBounded(world_source, at), "AW12b",
+                  "the WorldManager body slice is bounded (the scan is not degenerate)");
+            const std::string body = SliceFunctionBody(world_source, at);
             Check(body.find("m_IsWorldLoaded") == std::string::npos, "AW13",
                   "it does NOT early-return on m_IsWorldLoaded (quitting mid-load must still fire)");
         }

@@ -177,7 +177,44 @@ P8 / P9 是互补的一对：Player 态**不发**，编辑态**发**。只测"�
 | 行为（C++ 组件） | `UnityParitySmokeTest` **CH0–CH46** | 父级收 / 子级**不**收、新旧两个父级各一次、脱离只有旧父级收、**重排不发**、停用与失活照样收、只发给直接父级（不冒泡到祖父）、搬子树时被搬的那个自己不收、`DetachChildren` 逐条发 |
 | 行为（脚本） | `ScriptComponentSmokeTest` P0–P9、**P10–P18** | TS 侧真的收得到；两个方向都通；bool 是真 bool；`OnValidate` 的编辑器门；**父级才收**、`childCount` 在回调里已是新值、搬自己不给自己发 |
 | 接线 | `UnityParitySmokeTest` AW0–AW39 | 枚举 + 四个虚函数、GameObject/Level/WorldManager 三跳、**函数体里没有 Tick 判据**、WorldManager 不早退、三个触发点、quit 派发早于 RequestClose、Bool 版 invoke、`.d.ts` 五个声明、JS 原型五个兜底 |
-| 接线 | `UnityParitySmokeTest` **CW0–CW20** | 五个 kind 都在 switch 里、两个回调**都**声明（不是"至少一个"）、SetParent 里**两处**派发且都判空、派发在 `SetParent` 函数**体内**（不是没人调的 helper）、`SetSiblingIndex` 里**不许**出现它、`.d.ts` 与 JS 原型兜底都在 |
+| 接线 | `UnityParitySmokeTest` **CW0–CW22** | 五个 kind 都在 switch 里、两个回调**都**声明（不是"至少一个"）、SetParent 里**两处**派发且都判空、派发在 `SetParent` 函数**体内**（不是没人调的 helper）、`SetSiblingIndex` 里**不许**出现它、`.d.ts` 与 JS 原型兜底都在 |
+
+## 8.1 接线门自己的一个坑：切函数体不能写死行尾
+
+上面那批"**函数体里**应该有 / 不该有什么"的门，都要先切出函数体：
+
+```cpp
+const std::string body = SliceFunctionBody(source, source.find("bool Transform::SetParent"));
+```
+
+而切函数体靠的是"找到下一个同样缩进的 `}`"。这里有两个独立的坑，都实测踩到过：
+
+1. **行尾。** `ReadFile` 是 `std::ios::binary` 打开的，CRLF 原样进来；仓库里两种
+   行尾同时存在（`Component.h` 是 CRLF、`GameObject.cpp` 是 LF），`git checkout`
+   还会按 `core.autocrlf` 把文件翻一遍。CRLF 下 `"\n}\n"` 一律落空，`substr`
+   退化成"从这里到文件末尾"，于是：
+   * 正向门（"这段里应该有 X"）→ 整个文件里当然有 X → **永真**；
+   * 反向门（"这段里不该有 X"）→ 永远找得到 X → **永假**。
+
+   实测：`Transform.cpp` 被翻成 CRLF 之后 CW11 变永真、CW15 变永假，1985 条里
+   只有那一条在动。修法是在 `ReadFile` 里统一把 `\r` 折掉 —— **读到的内容不该
+   取决于 git 怎么捡出这个文件**。
+
+2. **缩进。** Runtime 那批文件函数顶格（`void Transform::SetParent` 在第 0 列），
+   而 `UnityParitySmokeTest.cpp` 自己的函数在匿名 namespace 里、缩进 4 格。写死
+   `"\n}\n"` 的话后者切出来的是"半个文件"。所以 `FunctionEndMarker` 按**签名行
+   的前导空白**推导，两种风格都对。
+
+两层门：
+
+* `BodyIsBounded(...)` —— 证明"切出来的真的是一个函数"（CW5b / CW10b / CW14b /
+  AW7b / AW12b / CW21c）；
+* CW22 —— 数 `ReadFile` **函数体内**有没有 `NormalizeNewlines`。范围必须限定在
+  函数体内：数整个文件的话，会被 CW22 自己的字面量命中（自引用），变异体把真正
+  的调用删掉之后计数仍是 1，门恒真。
+
+`TCM18`（把归一化那一步拿掉）是这条链的变异体。删掉归一化之后 CW10b / CW14b /
+CW15 / CW22 一起红。
 
 ## 9. 还没做
 
