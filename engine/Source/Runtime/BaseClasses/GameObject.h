@@ -80,6 +80,16 @@ public:
     /// Component::LateTick）。判据与 Tick / FixedTick 逐一相同。
     virtual void LateTick(float delta_time);
 
+    /// 广播一个 Unity 的"应用层"消息给本对象的**全部**组件。
+    ///
+    /// ⚠️ 与上面三趟 Tick 的判据**故意相反**：不判 IsActiveInHierarchy、
+    /// 不判 isEnabled、不看 g_editorTickComponentTypes 白名单。理由见
+    /// Component 里那四个虚函数的注释 —— 短话说是"应用要退出了"跟某个对象
+    /// 激不激活无关。
+    ///
+    /// `arg` 对 kQuit / kParentChanged 无意义（传什么都会被忽略）。
+    virtual void BroadcastAppEvent(AppEventKind kind, bool arg);
+
     bool load(const GameObject& object_instance_res);
     void save(GameObject& out_object_instance_res);
 

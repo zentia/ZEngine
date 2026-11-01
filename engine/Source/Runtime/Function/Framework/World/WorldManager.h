@@ -2,6 +2,9 @@
 
 #include "Runtime/Core/Base/EngineSystem.h"
 #include "Runtime/Core/Math/Vector3.h"
+// `AppEventKind`（Unity 应用层消息的标签）定义在 Component.h 里：它是"发给组件
+// 的消息"，与组件同生共死，WorldManager 只是转发方。
+#include "Runtime/Function/Framework/Component/Component.h"
 
 #include <EASTL/unordered_map.h>
 #include "Runtime/Function/Framework/World/WorldPartition.h"
@@ -49,6 +52,12 @@ public:
     /// 加载、不做 GPU-Spine 存活标记。世界分区的流式加载按帧走（在 Tick 里），
     /// LateTick 单独再判一次 IsEnabled 反而会漏掉本帧刚加载进来的格子。
     void LateTick(float delta_time);
+
+    /// 把一个 Unity 的"应用层"消息发给所有已加载关卡里的所有对象。
+    ///
+    /// ⚠️ 与 LateTick 相反，**不判** m_IsWorldLoaded：世界还没加载完就退出
+    /// 是 `OnApplicationQuit` 最常见的一次，判了就收不到。
+    void BroadcastAppEvent(AppEventKind kind, bool arg);
 
     Level* getCurrentActiveLevel() const { return m_CurrentActiveLevel; }
 

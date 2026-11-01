@@ -151,6 +151,14 @@ public:
     bool InvokeInstanceMethod(pesapi_value_ref instance, const char* method_name);
     bool InvokeInstanceMethodNumber(pesapi_value_ref instance, const char* method_name, double numeric_arg);
 
+    /// 带一个 **bool** 参数的版本（`OnApplicationFocus(bool)` /
+    /// `OnApplicationPause(bool)`）。
+    ///
+    /// 故意不复用 Number 版把 bool 塞成 1.0 / 0.0：那样 `if (hasFocus)` 仍然
+    /// 对，但 `hasFocus === true` 是假 —— 只在脚本用严格比较时才炸，是最难
+    /// 查的那一类。
+    bool InvokeInstanceMethodBool(pesapi_value_ref instance, const char* method_name, bool bool_arg);
+
     /// 带一个 `GameObject*` 参数的版本：碰撞 / 触发回调要把"撞到谁"交给脚本
     /// （`OnCollisionEnter(other)`）。参数由 `ZScript::Converter<GameObject*>`
     /// 转成脚本侧的 GameObject —— 复用绑定表的同一条路径，脚本拿到的对象与

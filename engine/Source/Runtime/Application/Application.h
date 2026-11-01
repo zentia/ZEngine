@@ -207,6 +207,33 @@ public:
     ZFUNCTION()
     static void SetRunInBackground(bool run);
 
+    // ---- Unity 的应用层消息（OnApplicationFocus / Pause）----------------
+    //
+    // 做成公开入口而不是"WindowSystem 回调内部直接派发"，是因为这条信号有
+    // **三个**来源：WindowSystem 的焦点回调（真机上唯一来源）、编辑器自己的
+    // 窗口循环、以及测试。只留内部回调的话，整条链只能靠真的去点一下窗口来
+    // 验证 —— 而 CI 里没有窗口可点，于是这条链永远没人跑过。
+
+    /// 报告一次窗口焦点变化，派发 `OnApplicationFocus` + `OnApplicationPause`。
+    ZFUNCTION()
+    static void NotifyApplicationFocus(bool has_focus);
+
+    /// 从"有没有焦点"和"失焦时是否继续跑"推导"应用是否暂停"。
+    ///
+    /// 单独抽成一个纯函数，是因为这是整条链上唯一**有判断**的一步（其余都是
+    /// 转发），而它偏偏是唯一没法通过派发结果观测到的一步：单元测试里没有已
+    /// 加载的世界，`BroadcastAppEvent` 走空。藏在 `NotifyApplicationFocus` 里
+    /// 的话它就没有断言能碰到。
+    ///
+    /// ⚠️ 没有"上一次的值"这回事，因此**不去重**：每次焦点变化都会派发一条
+    /// `OnApplicationPause(推导值)`。用 m_LastAppPaused 去重能少发一次，但那
+    /// 是一块谁也看不见的状态 —— 而"失焦但 runInBackground=true"时它会把
+    /// 一条真值（false）吞掉，变成"状态机说没变，实际上值是对的但没人知道"。
+    static bool DeriveApplicationPaused(bool has_focus, bool run_in_background)
+    {
+        return !has_focus && !run_in_background;
+    }
+
 protected:
     void LogicalTick(float deltaTime);
     bool RendererTick(float delta_time);

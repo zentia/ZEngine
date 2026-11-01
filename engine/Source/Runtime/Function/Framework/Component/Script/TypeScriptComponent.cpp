@@ -9,6 +9,11 @@
 #include "Runtime/Scripting/ScriptRegistry.h"
 #include "Runtime/Scripting/ScriptingManager.h"  // transitively brings pesapi.h via ScriptEnv.h
 
+// `g_isEditor` 由编辑器侧写入（与 g_isPlaying 同一机制：Runtime 不能依赖
+// Editor 模块）。声明在 Application.h，但那个头会带进 ZCLASS Application 的
+// 整个反射声明 —— 这里只要这一个 bool。
+extern bool g_isEditor;
+
 // =============================================================================
 // RTTI / serialisation boilerplate.
 //
@@ -135,6 +140,59 @@ void TypeScriptComponent::RefreshEnabledState()
     }
 
     InvokeMethod(now ? "OnEnable" : "OnDisable");
+}
+
+// -----------------------------------------------------------------------------
+// Unity 的应用层消息
+// -----------------------------------------------------------------------------
+//
+// 这一组与上面 OnUpdate / OnEnable 那一组有一个**方向**上的差别：
+//
+//   * OnUpdate / OnLateUpdate / OnEnable 由**宿主对象的状态**驱动 —— 对象被
+//     停用就收不到，这是"Tick 判据"那一套；
+//   * 这里四个由**整个应用**驱动（焦点、暂停、退出、改父级），派发侧刻意不判
+//     enabled / activeInHierarchy（见 Component 里那四个虚函数的注释）。
+//
+// 所以在这一层**也不能**补判：`GameObject::BroadcastAppEvent` 已经决定要发给
+// 所有组件了，脚本侧再加一道 `isEnabled()` 就等于把"被停用的对象也要能收到
+// 退出通知"这条语义又删掉一半 —— 而且只删掉脚本那一半，C++ 组件仍然收得到。
+
+void TypeScriptComponent::OnApplicationFocus(bool has_focus)
+{
+    InvokeMethodBool("OnApplicationFocus", has_focus);
+}
+
+void TypeScriptComponent::OnApplicationPause(bool paused)
+{
+    InvokeMethodBool("OnApplicationPause", paused);
+}
+
+void TypeScriptComponent::OnApplicationQuit()
+{
+    // 这里**不**解绑也不置空：Unity 的 OnApplicationQuit 之后对象照常存在
+    // （只是进程马上要没了）。在这里 TearDown 的话，如果"退出"又被取消
+    // （编辑器里停 Play 就是这种），对象会变成一个没有脚本实例的空壳。
+    InvokeMethod("OnApplicationQuit");
+}
+
+void TypeScriptComponent::OnTransformParentChanged()
+{
+    InvokeMethod("OnTransformParentChanged");
+}
+
+void TypeScriptComponent::OnSerializedFieldsUpdated()
+{
+    // Unity 的 `OnValidate()`：编辑器里 Inspector 改了序列化字段之后调用
+    // （Unity 在加载组件时也会调一次，这里同）。
+    //
+    // **只在编辑器下调**：Player 里 OnSerializedFieldsUpdated 唯一的调用方是
+    // 反序列化 / 实例化路径，那里脚本实例还没绑上（InvokeMethodBool 自己就
+    // 返回 false），所以不额外判 g_isEditor 也不会多发；显式判一次是为了让
+    // 这条语义留在代码里而不是留在"恰好没调用方"上。
+    if (g_isEditor)
+    {
+        InvokeMethod("OnValidate");
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -312,6 +370,23 @@ bool TypeScriptComponent::InvokeMethod(const char* method_name)
 
     auto ref = static_cast<pesapi_value_ref>(m_JsInstance);
     return sm->InvokeInstanceMethod(ref, method_name);
+}
+
+bool TypeScriptComponent::InvokeMethodBool(const char* method_name, bool bool_arg)
+{
+    if (m_JsInstance == nullptr || method_name == nullptr || method_name[0] == '\0')
+    {
+        return false;
+    }
+
+    auto* sm = GET_SYSTEM(ScriptingManager);
+    if (sm == nullptr)
+    {
+        return false;
+    }
+
+    auto ref = static_cast<pesapi_value_ref>(m_JsInstance);
+    return sm->InvokeInstanceMethodBool(ref, method_name, bool_arg);
 }
 
 bool TypeScriptComponent::InvokeMethodWithOther(const char* method_name, GameObject* other)

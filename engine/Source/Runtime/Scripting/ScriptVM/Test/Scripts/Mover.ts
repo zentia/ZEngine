@@ -154,6 +154,43 @@ class Mover extends Behaviour {
         this.nestedInner = this.nestedInner + 4;   // 7，跑完
     }
 
+    // ---- Unity 的应用层消息 ---------------------------------------------
+    //
+    // ⚠️ 两处 `=== true` 是**故意**的：它们能抓住"把 bool 当 1.0 / 0.0 传进
+    // 来"的实现 —— 那种实现下 `if (hasFocus)` 是对的，但 `hasFocus === true`
+    // 是假的。用隐式真值判断写这段，这个 bug 就永远测不出来。
+    focusLog: string = "";
+    pauseLog: string = "";
+    quitCount: number = 0;
+    parentChanged: number = 0;
+    validateCount: number = 0;
+
+    OnApplicationFocus(hasFocus: boolean): void {
+        this.focusLog = this.focusLog + (hasFocus === true ? "T" : "F");
+    }
+
+    OnApplicationPause(pauseStatus: boolean): void {
+        this.pauseLog = this.pauseLog + (pauseStatus === true ? "T" : "F");
+    }
+
+    OnApplicationQuit(): void {
+        this.quitCount = this.quitCount + 1;
+    }
+
+    // 回调里读一次 `transform.parent`：派发点必须在层级**更新之后**。早一步
+    // 派发的话这里读到的还是旧父级，而回调本身照样被调用一次 —— 只看调用
+    // 次数完全分不出来。
+    parentWasNullAtCallback: boolean = true;
+
+    OnTransformParentChanged(): void {
+        this.parentChanged = this.parentChanged + 1;
+        this.parentWasNullAtCallback = this.transform.parent === null;
+    }
+
+    OnValidate(): void {
+        this.validateCount = this.validateCount + 1;
+    }
+
     /// 从 TypeScript 里画 gizmo。C++ 侧的 GZ 组断言的是"画出了什么"，
     /// ScriptVMSmokeTest 的 L 组断言的是"脚本看不看得见 Gizmos" —— 只有这里
     /// 证明 `Gizmos.DrawLine(...)` 在 **.ts 里也能通过类型检查**（d.ts 里那

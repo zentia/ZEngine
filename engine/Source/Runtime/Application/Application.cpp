@@ -352,8 +352,38 @@ namespace
     }
 }  // namespace
 
+void Application::NotifyApplicationFocus(bool has_focus)
+{
+    auto* world = GET_SYSTEM(WorldManager);
+    if (world == nullptr)
+    {
+        return;
+    }
+
+    world->BroadcastAppEvent(AppEventKind::kFocus, has_focus);
+
+    // Unity 桌面端的语义：**Pause 不是 Focus 的别名**。
+    //   - Focus 是"键盘给谁了" —— 失焦就一定发 false；
+    //   - Pause 是"还跑不跑" —— 只有 `runInBackground == false`（Application::Run
+    //     那条分支会真的停掉世界）时才算暂停。
+    // 两者在移动端会同时发生，在桌面上会分叉：runInBackground=true 时窗口失焦，
+    // 世界照跑，于是只有 OnApplicationFocus(false)，没有 OnApplicationPause(true)。
+    world->BroadcastAppEvent(AppEventKind::kPause,
+                             DeriveApplicationPaused(has_focus, GetRunInBackground()));
+}
+
 void Application::Quit()
 {
+    // Unity 的 `OnApplicationQuit()`：**先**发给所有对象，**再**真的退出。
+    // 这是唯一的退出通知，没有第二次 —— 要存档 / 断连只能写在这里。
+    //
+    // 放在 RequestQuit / RequestClose 之前：窗口系统一旦开始关闭，WorldManager
+    // 可能已经随着系统反初始化被摘掉了，那时候再派发就是静默丢失。
+    if (auto* world = GET_SYSTEM(WorldManager))
+    {
+        world->BroadcastAppEvent(AppEventKind::kQuit, false);
+    }
+
     if (Application* self = App())
     {
         self->RequestQuit();

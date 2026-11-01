@@ -135,6 +135,28 @@ void WorldManager::LateTick(float delta_time)
     }
 }
 
+void WorldManager::BroadcastAppEvent(AppEventKind kind, bool arg)
+{
+    // ⚠️ 与 LateTick 相反，这里**不判**"世界是否已加载"。
+    //
+    // `OnApplicationQuit` 最常见的一次就是"世界还没加载完就退出了"，判了就
+    // 什么也收不到；而关卡表为空时下面的循环本来就是空转，不需要额外的门。
+    if (m_WorldPartition.IsEnabled())
+    {
+        for (auto& level_pair : m_LoadedLevels)
+        {
+            if (level_pair.second != nullptr)
+            {
+                level_pair.second->BroadcastAppEvent(kind, arg);
+            }
+        }
+    }
+    else if (m_CurrentActiveLevel != nullptr)
+    {
+        m_CurrentActiveLevel->BroadcastAppEvent(kind, arg);
+    }
+}
+
 eastl::vector<eastl::string> WorldManager::GetLoadedLevelUrls() const
 {
     eastl::vector<eastl::string> urls;

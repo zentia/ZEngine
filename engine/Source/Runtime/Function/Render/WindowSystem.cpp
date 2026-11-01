@@ -126,6 +126,19 @@ bool WindowSystem::Initialize()
         mainWnd->OnWindowRefresh.push_back([this]() { OnWindowRefresh(); });
     }
 
+    // Unity 的 `OnApplicationFocus` / `OnApplicationPause` 的真机上唯一来源。
+    //
+    // 注册在这里而不是 Application::Initialize：焦点是**窗口系统**的信号，
+    // 而 Application 是 `SystemInitPhase::Core`，比 WindowSystem 早 —— 它在
+    // Initialize 里 `GET_SYSTEM(WindowSystem)` 拿到的还是 nullptr，注册就静默
+    // 丢了（窗口系统后来才建起来，没有任何一方会再想起这件事）。
+    //
+    // 转发到 `Application::NotifyApplicationFocus` 而不是在这里直接广播：那个
+    // 入口还有编辑器和测试两个调用方（见它头上的注释）。
+    RegisterOnWindowFocusFunc([](int focused) {
+        Application::NotifyApplicationFocus(focused != 0);
+    });
+
     m_Application->PollEvents();
     return true;
 }

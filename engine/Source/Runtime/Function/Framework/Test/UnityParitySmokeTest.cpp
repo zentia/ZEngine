@@ -7779,6 +7779,332 @@ namespace
               "and an OnDisable default (a missing one is a per-object TypeError)");
     }
 
+    // ---------------------------------------------------------------- AM ---
+    // Unity 的应用层消息（OnApplicationFocus / Pause / Quit、
+    // OnTransformParentChanged、OnValidate）。
+
+    /// 记录收到了哪些应用层消息。
+    ///
+    /// ⚠️ 与 LateTickProbe 同样**不**写 REGISTER_CLASS：本 exe 不编 .gen.cpp，
+    /// 未注册类型的 `GetTypeName()` 会拿 `Type::DefaultTypeIndex` 越界索引
+    /// RuntimeTypeArray。不带它时走基类 Component 的那份，名字是 "Component"。
+    class AppEventProbe : public Component
+    {
+    public:
+        AppEventProbe(std::string* shared_log, char tag) : m_Log(shared_log), m_Tag(tag) {}
+
+        int focus_true = 0;
+        int focus_false = 0;
+        int pause_true = 0;
+        int pause_false = 0;
+        int quits = 0;
+        int parent_changes = 0;
+        int validates = 0;
+
+        /// Unity 的 `Behaviour.enabled`：基类没有 setter，这里自己记一个。
+        void SetProbeEnabled(bool on) { m_ProbeEnabled = on; }
+        bool isEnabled() const override { return m_ProbeEnabled; }
+
+        void Reset()
+        {
+            focus_true = focus_false = 0;
+            pause_true = pause_false = 0;
+            quits = parent_changes = validates = 0;
+        }
+
+        void OnApplicationFocus(bool has_focus) override
+        {
+            if (has_focus) { ++focus_true; } else { ++focus_false; }
+            Append(has_focus ? 'F' : 'f');
+        }
+        void OnApplicationPause(bool paused) override
+        {
+            if (paused) { ++pause_true; } else { ++pause_false; }
+            Append(paused ? 'P' : 'p');
+        }
+        void OnApplicationQuit() override { ++quits; Append('q'); }
+        void OnTransformParentChanged() override { ++parent_changes; Append('r'); }
+        void OnSerializedFieldsUpdated() override { ++validates; Append('v'); }
+
+    private:
+        void Append(char what)
+        {
+            if (m_Log != nullptr)
+            {
+                m_Log->push_back(m_Tag);
+                m_Log->push_back(what);
+            }
+        }
+
+        std::string* m_Log;
+        char m_Tag;
+        bool m_ProbeEnabled {true};
+    };
+
+    void TestApplicationMessages()
+    {
+        ObjectManager* om = GET_SYSTEM(ObjectManager);
+        Check(om != nullptr, "AM0", "ObjectManager is reachable");
+        if (om == nullptr) { return; }
+
+        Level level;
+        level.setLevelResUrl("Assets/Scenes/AppMessages.level");
+        level.LoadObjectGraph({}, false);
+        Check(level.IsLoaded(), "AM1", "the synthetic level is loaded");
+
+        GameObject* go = new GameObject(ObjectIDAllocator::Alloc());
+        om->AllocateAndAssignInstanceID(go);
+        Transform* transform = new Transform();
+        om->AllocateAndAssignInstanceID(transform);
+        go->addComponent(transform);
+        transform->PostLoadResource(go);
+
+        std::string log;
+        AppEventProbe* a = new AppEventProbe(&log, 'a');
+        AppEventProbe* b = new AppEventProbe(&log, 'b');
+        a->InitializeRuntimeTypeInfo();
+        b->InitializeRuntimeTypeInfo();
+        om->AllocateAndAssignInstanceID(a);
+        om->AllocateAndAssignInstanceID(b);
+        go->addComponent(a);
+        go->addComponent(b);
+        Check(level.RegisterRuntimeGObject(go), "AM2", "the object is in the level's runtime table");
+
+        // --- 四种消息各走一遍 --------------------------------------------
+        level.BroadcastAppEvent(AppEventKind::kFocus, true);
+        Check(a->focus_true == 1 && a->focus_false == 0, "AM3", "OnApplicationFocus(true) reaches the component");
+        log.clear();
+        level.BroadcastAppEvent(AppEventKind::kFocus, false);
+        Check(a->focus_false == 1, "AM4", "and so does OnApplicationFocus(false)");
+        // 顺序探针必须在这里读：下面的 pause / quit 还会往同一个 log 里追加。
+        // 留到 AM7 之后再比，字符串里会混进它们，断言就变成在验别的东西。
+        Check(log == "afbf", "AM5", "the focus(false) broadcast reached both components, in order");
+        level.BroadcastAppEvent(AppEventKind::kPause, true);
+        Check(a->pause_true == 1, "AM6", "OnApplicationPause(true) reaches it");
+        level.BroadcastAppEvent(AppEventKind::kQuit, false);
+        Check(a->quits == 1, "AM7", "OnApplicationQuit reaches it");
+        // 同一趟广播必须**每个组件**都收到：只发给第一个的实现（break 写成
+        // continue 之外的东西）在只有一个组件的测试里完全看不出来。
+        Check(b->focus_true == 1 && b->pause_true == 1 && b->quits == 1, "AM8",
+              "every component on the object receives it, not just the first");
+
+        // --- 与三趟 Tick 相反：**不判** enabled / activeInHierarchy --------
+        //
+        // 这是这一组最重要的断言。"应用要退出了"跟某个对象激不激活无关；
+        // 按激活态过滤掉它，得到的是"被停用的对象存不上档"这种没法复现的 bug。
+        a->Reset();
+        b->Reset();
+        a->SetProbeEnabled(false);
+        level.BroadcastAppEvent(AppEventKind::kQuit, false);
+        Check(a->quits == 1, "AM9", "a disabled component STILL gets OnApplicationQuit");
+
+        a->Reset();
+        b->Reset();
+        go->SetActive(false);
+        Check(!go->IsActiveInHierarchy(), "AM10", "SetActive(false) really deactivates it");
+        level.BroadcastAppEvent(AppEventKind::kQuit, false);
+        Check(a->quits == 1, "AM11", "and so does an inactive object (the whole point)");
+        go->SetActive(true);
+        a->SetProbeEnabled(true);
+
+        // --- OnTransformParentChanged：只发给宿主自己，不发给子树 ----------
+        GameObject* child = new GameObject(ObjectIDAllocator::Alloc());
+        om->AllocateAndAssignInstanceID(child);
+        Transform* child_transform = new Transform();
+        om->AllocateAndAssignInstanceID(child_transform);
+        child->addComponent(child_transform);
+        child_transform->PostLoadResource(child);
+
+        GameObject* other = new GameObject(ObjectIDAllocator::Alloc());
+        om->AllocateAndAssignInstanceID(other);
+        Transform* other_transform = new Transform();
+        om->AllocateAndAssignInstanceID(other_transform);
+        other->addComponent(other_transform);
+        other_transform->PostLoadResource(other);
+
+        AppEventProbe* c = new AppEventProbe(&log, 'c');
+        c->InitializeRuntimeTypeInfo();
+        om->AllocateAndAssignInstanceID(c);
+        child->addComponent(c);
+        Check(level.RegisterRuntimeGObject(child), "AM12", "the child is registered");
+        Check(level.RegisterRuntimeGObject(other), "AM13", "and the would-be parent too");
+
+        c->Reset();
+        Check(child_transform->SetParent(other_transform, true), "AM14", "SetParent succeeded");
+        Check(c->parent_changes == 1, "AM15", "the reparented object's components get OnTransformParentChanged");
+        // 同一个父级再设一次不算"变了"：SetParent 提前 return，不该发。
+        c->Reset();
+        Check(child_transform->SetParent(other_transform, true), "AM16", "setting the same parent succeeds");
+        Check(c->parent_changes == 0, "AM17", "and does NOT fire again (early return, no change)");
+        // 互补的一半：真的换回去要再发一次。
+        c->Reset();
+        Check(child_transform->SetParent(nullptr, true), "AM18", "detaching succeeds");
+        Check(c->parent_changes == 1, "AM19", "detaching to the scene root fires again");
+
+        // --- Level 那一层：两张表都要走到 ----------------------------------
+        a->Reset();
+        b->Reset();
+        level.BroadcastAppEvent(AppEventKind::kQuit, false);
+        Check(a->quits == 1, "AM20", "Level::BroadcastAppEvent reaches runtime-registered objects");
+
+        // --- pause 的推导（唯一"有判断"的一步，纯函数）--------------------
+        Check(!Application::DeriveApplicationPaused(true, true), "AM21",
+              "focused + runInBackground: not paused");
+        // 失焦但 runInBackground=true：世界照跑，**只**发 Focus(false)，不暂停。
+        // 把 Pause 当成 Focus 的别名的实现在这里就错了。
+        Check(!Application::DeriveApplicationPaused(false, true), "AM22",
+              "unfocused but runInBackground: NOT paused (Pause is not Focus's alias)");
+        Check(Application::DeriveApplicationPaused(false, false), "AM23",
+              "unfocused + !runInBackground: paused");
+        Check(!Application::DeriveApplicationPaused(true, false), "AM24",
+              "focused again: not paused");
+
+        level.UnregisterRuntimeGObject(go->GetID());
+        level.UnregisterRuntimeGObject(child->GetID());
+        level.UnregisterRuntimeGObject(other->GetID());
+        delete a;
+        delete b;
+        delete c;
+        delete go;
+        delete child;
+        delete other;
+    }
+
+    void TestApplicationMessagesWiring()
+    {
+        const std::string component_header =
+            ReadFile("Source/Runtime/Function/Framework/Component/Component.h");
+        Check(!component_header.empty(), "AW0", "Component.h is readable");
+        Check(CountOccurrences(component_header, "enum class AppEventKind") >= 1,
+              "AW1", "the four app messages are one enum (one walk, not four)");
+        Check(CountOccurrences(component_header, "virtual void OnApplicationFocus(") >= 1,
+              "AW2", "OnApplicationFocus is a virtual hook");
+        Check(CountOccurrences(component_header, "virtual void OnApplicationPause(") >= 1,
+              "AW3", "and OnApplicationPause");
+        Check(CountOccurrences(component_header, "virtual void OnApplicationQuit(") >= 1,
+              "AW4", "and OnApplicationQuit");
+        Check(CountOccurrences(component_header, "virtual void OnTransformParentChanged(") >= 1,
+              "AW5", "and OnTransformParentChanged");
+
+        const std::string go_source = ReadFile("Source/Runtime/BaseClasses/GameObject.cpp");
+        Check(CountOccurrences(go_source, "void GameObject::BroadcastAppEvent") >= 1,
+              "AW6", "GameObject walks its components for app events");
+        // ⚠️ 反向门：`BroadcastAppEvent` 里**不许**出现 Tick 那套判据。加回
+        // IsActiveInHierarchy / shouldComponentTick 就等于把"被停用的对象也
+        // 要收到退出通知"删掉 —— 而 AM9 / AM11 是运行时断言，这里守的是
+        // "函数体里没有那两行"这件事本身（两道门，不是冗余）。
+        const std::size_t at_broadcast = go_source.find("void GameObject::BroadcastAppEvent");
+        const std::size_t at_tick = go_source.find("void GameObject::Tick");
+        Check(at_broadcast != std::string::npos && at_tick != std::string::npos && at_broadcast > at_tick,
+              "AW7", "BroadcastAppEvent is a separate walk (not folded into Tick)");
+        {
+            const std::string body = go_source.substr(
+                at_broadcast, go_source.find("\n}\n", at_broadcast) - at_broadcast);
+            Check(body.find("IsActiveInHierarchy") == std::string::npos, "AW8",
+                  "it does NOT gate on activeInHierarchy (unlike the three ticks)");
+            Check(body.find("shouldComponentTick") == std::string::npos, "AW9",
+                  "nor on the edit-mode whitelist");
+            // 四个 case 都要有：少一个就是"某条消息永远收不到"。
+            Check(CountOccurrences(body, "AppEventKind::k") >= 4, "AW10",
+                  "all four kinds are dispatched");
+        }
+
+        const std::string world_source =
+            ReadFile("Source/Runtime/Function/Framework/World/WorldManager.cpp");
+        Check(CountOccurrences(world_source, "void WorldManager::BroadcastAppEvent") >= 1,
+              "AW11", "WorldManager forwards app events");
+        // ⚠️ 与 LateTick 相反：这里**不许**判 m_IsWorldLoaded。世界还没加载完
+        // 就退出是 OnApplicationQuit 最常见的一次。
+        {
+            const std::size_t at = world_source.find("void WorldManager::BroadcastAppEvent");
+            Check(at != std::string::npos, "AW12", "WorldManager::BroadcastAppEvent is implemented");
+            const std::string body = world_source.substr(
+                at, world_source.find("\n}\n", at) - at);
+            Check(body.find("m_IsWorldLoaded") == std::string::npos, "AW13",
+                  "it does NOT early-return on m_IsWorldLoaded (quitting mid-load must still fire)");
+        }
+
+        const std::string level_source = ReadFile("Source/Runtime/Function/Framework/Level/Level.cpp");
+        Check(CountOccurrences(level_source, "void Level::BroadcastAppEvent") >= 1,
+              "AW14", "Level forwards app events");
+        Check(CountOccurrences(level_source, "m_RuntimeGObjects") >= 1,
+              "AW15", "and the level source knows about the runtime object table");
+
+        // ---- 三个触发点：少任何一个，这条消息在真机上一次都不会发 --------
+        const std::string app_source = ReadFile("Source/Runtime/Application/Application.cpp");
+        Check(!app_source.empty(), "AW16", "Application.cpp is readable");
+        Check(CountOccurrences(app_source, "AppEventKind::kQuit") >= 1,
+              "AW17", "Quit() broadcasts OnApplicationQuit");
+        Check(CountOccurrences(app_source, "AppEventKind::kFocus") >= 1,
+              "AW18", "NotifyApplicationFocus broadcasts OnApplicationFocus");
+        Check(CountOccurrences(app_source, "AppEventKind::kPause") >= 1,
+              "AW19", "and the derived OnApplicationPause");
+        // 顺序门：退出通知必须在 RequestClose **之前**。窗口系统一开始就关，
+        // WorldManager 可能已经随系统反初始化被摘掉，那时候派发就是静默丢失。
+        const std::size_t at_quit_broadcast = app_source.find("AppEventKind::kQuit");
+        const std::size_t at_request_close = app_source.find("window_system->RequestClose()");
+        Check(at_quit_broadcast != std::string::npos && at_request_close != std::string::npos &&
+                  at_quit_broadcast < at_request_close,
+              "AW20", "the quit broadcast happens before the window is told to close");
+
+        const std::string window_source = ReadFile("Source/Runtime/Function/Render/WindowSystem.cpp");
+        Check(!window_source.empty(), "AW21", "WindowSystem.cpp is readable");
+        // 焦点是窗口系统的信号，而 Application 是 Core 阶段（比它早）—— 注册
+        // 只能放在窗口系统这一侧，放在 Application::Initialize 里拿到的是
+        // nullptr，注册就静默丢了。
+        Check(CountOccurrences(window_source, "RegisterOnWindowFocusFunc") >= 1,
+              "AW22", "the window system registers the focus forwarder");
+        Check(CountOccurrences(window_source, "Application::NotifyApplicationFocus") >= 1,
+              "AW23", "and forwards to Application (not straight to the world)");
+
+        const std::string transform_source =
+            ReadFile("Source/Runtime/Function/Framework/Component/Transform/Transform.cpp");
+        Check(!transform_source.empty(), "AW24", "Transform.cpp is readable");
+        Check(CountOccurrences(transform_source, "AppEventKind::kParentChanged") >= 1,
+              "AW25", "SetParent broadcasts OnTransformParentChanged");
+
+        const std::string ts_source =
+            ReadFile("Source/Runtime/Function/Framework/Component/Script/TypeScriptComponent.cpp");
+        Check(CountOccurrences(ts_source, "\"OnApplicationFocus\"") >= 1, "AW26",
+              "the script component forwards OnApplicationFocus");
+        Check(CountOccurrences(ts_source, "\"OnApplicationPause\"") >= 1, "AW27",
+              "and OnApplicationPause");
+        Check(CountOccurrences(ts_source, "\"OnApplicationQuit\"") >= 1, "AW28",
+              "and OnApplicationQuit");
+        Check(CountOccurrences(ts_source, "\"OnTransformParentChanged\"") >= 1, "AW29",
+              "and OnTransformParentChanged");
+        Check(CountOccurrences(ts_source, "\"OnValidate\"") >= 1, "AW30",
+              "and OnValidate (from the editor's serialized-field hook)");
+        // ⚠️ bool 参数必须走 Bool 版：塞成 1.0/0.0 的话 `hasFocus === true` 是假，
+        // 而 `if (hasFocus)` 却是真 —— 只在严格比较时才炸。
+        Check(CountOccurrences(ts_source, "InvokeMethodBool") >= 3, "AW31",
+              "the bool-carrying hooks use the bool overload (definition + 2 call sites)");
+
+        const std::string env_header = ReadFile("Source/Runtime/Scripting/Wrapper/ScriptEnv.h");
+        Check(CountOccurrences(env_header, "InvokeInstanceMethodBool") >= 1, "AW32",
+              "ScriptEnv exposes a bool-arg invoke");
+        const std::string env_source = ReadFile("Source/Runtime/Scripting/Wrapper/ScriptEnv.cpp");
+        Check(CountOccurrences(env_source, "pesapi_create_boolean") >= 1, "AW33",
+              "and really creates a JS boolean (not a 1.0/0.0 number)");
+
+        const std::string binding_source =
+            ReadFile("Source/Runtime/Scripting/Binding/ScriptBinding.cpp");
+        Check(CountOccurrences(binding_source, "OnApplicationFocus(has_focus: boolean): void;") >= 1,
+              "AW34", "the .d.ts declares OnApplicationFocus");
+        Check(CountOccurrences(binding_source, "OnApplicationPause(pause_status: boolean): void;") >= 1,
+              "AW35", "and OnApplicationPause");
+        Check(CountOccurrences(binding_source, "OnTransformParentChanged(): void;") >= 1,
+              "AW36", "and OnTransformParentChanged");
+        // 五个原型默认值一个都不能少：派发是无条件的，缺了兜底就是每个没写
+        // 这些钩子的类每次事件都走一次属性查找失败。
+        Check(CountOccurrences(env_source, "g.Behaviour.prototype.OnApplication") >= 2,
+              "AW37", "the JS prototype has no-op defaults for the focus/pause hooks");
+        Check(CountOccurrences(env_source, "g.Behaviour.prototype.OnApplicationQuit") >= 1,
+              "AW38", "and for OnApplicationQuit");
+        Check(CountOccurrences(env_source, "g.Behaviour.prototype.OnTransformParentChanged") >= 1,
+              "AW39", "and for OnTransformParentChanged");
+    }
+
     // ---------------------------------------------------------------- B ----
     void TestWiringGate()
     {
@@ -7951,6 +8277,8 @@ int main()
     TestLateUpdate();
     TestLateUpdateWiring();
     TestEnabledCallbacksWiring();
+    TestApplicationMessages();
+    TestApplicationMessagesWiring();
     TestWiringGate();
 
     std::printf("\n=== %d checks, %d failures ===\n", g_Checks, g_Failures);

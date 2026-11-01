@@ -108,6 +108,22 @@ public:
     /// 宿主 `activeInHierarchy` 变化（GameObject::SetActive 推下来的）。
     void OnOwnerActiveChanged(bool active) override;
 
+    // ---- Unity 的应用层消息 ---------------------------------------------
+    //
+    // 与上面那些**方向相反**：这些由整个应用驱动，派发侧不判 enabled /
+    // activeInHierarchy（理由见 Component 里那四个虚函数的注释）。所以这里
+    // 也不能补判 —— 补了就等于"被停用的对象收不到退出通知"，而这恰恰是
+    // Unity 明确不做的（它的 OnApplicationPause 文档写的是 "sent to all
+    // GameObjects"）。
+    void OnApplicationFocus(bool has_focus) override;
+    void OnApplicationPause(bool paused) override;
+    void OnApplicationQuit() override;
+    void OnTransformParentChanged() override;
+
+    /// Unity 的 `OnValidate()`：编辑器里序列化字段被改之后。只在 `g_isEditor`
+    /// 下发（Player 里这条路径唯一的调用方是反序列化，那时脚本还没绑上）。
+    void OnSerializedFieldsUpdated() override;
+
     // Authoring hooks --------------------------------------------------
     /// 32-char lowercase hex GUID of the source ScriptAsset. Empty until
     /// the component is bound (e.g. by Inspector drag-drop in P5+).
@@ -333,6 +349,10 @@ public:
     /// false，方法不存在**不算**失败（Unity SendMessage 的
     /// SendMessageOptions.DontRequireReceiver 语义）。
     bool InvokeMethodWithOther(const char* method_name, class GameObject* other);
+
+    /// 带一个 bool 参数的版本（Unity 的 `OnApplicationFocus(bool)` /
+    /// `OnApplicationPause(bool)`）。失败语义同 `InvokeMethod`。
+    bool InvokeMethodBool(const char* method_name, bool bool_arg);
 
     // --- Unity's Invoke family ---------------------------------------------
     //

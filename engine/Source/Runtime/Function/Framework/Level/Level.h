@@ -96,6 +96,13 @@ public:
     ///   * 不推进销毁倒计时（TickDestroyTimers 吃的是帧间隔，一帧一次才对）。
     void LateTick(float delta_time);
 
+    /// 把一个 Unity 的"应用层"消息发给本关卡里**所有**对象（含运行时创建的）。
+    ///
+    /// 不判 m_IsLoaded 之外的任何东西：`OnApplicationQuit` 必须能送到还没
+    /// Tick 过的对象上，否则"刚加载完就退出"的那条路收不到。m_IsLoaded 还是
+    /// 要判的 —— 没加载的关卡里 m_Gobjects 是上一份的残留。
+    void BroadcastAppEvent(AppEventKind kind, bool arg);
+
     const eastl::string& getLevelResUrl() const { return m_LevelResUrl; }
     void setLevelResUrl(const eastl::string& level_res_url) { m_LevelResUrl = level_res_url; }
 

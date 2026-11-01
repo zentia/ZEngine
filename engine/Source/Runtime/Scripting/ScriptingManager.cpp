@@ -215,6 +215,11 @@ bool ScriptingManager::InvokeInstanceMethodNumber(pesapi_value_ref instance, con
     return m_ScriptEnv && m_ScriptEnv->InvokeInstanceMethodNumber(instance, method_name, numeric_arg);
 }
 
+bool ScriptingManager::InvokeInstanceMethodBool(pesapi_value_ref instance, const char* method_name, bool bool_arg)
+{
+    return m_ScriptEnv && m_ScriptEnv->InvokeInstanceMethodBool(instance, method_name, bool_arg);
+}
+
 bool ScriptingManager::InvokeInstanceMethodGameObject(pesapi_value_ref instance, const char* method_name,
                                                       GameObject* other)
 {

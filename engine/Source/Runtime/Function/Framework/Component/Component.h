@@ -14,6 +14,24 @@
 // reachable from the .cpp (same reason GameObject.h forward-declares it).
 class Transform;
 class GameObject;
+
+/// Unity 的四个"应用层"消息，用一趟广播走完（见 Component 里那四个虚函数）。
+///
+/// 做成枚举而不是四个独立方法，是因为它们共享同一条**遍历语义**（不判启用、
+/// 遍历全部组件）；拆成四个方法就等于把这条语义抄四遍，抄漏一遍就是"某一条
+/// 消息莫名其妙收不到"。
+enum class AppEventKind : uint8_t
+{
+    /// `OnApplicationFocus(bool)` —— 窗口焦点变化。
+    kFocus = 0,
+    /// `OnApplicationPause(bool)` —— 世界开始 / 停止推进。
+    kPause,
+    /// `OnApplicationQuit()` —— 即将退出。bool 参数无意义。
+    kQuit,
+    /// `OnTransformParentChanged()` —— 宿主 Transform 换了父级。bool 参数无意义。
+    kParentChanged,
+};
+
 // Component
 ZCLASS()
 class Component : public Object
@@ -116,6 +134,52 @@ public:
     /// an Inspector edit does; override when a field change needs more than that --
     /// e.g. a path that is only resolved in PostLoadResource.
     virtual void PostEditUndo() { OnSerializedFieldsUpdated(); }
+
+    // ---- Unity 的"应用层"消息 ------------------------------------------
+    //
+    // `OnApplicationFocus` / `OnApplicationPause` / `OnApplicationQuit` /
+    // `OnTransformParentChanged`。它们与上面那三个 Tick 有一个**方向性**的
+    // 差别，值得单独说：
+    //
+    //   * Tick / FixedTick / LateTick 是"拉"：引擎每帧问一次，判据是
+    //     `enabled && activeInHierarchy` 再叠编辑器白名单。
+    //   * 这四个是"推"：整个应用范围内发生了一件事，谁注册了谁就收到，
+    //     **不判** enabled / activeInHierarchy / 白名单。
+    //
+    // 不判是有意的，而且和 Unity 一致（Unity 的 `OnApplicationPause` 文档写
+    // 的就是 "sent to all GameObjects"，失活的对象也收）。理由：
+    //   - "应用要退出了"这件事与某个对象当前激不激活无关，被停用的对象同样
+    //     要收尾（存档、断开连接、写日志）。按激活态过滤掉它，得到的是"偶尔
+    //     存不上档"这种没法复现的 bug。
+    //   - 它们一帧最多一次、且不由帧率驱动，不存在"两套节奏错位"的问题，
+    //     所以也不需要 Tick 那套判据来保持一致。
+    //
+    // 派发路径：`GameObject::BroadcastAppEvent` 一趟走完所有组件（按 kind
+    // switch 到下面四个虚函数）。不分四个方法是因为它们共享"遍历全部组件、
+    // 不判启用"这一条语义，分开写就有机会在其中一个里手滑加回判据。
+
+    /// 窗口拿到 / 失去焦点。`has_focus` 是变化后的新值。Unity 的
+    /// `OnApplicationFocus(bool)`。
+    virtual void OnApplicationFocus(bool has_focus) { (void)has_focus; }
+
+    /// 应用被挂起 / 恢复。`paused` 为 true 表示世界停止推进。Unity 的
+    /// `OnApplicationPause(bool)`。
+    ///
+    /// 与 Focus 的分工（桌面端最容易混的一点）：Focus 是"键盘给谁了"，Pause
+    /// 是"还跑不跑"。窗口失焦但 `runInBackground == true` 时 Focus(false)
+    /// 会来、Pause 不会 —— 这正是 Unity 桌面端的行为。
+    virtual void OnApplicationPause(bool paused) { (void)paused; }
+
+    /// 应用即将退出。Unity 的 `OnApplicationQuit()`。
+    ///
+    /// ⚠️ 这是**唯一的**退出通知，没有第二次。要存档 / 断连只能写在这里。
+    virtual void OnApplicationQuit() {}
+
+    /// 本对象 Transform 的父级刚变了。Unity 的 `OnTransformParentChanged()`。
+    ///
+    /// 只发给**宿主对象自己**的组件，不发给子树 —— Unity 也是这样（改父级的是
+    /// 这个对象，子对象的 `transform.parent` 没动）。
+    virtual void OnTransformParentChanged() {}
 
     bool IsDirty() const { return m_IsDirty; }
 

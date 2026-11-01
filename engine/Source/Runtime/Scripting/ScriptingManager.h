@@ -85,6 +85,9 @@ public:
     bool InvokeInstanceMethod(pesapi_value_ref instance, const char* method_name);
     bool InvokeInstanceMethodNumber(pesapi_value_ref instance, const char* method_name, double numeric_arg);
 
+    /// 带一个 bool 参数（`OnApplicationFocus` / `OnApplicationPause`）。
+    bool InvokeInstanceMethodBool(pesapi_value_ref instance, const char* method_name, bool bool_arg);
+
     /// 带一个 GameObject 参数（碰撞 / 触发回调的 `other`）。
     bool InvokeInstanceMethodGameObject(pesapi_value_ref instance, const char* method_name, class GameObject* other);
 

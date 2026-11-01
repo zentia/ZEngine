@@ -1446,5 +1446,19 @@ bool Transform::SetParent(Transform* new_parent, SetParentOptions options)
     }
 
     MarkTransformDirty(true);
+
+    // Unity 的 `OnTransformParentChanged()`。
+    //
+    // 只发给**宿主对象自己**的组件，不发给子树 —— 改父级的是这个对象，子对象
+    // 的 `transform.parent` 没动（Unity 同样如此）。
+    //
+    // 放在末尾而不是开头：消息到达时层级必须已经是新的了。脚本在这个回调里
+    // 读 `transform.parent` / `transform.position` 是常规用法，早一步派发它
+    // 读到的就是旧父级 —— 而"读到的父级偶尔是上一个"没有任何报错。
+    if (GameObject* const owner = GetParentObject())
+    {
+        owner->BroadcastAppEvent(AppEventKind::kParentChanged, false);
+    }
+
     return true;
 }

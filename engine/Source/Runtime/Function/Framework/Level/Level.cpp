@@ -540,6 +540,30 @@ void Level::FixedTick(float fixed_delta_time)
     GetTransformChangeDispatch().DispatchChanges();
 }
 
+void Level::BroadcastAppEvent(AppEventKind kind, bool arg)
+{
+    if (!m_IsLoaded)
+    {
+        return;
+    }
+
+    for (const auto& id_object_pair : m_Gobjects)
+    {
+        if (id_object_pair.second)
+        {
+            id_object_pair.second->BroadcastAppEvent(kind, arg);
+        }
+    }
+
+    for (const auto& id_object_pair : m_RuntimeGObjects)
+    {
+        if (id_object_pair.second != nullptr)
+        {
+            id_object_pair.second->BroadcastAppEvent(kind, arg);
+        }
+    }
+}
+
 void Level::LateTick(float delta_time)
 {
     if (!m_IsLoaded)

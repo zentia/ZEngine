@@ -433,6 +433,13 @@ void ScriptEnv::InstallConsoleAndDebugGlobals()
         // 保证，运行期如果这里没有兜底，用户没写 OnLateUpdate 的类每帧都会走
         // 一次属性查找失败路径。
         "  g.Behaviour.prototype.OnLateUpdate = function(dt) {};"
+        // Unity 的应用层消息。空实现同样是必需的：派发是无条件的，缺了兜底
+        // 就是每个没写这些钩子的类每次事件都走一次属性查找失败。
+        "  g.Behaviour.prototype.OnApplicationFocus = function(hasFocus) {};"
+        "  g.Behaviour.prototype.OnApplicationPause = function(pauseStatus) {};"
+        "  g.Behaviour.prototype.OnApplicationQuit = function() {};"
+        "  g.Behaviour.prototype.OnTransformParentChanged = function() {};"
+        "  g.Behaviour.prototype.OnValidate = function() {};"
         "  g.Behaviour.prototype.OnDestroy = function() {};"
         // Unity 的 `Invoke` 家族：TS 侧写 `this.Invoke(...)`，这里转发到
         // `component`（TypeScriptComponent 上绑定的原生方法）。
@@ -1371,6 +1378,43 @@ bool ScriptEnv::InvokeInstanceMethod(pesapi_value_ref instance, const char* meth
         {
             const char* msg = pesapi_get_exception_as_string(m_Papis, scope, 1);
             LOG_ERROR(ZScripting, "instance.{} threw: {}", method_name, msg ? msg : "<no message>");
+            ok = false;
+        }
+    }
+    pesapi_close_scope(m_Papis, scope);
+    return ok;
+}
+
+// `InvokeInstanceMethodBool` 与 Number 版只差 `pesapi_create_boolean` 一行，但
+// 不能复用：把 bool 当 1.0 / 0.0 传进去，脚本里 `hasFocus === true` 就是假，
+// 而 `if (hasFocus)` 却是真 —— 一个只在严格比较时才出错的坑。Unity 的
+// `OnApplicationFocus(bool)` / `OnApplicationPause(bool)` 就是这两个参数。
+bool ScriptEnv::InvokeInstanceMethodBool(pesapi_value_ref instance, const char* method_name, bool bool_arg)
+{
+    if (!instance || !method_name || !*method_name)
+        return false;
+
+    auto scope = pesapi_open_scope(m_Papis, m_EnvRef);
+    auto env = pesapi_get_env_from_ref(m_Papis, m_EnvRef);
+
+    pesapi_value this_val = pesapi_get_value_from_ref(m_Papis, env, instance);
+    if (!this_val)
+    {
+        pesapi_close_scope(m_Papis, scope);
+        return false;
+    }
+    pesapi_value fn = pesapi_get_property(m_Papis, env, this_val, method_name);
+    bool ok = true;
+    if (fn && pesapi_is_function(m_Papis, env, fn))
+    {
+        pesapi_value arg_val = pesapi_create_boolean(m_Papis, env, bool_arg ? 1 : 0);
+        const pesapi_value args[1] = {arg_val};
+        pesapi_call_function(m_Papis, env, fn, this_val, 1, args);
+        if (pesapi_has_caught(m_Papis, scope))
+        {
+            const char* msg = pesapi_get_exception_as_string(m_Papis, scope, 1);
+            LOG_ERROR(ZScripting, "instance.{}({}) threw: {}", method_name,
+                      bool_arg ? "true" : "false", msg ? msg : "<no message>");
             ok = false;
         }
     }

@@ -98,6 +98,16 @@ namespace
         // Unity 的 LateUpdate。每帧一次，在所有 OnUpdate 之后。C++ 侧拿的
         // 是帧间隔（与 OnUpdate 同一个 deltaTime），不是固定步长。
         "    OnLateUpdate(delta_time: number): void;",
+        // Unity 的应用层消息。与 OnUpdate 那一组**方向相反**：这四个由整个
+        // 应用驱动（焦点 / 暂停 / 退出 / 改父级），派发时不判 enabled 与
+        // 层级激活 —— 被停用的对象同样要收到"要退出了"。
+        "    OnApplicationFocus(has_focus: boolean): void;",
+        "    OnApplicationPause(pause_status: boolean): void;",
+        "    OnApplicationQuit(): void;",
+        "    OnTransformParentChanged(): void;",
+        // Unity 的 `OnValidate`：编辑器里序列化字段被改之后调用（编辑器专用，
+        // Player 里不会来）。
+        "    OnValidate(): void;",
         "    OnDestroy(): void;",
         // Unity 的 Invoke 家族。签名必须与 ScriptEnv 里
         // `g.Behaviour.prototype.*` 的转发一致；实现在 TypeScriptComponent 上

@@ -125,6 +125,36 @@ void GameObject::LateTick(float delta_time)
     }
 }
 
+void GameObject::BroadcastAppEvent(AppEventKind kind, bool arg)
+{
+    // 与三趟 Tick 的差别就是这里**没有**那三行判据（层级激活 / enabled /
+    // 白名单）。删掉它们是这个函数的全部意义 —— 加回来等于让被停用的对象
+    // 收不到"应用要退出了"。
+    for (auto& component : m_Components)
+    {
+        if (component == nullptr)
+        {
+            continue;
+        }
+
+        switch (kind)
+        {
+            case AppEventKind::kFocus:
+                component->OnApplicationFocus(arg);
+                break;
+            case AppEventKind::kPause:
+                component->OnApplicationPause(arg);
+                break;
+            case AppEventKind::kQuit:
+                component->OnApplicationQuit();
+                break;
+            case AppEventKind::kParentChanged:
+                component->OnTransformParentChanged();
+                break;
+        }
+    }
+}
+
 // Both lookups go through TypeManager::ClassNameToType + Type::IsBaseOf rather
 // than `GetTypeName() == name`: the latter reads Object::GetType(), i.e.
 // m_CachedTypeIndex, which is only meaningful after InitializeRuntimeTypeInfo()

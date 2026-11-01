@@ -71,6 +71,10 @@
 #include "Runtime/Scripting/ScriptingManager.h"
 #include "Runtime/Scripting/Wrapper/ScriptEnv.h"
 
+// `g_isEditor` 由编辑器侧写入（与 g_isPlaying 同一机制：Runtime 不能依赖
+// Editor 模块）。P8 / P9 要临时把它翻成 true 才能验 OnValidate 的编辑器语义。
+extern bool g_isEditor;
+
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -825,6 +829,60 @@ int main(int argc, char** argv)
         CheckEq("N8", "外层收尾（nestedSteps=7）", mover_value("nestedSteps"), "7");
         CheckEq("N9", "两个都结束后调度器空了",
                 std::to_string(scheduler->GetRunningCount()), "0");
+
+        // ---- Unity 的应用层消息 ------------------------------------------
+        //
+        // UnityParitySmokeTest 的 AM 组证明的是"C++ 组件收得到"，这一段证明的是
+        // "**脚本**收得到" —— 中间隔着 TypeScriptComponent 的五个转发和一个
+        // 带 bool 参数的 InvokeInstanceMethod，那一层少任何一个都是静默的。
+        scheduler->StopAll();
+        CheckEq("P0", "初始没有任何焦点记录", mover_value("focusLog"), "");
+        go2->BroadcastAppEvent(AppEventKind::kFocus, true);
+        CheckEq("P1", "OnApplicationFocus(true) 到了脚本", mover_value("focusLog"), "T");
+        go2->BroadcastAppEvent(AppEventKind::kFocus, false);
+        // 两个方向都测：只转发 true 的实现（比如把参数写死）在这里就露了。
+        CheckEq("P2", "OnApplicationFocus(false) 也到了（两个方向都要通）",
+                mover_value("focusLog"), "TF");
+        go2->BroadcastAppEvent(AppEventKind::kPause, true);
+        CheckEq("P3", "OnApplicationPause(true) 到了脚本", mover_value("pauseLog"), "T");
+        go2->BroadcastAppEvent(AppEventKind::kQuit, false);
+        CheckEq("P4", "OnApplicationQuit 到了脚本", mover_value("quitCount"), "1");
+
+        // --- 互补的一半：不判 enabled / activeInHierarchy ------------------
+        // "应用要退出了"跟某个对象激不激活无关。这里补上激活判据的实现，
+        // 会让被停用的对象存不上档 —— 而且只在"恰好退出时被停用"才复现。
+        comp2->SetEnabled(false);
+        go2->SetActive(false);
+        CheckTrue("P5", "SetActive(false) 真的失活了（否则 P6 是空的）",
+                  !go2->IsActiveInHierarchy());
+        go2->BroadcastAppEvent(AppEventKind::kQuit, false);
+        CheckEq("P6", "停用 + 失活的组件照样收到 OnApplicationQuit",
+                mover_value("quitCount"), "2");
+        go2->SetActive(true);
+        comp2->SetEnabled(true);
+
+        // --- OnTransformParentChanged：真的换父级 --------------------------
+        go2->GetTransform()->SetParent(go->GetTransform(), true);
+        CheckEq("P7", "改父级之后脚本收到 OnTransformParentChanged",
+                mover_value("parentChanged"), "1");
+        // 派发点必须在层级更新**之后**：回调里读 `transform.parent` 必须是新的。
+        // 早一步派发的话回调照样被调一次（P7 绿），但读到的还是旧父级。
+        CheckEq("P7b", "回调里读到的父级已经是新的（不是旧的 null）",
+                mover_value("parentWasNullAtCallback"), "false");
+
+        // --- OnValidate：编辑器那条路（OnSerializedFieldsUpdated）----------
+        //
+        // 互补的一对：Player 里（g_isEditor=false）**不该**发，编辑器里该发。
+        // 只测"发了"的话，"忘了判 g_isEditor"这种实现是绿的。
+        comp2->OnSerializedFieldsUpdated();
+        CheckEq("P8", "Player 态下 OnSerializedFieldsUpdated 不发 OnValidate",
+                mover_value("validateCount"), "0");
+        const bool was_editor = g_isEditor;
+        g_isEditor = true;
+        comp2->OnSerializedFieldsUpdated();
+        CheckEq("P9", "编辑态下它转发成 OnValidate", mover_value("validateCount"), "1");
+        g_isEditor = was_editor;
+
         scheduler->StopAll();
     }
 

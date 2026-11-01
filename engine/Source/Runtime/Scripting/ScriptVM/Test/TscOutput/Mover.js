@@ -74,6 +74,20 @@ class Mover extends Behaviour {
         // 走到 7。只有"内层还在跑的时候外层必须停住"这一条能区分两者。
         this.nestedSteps = 0;
         this.nestedInner = 0;
+        // ---- Unity 的应用层消息 ---------------------------------------------
+        //
+        // ⚠️ 两处 `=== true` 是**故意**的：它们能抓住"把 bool 当 1.0 / 0.0 传进
+        // 来"的实现 —— 那种实现下 `if (hasFocus)` 是对的，但 `hasFocus === true`
+        // 是假的。用隐式真值判断写这段，这个 bug 就永远测不出来。
+        this.focusLog = "";
+        this.pauseLog = "";
+        this.quitCount = 0;
+        this.parentChanged = 0;
+        this.validateCount = 0;
+        // 回调里读一次 `transform.parent`：派发点必须在层级**更新之后**。早一步
+        // 派发的话这里读到的还是旧父级，而回调本身照样被调用一次 —— 只看调用
+        // 次数完全分不出来。
+        this.parentWasNullAtCallback = true;
         // ---- Bounds / Color32 -------------------------------------------------
         //
         // 这两个是 Unity 里仅剩、而引擎里此前**零命中**的值类型。C++ 侧的 BC 组
@@ -149,6 +163,22 @@ class Mover extends Behaviour {
         this.nestedInner = this.nestedInner + 2; // 3
         yield null;
         this.nestedInner = this.nestedInner + 4; // 7，跑完
+    }
+    OnApplicationFocus(hasFocus) {
+        this.focusLog = this.focusLog + (hasFocus === true ? "T" : "F");
+    }
+    OnApplicationPause(pauseStatus) {
+        this.pauseLog = this.pauseLog + (pauseStatus === true ? "T" : "F");
+    }
+    OnApplicationQuit() {
+        this.quitCount = this.quitCount + 1;
+    }
+    OnTransformParentChanged() {
+        this.parentChanged = this.parentChanged + 1;
+        this.parentWasNullAtCallback = this.transform.parent === null;
+    }
+    OnValidate() {
+        this.validateCount = this.validateCount + 1;
     }
     /// 从 TypeScript 里画 gizmo。C++ 侧的 GZ 组断言的是"画出了什么"，
     /// ScriptVMSmokeTest 的 L 组断言的是"脚本看不看得见 Gizmos" —— 只有这里
