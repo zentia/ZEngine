@@ -960,6 +960,54 @@ int main(int argc, char** argv)
                 mover_value("gizmoSelectedDraws"), "2");
         go2->SetActive(true);
 
+        // --- Unity 的七个鼠标消息（S 段）----------------------------------
+        //
+        // 与 R 段同一条判据：只判 activeInHierarchy，**不判 enabled**。停用的脚本
+        // 照样收到 OnMouse*。
+        //
+        // ⚠️ 七条各用一个不同的字母，而不是共用一个计数器：共用计数时
+        // "OnMouseUp 与 OnMouseUpAsButton 转发到同一个 JS 名字"是绿的（计数照样
+        // +2）。逐字母比对是唯一能看见它的判据。
+        go2->BroadcastMouseEvent(MouseEventKind::kEnter);
+        CheckEq("S0", "BroadcastMouseEvent 送到了 JS 的 OnMouseEnter",
+                mover_value("mouseLog"), "E");
+        go2->BroadcastMouseEvent(MouseEventKind::kOver);
+        CheckEq("S1", "OnMouseOver 是独立的一条", mover_value("mouseLog"), "EO");
+        go2->BroadcastMouseEvent(MouseEventKind::kExit);
+        CheckEq("S2", "OnMouseExit 是独立的一条", mover_value("mouseLog"), "EOX");
+
+        go2->BroadcastMouseEvent(MouseEventKind::kDown);
+        CheckEq("S3", "OnMouseDown 是独立的一条", mover_value("mouseLog"), "EOXD");
+        CheckEq("S4", "鼠标回调里 gameObject 注入属性是可读的",
+                mover_value("mouseDownHadGameObject"), "true");
+
+        go2->BroadcastMouseEvent(MouseEventKind::kDrag);
+        CheckEq("S5", "OnMouseDrag 是独立的一条", mover_value("mouseLog"), "EOXDG");
+        go2->BroadcastMouseEvent(MouseEventKind::kUp);
+        CheckEq("S6", "OnMouseUp 是独立的一条", mover_value("mouseLog"), "EOXDGU");
+        // ⚠️ 这条是**名字前缀**那个坑的正对面：OnMouseUp 是 OnMouseUpAsButton 的
+        // 前缀。上面的 S6 已经证明 Up 来了，所以这里必须是 "B" 而不是又一个 "U"。
+        go2->BroadcastMouseEvent(MouseEventKind::kUpAsButton);
+        CheckEq("S7", "OnMouseUpAsButton 没有被 OnMouseUp 顶掉",
+                mover_value("mouseLog"), "EOXDGUB");
+
+        // ⚠️ 核心差异：停用**不**挡鼠标消息（Unity 明文：enabled 只挡
+        // Start/Awake/Update/FixedUpdate/OnGUI）。
+        comp2->SetEnabled(false);
+        go2->BroadcastMouseEvent(MouseEventKind::kEnter);
+        CheckEq("S8", "停用的脚本照样收到 OnMouseEnter",
+                mover_value("mouseLog"), "EOXDGUBE");
+        comp2->SetEnabled(true);
+
+        // 互补的一半：activeInHierarchy **要**挡。只做上面那对的话，"两个判据
+        // 全都不要了"这种实现也是绿的。
+        go2->SetActive(false);
+        CheckTrue("S9", "go2 真的停用了", !go2->IsActiveInHierarchy());
+        go2->BroadcastMouseEvent(MouseEventKind::kEnter);
+        go2->BroadcastMouseEvent(MouseEventKind::kDown);
+        CheckEq("S10", "停用的对象一个都不发", mover_value("mouseLog"), "EOXDGUBE");
+        go2->SetActive(true);
+
         // ---- 值类型的静态门面（Vector2 / Vector4 / Matrix4x4）------------
         //
         // C++ 侧的 VT 组（UnityParitySmokeTest）断言的是**算术**；这一段断言的是

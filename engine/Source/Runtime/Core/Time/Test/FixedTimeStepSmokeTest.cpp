@@ -360,12 +360,30 @@ int main()
         const std::string app_src   = read_file(root + "/Source/Runtime/Application/Application.cpp");
         const std::string level_src = read_file(root + "/Source/Runtime/Function/Framework/Level/Level.cpp");
 
+        // ⚠️ 切函数体，不要写死"前 3000 个字符"。
+        //
+        // 两个坑叠在一起：
+        //   1. `std::string::substr` 的第二个参数是**字节**，而源码里有大量中文
+        //      注释（UTF-8 一个汉字 3 字节），所以"前 3000"在字节意义上远比
+        //      肉眼看到的 3000 列要短；
+        //   2. 窗口是个魔数 —— 谁在 `LogicalTick` 前半段加几行注释，后面的
+        //      断言就静默变成"没找到"，报的是"接线没了"，实际只是窗口短了。
+        //
+        // 这两个文件里的顶层函数都顶格写，所以函数尾就是"顶格的一个 `}`"。
+        auto body_from = [](const std::string& src, size_t at) -> std::string
+        {
+            if (at == std::string::npos) { return {}; }
+            const size_t end = src.find("\n}\n", at);
+            return (end == std::string::npos) ? src.substr(at) : src.substr(at, end - at);
+        };
+
         // H1: LogicalTick 真的按 GetFixedStepCount() 循环分发。
         const size_t logical_tick = app_src.find("void Application::LogicalTick");
         Check(logical_tick != std::string::npos, "H1", "能定位 Application::LogicalTick");
         if (logical_tick != std::string::npos)
         {
-            const std::string body = app_src.substr(logical_tick, 3000);
+            const std::string body = body_from(app_src, logical_tick);
+            Check(body.size() > 100, "H1b", "LogicalTick 的函数体切出来了（不是空转）");
             Check(body.find("GetFixedStepCount()") != std::string::npos, "H2",
                   "LogicalTick 按固定步数循环");
             Check(body.find("FixedTick(") != std::string::npos, "H3",
@@ -383,7 +401,8 @@ int main()
         if (fixed_pos != std::string::npos && tick_pos != std::string::npos)
         {
             const std::string tick_body = level_src.substr(tick_pos, fixed_pos - tick_pos);
-            const std::string fixed_body = level_src.substr(fixed_pos, 2500);
+            const std::string fixed_body = body_from(level_src, fixed_pos);
+            Check(fixed_body.size() > 100, "H5b", "Level::FixedTick 的函数体切出来了");
             Check(fixed_body.find("physics_scene->Tick") != std::string::npos, "H6",
                   "物理在 Level::FixedTick 里推进");
             Check(tick_body.find("physics_scene->Tick") == std::string::npos, "H7",

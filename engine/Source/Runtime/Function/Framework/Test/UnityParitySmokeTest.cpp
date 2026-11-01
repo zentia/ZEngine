@@ -9130,6 +9130,19 @@ namespace
         Check(MouseEventDispatcher::Tick(idle) == nullptr, "ME41",
               "and a whole tick with no camera dispatches nothing");
 
+        // --- ⚠️ Reset 必须**两个**都清 --------------------------------------
+        // 只清 hovered 不清 pressed 的话，切关卡之后第一次 Drag / Up 打到的还是
+        // 上一张关卡里已经销毁的对象 —— 而这个状态在真实路径上要"恰好切关卡时
+        // 正按着鼠标"才出现，所以只能在这里显式钉住。
+        MouseEventDispatcher::DispatchTo(press, a.object);
+        Check(MouseEventDispatcher::GetHovered() == a.object &&
+                  MouseEventDispatcher::GetPressed() == a.object, "ME42",
+              "A is both hovered and pressed");
+        MouseEventDispatcher::Reset();
+        Check(MouseEventDispatcher::GetHovered() == nullptr, "ME43", "Reset clears the hover");
+        Check(MouseEventDispatcher::GetPressed() == nullptr, "ME44",
+              "and the press (forgetting this is a use-after-free on the next Drag)");
+
         MouseEventDispatcher::Reset();
         level.UnregisterRuntimeGObject(a.object->GetID());
         level.UnregisterRuntimeGObject(b.object->GetID());
@@ -9237,6 +9250,17 @@ namespace
                       "and the held state");
                 Check(CountOccurrences(body, "mouse_state.released") >= 1, "MW23",
                       "and the released edge");
+                // 相位：鼠标帧在**输入采样之后、世界 tick 之前**。挪到输入之前
+                // 的话拾取用的是上一帧的输入（首帧恒为空）；挪到世界 tick 之后
+                // 的话脚本的 OnUpdate 要等到下一帧才看得到这一下点击。
+                const std::size_t at_input = body.find("GET_SYSTEM(InputSystem)->Tick();");
+                const std::size_t at_mouse = body.find("MouseEventDispatcher::Tick(");
+                const std::size_t at_world = body.find("GET_SYSTEM(WorldManager)->Tick(");
+                Check(at_input != std::string::npos && at_mouse != std::string::npos &&
+                          at_world != std::string::npos, "MW32",
+                      "the three anchors are all in the sliced body");
+                Check(at_input < at_mouse && at_mouse < at_world, "MW33",
+                      "input -> mouse -> world, in that order");
             }
         }
 

@@ -231,6 +231,34 @@ class Mover extends Behaviour {
         this.gizmoSelectedDraws = this.gizmoSelectedDraws + 1;
     }
 
+    // ---- Unity 的七个鼠标消息 -------------------------------------------
+    //
+    // 与 gizmo 同一条判据：只判 activeInHierarchy，**不判 enabled**。停用的脚本
+    // 照样收到 OnMouse*（Unity 的 enabled 只挡 Start/Awake/Update/FixedUpdate/
+    // OnGUI）。C++ 侧的 ME 组断言的是引擎自己的组件，这一段断言的是**脚本**那条
+    // 链路：`GameObject::BroadcastMouseEvent` → `TypeScriptComponent::OnMouse*` →
+    // JS。
+    //
+    // ⚠️ 七条各用一个**不同的字母**，而不是共用一个计数器：共用计数器的话
+    // "OnMouseUp 与 OnMouseUpAsButton 转发到了同一个 JS 名字"这种 bug 是绿的
+    // （计数照样 +2）。同理 `mouseDownHadGameObject` 是"注入属性在回调里可读"
+    // 的判据 —— 早一步/晚一步派发都会让 gameObject 为空。
+    mouseLog: string = "";
+    mouseDownHadGameObject: boolean = false;
+
+    OnMouseEnter(): void { this.mouseLog = this.mouseLog + "E"; }
+    OnMouseOver(): void { this.mouseLog = this.mouseLog + "O"; }
+    OnMouseExit(): void { this.mouseLog = this.mouseLog + "X"; }
+
+    OnMouseDown(): void {
+        this.mouseLog = this.mouseLog + "D";
+        this.mouseDownHadGameObject = (this.gameObject != null);
+    }
+
+    OnMouseDrag(): void { this.mouseLog = this.mouseLog + "G"; }
+    OnMouseUp(): void { this.mouseLog = this.mouseLog + "U"; }
+    OnMouseUpAsButton(): void { this.mouseLog = this.mouseLog + "B"; }
+
     // ---- 值类型的静态门面：Vector2 / Vector4 / Matrix4x4 ------------------
     //
     // 这段的价值**在 tsc**：`Vector2.zero` 这种写法只有 d.ts 里同时存在
