@@ -447,6 +447,15 @@ void ScriptEnv::InstallConsoleAndDebugGlobals()
         // 缺了兜底就是每个没写这两个钩子的类每帧走一次属性查找失败。
         "  g.Behaviour.prototype.OnDrawGizmos = function() {};"
         "  g.Behaviour.prototype.OnDrawGizmosSelected = function() {};"
+        // Unity 的七条鼠标消息。空实现同样是必需的：派发每帧进行（只要有相机和
+        // 物理），缺了兜底就是每个没写这些钩子的类每帧走一次属性查找失败。
+        "  g.Behaviour.prototype.OnMouseEnter = function() {};"
+        "  g.Behaviour.prototype.OnMouseOver = function() {};"
+        "  g.Behaviour.prototype.OnMouseExit = function() {};"
+        "  g.Behaviour.prototype.OnMouseDown = function() {};"
+        "  g.Behaviour.prototype.OnMouseDrag = function() {};"
+        "  g.Behaviour.prototype.OnMouseUp = function() {};"
+        "  g.Behaviour.prototype.OnMouseUpAsButton = function() {};"
         "  g.Behaviour.prototype.OnValidate = function() {};"
         "  g.Behaviour.prototype.OnDestroy = function() {};"
         // Unity 的 `Invoke` 家族：TS 侧写 `this.Invoke(...)`，这里转发到

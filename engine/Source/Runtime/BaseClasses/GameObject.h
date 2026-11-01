@@ -100,6 +100,13 @@ public:
     /// `selected` 决定是否**额外**发一次 `OnDrawGizmosSelected()`。
     virtual void BroadcastDrawGizmos(bool selected);
 
+    /// 派发一条 Unity 的鼠标消息给本对象的**全部**组件。
+    ///
+    /// 判据与 `BroadcastDrawGizmos` 完全相同（只判 `IsActiveInHierarchy()`），
+    /// 理由见 `Component::OnMouseEnter` 那一组注释 —— 两处必须一致，否则会出现
+    /// "停用的对象收不到 OnMouseExit"这种只有一半生效的状态。
+    virtual void BroadcastMouseEvent(MouseEventKind kind);
+
     bool load(const GameObject& object_instance_res);
     void save(GameObject& out_object_instance_res);
 

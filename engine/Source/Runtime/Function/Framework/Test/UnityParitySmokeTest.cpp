@@ -46,6 +46,7 @@
 #include "Runtime/Function/Framework/Component/Audio/AudioSourceComponent.h"
 #include "Runtime/Function/Command/CommandSystem.h"
 #include "Runtime/Function/Framework/Component/Behaviour.h"
+#include "Runtime/Function/Framework/Component/MouseEventDispatcher.h"
 #include "Runtime/Function/Framework/Level/Level.h"
 #include "Runtime/Function/Framework/Object/ObjectIdAllocator.h"
 #include "Runtime/Function/Framework/World/WorldManager.h"
@@ -8436,6 +8437,17 @@ namespace
         /// "gizmo 不判 enabled"那条断言不是空转的。
         int ticks = 0;
 
+        // Unity 的七条鼠标消息。七个分开记：合成一个"收到了消息"计数会把
+        // "该来的是哪一条"这件事彻底抹掉 —— 而这一族消息的全部复杂度就在
+        // "谁在什么时候来"。
+        int mouse_enter = 0;
+        int mouse_over = 0;
+        int mouse_exit = 0;
+        int mouse_down = 0;
+        int mouse_drag = 0;
+        int mouse_up = 0;
+        int mouse_up_as_button = 0;
+
         /// Unity 的 `Behaviour.enabled`：基类没有 setter，这里自己记一个。
         void SetProbeEnabled(bool on) { m_ProbeEnabled = on; }
         bool isEnabled() const override { return m_ProbeEnabled; }
@@ -8447,6 +8459,8 @@ namespace
             quits = parent_changes = children_changes = validates = 0;
             gizmo_draws = gizmo_selected_draws = 0;
             ticks = 0;
+            mouse_enter = mouse_over = mouse_exit = 0;
+            mouse_down = mouse_drag = mouse_up = mouse_up_as_button = 0;
         }
 
         void OnApplicationFocus(bool has_focus) override
@@ -8470,6 +8484,17 @@ namespace
         // "只发 Selected" 和"两个都发"看起来一样。
         void OnDrawGizmos() override { ++gizmo_draws; Append('g'); }
         void OnDrawGizmosSelected() override { ++gizmo_selected_draws; Append('s'); }
+
+        // Unity 的七条鼠标消息。每个钩子一个字符，于是"谁在什么时候来"在日志串
+        // 里是可读的 —— 共用一个计数器的话，"Down 发了两次"和"Down + Drag 各一次"
+        // 长得一模一样。
+        void OnMouseEnter() override { ++mouse_enter; Append('E'); }
+        void OnMouseOver() override { ++mouse_over; Append('O'); }
+        void OnMouseExit() override { ++mouse_exit; Append('X'); }
+        void OnMouseDown() override { ++mouse_down; Append('D'); }
+        void OnMouseDrag() override { ++mouse_drag; Append('G'); }
+        void OnMouseUp() override { ++mouse_up; Append('U'); }
+        void OnMouseUpAsButton() override { ++mouse_up_as_button; Append('B'); }
         void OnSerializedFieldsUpdated() override { ++validates; Append('v'); }
 
     private:
@@ -8879,6 +8904,373 @@ namespace
             ReadFile("Source/Runtime/Scripting/Binding/ScriptBinding.cpp");
         Check(CountOccurrences(binding_source, "OnTransformChildrenChanged(): void;") >= 1,
               "CW20", "the .d.ts declares OnTransformChildrenChanged");
+    }
+
+    // ---------------------------------------------------------------- ME ---
+    // Unity 的七条鼠标消息（`OnMouseEnter/Over/Exit/Down/Drag/Up/UpAsButton`）。
+    //
+    // 这一组测的是 `MouseEventDispatcher::DispatchTo` —— 派发那一半。
+    // `PickAt`（屏幕坐标 -> 对象）需要相机 + 物理，headless 下两者都没有，所以
+    // 它只有"降级"那一条断言（ME40）；`Tick` = `DispatchTo(state, PickAt(...))`
+    // 这层壳由 MW 的源码级门守。
+    //
+    // ⚠️ 每一帧的派发都依赖**跨帧状态**（悬停的是谁、按下的是谁），所以每个
+    // 子用例开头都要 `MouseEventDispatcher::Reset()` —— 否则上一用例的悬停对象
+    // 会漏进来，表现为"多了一条 Exit"，而且只在整组一起跑的时候出现。
+
+    void TestMouseEvents()
+    {
+        ObjectManager* om = GET_SYSTEM(ObjectManager);
+        Check(om != nullptr, "ME0", "ObjectManager is reachable");
+        if (om == nullptr) { return; }
+
+        Level level;
+        level.setLevelResUrl("Assets/Scenes/MouseEvents.level");
+        level.LoadObjectGraph({}, false);
+        Check(level.IsLoaded(), "ME1", "the synthetic level is loaded");
+
+        std::string log;
+
+        struct Node
+        {
+            GameObject* object {nullptr};
+            Transform* transform {nullptr};
+        };
+        auto make_node = [&](Node& out) -> bool
+        {
+            out.object = new GameObject(ObjectIDAllocator::Alloc());
+            om->AllocateAndAssignInstanceID(out.object);
+            out.transform = new Transform();
+            om->AllocateAndAssignInstanceID(out.transform);
+            out.object->addComponent(out.transform);
+            out.transform->PostLoadResource(out.object);
+            return level.RegisterRuntimeGObject(out.object);
+        };
+        auto add_probe = [&](Node& node, char tag) -> AppEventProbe*
+        {
+            AppEventProbe* probe = new AppEventProbe(&log, tag);
+            probe->InitializeRuntimeTypeInfo();
+            om->AllocateAndAssignInstanceID(probe);
+            node.object->addComponent(probe);
+            return probe;
+        };
+
+        Node a, b;
+        Check(make_node(a), "ME2", "node A is in the level's runtime table");
+        Check(make_node(b), "ME3", "node B too");
+        // A 上挂**两个**探针：只发给第一个组件的实现照样过单探针的夹具。
+        AppEventProbe* pa1 = add_probe(a, 'A');
+        AppEventProbe* pa2 = add_probe(a, 'a');
+        AppEventProbe* pb = add_probe(b, 'B');
+
+        MouseEventDispatcher::Reset();
+
+        // --- 悬停：Enter 一次，Over 每帧 ----------------------------------
+        MouseFrameState idle;
+        Check(MouseEventDispatcher::DispatchTo(idle, a.object) == a.object, "ME4",
+              "DispatchTo returns the object under the mouse");
+        Check(pa1->mouse_enter == 1 && pa1->mouse_over == 1, "ME5",
+              "the first frame gives Enter + Over");
+        Check(pa2->mouse_enter == 1 && pa2->mouse_over == 1, "ME6",
+              "every component on it gets it, not just the first");
+        Check(pb->mouse_enter == 0 && pb->mouse_over == 0, "ME7", "the other object gets nothing");
+
+        pa1->Reset(); pa2->Reset(); pb->Reset();
+        log.clear();
+        MouseEventDispatcher::DispatchTo(idle, a.object);
+        Check(pa1->mouse_enter == 0 && pa1->mouse_over == 1, "ME8",
+              "a second frame on the same object is Over only (Enter is an edge)");
+
+        // --- 移到另一个对象：旧的收 Exit，新的收 Enter ----------------------
+        pa1->Reset(); pa2->Reset(); pb->Reset();
+        log.clear();
+        MouseEventDispatcher::DispatchTo(idle, b.object);
+        Check(pa1->mouse_exit == 1, "ME9", "the OLD object gets OnMouseExit");
+        Check(pb->mouse_enter == 1 && pb->mouse_over == 1, "ME10", "the new one gets Enter + Over");
+        // 顺序探针：Exit 必须**先于** Enter。倒过来的话脚本里"先清旧的高亮再画
+        // 新的"这种写法会闪一下。
+        Check(log.find("AX") != std::string::npos && log.find("BE") != std::string::npos &&
+                  log.find("AX") < log.find("BE"),
+              "ME11", "Exit on the old one comes before Enter on the new one");
+
+        // --- 移开：Exit 一次 ------------------------------------------------
+        pa1->Reset(); pa2->Reset(); pb->Reset();
+        MouseEventDispatcher::DispatchTo(idle, nullptr);
+        Check(pb->mouse_exit == 1, "ME12", "leaving to nothing still fires Exit");
+        Check(MouseEventDispatcher::GetHovered() == nullptr, "ME13", "and nothing is hovered");
+
+        // --- 按下：Down 是边沿，Drag 每帧 ----------------------------------
+        pa1->Reset(); pa2->Reset(); pb->Reset();
+        log.clear();
+        MouseFrameState press;
+        press.pressed = true;
+        press.held = true;
+        MouseEventDispatcher::DispatchTo(press, a.object);
+        Check(pa1->mouse_enter == 1 && pa1->mouse_down == 1, "ME14",
+              "the pressed frame gives Enter (edge) + Over + Down");
+        // ⚠️ 按下那一帧**也**发 Drag：Unity 对 OnMouseDrag 的说法是 "every frame
+        // while the mouse is down"，而按下那一帧鼠标确实是按下的。为此加一个
+        // `!state.pressed` 的特例等于自造一条文档里没有的规则。
+        Check(pa1->mouse_drag == 1, "ME15", "and Drag too (Unity: every frame while down)");
+        Check(MouseEventDispatcher::GetPressed() == a.object, "ME16", "the object is remembered");
+        // ⚠️ 串是**按消息**分组的（Enter 走完两个组件，才轮到 Over），不是按组件
+        // 分组（一个组件收完七条再换下一个）。这个顺序是 `BroadcastMouseEvent` 的
+        // 结构决定的，写死在断言里正是为了让它不可随意改变 —— 脚本里"先清旧的再
+        // 画新的"这类写法依赖它。
+        Check(log == "AEaEAOaOADaDAGaG", "ME17",
+              "one pass: Enter, Over, Down, Drag -- grouped by message, in that order");
+
+        pa1->Reset(); pa2->Reset(); pb->Reset();
+        MouseFrameState hold;
+        hold.held = true;
+        MouseEventDispatcher::DispatchTo(hold, a.object);
+        Check(pa1->mouse_down == 0 && pa1->mouse_drag == 1 && pa1->mouse_over == 1, "ME18",
+              "holding: Drag every frame, Down only once");
+
+        // --- ⚠️ Drag 发给**按下时**那个对象，不是当前悬停的那个 --------------
+        pa1->Reset(); pa2->Reset(); pb->Reset();
+        MouseEventDispatcher::DispatchTo(hold, b.object);
+        Check(pa1->mouse_drag == 1, "ME19",
+              "Drag still goes to the PRESSED object after the mouse moved away");
+        Check(pb->mouse_over == 1 && pb->mouse_drag == 0, "ME20",
+              "the newly hovered one only gets Over");
+        Check(pa1->mouse_over == 0, "ME21", "the pressed one no longer gets Over either");
+
+        // --- 松手在别处：Up 有，UpAsButton 没有 ------------------------------
+        pa1->Reset(); pa2->Reset(); pb->Reset();
+        MouseFrameState release;
+        release.released = true;
+        MouseEventDispatcher::DispatchTo(release, b.object);
+        Check(pa1->mouse_up == 1, "ME22", "Up goes to the pressed object");
+        Check(pa1->mouse_up_as_button == 0, "ME23",
+              "but NOT UpAsButton (the mouse is no longer over it)");
+        Check(MouseEventDispatcher::GetPressed() == nullptr, "ME24", "the press is forgotten");
+
+        // --- 互补的一半：在同一个对象上松手，UpAsButton 要来 -----------------
+        MouseEventDispatcher::Reset();
+        pa1->Reset(); pa2->Reset(); pb->Reset();
+        MouseEventDispatcher::DispatchTo(press, a.object);
+        pa1->Reset(); pa2->Reset(); pb->Reset();
+        log.clear();
+        MouseEventDispatcher::DispatchTo(release, a.object);
+        Check(pa1->mouse_up == 1 && pa1->mouse_up_as_button == 1, "ME25",
+              "releasing over the SAME object gives Up and then UpAsButton");
+        Check(log.find("AU") != std::string::npos && log.find("AB") != std::string::npos &&
+                  log.find("AU") < log.find("AB"),
+              "ME26", "Up comes before UpAsButton");
+
+        // --- ⚠️ 与 gizmo 同一条规则：不判 enabled ---------------------------
+        MouseEventDispatcher::Reset();
+        pa1->SetProbeEnabled(false);
+        pa1->Reset(); pa2->Reset(); pb->Reset();
+        MouseEventDispatcher::DispatchTo(idle, a.object);
+        Check(pa1->mouse_enter == 1, "ME27",
+              "a DISABLED component still gets it (Unity's enabled only blocks "
+              "Start/Awake/Update/FixedUpdate/OnGUI)");
+        // 互补的一半：同一个探针在同一状态下 Tick 必须被跳过。
+        const bool had_whitelisted =
+            g_editorTickComponentTypes.find("Component") != g_editorTickComponentTypes.end();
+        if (!had_whitelisted) { g_editorTickComponentTypes.insert("Component"); }
+        pa1->ticks = 0;
+        level.Tick(0.016f);
+        Check(pa1->ticks == 0, "ME28", "…while its Tick really is skipped");
+        if (!had_whitelisted) { g_editorTickComponentTypes.erase("Component"); }
+        pa1->SetProbeEnabled(true);
+        pa1->Reset(); pa2->Reset(); pb->Reset();
+
+        // --- 判 activeInHierarchy：停用的对象一个都不收 ----------------------
+        MouseEventDispatcher::Reset();
+        a.object->SetActive(false);
+        Check(!a.object->IsActiveInHierarchy(), "ME29", "A is really inactive");
+        MouseEventDispatcher::DispatchTo(press, a.object);
+        Check(pa1->mouse_enter == 0 && pa1->mouse_down == 0 && pa1->mouse_over == 0, "ME30",
+              "an inactive object gets no mouse events at all");
+        // ⚠️ 派发器**不**判激活：判据活在下层的 `BroadcastMouseEvent` 里。真实
+        // 路径下这个状态不可达（停用对象的碰撞体不在物理世界里，`PickAt` 打不到
+        // 它），所以这里记的是"两层各管一件事"这个划分，而不是一条行为规则。
+        Check(MouseEventDispatcher::GetHovered() == a.object, "ME31",
+              "the dispatcher still records it (the active gate lives in the broadcast)");
+        a.object->SetActive(true);
+
+        // --- ⚠️ 销毁时的 Forget：这是本切片唯一一处真的会崩的地方 ------------
+        MouseEventDispatcher::Reset();
+        MouseEventDispatcher::DispatchTo(idle, a.object);
+        Check(MouseEventDispatcher::GetHovered() == a.object, "ME32", "A is hovered");
+        {
+            // 脚本里"点一下就消失"是最常见的写法：销毁时鼠标正停在上面。不摘掉
+            // 的话下一次派发的 OnMouseExit 就是一次 use-after-free。
+            Node doomed;
+            Check(make_node(doomed), "ME33", "a doomed node is registered");
+            MouseEventDispatcher::DispatchTo(idle, doomed.object);
+            Check(MouseEventDispatcher::GetHovered() == doomed.object, "ME34",
+                  "and it is the one hovered now");
+            level.UnregisterRuntimeGObject(doomed.object->GetID());
+            delete doomed.object;
+            Check(MouseEventDispatcher::GetHovered() == nullptr, "ME35",
+                  "destroying the hovered object clears the hover (no use-after-free)");
+        }
+        // 按下状态同样要摘。
+        MouseEventDispatcher::Reset();
+        {
+            Node doomed;
+            Check(make_node(doomed), "ME36", "another doomed node is registered");
+            MouseEventDispatcher::DispatchTo(press, doomed.object);
+            Check(MouseEventDispatcher::GetPressed() == doomed.object, "ME37", "it is pressed");
+            level.UnregisterRuntimeGObject(doomed.object->GetID());
+            delete doomed.object;
+            Check(MouseEventDispatcher::GetPressed() == nullptr, "ME38",
+                  "destroying the pressed object clears the press too");
+        }
+
+        // --- PickAt 的降级：没有相机就没有"鼠标下面" ------------------------
+        MouseEventDispatcher::Reset();
+        Check(GET_SYSTEM(RenderSystem) == nullptr, "ME39", "(the fixture has no RenderSystem)");
+        Check(MouseEventDispatcher::PickAt(Vector2(10.0f, 10.0f)) == nullptr, "ME40",
+              "no camera -> PickAt is null, not a crash");
+        Check(MouseEventDispatcher::Tick(idle) == nullptr, "ME41",
+              "and a whole tick with no camera dispatches nothing");
+
+        MouseEventDispatcher::Reset();
+        level.UnregisterRuntimeGObject(a.object->GetID());
+        level.UnregisterRuntimeGObject(b.object->GetID());
+        delete pa1;
+        delete pa2;
+        delete pb;
+        delete a.object;
+        delete b.object;
+    }
+
+    void TestMouseEventsWiring()
+    {
+        const std::string component_header =
+            ReadFile("Source/Runtime/Function/Framework/Component/Component.h");
+        Check(!component_header.empty(), "MW0", "Component.h is readable");
+        // 七条都要在：少一条就是"那条消息永远收不到"。
+        const char* kHooks[] = {"virtual void OnMouseEnter(", "virtual void OnMouseOver(",
+                                "virtual void OnMouseExit(",  "virtual void OnMouseDown(",
+                                "virtual void OnMouseDrag(",  "virtual void OnMouseUp(",
+                                "virtual void OnMouseUpAsButton("};
+        for (int i = 0; i < 7; ++i)
+        {
+            Check(CountOccurrences(component_header, kHooks[i]) >= 1,
+                  ("MW1_" + std::to_string(i)).c_str(), kHooks[i]);
+        }
+        Check(CountOccurrences(component_header, "enum class MouseEventKind") >= 1, "MW2",
+              "the seven are one enum (one walk, not seven)");
+        // ⚠️ 子串陷阱：`OnMouseUp(` **包含** `OnMouseUp...`? 不 —— 上面七条都带
+        // 左括号，所以 `OnMouseUp(` 不会命中 `OnMouseUpAsButton(`。反过来
+        // `OnMouseUpAsButton(` 也不会被 `OnMouseUp(` 满足。两条都数，是互相的门。
+        Check(CountOccurrences(component_header, "virtual void OnMouseUp(") >= 1, "MW3",
+              "OnMouseUp is declared (and is not just a prefix of UpAsButton)");
+
+        const std::string go_source = ReadFile("Source/Runtime/BaseClasses/GameObject.cpp");
+        Check(!go_source.empty(), "MW4", "GameObject.cpp is readable");
+        const std::size_t at_broadcast = go_source.find("void GameObject::BroadcastMouseEvent");
+        Check(at_broadcast != std::string::npos, "MW5", "BroadcastMouseEvent is implemented");
+        if (at_broadcast != std::string::npos)
+        {
+            Check(BodyIsBounded(go_source, at_broadcast), "MW5b",
+                  "the BroadcastMouseEvent body slice is bounded (the scan is not degenerate)");
+            const std::string body = SliceFunctionBody(go_source, at_broadcast);
+            Check(CountOccurrences(body, "IsActiveInHierarchy") >= 1, "MW6",
+                  "it gates on activeInHierarchy");
+            // ⚠️ 反向门，与 DW6 同款：函数体里**不许**出现 enabled 判据，注释里也
+            // 不许出现那个词（否则门恒真）。
+            Check(body.find("isEnabled") == std::string::npos, "MW7",
+                  "it does NOT gate on isEnabled (Unity: disabled scripts still get OnMouse*)");
+            Check(body.find("shouldComponentTick") == std::string::npos, "MW8",
+                  "nor on the edit-mode whitelist");
+            Check(CountOccurrences(body, "MouseEventKind::k") >= 7, "MW9",
+                  "all seven kinds are dispatched");
+            // 七个 case 长得一模一样，加错 case 调错函数是最容易犯的错。
+            Check(CountOccurrences(body, "->OnMouse") >= 7, "MW10",
+                  "and each calls its own hook (not a copy-pasted neighbour)");
+        }
+
+        // 派发器。
+        const std::string dispatcher_source =
+            ReadFile("Source/Runtime/Function/Framework/Component/MouseEventDispatcher.cpp");
+        Check(!dispatcher_source.empty(), "MW11", "MouseEventDispatcher.cpp is readable");
+        {
+            const std::size_t at = dispatcher_source.find("MouseEventDispatcher::DispatchTo");
+            Check(at != std::string::npos, "MW12", "the dispatch half is a step of its own");
+            if (at != std::string::npos)
+            {
+                Check(BodyIsBounded(dispatcher_source, at), "MW12b",
+                      "the DispatchTo body slice is bounded");
+                const std::string body = SliceFunctionBody(dispatcher_source, at);
+                // 拖拽 / 松手发给**按下时**那个对象，不是当前悬停的那个。
+                Check(CountOccurrences(body, "s_Pressed->BroadcastMouseEvent") >= 3, "MW13",
+                      "Drag / Up / UpAsButton go to the PRESSED object");
+                Check(CountOccurrences(body, "s_Hovered->BroadcastMouseEvent") >= 3, "MW14",
+                      "Enter / Over / Down go to the hovered one");
+                Check(CountOccurrences(body, "s_Pressed == s_Hovered") >= 1, "MW15",
+                      "UpAsButton only fires when the release is on the same object");
+            }
+            Check(CountOccurrences(dispatcher_source, "MouseEventDispatcher::Forget") >= 1,
+                  "MW16", "the dispatcher can forget a destroyed object");
+        }
+        // ⚠️ Forget 必须**真的被调**：写在头文件里没人调的话，"销毁时清状态"就是
+        // 一句注释。这条是本切片唯一一处"不修就真的崩"的接线。
+        Check(CountOccurrences(go_source, "MouseEventDispatcher::Forget(this)") >= 1, "MW17",
+              "GameObject's destructor forgets itself (the hover pointer is raw)");
+
+        // 主循环：实现了但没接进主循环 = 没实现。
+        const std::string app_source =
+            ReadFile("Source/Runtime/Application/Application.cpp");
+        Check(!app_source.empty(), "MW18", "Application.cpp is readable");
+        {
+            const std::size_t at_tick = app_source.find("void Application::LogicalTick");
+            Check(at_tick != std::string::npos, "MW19", "LogicalTick is implemented");
+            if (at_tick != std::string::npos)
+            {
+                Check(BodyIsBounded(app_source, at_tick), "MW19b",
+                      "the LogicalTick body slice is bounded");
+                const std::string body = SliceFunctionBody(app_source, at_tick);
+                Check(CountOccurrences(body, "MouseEventDispatcher::Tick(") >= 1, "MW20",
+                      "the logical tick drives the mouse frame");
+                // 三个 bool 是独立的：pressed / held / released 各来一处。少一个
+                // 就是"Drag 永不触发"或"Down 每帧都触发"。
+                Check(CountOccurrences(body, "mouse_state.pressed") >= 1, "MW21",
+                      "the pressed edge is filled in");
+                Check(CountOccurrences(body, "mouse_state.held") >= 1, "MW22",
+                      "and the held state");
+                Check(CountOccurrences(body, "mouse_state.released") >= 1, "MW23",
+                      "and the released edge");
+            }
+        }
+
+        // 脚本面。
+        const std::string ts_source =
+            ReadFile("Source/Runtime/Function/Framework/Component/Script/TypeScriptComponent.cpp");
+        Check(!ts_source.empty(), "MW24", "TypeScriptComponent.cpp is readable");
+        const char* kNames[] = {"\"OnMouseEnter\"", "\"OnMouseOver\"", "\"OnMouseExit\"",
+                                "\"OnMouseDown\"", "\"OnMouseDrag\"", "\"OnMouseUp\""};
+        for (int i = 0; i < 6; ++i)
+        {
+            Check(CountOccurrences(ts_source, kNames[i]) >= 1,
+                  ("MW25_" + std::to_string(i)).c_str(), kNames[i]);
+        }
+        // ⚠️ `"OnMouseUp"` 是 `"OnMouseUpAsButton"` 的**前缀**：只数裸串的话删掉
+        // UpAsButton 那条照样绿。带上结束引号才分得开。
+        Check(CountOccurrences(ts_source, "InvokeMethod(\"OnMouseUp\")") >= 1, "MW26",
+              "Up is forwarded (and is not just a prefix of UpAsButton)");
+        Check(CountOccurrences(ts_source, "InvokeMethod(\"OnMouseUpAsButton\")") >= 1, "MW27",
+              "and UpAsButton is forwarded too");
+
+        const std::string env_source = ReadFile("Source/Runtime/Scripting/Wrapper/ScriptEnv.cpp");
+        // 同上：带 " = function" 才不会被更长的那个名字满足。
+        Check(CountOccurrences(env_source, "g.Behaviour.prototype.OnMouseUp = function") >= 1,
+              "MW28", "the JS prototype has an OnMouseUp default");
+        Check(CountOccurrences(env_source, "g.Behaviour.prototype.OnMouseUpAsButton = function") >= 1,
+              "MW29", "and an OnMouseUpAsButton default");
+
+        const std::string binding_source =
+            ReadFile("Source/Runtime/Scripting/Binding/ScriptBinding.cpp");
+        Check(CountOccurrences(binding_source, "OnMouseDown(): void;") >= 1, "MW30",
+              "the .d.ts declares OnMouseDown on Behaviour");
+        Check(CountOccurrences(binding_source, "OnMouseUpAsButton(): void;") >= 1, "MW31",
+              "and OnMouseUpAsButton");
     }
 
     // ---------------------------------------------------------------- DG ---
@@ -9607,6 +9999,8 @@ int main()
     TestTransformChildrenChangedWiring();
     TestDrawGizmos();
     TestDrawGizmosWiring();
+    TestMouseEvents();
+    TestMouseEventsWiring();
     TestValueTypeFacades();
     TestValueTypeFacadeWiring();
     TestWiringGate();

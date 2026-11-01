@@ -113,6 +113,16 @@ namespace
         // 照样画辅助线，这是 Unity 明文写了的（见 Component::OnDrawGizmos）。
         "    OnDrawGizmos(): void;",
         "    OnDrawGizmosSelected(): void;",
+        // Unity 的七条鼠标消息。与 gizmo 那两条同组：派发只判 activeInHierarchy，
+        // 不判 enabled（Unity 的 enabled 只挡 Start/Awake/Update/FixedUpdate
+        // /OnGUI）。
+        "    OnMouseEnter(): void;",
+        "    OnMouseOver(): void;",
+        "    OnMouseExit(): void;",
+        "    OnMouseDown(): void;",
+        "    OnMouseDrag(): void;",
+        "    OnMouseUp(): void;",
+        "    OnMouseUpAsButton(): void;",
         // Unity 的 `OnValidate`：编辑器里序列化字段被改之后调用（编辑器专用，
         // Player 里不会来）。
         "    OnValidate(): void;",

@@ -127,6 +127,16 @@ public:
     void OnDrawGizmos() override;
     void OnDrawGizmosSelected() override;
 
+    // Unity 的七条鼠标消息。派发侧同样只判 `activeInHierarchy`、不判 enabled
+    // （与 gizmo 那一组同一条规则）。
+    void OnMouseEnter() override;
+    void OnMouseOver() override;
+    void OnMouseExit() override;
+    void OnMouseDown() override;
+    void OnMouseDrag() override;
+    void OnMouseUp() override;
+    void OnMouseUpAsButton() override;
+
     /// Unity 的 `OnValidate()`：编辑器里序列化字段被改之后。只在 `g_isEditor`
     /// 下发（Player 里这条路径唯一的调用方是反序列化，那时脚本还没绑上）。
     void OnSerializedFieldsUpdated() override;

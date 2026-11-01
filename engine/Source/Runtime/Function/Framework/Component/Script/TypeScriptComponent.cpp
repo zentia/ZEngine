@@ -202,6 +202,47 @@ void TypeScriptComponent::OnDrawGizmosSelected()
     InvokeMethod("OnDrawGizmosSelected");
 }
 
+void TypeScriptComponent::OnMouseEnter()
+{
+    InvokeMethod("OnMouseEnter");
+}
+
+void TypeScriptComponent::OnMouseOver()
+{
+    InvokeMethod("OnMouseOver");
+}
+
+void TypeScriptComponent::OnMouseExit()
+{
+    InvokeMethod("OnMouseExit");
+}
+
+void TypeScriptComponent::OnMouseDown()
+{
+    InvokeMethod("OnMouseDown");
+}
+
+void TypeScriptComponent::OnMouseDrag()
+{
+    // ⚠️ 与 `OnMouseEnter` / `OnMouseDown` 是三个不同的时刻，名字却都很像。写成
+    // `"OnMouseDown"` 的话：按住不动的每一帧都会当成一次新的按下 —— 脚本里表现为
+    // "点击计数疯涨"，而回调本身一直在被调到，没有任何报错。
+    InvokeMethod("OnMouseDrag");
+}
+
+void TypeScriptComponent::OnMouseUp()
+{
+    InvokeMethod("OnMouseUp");
+}
+
+void TypeScriptComponent::OnMouseUpAsButton()
+{
+    // 与 `OnMouseUp` 唯一的差别是"松手时鼠标还在不在同一个对象上"。写错成
+    // `"OnMouseUp"` 的话：按下后拖出去再松手也会触发点击 —— 而"按钮"的语义恰恰
+    // 是要求按下和松开在同一个对象上。
+    InvokeMethod("OnMouseUpAsButton");
+}
+
 void TypeScriptComponent::OnSerializedFieldsUpdated()
 {
     // Unity 的 `OnValidate()`：编辑器里 Inspector 改了序列化字段之后调用

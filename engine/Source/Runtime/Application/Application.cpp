@@ -7,8 +7,10 @@
 #include "Runtime/Core/Time/TimeState.h"
 #include "Runtime/BaseClasses/GameObject.h"
 #include "Runtime/Function/Console/RuntimeConsoleCommands.h"
+#include "Runtime/Function/Framework/Component/MouseEventDispatcher.h"
 #include "Runtime/Function/Framework/Level/Level.h"
 #include "Runtime/Function/Framework/World/WorldManager.h"
+#include "Runtime/Scripting/ScriptInput/ScriptInput.h"
 #include "Runtime/Function/Framework/Coroutine/Coroutine.h"
 #include "Runtime/Function/Input/InputSystem.h"
 #include "Runtime/Function/Particle/ParticleManager.h"
@@ -254,6 +256,23 @@ void Application::LogicalTick(float delta_time)
     // 命令（首帧更是恒为 0），表现就是注入了输入、配置也正确，角色却不动。
     // InputSystem::Tick() 不依赖世界状态，提前没有副作用。
     GET_SYSTEM(InputSystem)->Tick();
+
+    // Unity 的七条鼠标消息（`OnMouseEnter/Over/Exit/Down/Drag/Up/UpAsButton`）。
+    //
+    // 放在输入采样之后、**Update 之前**：脚本的 OnUpdate 于是能在同一帧里响应
+    // 这一下点击，而不是等到下一帧。代价是拾取用的是上一帧末的位姿（物体在本
+    // 帧 Update 里还没动）—— 这是一帧的量级，换"同帧响应"是值的。
+    //
+    // 判空不是多余的：没有相机（专用服务器 / 没跑渲染）时 `PickAt` 恒返回
+    // nullptr，于是什么也不派发 —— 而不是崩。
+    {
+        MouseFrameState mouse_state;
+        mouse_state.position_pixels = Input::GetMousePosition();
+        mouse_state.pressed = Input::GetMouseButtonDown(0);
+        mouse_state.held = Input::GetMouseButton(0);
+        mouse_state.released = Input::GetMouseButtonUp(0);
+        MouseEventDispatcher::Tick(mouse_state);
+    }
 
     // 固定步在 Update 之前。
     //

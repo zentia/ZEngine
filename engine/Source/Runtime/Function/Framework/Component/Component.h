@@ -39,6 +39,28 @@ enum class AppEventKind : uint8_t
     kChildrenChanged,
 };
 
+/// Unity 的七条鼠标消息，同样一趟广播走完（见 Component 里那七个虚函数）。
+///
+/// 与 `AppEventKind` 同样的理由做成枚举：它们共享"一趟走完宿主上的全部组件、
+/// 只判 activeInHierarchy"这条语义。拆成七个方法就是把语义抄七遍。
+enum class MouseEventKind : uint8_t
+{
+    /// `OnMouseEnter()` —— 鼠标刚移到这个对象上（进入那一帧一次）。
+    kEnter = 0,
+    /// `OnMouseOver()` —— 鼠标还在上面（每帧一次）。
+    kOver,
+    /// `OnMouseExit()` —— 鼠标刚离开（离开那一帧一次）。
+    kExit,
+    /// `OnMouseDown()` —— 在上面按下（按下那一帧一次）。
+    kDown,
+    /// `OnMouseDrag()` —— 按住期间每帧一次。
+    kDrag,
+    /// `OnMouseUp()` —— 松手。
+    kUp,
+    /// `OnMouseUpAsButton()` —— 松手，且松手时鼠标**仍在按下时那个对象**上。
+    kUpAsButton,
+};
+
 // Component
 ZCLASS()
 class Component : public Object
@@ -225,6 +247,35 @@ public:
 
     /// Unity 的 `OnDrawGizmos()`：每帧（含编辑器帧）一次，无选中要求。
     virtual void OnDrawGizmos() {}
+
+    // ---- Unity 的鼠标消息 ------------------------------------------------
+    //
+    // `OnMouseEnter/Over/Exit/Down/Drag/Up/UpAsButton`。派发方是
+    // `MouseEventDispatcher`（每帧一次，从主相机打一条射线到物理世界里找"鼠标
+    // 下面是谁"）。
+    //
+    // 判据与 gizmo 那一组**相同**：只判 `activeInHierarchy`，不判 enabled。
+    // 依据还是 MonoBehaviour 参考页那句 "The checkbox for disabling a
+    // MonoBehavior will only prevent Start, Awake, Update, FixedUpdate, and
+    // OnGUI from executing" —— 那句清单里没有 OnMouse*。
+    //
+    // ⚠️ 这是三套判据里的第二套（Tick 全判、AppEvent 全不判、gizmo 与鼠标只判
+    // 层级激活）。别顺手改成"看起来更合理"的那两种。
+
+    /// 鼠标刚移到本对象上（进入那一帧一次）。
+    virtual void OnMouseEnter() {}
+    /// 鼠标还在本对象上（每帧一次）。
+    virtual void OnMouseOver() {}
+    /// 鼠标刚离开本对象（离开那一帧一次）。
+    virtual void OnMouseExit() {}
+    /// 鼠标在本对象上按下（按下那一帧一次）。
+    virtual void OnMouseDown() {}
+    /// 按住期间每帧一次。⚠️ 发给**按下时**那个对象，不是当前悬停的那个。
+    virtual void OnMouseDrag() {}
+    /// 松手。同样发给按下时那个对象。
+    virtual void OnMouseUp() {}
+    /// 松手，且松手时鼠标**仍在**按下时那个对象上（按钮语义）。
+    virtual void OnMouseUpAsButton() {}
 
     /// Unity 的 `OnDrawGizmosSelected()`：只在宿主对象**被选中**时来。
     ///

@@ -4,6 +4,7 @@
 #include "Runtime/Application/Application.h"
 #include "Runtime/BaseClasses/ObjectManager.h"
 #include "Runtime/Function/Framework/Component/Component.h"
+#include "Runtime/Function/Framework/Component/MouseEventDispatcher.h"
 #include "Runtime/Function/Framework/Component/Rigidbody/RigidbodyComponent.h"
 #include "Runtime/Function/Framework/Component/Script/TypeScriptComponent.h"
 #include "Runtime/Function/Framework/Component/Transform/Transform.h"
@@ -34,6 +35,11 @@ bool shouldComponentTick(std::string component_type_name)
 
 GameObject::~GameObject()
 {
+    // ⚠️ 销毁时必须把鼠标状态里指向本对象的指针摘掉 —— 那两个是裸指针，而
+    // "鼠标还停在上面时把对象 Destroy 掉"是脚本里最常见的一种写法。不摘的话
+    // 下一次 `OnMouseExit` / `OnMouseUp` 就是一次 use-after-free。
+    MouseEventDispatcher::Forget(this);
+
     for (auto& component : m_Components)
     {
     }
@@ -184,6 +190,54 @@ void GameObject::BroadcastDrawGizmos(bool selected)
         if (selected)
         {
             component->OnDrawGizmosSelected();
+        }
+    }
+}
+
+void GameObject::BroadcastMouseEvent(MouseEventKind kind)
+{
+    // 判据与 `BroadcastDrawGizmos` 逐字相同，理由也相同（见 Component 里那七个
+    // 虚函数的注释）：Unity 的 MonoBehaviour 参考页说 enabled 只挡 Start /
+    // Awake / Update / FixedUpdate / OnGUI，鼠标消息不在那份清单里。
+    //
+    // ⚠️ 两处必须一起改：只改一处会得到"停用的对象收得到 OnMouseDown 却收不到
+    // OnMouseExit"这种半生效状态，而它的表现（高亮不消失 / 点击无反应）看起来
+    // 完全像另一个 bug。
+    if (!IsActiveInHierarchy())
+    {
+        return;
+    }
+
+    for (auto& component : m_Components)
+    {
+        if (component == nullptr)
+        {
+            continue;
+        }
+
+        switch (kind)
+        {
+            case MouseEventKind::kEnter:
+                component->OnMouseEnter();
+                break;
+            case MouseEventKind::kOver:
+                component->OnMouseOver();
+                break;
+            case MouseEventKind::kExit:
+                component->OnMouseExit();
+                break;
+            case MouseEventKind::kDown:
+                component->OnMouseDown();
+                break;
+            case MouseEventKind::kDrag:
+                component->OnMouseDrag();
+                break;
+            case MouseEventKind::kUp:
+                component->OnMouseUp();
+                break;
+            case MouseEventKind::kUpAsButton:
+                component->OnMouseUpAsButton();
+                break;
         }
     }
 }
