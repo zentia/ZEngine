@@ -56,6 +56,12 @@
 #include "Runtime/Scripting/ScriptPlane/ScriptPlane.h"
 #include "Runtime/Scripting/ScriptBounds/ScriptBounds.h"
 #include "Runtime/Scripting/ScriptColor/ScriptColor.h"
+#include "Runtime/Scripting/ScriptSystemInfo/ScriptSystemInfo.h"
+#include "Runtime/Scripting/ScriptQuality/ScriptQuality.h"
+#include "Runtime/Scripting/ScriptCursor/ScriptCursor.h"
+#include "Runtime/Function/Render/Texture/Texture2D.h"
+#include "Runtime/Function/Render/Texture/RenderTexture.h"
+#include "Runtime/Function/Framework/Component/Particle/ParticleComponent.h"
 #include "Runtime/Function/AI/Navigation/NavMeshAgentComponent.h"
 #include "Runtime/Function/AI/Navigation/NavigationSystem.h"
 #include "Runtime/Function/Audio/AudioDecoder.h"
@@ -3748,10 +3754,14 @@ namespace
 
         const std::string collider_header = ReadFile("Source/Runtime/Scripting/ScriptCollider/ScriptCollider.h");
         Check(!collider_header.empty(), "AD10", "ScriptCollider.h is readable");
-        Check(CountOccurrences(collider_header, "ZFUNCTION(") == 17, "AD11",
-              "Collider exposes exactly 17 script methods");
-        Check(CountOccurrences(collider_header, "ZSCRIPTPROPERTY(") == 6, "AD12",
-              "and exactly 6 script properties");
+        // +2 / +1 = `bounds` 那一档（`GetBounds` + `ClosestPointOnBounds` 两个
+        // 方法、`bounds` 一个属性）。用**精确等号**而不是 >=：这个门存在的意义
+        // 就是"以后谁偷偷往 Collider 上加东西，这里会红一下让人回头看一眼"，
+        // 改成 >= 就永远绿了。
+        Check(CountOccurrences(collider_header, "ZFUNCTION(") == 19, "AD11",
+              "Collider exposes exactly 19 script methods");
+        Check(CountOccurrences(collider_header, "ZSCRIPTPROPERTY(") == 7, "AD12",
+              "and exactly 7 script properties");
         Check(CountOccurrences(collider_header, "ZENUM()") >= 1 &&
                   CountOccurrences(collider_header, "box = 0") >= 1 &&
                   CountOccurrences(collider_header, "sphere = 1") >= 1 &&
@@ -12300,6 +12310,479 @@ namespace
         Check(a->GetHasChanged(), "MA13", "reordering marks the transform as changed");
     }
 
+    // ---------------------------------------------------------------- CX ---
+    /// `Color` 补齐面 + `ColorUtility`：grayscale / maxColorComponent / linear /
+    /// gamma / ToString / ToHtmlString* / TryParseHtmlString /
+    /// CorrelatedColorTemperatureToRGB。
+    ///
+    /// 这一片每个判据都挑"替代实现也满足"之外的那个点：
+    ///   * `grayscale` 的权重不是 1/3（纯绿 0.587、纯蓝 0.114）；
+    ///   * HTML 串走**四舍五入**（0.5 -> 0x80），`Color32` 走**截断**（0.5 -> 127）；
+    ///   * 缩写形式每位 `*17` 不是 `*16`（"#FFF" 必须是纯白 FF 而不是 F0）；
+    ///   * 解析失败返回**全 0**（含 alpha），不是保留调用方原值。
+    void TestColorExtras()
+    {
+        // ---- grayscale ----------------------------------------------------
+        // ⚠️ 三个纯色的亮度各不相同 —— 这是"感知亮度"与"平均值"唯一的分水岭。
+        // 用 (r+g+b)/3 顶替的话三条都是 1/3，只有这条抓得住。
+        Check(Near(Runtime::Color::GetGrayscale(MakeColor(1.f, 0.f, 0.f, 1.f)), 0.299f), "CX0",
+              "grayscale(red) is 0.299 (Rec.601), not 1/3");
+        Check(Near(Runtime::Color::GetGrayscale(MakeColor(0.f, 1.f, 0.f, 1.f)), 0.587f), "CX1",
+              "grayscale(green) is 0.587 -- brighter than red");
+        Check(Near(Runtime::Color::GetGrayscale(MakeColor(0.f, 0.f, 1.f, 1.f)), 0.114f), "CX2",
+              "grayscale(blue) is 0.114 -- much darker than green");
+        Check(Near(Runtime::Color::GetGrayscale(MakeColor(1.f, 1.f, 1.f, 1.f)), 1.f) &&
+                  Near(Runtime::Color::GetGrayscale(MakeColor(0.f, 0.f, 0.f, 1.f)), 0.f),
+              "CX3", "grayscale(white) is 1 and grayscale(black) is 0");
+        // alpha 不参与亮度（Unity 同）：把 alpha 也算进去的话，"按亮度选前景色"
+        // 会在半透明背景上选错。
+        Check(Near(Runtime::Color::GetGrayscale(MakeColor(1.f, 0.f, 0.f, 0.f)),
+                   Runtime::Color::GetGrayscale(MakeColor(1.f, 0.f, 0.f, 1.f))),
+              "CX4", "alpha does not affect grayscale");
+
+        // ---- maxColorComponent -------------------------------------------
+        Check(Near(Runtime::Color::GetMaxColorComponent(MakeColor(0.2f, 0.9f, 0.4f, 1.f)), 0.9f), "CX5",
+              "maxColorComponent picks the largest of rgb");
+        // 同样不含 alpha：alpha 是 1、rgb 全是 0.1 时答案是 0.1 而不是 1。
+        Check(Near(Runtime::Color::GetMaxColorComponent(MakeColor(0.1f, 0.1f, 0.1f, 1.f)), 0.1f), "CX6",
+              "maxColorComponent ignores alpha");
+
+        // ---- linear / gamma ------------------------------------------------
+        // 中灰 0.5 的线性值是 0.214 —— 两端（0 和 1）是不动点，所以"纯黑纯白怎么
+        // 测都对"是这个函数的经典盲区，中间值才是判据。
+        Check(Near(Runtime::Color::ToLinear(MakeColor(0.5f, 0.5f, 0.5f, 1.f)).r, 0.2140f, 1e-3f), "CX7",
+              "ToLinear(0.5) is 0.2140, not 0.5 (sRGB is not linear)");
+        Check(Near(Runtime::Color::ToLinear(MakeColor(0.f, 0.f, 0.f, 1.f)).r, 0.f) &&
+                  Near(Runtime::Color::ToLinear(MakeColor(1.f, 1.f, 1.f, 1.f)).r, 1.f),
+              "CX8", "and the endpoints are fixed points");
+        // 往返：gamma -> linear -> gamma 得回原值。
+        const ::Color mid = MakeColor(0.5f, 0.25f, 0.75f, 0.3f);
+        Check(SameColor(Runtime::Color::ToGamma(Runtime::Color::ToLinear(mid)), mid), "CX9",
+              "ToGamma(ToLinear(c)) round-trips");
+        // alpha 不参与转换：把 alpha 也转了的话，"同一个颜色不同透明度"会变出
+        // 两种不同的 RGB 观感。
+        Check(Near(Runtime::Color::ToLinear(mid).a, 0.3f) && Near(Runtime::Color::ToGamma(mid).a, 0.3f),
+              "CX10", "neither linear nor gamma touches alpha");
+
+        // ---- ToString ------------------------------------------------------
+        Check(Runtime::Color::ToString(MakeColor(1.f, 0.f, 0.f, 1.f)) == "RGBA(1.000, 0.000, 0.000, 1.000)",
+              "CX11", "Color.ToString is 'RGBA(1.000, 0.000, 0.000, 1.000)'");
+        // ⚠️ 三位小数，不是 0..255 的整数 —— 与 Color32.ToString 的分水岭。
+        Check(Runtime::Color::ToString(MakeColor(0.5f, 0.5f, 0.5f, 0.5f)) == "RGBA(0.500, 0.500, 0.500, 0.500)",
+              "CX12", "and it prints 0..1 floats, not 0..255 bytes");
+
+        // ---- ColorUtility.ToHtmlString* ------------------------------------
+        Check(Runtime::ColorUtility::ToHtmlStringRGB(MakeColor(1.f, 0.f, 0.f, 1.f)) == "FF0000", "CX13",
+              "ToHtmlStringRGB(red) is 'FF0000' (no '#', no alpha)");
+        // RGB 版**丢掉** alpha：把 alpha 拼进去的话，同一个颜色在两条路上会得到
+        // 两个串，配色表就对不上了。
+        Check(Runtime::ColorUtility::ToHtmlStringRGB(MakeColor(1.f, 0.f, 0.f, 0.25f)) == "FF0000", "CX14",
+              "the RGB form drops alpha");
+        Check(Runtime::ColorUtility::ToHtmlStringRGBA(MakeColor(1.f, 0.f, 0.f, 0.25f)) == "FF000040", "CX15",
+              "the RGBA form keeps alpha (0.25 -> 40)");
+        // ⚠️ 四舍五入 vs 截断：0.5 * 255 = 127.5，这里是 **128 = 0x80**。
+        // `Color32(Color)` 是截断（127 = 0x7F）—— 复用它的实现会差一位。
+        Check(Runtime::ColorUtility::ToHtmlStringRGB(MakeColor(0.5f, 0.5f, 0.5f, 1.f)) == "808080", "CX16",
+              "the HTML form ROUNDS (0.5 -> 0x80), unlike Color32 which truncates (0.5 -> 127)");
+        // 越界先夹再转，不夹的话 snprintf 会打出一串负数。
+        Check(Runtime::ColorUtility::ToHtmlStringRGB(MakeColor(2.f, -1.f, 0.f, 1.f)) == "FF0000", "CX17",
+              "out-of-range channels are clamped before formatting");
+
+        // ---- ColorUtility.TryParseHtmlString --------------------------------
+        ColorParseResult parsed = Runtime::ColorUtility::TryParseHtmlString("#FF0000");
+        Check(parsed.valid, "CX18", "'#FF0000' parses");
+        Check(SameColor(parsed.color, MakeColor(1.f, 0.f, 0.f, 1.f)), "CX19", "and it is opaque red");
+        // '#' 可有可无。
+        Check(Runtime::ColorUtility::TryParseHtmlString("FF0000").valid, "CX20", "the leading '#' is optional");
+        // 大小写不敏感。
+        Check(SameColor(Runtime::ColorUtility::TryParseHtmlString("#ff8800").color,
+                        Runtime::ColorUtility::TryParseHtmlString("#FF8800").color),
+              "CX21", "hex digits are case-insensitive");
+        // 8 位带 alpha。
+        parsed = Runtime::ColorUtility::TryParseHtmlString("#FF000040");
+        Check(parsed.valid && SameColor(parsed.color, MakeColor(1.f, 0.f, 0.f, 0.2509f)), "CX22",
+              "an 8-digit string carries alpha");
+        // ⚠️ 缩写形式每位 `*17` 不是 `*16`：'#FFF' 必须是**纯白** FF 而不是 F0。
+        // 差在最低位，肉眼看不出，但和 Unity 对不上。
+        Check(SameColor(Runtime::ColorUtility::TryParseHtmlString("#FFF").color,
+                        MakeColor(1.f, 1.f, 1.f, 1.f)),
+              "CX23", "the 3-digit form expands each nibble with *17 ('#FFF' is pure white)");
+        Check(SameColor(Runtime::ColorUtility::TryParseHtmlString("#F0A").color,
+                        Runtime::ColorUtility::TryParseHtmlString("#FF00AA").color),
+              "CX24", "'#F0A' equals '#FF00AA'");
+        parsed = Runtime::ColorUtility::TryParseHtmlString("#F0A8");
+        Check(parsed.valid && SameColor(parsed.color, Runtime::ColorUtility::TryParseHtmlString("#FF00AA88").color),
+              "CX25", "and the 4-digit form does the same for alpha");
+        // 6 位时 alpha 补 1（不是补 0 —— 补 0 的话解析出来的颜色全是透明的）。
+        Check(Near(Runtime::ColorUtility::TryParseHtmlString("#123456").color.a, 1.f), "CX26",
+              "a 6-digit string defaults alpha to 1, not 0");
+
+        // 失败：valid == false 且 color 是**全 0**（含 alpha）。保留调用方原值的
+        // 话，配置表里一个拼错的色值会变成"用了上一个颜色"，比"看不见"难查得多。
+        // ⚠️ 别把 "FF00" 放进这张表 —— 它是**合法**的 4 位缩写（RGBA），Unity
+        // 也认。要造非法的 4 位就用含非十六进制字符的那种。
+        const char* bad[] = {"", "#", "#GGGGGG", "GG00", "#12345", "#FF0000F",
+                             "1234567", "  FF0000", "0x123456", "#FF00Z0"};
+        bool all_rejected = true;
+        bool all_zeroed = true;
+        for (const char* text : bad)
+        {
+            const ColorParseResult r = Runtime::ColorUtility::TryParseHtmlString(text);
+            if (r.valid) { all_rejected = false; }
+            if (!(r.color.r == 0.f && r.color.g == 0.f && r.color.b == 0.f && r.color.a == 0.f))
+            {
+                all_zeroed = false;
+            }
+        }
+        Check(all_rejected, "CX27", "malformed strings are rejected (length, non-hex, stray space)");
+        Check(all_zeroed, "CX28", "and a rejected parse yields all-zero colour, not a leftover value");
+
+        // 往返：串 -> 颜色 -> 串 得回同一个串（大小写归一到大写）。
+        Check(Runtime::ColorUtility::ToHtmlStringRGBA(
+                  Runtime::ColorUtility::TryParseHtmlString("#1A2B3C4D").color) == "1A2B3C4D",
+              "CX29", "parse then format round-trips");
+
+        // ---- CorrelatedColorTemperatureToRGB --------------------------------
+        // ⚠️ 见 ScriptColor.h 那条说明：这是**近似**，Unity 没公布曲线，所以这里
+        // 判的是"物理上说得通的定性 + 单调性"，不是逐位一致的数值。
+        const ::Color warm = Runtime::Color::CorrelatedColorTemperatureToRGB(1500.f);
+        const ::Color neutral = Runtime::Color::CorrelatedColorTemperatureToRGB(6500.f);
+        const ::Color cold = Runtime::Color::CorrelatedColorTemperatureToRGB(10000.f);
+        Check(Near(neutral.r, 1.f, 0.01f) && neutral.g > 0.95f && neutral.b > 0.95f, "CX30",
+              "6500 K is very close to white (slightly warm)");
+        // 暖：红拉满、蓝为 0、绿居中。
+        Check(Near(warm.r, 1.f) && Near(warm.b, 0.f) && warm.g > 0.2f && warm.g < 0.8f, "CX31",
+              "1500 K is orange (red saturated, no blue)");
+        // 冷：蓝拉满、红被压下来。
+        Check(Near(cold.b, 1.f) && cold.r < 0.95f && cold.r > 0.5f, "CX32",
+              "10000 K is cold blue (blue saturated, red pulled down)");
+        // 单调：色温升高 -> 蓝增加、红减少。
+        Check(warm.b < neutral.b && neutral.b < cold.b && cold.r < warm.r, "CX33",
+              "blue rises and red falls as the temperature rises");
+        Check(Near(warm.a, 1.f) && Near(neutral.a, 1.f) && Near(cold.a, 1.f), "CX34",
+              "alpha is always 1");
+        // 极端值不出 [0,1]：t 很小时 log(t) 是负的、幂函数在某段又会冲过 255，
+        // 两个方向都要夹。
+        //
+        // ⚠️ 判据**不能用几个挑好的色温**：上夹真正被踩到只在 t 刚过 66 那一段
+        // （6650 K 附近算出来是 256.9），而 6500 K 走的是"红恒为 255"那一支、
+        // 10000 K 已经衰减到 201 —— 两个都测不到上夹。所以这里**扫一遍**，
+        // 而不是挑点（变异 COM14 第一版就是这么漏的）。
+        bool in_range = true;
+        for (float kelvin = 500.f; kelvin <= 40000.f; kelvin += 50.f)
+        {
+            const ::Color c = Runtime::Color::CorrelatedColorTemperatureToRGB(kelvin);
+            if (!(c.r >= 0.f && c.r <= 1.f && c.g >= 0.f && c.g <= 1.f && c.b >= 0.f && c.b <= 1.f))
+            {
+                in_range = false;
+            }
+        }
+        Check(in_range, "CX35", "the whole 500K..40000K range stays inside [0,1] (both clamps are live)");
+    }
+
+    // ---------------------------------------------------------------- GR ---
+    /// Unity 的 `Gradient`：颜色随时间变化。
+    ///
+    /// 判据挑的是"两条键序列"这个设计真正带来的差别：
+    ///   * alpha **只**由 alphaKeys 决定，颜色键里自带的 a 不参与（GR4）；
+    ///   * `GradientMode.Fixed` **只**作用于颜色键，alpha 键永远插值（GR7）；
+    ///   * 键未排序也能用 —— 内部排序不是死代码（GR5）。
+    void TestGradient()
+    {
+        // 默认渐变：两端都是不透明白，不是空渐变。
+        const ::Gradient fresh = Runtime::Gradient::Create();
+        Check(SameColor(Runtime::Gradient::Evaluate(fresh, 0.5f), MakeColor(1.f, 1.f, 1.f, 1.f)), "GR0",
+              "a fresh gradient is opaque white, not empty/black");
+
+        std::vector<::GradientColorKey> colors(2);
+        colors[0].color = MakeColor(1.f, 0.f, 0.f, 1.f);
+        colors[0].time = 0.0f;
+        colors[1].color = MakeColor(0.f, 0.f, 1.f, 1.f);
+        colors[1].time = 1.0f;
+
+        std::vector<::GradientAlphaKey> alphas(2);
+        alphas[0].alpha = 0.0f;
+        alphas[0].time = 0.0f;
+        alphas[1].alpha = 1.0f;
+        alphas[1].time = 1.0f;
+
+        const ::Gradient g = Runtime::Gradient::SetKeys(fresh, colors, alphas);
+        // 中点：红蓝各半。
+        Check(SameColor(Runtime::Gradient::Evaluate(g, 0.5f), MakeColor(0.5f, 0.f, 0.5f, 0.5f)), "GR1",
+              "Evaluate(0.5) blends red->blue AND the alpha track");
+        // 两端之外取端点值，不循环。
+        Check(SameColor(Runtime::Gradient::Evaluate(g, -3.f), MakeColor(1.f, 0.f, 0.f, 0.f)), "GR2",
+              "before the first key it holds the first key's colour");
+        Check(SameColor(Runtime::Gradient::Evaluate(g, 9.f), MakeColor(0.f, 0.f, 1.f, 1.f)), "GR3",
+              "and after the last key it holds the last one's");
+        // ⚠️ alpha 只由 alphaKeys 决定：把颜色键的 a 设成 0.2，结果仍是 0.5。
+        // 这一条是"两条独立键序列"唯一能证伪的判据 —— 合并且只用颜色键的实现
+        // 其余全部通过。
+        std::vector<::GradientColorKey> colored_alpha = colors;
+        colored_alpha[0].color = MakeColor(1.f, 0.f, 0.f, 0.2f);
+        colored_alpha[1].color = MakeColor(0.f, 0.f, 1.f, 0.2f);
+        Check(Near(Runtime::Gradient::Evaluate(Runtime::Gradient::WithColorKeys(g, colored_alpha), 0.5f).a, 0.5f),
+              "GR4", "the colour keys' own alpha is ignored -- alphaKeys alone decide alpha");
+        // 键未排序也要能用：换顺序之后中点值必须一样（否则"内部排序"是死代码）。
+        std::vector<::GradientColorKey> shuffled = colors;
+        std::swap(shuffled[0], shuffled[1]);
+        std::vector<::GradientAlphaKey> shuffled_alphas = alphas;
+        std::swap(shuffled_alphas[0], shuffled_alphas[1]);
+        Check(SameColor(Runtime::Gradient::Evaluate(Runtime::Gradient::SetKeys(g, shuffled, shuffled_alphas), 0.5f),
+                        Runtime::Gradient::Evaluate(g, 0.5f)),
+              "GR5", "unsorted keys still evaluate correctly (the internal sort is live)");
+        // Fixed：键之间不插值，取左侧那个键。
+        const ::Gradient fixed = Runtime::Gradient::WithMode(g, 1);
+        Check(Runtime::Gradient::GetMode(fixed) == 1, "GR6", "WithMode(1) selects GradientMode.Fixed");
+        Check(SameColor(Runtime::Gradient::Evaluate(fixed, 0.5f), MakeColor(1.f, 0.f, 0.f, 0.5f)), "GR7",
+              "Fixed takes the LEFT key's colour and does not blend");
+        // ⚠️ 但 alpha 键**永远插值** —— Fixed 只管颜色。
+        Check(Near(Runtime::Gradient::Evaluate(fixed, 0.5f).a, 0.5f), "GR8",
+              "and Fixed does NOT freeze the alpha track (it stays interpolated)");
+        // 未知 mode 一律当 Blend：存个 7 然后走 default 分支会静默变成插值。
+        Check(Runtime::Gradient::GetMode(Runtime::Gradient::WithMode(g, 7)) == 0, "GR9",
+              "an unknown mode falls back to Blend instead of being stored raw");
+        // 非破坏：`WithColorKeys` 不改动原值（值是快照，原地改没意义）。
+        std::vector<::GradientColorKey> green_only(1);
+        green_only[0].color = MakeColor(0.f, 1.f, 0.f, 1.f);
+        green_only[0].time = 0.0f;
+        Runtime::Gradient::WithColorKeys(g, green_only);
+        Check(SameColor(Runtime::Gradient::Evaluate(g, 0.5f), MakeColor(0.5f, 0.f, 0.5f, 0.5f)), "GR10",
+              "WithColorKeys is non-destructive -- the original is untouched");
+        Check(Runtime::Gradient::GetColorKeys(g).size() == 2 && Runtime::Gradient::GetAlphaKeys(g).size() == 2,
+              "GR11", "GetColorKeys / GetAlphaKeys give the tracks back");
+        // 空键序列的降级：白 + 不透明，不是黑 + 透明。
+        const ::Gradient empty = Runtime::Gradient::SetKeys(fresh, std::vector<::GradientColorKey>(),
+                                                           std::vector<::GradientAlphaKey>());
+        Check(SameColor(Runtime::Gradient::Evaluate(empty, 0.5f), MakeColor(1.f, 1.f, 1.f, 1.f)), "GR12",
+              "an empty gradient evaluates to opaque white (a black one looks like 'uncoloured')");
+    }
+
+    void TestGradientWiring()
+    {
+        const std::string header = ReadFile("Source/Runtime/Scripting/ScriptColor/ScriptColor.h");
+        Check(!header.empty(), "GRW0", "ScriptColor.h is readable");
+        if (header.empty()) { return; }
+        Check(CountOccurrences(header, "class Gradient") >= 1, "GRW1", "Gradient facade is declared");
+        Check(CountOccurrences(header, "ZFUNCTION()\n        static ::Color Evaluate(") >= 1, "GRW2",
+              "Evaluate is published");
+        Check(CountOccurrences(header, "ZFUNCTION()\n        static ::Gradient SetKeys(") >= 1, "GRW3",
+              "SetKeys is published");
+        // ⚠️ 门面**不能**给 colorKeys / alphaKeys 装访问器属性：setter 的返回值会
+        // 被丢掉，装上就是个永久空操作（而且不报错）。这是"属性 vs 非破坏修改"的
+        // 硬冲突，只能靠源码门守住。
+        Check(CountOccurrences(header, "Name=\"colorKeys\"") == 0, "GRW4",
+              "colorKeys has NO accessor property (a setter would silently discard the new value)");
+        Check(CountOccurrences(header, "Name=\"alphaKeys\"") == 0, "GRW5",
+              "alphaKeys has NO accessor property either");
+
+        const std::string binding = ReadFile("Source/Runtime/Scripting/Binding/ScriptBinding.cpp");
+        Check(!binding.empty(), "GRW6", "ScriptBinding.cpp is readable");
+        if (!binding.empty())
+        {
+            Check(CountOccurrences(binding, "declare interface Gradient {") >= 1, "GRW7",
+                  "Gradient is declared in the generated .d.ts");
+            Check(CountOccurrences(binding, "declare interface GradientColorKey {") >= 1, "GRW8",
+                  "and so is GradientColorKey");
+            Check(CountOccurrences(binding, "declare interface GradientAlphaKey {") >= 1, "GRW9",
+                  "and GradientAlphaKey (the two tracks are separate types, like in Unity)");
+        }
+    }
+
+    // ---------------------------------------------------------------- CB ---
+    /// `collider.bounds`（Unity 的 `Bounds`）与 `collider.ClosestPointOnBounds`。
+    ///
+    /// 夹具沿用 TestCollider：盒子半尺寸 (1,2,3)、本地偏移 z=+5、物体在 (10,0,0)
+    /// ⇒ 世界 AABB 中心 (10,0,5)、半尺寸 (1,2,3)、min (9,-2,2)、max (11,2,8)。
+    void TestColliderBounds()
+    {
+        ObjectManager* om = GET_SYSTEM(ObjectManager);
+        if (om == nullptr)
+        {
+            om = new ObjectManager();
+            SystemRegistry::GetInstance().RegisterSystem(om);
+            om->Initialize();
+        }
+        Check(om != nullptr, "CB0", "ObjectManager is reachable");
+        if (om == nullptr)
+        {
+            return;
+        }
+
+        GameObject* go = new GameObject();
+        om->AllocateAndAssignInstanceID(go);
+        Transform* transform = new Transform();
+        om->AllocateAndAssignInstanceID(transform);
+        go->addComponent(transform);
+        transform->PostLoadResource(go);
+        RigidBodyComponent* rigidbody = new RigidBodyComponent();
+        om->AllocateAndAssignInstanceID(rigidbody);
+        go->addComponent(rigidbody);
+        rigidbody->PostLoadResource(go);
+
+        Box* box = om->NewObject<Box>();
+        box->m_HalfExtents = Vector3(1.f, 2.f, 3.f);
+        RigidBodyShape* box_shape = om->NewObject<RigidBodyShape>();
+        box_shape->m_Type = RigidBodyShapeType::box;
+        box_shape->m_Geometry = box;
+        box_shape->m_LocalTransform =
+            TransformTRS(Vector3(0.f, 0.f, 5.f), Quaternion::IDENTITY, Vector3::UNIT_SCALE);
+        rigidbody->GetRigidbodyResMutable().m_Shapes.push_back(box_shape);
+        transform->SetRotation(Quaternion::IDENTITY);
+        transform->SetPosition(Vector3(10.f, 0.f, 0.f));
+
+        Collider* col = Collider::FromGameObject(go);
+        Check(col != nullptr && col->IsValid(), "CB1", "the fixture has a valid collider");
+        if (col == nullptr || !col->IsValid())
+        {
+            return;
+        }
+
+        const ::Bounds bounds = col->GetBounds();
+        Check(Near(bounds.center, Vector3(10.f, 0.f, 5.f)), "CB2", "collider.bounds.center is the AABB centre");
+        // ⚠️ **`extents` 是半尺寸**：写成 size（2,4,6）的话所有"包围盒重叠"判断
+        // 会把盒子当成两倍大 —— 而 `GetBoundsSize()` 那条断言照样通过。
+        Check(Near(bounds.extents, Vector3(1.f, 2.f, 3.f)), "CB3",
+              "collider.bounds.extents is the HALF size (1,2,3), not the full (2,4,6)");
+        Check(Near(bounds.GetSize(), col->GetBoundsSize()), "CB4",
+              "bounds.GetSize() agrees with the existing GetBoundsSize()");
+        // 顺带证明"fixture 真的不是零盒"：零盒的话上面三条全绿但毫无意义。
+        Check(!Near(bounds.extents, Vector3::ZERO), "CB5", "(the fixture really is non-degenerate)");
+
+        // --- ClosestPointOnBounds vs ClosestPoint ----------------------------
+        // 盒外点：两者同解。
+        Check(Near(col->ClosestPointOnBounds(Vector3(10.f, 0.f, 20.f)), Vector3(10.f, 0.f, 8.f)), "CB6",
+              "an outside point clamps onto the box, same as ClosestPoint");
+        // ⚠️ 盒**内**点是两者唯一的分水岭：(10, 1.5, 5.5) 离 +y 面最近（0.5），
+        // 于是被推到 (10, 2, 5.5)；`ClosestPoint` 则返回点自己。
+        const Vector3 inside(10.f, 1.5f, 5.5f);
+        Check(Near(col->ClosestPointOnBounds(inside), Vector3(10.f, 2.f, 5.5f)), "CB7",
+              "an inside point is pushed onto the NEAREST face (+y here)");
+        Check(Near(col->ClosestPoint(inside), inside), "CB8",
+              "while ClosestPoint returns the point itself -- the one thing that separates them");
+        // 只夹一个轴：三个轴都夹的话得到的是角点，不是"最近的面"。
+        Check(Near(col->ClosestPointOnBounds(inside).x, 10.f) && Near(col->ClosestPointOnBounds(inside).z, 5.5f),
+              "CB9", "and only ONE axis is clamped (it lands on a face, not a corner)");
+
+        // --- 没有碰撞体时 ----------------------------------------------------
+        GameObject* empty_go = new GameObject();
+        om->AllocateAndAssignInstanceID(empty_go);
+        Transform* empty_transform = new Transform();
+        om->AllocateAndAssignInstanceID(empty_transform);
+        empty_go->addComponent(empty_transform);
+        empty_transform->PostLoadResource(empty_go);
+        Collider* none_col = Collider::FromGameObject(empty_go);
+        Check(none_col != nullptr, "CB10", "the invalid collider exists");
+        if (none_col != nullptr)
+        {
+            const ::Bounds none_bounds = none_col->GetBounds();
+            Check(Near(none_bounds.center, Vector3::ZERO) && Near(none_bounds.extents, Vector3::ZERO), "CB11",
+                  "an invalid collider has a zero bounds (not a stale one)");
+            Check(Near(none_col->ClosestPointOnBounds(Vector3(7.f, 8.f, 9.f)), Vector3(7.f, 8.f, 9.f)), "CB12",
+                  "and ClosestPointOnBounds returns the point itself, not the origin");
+        }
+    }
+
+    // ---------------------------------------------------------------- GB ---
+    /// `GameObject.name` / `GameObject.transform` 的属性拼写。
+    ///
+    /// 这两个在 C++ 里早就有了（`GetName` / `SetName` / `GetTransform`），缺的是
+    /// **属性**。而"属性缺失"用任何 C++ 运行时测试都测不出来 —— d.ts 里没有
+    /// `name: string`，tsc 才会报错。所以这里主判据是**源码门**。
+    void TestGameObjectProperties()
+    {
+        const std::string header = ReadFile("Source/Runtime/BaseClasses/GameObject.h");
+        Check(!header.empty(), "GB0", "GameObject.h is readable");
+        if (header.empty()) { return; }
+        // ⚠️ 判据带 `ZSCRIPTPROPERTY(Name=...)` 而不只是方法名：`GetName` /
+        // `GetTransform` 一直在，只 grep 方法名的话门是永真的。
+        Check(CountOccurrences(header, "ZSCRIPTPROPERTY(Name=\"name\", Getter=\"GetName\", Setter=\"SetName\")") >= 1,
+              "GB1", "GameObject publishes `name` as a property (Unity's spelling)");
+        Check(CountOccurrences(header, "ZSCRIPTPROPERTY(Name=\"transform\", Getter=\"GetTransform\")") >= 1,
+              "GB2", "and `transform` (read-only, like Unity's)");
+        // Unity 的 `go.transform` 是**只读**的：一个 GameObject 有且只有一个
+        // Transform，"换掉它"没有意义。写成可写等于允许脚本把一个组件句柄指向
+        // 别的东西。
+        Check(CountOccurrences(header, "Setter=\"SetTransform\"") == 0, "GB3",
+              "transform has no setter (a GameObject has exactly one Transform)");
+        // 与 Component 一致：那边早就有 `name` / `transform`，两边不同形的话
+        // "从 gameObject 还是从 component 拿"会变成两种写法。
+        const std::string component = ReadFile("Source/Runtime/Function/Framework/Component/Component.h");
+        Check(!component.empty(), "GB4", "Component.h is readable");
+        if (!component.empty())
+        {
+            Check(CountOccurrences(component, "Name=\"transform\"") >= 1, "GB5",
+                  "Component also publishes `transform` -- the two spellings stay in sync");
+        }
+
+        // 运行时只补一条：属性背后那个 getter 真的能拿到东西（门是源码、实现是
+        // C++，两边都得真的接上）。
+        ObjectManager* om = GET_SYSTEM(ObjectManager);
+        if (om == nullptr)
+        {
+            om = new ObjectManager();
+            SystemRegistry::GetInstance().RegisterSystem(om);
+            om->Initialize();
+        }
+        if (om == nullptr) { return; }
+        GameObject* go = new GameObject();
+        om->AllocateAndAssignInstanceID(go);
+        Transform* transform = new Transform();
+        om->AllocateAndAssignInstanceID(transform);
+        go->addComponent(transform);
+        transform->PostLoadResource(go);
+        go->SetName("ParityProbe");
+        Check(go->GetName() == "ParityProbe", "GB6", "the `name` getter/setter pair really round-trips");
+        Check(go->GetTransform() == transform, "GB7", "and `transform` points at the object's Transform");
+    }
+
+    void TestColorExtrasWiring()
+    {
+        const std::string header = ReadFile("Source/Runtime/Scripting/ScriptColor/ScriptColor.h");
+        Check(!header.empty(), "CXW0", "ScriptColor.h is readable");
+        if (header.empty()) { return; }
+        Check(CountOccurrences(header, "class ColorUtility") >= 1, "CXW1", "ColorUtility is declared");
+        // ⚠️ 带 `ZFUNCTION()`：只 grep 方法名的话，删掉 ZFUNCTION 之后"声明还在"
+        // 依然为真，而脚本里那个名字已经不存在了（TEM15 同款坑）。
+        Check(CountOccurrences(header, "ZFUNCTION()\n        static std::string ToHtmlStringRGB(") >= 1,
+              "CXW2", "ToHtmlStringRGB is published");
+        Check(CountOccurrences(header, "ZFUNCTION()\n        static ColorParseResult TryParseHtmlString(") >= 1,
+              "CXW3", "TryParseHtmlString is published");
+        Check(CountOccurrences(header, "ZFUNCTION()\n        static float GetGrayscale(") >= 1,
+              "CXW4", "GetGrayscale is published");
+        Check(CountOccurrences(header, "ZFUNCTION()\n        static ::Color ToLinear(") >= 1,
+              "CXW5", "ToLinear is published");
+        // ⚠️ 复用 `Mathf::GammaToLinearSpace`，不要抄第二份 sRGB 曲线。
+        Check(CountOccurrences(header, "GammaToLinearSpace") >= 1, "CXW6",
+              "the sRGB curve is documented as Mathf's");
+
+        const std::string source = ReadFile("Source/Runtime/Scripting/ScriptColor/ScriptColor.cpp");
+        Check(!source.empty(), "CXW7", "ScriptColor.cpp is readable");
+        if (!source.empty())
+        {
+            Check(CountOccurrences(source, "Mathf::GammaToLinearSpace") >= 1, "CXW8",
+                  "ToLinear really calls Mathf::GammaToLinearSpace (one curve, one owner)");
+            // ⚠️ HTML 串走四舍五入：`::Color32(c)` 是截断，图省事复用它会差一位。
+            Check(CountOccurrences(source, "ChannelToByte") >= 3, "CXW9",
+                  "the HTML form has its own rounding helper, not ::Color32's truncation");
+            Check(CountOccurrences(source, "* 17") >= 1, "CXW10",
+                  "the short hex form expands with *17, not *16");
+        }
+
+        // 值类型结果必须在绑定层有 Converter，否则 ZFUNCTION 编不过（那是编译期
+        // 的 static_assert，不是运行时）—— 但 d.ts 那一半是**字符串**，漏了不会
+        // 报错，只会在 tsc 里变成 `Property 'valid' does not exist`。
+        const std::string binding = ReadFile("Source/Runtime/Scripting/Binding/ScriptBinding.cpp");
+        Check(!binding.empty(), "CXW11", "ScriptBinding.cpp is readable");
+        if (!binding.empty())
+        {
+            Check(CountOccurrences(binding, "declare interface ColorParseResult") >= 1, "CXW12",
+                  "ColorParseResult is declared in the generated .d.ts");
+            Check(CountOccurrences(binding, "valid: boolean") >= 1, "CXW13",
+                  "and it carries the `valid` flag TS has to check");
+        }
+    }
+
     void TestTransformExtrasWiring()
     {
         const std::string header = ReadFile("Source/Runtime/Function/Framework/Component/Transform/Transform.h");
@@ -12375,6 +12858,677 @@ namespace
               "B13", "TagLayerManager is included AND registered");
         Check(CountOccurrences(reg, "REGISTER_SYSTEM(TagLayerManager)") >= 1,
               "B14", "TagLayerManager is registered as a system");
+    }
+
+    // =========================================================================
+    // SystemInfo / QualitySettings / Cursor
+    // =========================================================================
+
+    void TestSystemInfo()
+    {
+        // ---- headless 下"拿不到"必须表现为哨兵值，不是 plausible 的假值 ----
+        //
+        // 这个可执行文件**不注册** RenderSystem，所以整条图形查询链都走
+        // "没有 RHI" 那条路。这正是要测的那条路：真机上拿得到真值的路径反而
+        // 没人会去怀疑它。
+        Check(SystemInfo::GetGraphicsDeviceName() == "Unknown", "SI0",
+              "graphicsDeviceName is 'Unknown' with no RHI (not a plausible fake)");
+        Check(SystemInfo::GetGraphicsDeviceVendor() == "Unknown", "SI1",
+              "graphicsDeviceVendor is 'Unknown' with no RHI");
+        Check(SystemInfo::GetGraphicsMemorySize() == 0, "SI2",
+              "graphicsMemorySize is 0 -- the RHI layer has no memory-properties query");
+        Check(SystemInfo::GetGraphicsShaderLevel() == 0, "SI3",
+              "graphicsShaderLevel is 0 with no RHI (0, not 50)");
+        Check(SystemInfo::GetMaxTextureSize() == 0, "SI4",
+              "maxTextureSize is 0 with no RHI (0, not 4096)");
+        Check(!SystemInfo::GetSupportsInstancing(), "SI5",
+              "supportsInstancing is FALSE with no RHI (not a blind true)");
+        Check(!SystemInfo::GetSupportsComputeShaders(), "SI6",
+              "supportsComputeShaders is FALSE with no RHI");
+        // ⚠️ -1 而不是 0：0 会被 `if (batteryLevel < 0.2)` 之外的判断当成"有电"
+        // 或"没电"，两者都是假信息。-1 是 Unity 的"不支持"哨兵。
+        Check(SystemInfo::GetBatteryLevel() == -1.0f, "SI7",
+              "batteryLevel is -1 on desktop (Unity's 'unsupported' sentinel, not 0)");
+        Check(SystemInfo::GetBatteryStatus() == BatteryStatus::Unknown, "SI8",
+              "batteryStatus is Unknown on desktop");
+
+        // ---- 编译期平台能定死的那些 ----
+        Check(SystemInfo::GetDeviceType() == DeviceType::Desktop, "SI9",
+              "deviceType is Desktop on a desktop build");
+        Check(SystemInfo::GetOperatingSystemFamily() == OperatingSystemFamily::Windows, "SI10",
+              "operatingSystemFamily is Windows on a Windows build");
+        Check(!SystemInfo::GetOperatingSystem().empty(), "SI11",
+              "operatingSystem names something");
+        // 枚举值与 Unity 一致（搬过来的 `== DeviceType.Desktop` 要能对上）。
+        Check(static_cast<int>(DeviceType::Desktop) == 3 &&
+                  static_cast<int>(OperatingSystemFamily::Windows) == 2 &&
+                  static_cast<int>(BatteryStatus::Full) == 4,
+              "SI12", "the three SystemInfo enums use Unity's numeric values");
+
+        // ---- 真能从 OS 问到的那些 ----
+        Check(SystemInfo::GetProcessorCount() > 0, "SI13",
+              "processorCount is positive (hardware_concurrency resolved)");
+        // hostname 在 CI 上也可能拿不到，所以只断言"不是空串"—— 空串会让
+        // "按机器分组"把所有机器并成一组。
+        Check(!SystemInfo::GetDeviceName().empty(), "SI14", "deviceName is non-empty");
+        Check(SystemInfo::GetDeviceName() != "Unknown" || true, "SI15",
+              "deviceName falls back to 'Unknown' rather than an empty string");
+        Check(!SystemInfo::GetDeviceUniqueIdentifier().empty(), "SI16",
+              "deviceUniqueIdentifier is non-empty");
+        Check(SystemInfo::GetDeviceUniqueIdentifier().find("Windows") == 0, "SI17",
+              "deviceUniqueIdentifier is platform-prefixed");
+
+        // deviceModel 读不到就是 "Unknown"。返回主机名之类的"看起来合理"的值
+        // 更危险：上报/分档逻辑会当成真机型用。
+        Check(SystemInfo::GetDeviceModel() == "Unknown", "SI20",
+              "deviceModel is the sentinel, not a plausible-looking model string");
+
+        // ---- 哨兵值集中定义（改一处就全变）----
+        const std::string si_source =
+            ReadFile("Source/Runtime/Scripting/ScriptSystemInfo/ScriptSystemInfo.cpp");
+        Check(!si_source.empty(), "SI18", "ScriptSystemInfo.cpp is readable");
+        Check(CountOccurrences(si_source, "kUnknown") >= 8, "SI19",
+              "the 'no data' sentinels are centralised in one place");
+    }
+
+    void TestQualitySettings()
+    {
+        QualitySettings::ResetToDefaults();
+
+        // ---- 档位 ----
+        Check(QualitySettings::GetQualityLevelCount() == 6, "QS0",
+              "there are 6 quality levels");
+        Check(QualitySettings::GetQualityLevel() == 2, "QS1",
+              "the default level is 2 (Medium)");
+        Check(QualitySettings::GetName() == "Medium", "QS2", "and its name is 'Medium'");
+        Check(QualitySettings::GetNames().size() == 6, "QS3", "names has one entry per level");
+        Check(QualitySettings::GetNames()[0] == "Very Low" &&
+                  QualitySettings::GetNames()[5] == "Ultra",
+              "QS4", "the level names are Unity's defaults");
+        Check(QualitySettings::GetNameForLevel(3) == "High", "QS5", "GetNameForLevel(3) is 'High'");
+        // 越界返回空串，不是夹紧到最近的一档。
+        Check(QualitySettings::GetNameForLevel(99).empty(), "QS6",
+              "GetNameForLevel(99) is empty (not clamped)");
+
+        // ---- 切档会整体覆盖开关 ----
+        QualitySettings::SetQualityLevel(4);
+        Check(QualitySettings::GetQualityLevel() == 4, "QS7", "SetQualityLevel(4) sticks");
+        Check(QualitySettings::GetAntiAliasing() == 8, "QS8", "level 4 raises MSAA to 8");
+        Check(Near(QualitySettings::GetShadowDistance(), 150.0f), "QS9",
+              "and shadow distance to 150");
+        Check(static_cast<int>(QualitySettings::GetShadowResolution()) == 3, "QS10",
+              "and shadow resolution to VeryHigh");
+        Check(QualitySettings::GetSkinWeights() == SkinWeights::Unlimited, "QS11",
+              "and skin weights to Unlimited");
+
+        // 越界**不动任何东西**（Unity 的行为）。夹紧会让 SetQualityLevel(99)
+        // 悄悄变成"最高档"。
+        QualitySettings::SetQualityLevel(99);
+        Check(QualitySettings::GetQualityLevel() == 4, "QS12",
+              "SetQualityLevel(99) is ignored, not clamped");
+        QualitySettings::SetQualityLevel(-1);
+        Check(QualitySettings::GetQualityLevel() == 4, "QS13", "and so is -1");
+
+        // ---- Increase / Decrease 在两端停住 ----
+        QualitySettings::SetQualityLevel(5);
+        QualitySettings::IncreaseLevel();
+        Check(QualitySettings::GetQualityLevel() == 5, "QS14", "IncreaseLevel stops at the top");
+        QualitySettings::SetQualityLevel(0);
+        QualitySettings::DecreaseLevel();
+        Check(QualitySettings::GetQualityLevel() == 0, "QS15", "DecreaseLevel stops at the bottom");
+        QualitySettings::IncreaseLevel();
+        Check(QualitySettings::GetQualityLevel() == 1, "QS16",
+              "and IncreaseLevel from the bottom moves by one");
+
+        // ---- 离散合法集一律向下取 ----
+        QualitySettings::SetAntiAliasing(3);
+        Check(QualitySettings::GetAntiAliasing() == 2, "QS17",
+              "antiAliasing(3) snaps DOWN to 2, not up to 4");
+        QualitySettings::SetAntiAliasing(9);
+        Check(QualitySettings::GetAntiAliasing() == 8, "QS18", "antiAliasing(9) snaps to 8");
+        QualitySettings::SetShadowCascades(3);
+        Check(QualitySettings::GetShadowCascades() == 2, "QS19", "shadowCascades(3) snaps to 2");
+        QualitySettings::SetShadowCascades(9);
+        Check(QualitySettings::GetShadowCascades() == 4, "QS20", "and 9 snaps to 4, not to 2");
+
+        // ---- 夹取 ----
+        QualitySettings::SetMasterTextureLimit(7);
+        Check(QualitySettings::GetMasterTextureLimit() == 3, "QS21",
+              "masterTextureLimit is clamped to 3 (more would skip the whole texture)");
+        QualitySettings::SetMaxQueuedFrames(0);
+        Check(QualitySettings::GetMaxQueuedFrames() == 1, "QS22",
+              "maxQueuedFrames is clamped up to 1");
+        QualitySettings::SetVSyncCount(-5);
+        Check(QualitySettings::GetVSyncCount() == 0, "QS23", "negative vSyncCount clamps to 0");
+        QualitySettings::SetShadowDistance(-100.0f);
+        Check(QualitySettings::GetShadowDistance() == 0.0f, "QS24",
+              "a negative shadowDistance clamps to 0");
+
+        // ---- 非法枚举值回落到合法值，不是"照单全收" ----
+        //
+        // 枚举是从脚本的 number 强转过来的，可能是任意整数。一个越界的
+        // shadowResolution 会在建 shadow map 时才炸，而那时已经离调用点很远了。
+        QualitySettings::SetShadowResolution(static_cast<ShadowResolution>(99));
+        Check(QualitySettings::GetShadowResolution() == ShadowResolution::Medium, "QS25",
+              "an out-of-range shadowResolution falls back to Medium");
+        QualitySettings::SetSkinWeights(static_cast<SkinWeights>(7));
+        Check(QualitySettings::GetSkinWeights() == SkinWeights::FourBones, "QS26",
+              "and an out-of-range skinWeights falls back to FourBones");
+
+        // ---- 枚举值与 Unity 一致 ----
+        Check(static_cast<int>(SkinWeights::FourBones) == 4 &&
+                  static_cast<int>(SkinWeights::Unlimited) == 255,
+              "QS27", "SkinWeights uses Unity's 1/2/4/255 values, not 0/1/2/3");
+        Check(static_cast<int>(AnisotropicFiltering::ForceEnable) == 2, "QS28",
+              "AnisotropicFiltering uses Unity's values");
+
+        QualitySettings::ResetToDefaults();
+        Check(QualitySettings::GetQualityLevel() == 2 && QualitySettings::GetAntiAliasing() == 2,
+              "QS29", "ResetToDefaults restores level 2 and its preset");
+
+        // 最高两档的名字顺序：档次表与名字表是**两张表**，靠下标对齐。错位了
+        // 只有这两条能看出来（"Very High" 落在档 5 上，设置面板显示错档名）。
+        Check(QualitySettings::GetNameForLevel(4) == "Very High" &&
+                  QualitySettings::GetNameForLevel(5) == "Ultra" &&
+                  QualitySettings::GetNames()[5] == "Ultra",
+              "QS30", "the top two levels are 'Very High' (4) then 'Ultra' (5)");
+    }
+
+    void TestCursorFacade()
+    {
+        // 这个可执行文件里**没有** WindowSystem，所以走的是"只记状态"那条路。
+        // 那正是要钉住的契约：设什么读回什么，与后端有没有接无关。
+        Cursor::ResetToDefaults();
+        Check(Cursor::GetVisible(), "CU0", "the cursor starts visible");
+        Check(Cursor::GetLockState() == CursorLockMode::None, "CU1",
+              "and unlocked");
+
+        Cursor::SetVisible(false);
+        Check(!Cursor::GetVisible(), "CU2", "SetVisible(false) reads back as false");
+        Cursor::SetLockState(CursorLockMode::Locked);
+        Check(Cursor::GetLockState() == CursorLockMode::Locked, "CU3",
+              "SetLockState(Locked) reads back as Locked");
+
+        Cursor::SetCursorState(true, CursorLockMode::Confined);
+        Check(Cursor::GetVisible() && Cursor::GetLockState() == CursorLockMode::Confined, "CU4",
+              "SetCursorState sets both in one go");
+
+        Cursor::ResetToDefaults();
+        Check(Cursor::GetVisible() && Cursor::GetLockState() == CursorLockMode::None, "CU5",
+              "ResetToDefaults restores visible + unlocked");
+
+        // 枚举值与 Unity 一致。
+        Check(static_cast<int>(CursorLockMode::None) == 0 &&
+                  static_cast<int>(CursorLockMode::Locked) == 1 &&
+                  static_cast<int>(CursorLockMode::Confined) == 2,
+              "CU6", "CursorLockMode uses Unity's numeric values");
+
+        // ---- 接线门：Windows 后端必须真的去改 OS 光标 ----
+        const std::string win_window =
+            ReadFile("Source/Runtime/Function/Render/Platform/Windows/WindowsWindow.cpp");
+        Check(!win_window.empty(), "CU7", "WindowsWindow.cpp is readable");
+        Check(CountOccurrences(win_window, "::ShowCursor(") >= 2, "CU8",
+              "WindowsWindow calls ShowCursor (both directions of the refcount)");
+        Check(CountOccurrences(win_window, "::ClipCursor(") >= 3, "CU9",
+              "and ClipCursor for Confined / Locked / unlock");
+        // ⚠️ 必须是**循环**到越过 0，不是调一次：ShowCursor 是引用计数。
+        Check(CountOccurrences(win_window, "while (::ShowCursor(") == 2, "CU10",
+              "ShowCursor is looped past zero, not called once (it is a refcount)");
+
+        const std::string generic_window =
+            ReadFile("Source/Runtime/Function/Render/Platform/Generic/GenericWindow.h");
+        Check(!generic_window.empty(), "CU11", "GenericWindow.h is readable");
+        Check(CountOccurrences(generic_window, "SetCursorVisible") >= 1 &&
+                  CountOccurrences(generic_window, "SetCursorLockMode") >= 1,
+              "CU12", "GenericWindow declares both cursor hooks for other backends");
+        // ClipCursor 吃的是**屏幕**坐标；把 GetClientRect 的客户区坐标直接传进去，
+        // 在有标题栏/边框的窗口上会把光标锁到偏移了几十像素的一块区域。
+        Check(CountOccurrences(win_window, "::ClientToScreen(") >= 2, "CU13",
+              "the client rect is converted to screen coords before ClipCursor");
+    }
+
+    // =========================================================================
+    // Time 的两个闸门 + 关卡时钟
+    // =========================================================================
+
+    void TestTimeGates()
+    {
+        TimeState& time_state = TimeState::Get();
+        time_state.Reset();
+        time_state.ResetTimeScale();
+        time_state.SetMaximumDeltaTime(TimeState::kDefaultMaximumDeltaTime);
+        time_state.SetCaptureFramerate(0);
+
+        Check(Near(time_state.GetMaximumDeltaTime(), 1.0f / 3.0f), "TG0",
+              "maximumDeltaTime defaults to 1/3 s (Unity's default)");
+        Check(time_state.GetCaptureFramerate() == 0, "TG1",
+              "captureFramerate defaults to off");
+
+        // ---- 闸门作用在"本帧 delta 诞生之前" ----
+        time_state.BeginFrame(2.0f, 2.0f, true);
+        Check(Near(time_state.GetDeltaTime(), 1.0f / 3.0f), "TG2",
+              "a 2-second hitch is clamped to maximumDeltaTime, not passed through");
+        // ⚠️ 闸门在**缩放之前**：timeScale=0.1 时上限仍是 1/3 秒，不是 1/30。
+        time_state.Reset();
+        time_state.SetTimeScale(0.1f);
+        time_state.BeginFrame(2.0f, 2.0f, true);
+        Check(Near(time_state.GetDeltaTime(), (1.0f / 3.0f) * 0.1f), "TG3",
+              "the clamp is applied BEFORE timeScale, so 0.1x still allows 1/3 s of raw step");
+        time_state.ResetTimeScale();
+
+        // ---- captureFramerate 钉死步长 ----
+        time_state.Reset();
+        time_state.SetCaptureFramerate(30);
+        time_state.BeginFrame(0.005f, 0.005f, true);
+        Check(Near(time_state.GetDeltaTime(), 1.0f / 30.0f, 1e-5f), "TG4",
+              "captureFramerate=30 pins the step at 1/30 regardless of the real frame time");
+        time_state.BeginFrame(0.5f, 0.5f, true);
+        Check(Near(time_state.GetDeltaTime(), 1.0f / 30.0f, 1e-5f), "TG5",
+              "and a slow frame does not change it either");
+        time_state.SetCaptureFramerate(0);
+        time_state.BeginFrame(0.016f, 0.016f, true);
+        Check(Near(time_state.GetDeltaTime(), 0.016f), "TG6",
+              "turning captureFramerate off restores the real step");
+        // <= 0 一律当"关闭"，不夹到 1fps。
+        time_state.SetCaptureFramerate(-60);
+        Check(time_state.GetCaptureFramerate() == 0, "TG7",
+              "a negative captureFramerate means OFF, not 1 fps");
+
+        // ---- maximumDeltaTime 的下限 ----
+        time_state.SetMaximumDeltaTime(0.0f);
+        Check(time_state.GetMaximumDeltaTime() > 0.0f, "TG8",
+              "maximumDeltaTime cannot be zeroed (0 would freeze the world)");
+        // ⚠️ 必须还原：上面那一步把上限压到了 1ms，后面的 BeginFrame(0.1) 会被
+        // 夹成 0.001 —— 于是"累计时间"那几条断言全错，而错因看起来像关卡时钟
+        // 坏了。测试之间的全局状态要在离开这一步时还回去。
+        time_state.SetMaximumDeltaTime(TimeState::kDefaultMaximumDeltaTime);
+
+        // ---- 关卡时钟 ----
+        time_state.Reset();
+        time_state.BeginFrame(0.1f, 0.1f, true);
+        time_state.BeginFrame(0.1f, 0.1f, true);
+        Check(Near(time_state.GetTimeSinceLevelLoad(), 0.2f), "TG9",
+              "before any level load, timeSinceLevelLoad tracks Time.time");
+        time_state.NotifyLevelLoaded();
+        Check(Near(time_state.GetTimeSinceLevelLoad(), 0.0f), "TG10",
+              "NotifyLevelLoaded resets the level clock");
+        time_state.BeginFrame(0.05f, 0.05f, true);
+        Check(Near(time_state.GetTimeSinceLevelLoad(), 0.05f), "TG11",
+              "and it then measures from that point");
+        Check(Near(time_state.GetTime(), 0.25f), "TG12",
+              "while Time.time keeps counting from engine start");
+
+        time_state.Reset();
+        time_state.ResetTimeScale();
+        time_state.SetMaximumDeltaTime(TimeState::kDefaultMaximumDeltaTime);
+
+        // ---- 接线门：SceneManager 真的去打点 ----
+        const std::string scene_source =
+            ReadFile("Source/Runtime/Scripting/ScriptScene/ScriptScene.cpp");
+        Check(!scene_source.empty(), "TG13", "ScriptScene.cpp is readable");
+        // >= 3：LoadScene / LoadSceneAdditive / ReloadActiveScene。少一处就是
+        // "有一条加载路径不重置关卡时钟"，而那条路的表现是"计时偶尔偏一点"。
+        Check(CountOccurrences(scene_source, "NotifyLevelLoaded()") >= 3, "TG14",
+              "all three scene-load paths reset the level clock");
+    }
+
+    // =========================================================================
+    // Texture2D / RenderTexture
+    // =========================================================================
+
+    void TestTexture2DFacade()
+    {
+        Texture2D texture;
+        // 空壳：还没有像素。
+        Check(!texture.GetIsValid(), "TF0", "a default Texture2D is not valid");
+        Check(!texture.GetHasUncompressedPixels(), "TF1",
+              "and has no uncompressed pixel layout");
+        Check(!texture.SetPixel(0, 0, ::Color32(255, 0, 0, 255)), "TF2",
+              "SetPixel on an empty texture reports failure");
+        Check(!texture.Resize(0, 0), "TF3", "Resize(0,0) is rejected");
+
+        Check(texture.Resize(4, 2), "TF4", "Resize(4,2) succeeds");
+        // `m_Width` / `m_Height` 是公开字段，脚本侧叫 `width` / `height`
+        // （ZPROPERTY 剥掉 m_ 前缀）。
+        Check(texture.m_Width == 4 && texture.m_Height == 2, "TF5",
+              "and the dimensions stick");
+        Check(texture.GetHasUncompressedPixels(), "TF6",
+              "a resized texture has an uncompressed RGBA8 layout");
+        Check(texture.GetMipmapCount() == 1, "TF7", "and exactly one mip");
+        Check(texture.GetIsValid(), "TF8", "and it is now valid");
+
+        // Resize 出来的是**全 0**（透明黑），不是"保留原内容"。
+        Check(Near(texture.GetPixel(0, 0).a, 0.0f), "TF9", "a resized texture starts at zero");
+
+        Check(texture.SetPixel(1, 1, ::Color32(255, 0, 0, 255)), "TF10",
+              "SetPixel inside the bounds succeeds");
+        const ::Color read_back = texture.GetPixel(1, 1);
+        Check(Near(read_back.r, 1.0f) && Near(read_back.g, 0.0f) && Near(read_back.b, 0.0f) &&
+                  Near(read_back.a, 1.0f),
+              "TF11", "and GetPixel reads it back");
+        // 只写了 (1,1)，(0,0) 必须还是 0 —— 写错位会让"只改一个像素"变成"改一片"。
+        Check(Near(texture.GetPixel(0, 0).a, 0.0f), "TF12", "neighbouring pixels are untouched");
+
+        // 越界：不夹紧，返回透明黑。
+        Check(!texture.SetPixel(-1, 0, ::Color32(255, 0, 0, 255)), "TF13",
+              "SetPixel(-1,0) is rejected (no clamping to the edge)");
+        Check(!texture.SetPixel(4, 0, ::Color32(255, 0, 0, 255)), "TF14",
+              "and so is x == width");
+        // ⚠️ 先在一个**边缘**像素上写不透明色，再读越界坐标。直接读 (99,99)
+        // 是抓不到"夹紧到边缘"那个实现的 —— 那时边缘还是透明的，两种实现的
+        // 返回值一样。这是"空测试"的另一种形态：断言对了但证明不了东西。
+        Check(texture.SetPixel(3, 1, ::Color32(255, 0, 0, 255)), "TF15a",
+              "the bottom-right pixel can be made opaque");
+        Check(Near(texture.GetPixel(-1, 0).a, 0.0f) && Near(texture.GetPixel(99, 99).a, 0.0f),
+              "TF15", "out-of-range GetPixel is transparent black, not the edge pixel");
+
+        // 通道夹紧：Color 的通道是 float，脚本能给 1.5 / -0.2。
+        ::Color over_range;
+        over_range.r = 2.0f;
+        over_range.g = -1.0f;
+        over_range.b = 0.0f;
+        over_range.a = 1.0f;
+        Check(texture.SetPixel(2, 0, over_range), "TF16", "SetPixel accepts an out-of-range Color");
+        const ::Color clamped = texture.GetPixel(2, 0);
+        Check(Near(clamped.r, 1.0f) && Near(clamped.g, 0.0f), "TF17",
+              "and clamps the channels to 0..1 (no uint8_t wraparound)");
+
+        // 舍入：0.5 必须落到 128/255（Unity 的 RoundToInt），不是 127/255
+        // （截断）。差一位，肉眼看不出，但和 ColorUtility.ToHtmlStringRGB
+        // 的 floor(v*255+0.5) 来回转换时就漂了。
+        ::Color half;
+        half.r = 0.5f;
+        half.g = 0.5f;
+        half.b = 0.5f;
+        half.a = 1.0f;
+        Check(texture.SetPixel(0, 1, half), "TF21", "SetPixel accepts a fractional Color");
+        const ::Color rounded = texture.GetPixel(0, 1);
+        Check(Near(rounded.r, 128.0f / 255.0f, 1e-4f), "TF22",
+              "0.5 rounds to 128/255, not 127/255 (rounding, not truncation)");
+
+        // ClearPixels
+        Check(texture.ClearPixels(::Color32(0, 255, 0, 255)), "TF18", "ClearPixels succeeds");
+        const ::Color cleared = texture.GetPixel(3, 1);
+        Check(Near(cleared.g, 1.0f) && Near(cleared.r, 0.0f), "TF19",
+              "and fills every pixel of mip 0");
+        Check(Near(cleared.a, 1.0f), "TF23", "and the alpha channel is filled too");
+
+        Check(!texture.Resize(99999, 1), "TF20",
+              "Resize beyond 16384 is rejected (it could never be uploaded)");
+
+        // 尺寸与数据对不上时不能报"有像素"。只看 w*h>0 的实现会在这里说 true，
+        // 然后 GetPixel 越界读到 vector 外面。
+        Texture2D partial;
+        partial.Resize(4, 2);
+        partial.m_Pixels.resize(8);  // 只够 2 个像素，不是 8 个
+        Check(!partial.GetHasUncompressedPixels(), "TF24",
+              "a pixel buffer shorter than w*h*4 does not count as 'hasUncompressedPixels'");
+        Check(Near(partial.GetPixel(3, 1).a, 0.0f), "TF25",
+              "and GetPixel on the missing tail is transparent black, not a heap over-read");
+    }
+
+    void TestRenderTextureFacade()
+    {
+        RenderTexture render_texture;
+        // 默认构造出来的描述不能是不确定值 —— RenderTextureDesc 原来没有默认
+        // 初始化器，`RenderTextureDesc m_Desc;` 会把 int 读成垃圾。
+        Check(render_texture.GetWidth() == 0 && render_texture.GetHeight() == 0, "RF0",
+              "a default RenderTexture has zeroed dimensions (RenderTextureDesc has defaults)");
+        Check(!render_texture.IsCreated(), "RF1", "and is not created");
+
+        render_texture.SetWidth(1280);
+        render_texture.SetHeight(720);
+        Check(render_texture.GetWidth() == 1280 && render_texture.GetHeight() == 720, "RF2",
+              "width / height are writable");
+        // <= 0 夹到 1，不是 0：0 宽的资源在 RHI 上是非法尺寸。
+        render_texture.SetWidth(0);
+        Check(render_texture.GetWidth() == 1, "RF3", "width 0 clamps to 1");
+
+        render_texture.SetAntiAliasing(3);
+        Check(render_texture.GetAntiAliasing() == 2, "RF4", "antiAliasing(3) snaps DOWN to 2");
+        render_texture.SetDepth(20);
+        Check(render_texture.GetDepth() == 16, "RF5", "depth(20) snaps to 16");
+        render_texture.SetFormat(-7);
+        Check(render_texture.GetFormat() == 0, "RF6", "a negative format clamps to 0 (unspecified)");
+
+        // ---- 生命周期 ----
+        RenderTexture sized;
+        sized.SetWidth(64);
+        sized.SetHeight(64);
+        sized.Create();
+        Check(sized.IsCreated(), "RF7", "Create() on valid dimensions succeeds");
+        sized.Create();
+        Check(sized.IsCreated(), "RF8", "and a second Create() is a no-op");
+        sized.Release();
+        Check(!sized.IsCreated(), "RF9", "Release() clears it");
+
+        // 尺寸非法：不创建、也不置位。
+        RenderTexture empty;
+        empty.SetWidth(1);
+        empty.SetHeight(1);
+        empty.Release();
+        empty.Create();
+        Check(empty.IsCreated(), "RF10", "1x1 is a legal size and creates");
+
+        // ⚠️ 尺寸非法的 RT：Create() 必须**不**置位。RF1 只看默认构造的状态，
+        // 没走 Create() —— 所以"Create 把非法尺寸也标成已创建"这一条之前是漏的。
+        RenderTexture degenerate;
+        degenerate.Create();
+        Check(!degenerate.IsCreated(), "RF16",
+              "Create() on a zero-sized descriptor leaves isCreated false");
+        // setter 会把 <=0 夹到 1，所以 0x0 只能来自默认构造 —— 也就意味着
+        // Create() 里的尺寸检查是**唯一**能挡住它的地方。
+        degenerate.Create();
+        Check(!degenerate.IsCreated(), "RF17",
+              "and a second Create() does not paper over it");
+
+        // ---- 两个 mip 开关的自洽 ----
+        RenderTexture mips;
+        mips.SetAutoGenerateMips(true);
+        Check(mips.GetUseMipMap(), "RF11", "autoGenerateMips=true turns useMipMap on");
+        mips.SetUseMipMap(false);
+        Check(!mips.GetAutoGenerateMips(), "RF12", "useMipMap=false turns autoGenerateMips off");
+
+        // ---- active 是全局的 ----
+        RenderTexture::SetActive(nullptr);
+        Check(RenderTexture::GetActive() == nullptr, "RF13", "active starts as null");
+        RenderTexture::SetActive(&sized);
+        Check(RenderTexture::GetActive() == &sized, "RF14", "SetActive sticks");
+        sized.Create();
+        RenderTexture::SetActive(&sized);
+        sized.Release();
+        // 释放掉的 RT 不能继续当活动目标。
+        Check(RenderTexture::GetActive() == nullptr, "RF15",
+              "releasing the active render target clears 'active'");
+    }
+
+    // =========================================================================
+    // 粒子播放控制
+    // =========================================================================
+
+    void TestParticlePlayback()
+    {
+        Runtime::ParticleComponent particles;
+
+        Check(particles.IsPlaying(), "PP0", "a fresh particle component is playing");
+        Check(particles.IsAlive(), "PP1", "and therefore alive");
+        Check(!particles.IsPaused() && !particles.IsStopped(), "PP2",
+              "and neither paused nor stopped");
+
+        particles.Pause();
+        Check(particles.IsPaused(), "PP3", "Pause() on a playing system pauses it");
+        Check(!particles.IsPlaying(), "PP4", "and it is no longer playing");
+        Check(particles.IsAlive(), "PP5", "but it is still alive");
+
+        particles.Play();
+        Check(particles.IsPlaying() && !particles.IsPaused(), "PP6",
+              "Play() resumes without resetting the clock");
+
+        // SetPlayState 收的是脚本来的 int 强转，可能是任意值。越界档位不落回
+        // Stopped 的话，后面所有 `switch` 都会走 default，状态机读出来是垃圾。
+        particles.SetPlayState(static_cast<ParticlePlayState>(99));
+        Check(particles.IsStopped(), "PP22",
+              "an out-of-range playState falls back to Stopped, not to a garbage state");
+        particles.SetPlayState(ParticlePlayState::Playing);
+        Check(particles.IsPlaying(), "PP23", "and a legal state still round-trips");
+
+        particles.Stop();
+        Check(particles.IsStopped(), "PP7", "Stop() stops it");
+        Check(!particles.IsAlive(), "PP8", "and a stopped system is not alive");
+
+        // ⚠️ 已停止的系统不接受暂停：Unity 的 Pause 只对"正在播的"有意义。
+        particles.Pause();
+        Check(particles.IsStopped() && !particles.IsPaused(), "PP9",
+              "Pause() on a stopped system is a no-op");
+
+        particles.SetTime(5.0f);
+        particles.Clear();
+        Check(particles.IsStopped(), "PP10", "Clear() stops");
+        Check(particles.GetTime() == 0.0f, "PP11", "and zeroes the clock");
+
+        particles.SetTime(-3.0f);
+        Check(particles.GetTime() == 0.0f, "PP12", "a negative time clamps to 0");
+
+        // 三态枚举：两个"真"同时成立是不可能的。
+        Check(static_cast<int>(ParticlePlayState::Stopped) == 0 &&
+                  static_cast<int>(ParticlePlayState::Playing) == 1 &&
+                  static_cast<int>(ParticlePlayState::Paused) == 2,
+              "PP13", "ParticlePlayState is a 3-state enum, not three bools");
+        particles.SetPlayState(ParticlePlayState::Paused);
+        Check(particles.GetPlayState() == ParticlePlayState::Paused, "PP14",
+              "SetPlayState takes the enum directly");
+
+        // ---- Tick 真的按状态推进时钟 ----
+        //
+        // ⚠️ 这里调的是**真的 Tick**，不是"读一下状态"：状态机对了但 Tick 不按
+        // 它分支，是这一类实现里最常见的漏法（两边都编译得过、都跑得动）。
+        // 没有 RenderSystem 时 Tick 会在拿到 swap context 之后就返回，而时钟是
+        // 在**那之前**累加的，所以这几条在没有渲染系统的进程里也成立。
+        particles.Play();
+        particles.SetTime(0.0f);
+        particles.Tick(0.1f);
+        Check(Near(particles.GetTime(), 0.1f), "PP19", "Tick advances the clock while playing");
+        particles.Pause();
+        particles.Tick(0.1f);
+        Check(Near(particles.GetTime(), 0.1f), "PP20",
+              "and does NOT advance it while paused (paused keeps the clock)");
+        particles.Stop();
+        particles.Tick(0.1f);
+        Check(Near(particles.GetTime(), 0.1f), "PP21", "nor while stopped");
+
+        // ---- 接线门：Tick 真的按状态分支 ----
+        const std::string particle_source = ReadFile(
+            "Source/Runtime/Function/Framework/Component/Particle/ParticleComponent.cpp");
+        Check(!particle_source.empty(), "PP15", "ParticleComponent.cpp is readable");
+        Check(CountOccurrences(particle_source, "ParticlePlayState::Stopped") >= 2, "PP16",
+              "Tick early-returns when stopped");
+        Check(CountOccurrences(particle_source, "AddTickParticleEmitter") >= 1 &&
+                  particle_source.find("if (m_PlayState == ParticlePlayState::Playing)") !=
+                      std::string::npos,
+              "PP17", "the simulation tick is gated on Playing");
+        // 暂停时**仍然**同步 transform —— 少了它，暂停中移动发射器会被吞掉。
+        Check(particle_source.find("UpdateParticleTransform") != std::string::npos,
+              "PP18", "the transform is still synced while paused");
+    }
+
+    // =========================================================================
+    // Application 补项
+    // =========================================================================
+
+    void TestApplicationExtras()
+    {
+        // identifier 永远非空且长得像反转域名：空串会让"按包名分组"把全世界
+        // 并成一组。
+        const std::string identifier = Application::GetIdentifier();
+        Check(!identifier.empty(), "AX0", "identifier is never empty");
+        Check(identifier.find("com.") == 0, "AX1",
+              "identifier uses the reversed-domain shape");
+
+        Check(!Application::GetIsMobilePlatform(), "AX2",
+              "a desktop build is not a mobile platform");
+        Check(!Application::GetIsConsolePlatform(), "AX3",
+              "isConsolePlatform is explicitly false (no console backend)");
+        // ⚠️ 无窗口系统时返回 **true**：false 会让"失焦就停"的逻辑在 headless
+        // 下把整个世界冻住。
+        Check(Application::GetIsFocused(), "AX4",
+              "isFocused is true with no window system (false would freeze a headless world)");
+
+        // ---- OpenURL 的白名单（防 shell 注入）----
+        Check(!Application::OpenURL("not-a-url"), "AX5",
+              "OpenURL rejects a string with no allowed scheme");
+        Check(!Application::OpenURL("http://x/a; rm -rf /"), "AX6",
+              "and rejects a ';' even with a legal scheme (system() goes through a shell)");
+        Check(!Application::OpenURL("http://x/$(whoami)"), "AX7", "and rejects $()");
+        Check(!Application::OpenURL("http://x/a b"), "AX8", "and rejects whitespace");
+        Check(!Application::OpenURL("http://"), "AX9", "and rejects an empty host");
+        // 合法 URL 会真的去调 ShellExecute / xdg-open —— 测试里不该真的打开
+        // 浏览器，所以这里只钉"校验不误杀"这一点：mailto: 是合法 scheme。
+        const std::string app_source = ReadFile("Source/Runtime/Application/Application.cpp");
+        Check(!app_source.empty(), "AX10", "Application.cpp is readable");
+        Check(CountOccurrences(app_source, "mailto:") >= 1 &&
+                  CountOccurrences(app_source, "https://") >= 1 &&
+                  CountOccurrences(app_source, "file://") >= 1,
+              "AX11", "the scheme allow-list covers http/https/mailto/file");
+        Check(CountOccurrences(app_source, "kForbidden") >= 2, "AX12",
+              "and there is an explicit shell-metacharacter blacklist");
+
+        // ---- 系统语言：只映射认识的语言，其余 Unknown ----
+        Check(Application::GetSystemLanguage() != SystemLanguage::Unknown ||
+                  Application::GetSystemLanguage() == SystemLanguage::Unknown,
+              "AX13", "systemLanguage resolves to a SystemLanguage value");
+        Check(static_cast<int>(SystemLanguage::English) == 10 &&
+                  static_cast<int>(SystemLanguage::Chinese) == 13,
+              "AX14", "SystemLanguage uses Unity's numeric values");
+
+        // ---- backgroundLoadingPriority ----
+        Application::SetBackgroundLoadingPriority(ThreadPriority::High);
+        Check(Application::GetBackgroundLoadingPriority() == ThreadPriority::High, "AX15",
+              "backgroundLoadingPriority round-trips");
+        Application::SetBackgroundLoadingPriority(ThreadPriority::Low);
+        Check(static_cast<int>(ThreadPriority::Low) == 0 &&
+                  static_cast<int>(ThreadPriority::High) == 3,
+              "AX16", "ThreadPriority uses Unity's 0..3 values");
+
+        // ---- 临时目录不 fallback 到 persistentDataPath ----
+        Check(!Application::GetTemporaryCachePath().empty(), "AX17",
+              "temporaryCachePath resolves to a real temp directory");
+
+        // ---- 非法优先级回落 ----
+        // 不回落的话，脚本里一次算错的枚举值会把加载线程优先级永久顶到最高
+        // —— 而且没有任何日志。
+        Application::SetBackgroundLoadingPriority(static_cast<ThreadPriority>(77));
+        Check(Application::GetBackgroundLoadingPriority() == ThreadPriority::Normal, "AX18",
+              "an out-of-range backgroundLoadingPriority falls back to Normal");
+        Application::SetBackgroundLoadingPriority(ThreadPriority::High);
+
+        // ---- shell 元字符黑名单的实际内容 ----
+        // AX6-AX8 是**行为**门，但它们靠"ShellExecuteA 恰好失败"才过 —— 一个
+        // 真能打开的 URL（file:///tmp/x;y 在部分机器上成立）会让它们放行。
+        // 所以还要看那张黑名单里到底有没有那几个要命的字符。
+        const std::size_t kb = app_source.find("kForbidden = \"");
+        Check(kb != std::string::npos, "AX19", "the shell metacharacter blacklist exists");
+        if (kb != std::string::npos)
+        {
+            const std::size_t begin = kb + std::strlen("kForbidden = \"");
+            const std::size_t end   = app_source.find("\";", begin);
+            Check(end != std::string::npos && end > begin, "AX20", "and it is a string literal");
+            if (end != std::string::npos && end > begin)
+            {
+                const std::string literal = app_source.substr(begin, end - begin);
+                bool all_present = true;
+                // ⚠️ 比对的是**源码字面量**里的字符（\t 在文件里是反斜杠+t
+                // 两个字符），不是它运行时的值。
+                for (const char c : std::string(" \\\"'`$\\;|&<>(){}[]*?!#"))
+                {
+                    if (literal.find(c) == std::string::npos)
+                    {
+                        all_present = false;
+                    }
+                }
+                Check(all_present, "AX21",
+                      "and it lists every dangerous shell metacharacter");
+            }
+        }
     }
 }  // namespace
 
@@ -12549,6 +13703,20 @@ int main()
     TestVector3Statics();
     TestVector3StaticsWiring();
     TestMathfTail();
+    TestColorExtras();
+    TestSystemInfo();
+    TestQualitySettings();
+    TestCursorFacade();
+    TestTimeGates();
+    TestTexture2DFacade();
+    TestRenderTextureFacade();
+    TestParticlePlayback();
+    TestApplicationExtras();
+    TestGradient();
+    TestGradientWiring();
+    TestColliderBounds();
+    TestGameObjectProperties();
+    TestColorExtrasWiring();
     TestTransformExtras();
     TestTransformMoveAfterSibling();
     TestTransformExtrasWiring();

@@ -257,6 +257,24 @@ class Mover extends Behaviour {
         ///   2. 矩阵属性和 `TransformPoint` 是同一套（getter 挂到 worldToLocal 上
         ///      的话仍然是个 Matrix4x4，类型检查一样过）。
         this.transformExtrasProbe = "";
+        /// `Color` 补齐面 + `ColorUtility` 的端到端探针。
+        ///
+        /// 判据挑的是"替代实现也满足"之外的那几个：
+        ///   * `GetGrayscale` 的**三个纯色互不相同**（1/3 平均值版三条都是 1/3）；
+        ///   * HTML 串 0.5 -> **80**，而 `Color32` 截断是 127；
+        ///   * 缩写串 `#FFF` 必须是**纯白**（每位 `*17`，不是 `*16` 的 F0）；
+        ///   * 解析失败时 `valid === false` 且 `color` 全 0（含 a）。
+        this.colorExtrasProbe = "";
+        /// `SystemInfo` / `QualitySettings` / `Cursor` / `Time` 补项 / `Application` 补项
+        /// 的**脚本侧**探针。
+        ///
+        /// C++ 侧的 UnityParitySmokeTest 只钉住"类本身对不对"；这里钉的是"这些名字
+        /// 在 TS 里真的存在且类型对" —— 少了 `.d.ts` 里的 `declare class`、或者
+        /// 静态属性没装到构造器上，C++ 那一侧是全绿的。
+        ///
+        /// ⚠️ 断言的是**哨兵值与夹取规则**，不是"真机上的真值"：这个进程没有
+        /// RenderSystem，图形相关的一律走"拿不到"那条路 —— 那条路才是没人测过的。
+        this.platformProbe = "";
         // ---- Unity 的 FixedUpdate ---------------------------------------------
         //
         // 这一段存在的理由不只是"多一个钩子"：在此之前 `OnFixedUpdate` 在 d.ts 里
@@ -619,6 +637,135 @@ class Mover extends Behaviour {
                 Math.abs(viaInverseMatrix.y - backward.y) < 0.001 &&
                 Math.abs(viaInverseMatrix.z - backward.z) < 0.001),
             worldPos.x.toFixed(2) + "," + worldPos.y.toFixed(2) + "," + worldPos.z.toFixed(2)
+        ].join("|");
+    }
+    ProbeColorExtras() {
+        const red = { r: 1, g: 0, b: 0, a: 1 };
+        const grey = { r: 0.5, g: 0.5, b: 0.5, a: 1 };
+        const htmlGrey = ColorUtility.ToHtmlStringRGB(grey);
+        const alphaKept = ColorUtility.ToHtmlStringRGBA({ r: 1, g: 0, b: 0, a: 0.25 });
+        const alphaDropped = ColorUtility.ToHtmlStringRGB({ r: 1, g: 0, b: 0, a: 0.25 });
+        const white = ColorUtility.TryParseHtmlString("#FFF");
+        const longForm = ColorUtility.TryParseHtmlString("#FF0000");
+        const bad = ColorUtility.TryParseHtmlString("#ZZZZZZ");
+        const linear = Color.ToLinear(grey);
+        const warm = Color.CorrelatedColorTemperatureToRGB(1500);
+        this.colorExtrasProbe = [
+            Color.GetGrayscale(red).toFixed(3),
+            Color.GetGrayscale({ r: 0, g: 1, b: 0, a: 1 }).toFixed(3),
+            Color.GetGrayscale({ r: 0, g: 0, b: 1, a: 1 }).toFixed(3),
+            Color.GetMaxColorComponent({ r: 0.2, g: 0.9, b: 0.4, a: 1 }).toFixed(1),
+            htmlGrey,
+            alphaKept,
+            alphaDropped,
+            Color.ToString(red),
+            linear.r.toFixed(3),
+            Color.ToGamma(linear).r.toFixed(3),
+            String(white.valid),
+            String(white.color.r === 1 && white.color.g === 1 && white.color.b === 1),
+            String(longForm.valid),
+            ColorUtility.ToHtmlStringRGBA(longForm.color),
+            String(bad.valid),
+            String(bad.color.r === 0 && bad.color.g === 0 && bad.color.b === 0 && bad.color.a === 0),
+            warm.b.toFixed(3),
+            String(warm.a === 1)
+        ].join("|");
+    }
+    ProbePlatformFacades() {
+        // ---- SystemInfo：headless 下必须是哨兵值 ----
+        const sysDeviceType = SystemInfo.deviceType;
+        const sysFamily = SystemInfo.operatingSystemFamily;
+        const sysProcessor = SystemInfo.processorCount;
+        const sysDeviceName = SystemInfo.deviceName;
+        const sysGraphicsMemory = SystemInfo.graphicsMemorySize;
+        const sysShaderLevel = SystemInfo.graphicsShaderLevel;
+        const sysBattery = SystemInfo.batteryLevel;
+        const sysBatteryStatus = SystemInfo.batteryStatus;
+        const sysInstancing = SystemInfo.supportsInstancing;
+        // ---- QualitySettings：档位 / 夹取 / 越界 ----
+        QualitySettings.ResetToDefaults();
+        const qualityDefault = QualitySettings.qualityLevel;
+        const qualityNameDefault = QualitySettings.name;
+        const qualityCount = QualitySettings.GetQualityLevelCount();
+        const qualityNames = QualitySettings.names;
+        // ⚠️ 走**属性**而不是 SetQualityLevel：setter 被 codegen 从方法表摘掉了
+        // （静态访问器只能挂一处，见 ScriptTime.h 的 GetRealtimeSinceStartup）。
+        QualitySettings.qualityLevel = 4;
+        const qualityAfterSet = QualitySettings.qualityLevel;
+        const aaFromPreset = QualitySettings.antiAliasing;
+        const shadowFromPreset = QualitySettings.shadowDistance;
+        // 越界不动（不是夹紧到最高档）。
+        QualitySettings.qualityLevel = 99;
+        const qualityAfterOutOfRange = QualitySettings.qualityLevel;
+        // 离散合法集向下取。
+        QualitySettings.antiAliasing = 3;
+        const aaSnapped = QualitySettings.antiAliasing;
+        QualitySettings.masterTextureLimit = 7;
+        const mipClamped = QualitySettings.masterTextureLimit;
+        QualitySettings.ResetToDefaults();
+        const qualityAfterReset = QualitySettings.qualityLevel;
+        // ---- Cursor：设什么读回什么 ----
+        Cursor.ResetToDefaults();
+        const cursorVisibleDefault = Cursor.visible;
+        const cursorLockDefault = Cursor.lockState;
+        Cursor.SetCursorState(false, CursorLockMode.Locked);
+        const cursorVisibleAfter = Cursor.visible;
+        const cursorLockAfter = Cursor.lockState;
+        Cursor.ResetToDefaults();
+        const cursorVisibleReset = Cursor.visible;
+        // ---- Time 补项 ----
+        const maxDelta = Time.maximumDeltaTime;
+        const captureRate = Time.captureFramerate;
+        const sinceLevelLoad = Time.timeSinceLevelLoad;
+        // ---- Application 补项 ----
+        const appIdentifier = Application.identifier;
+        const appMobile = Application.isMobilePlatform;
+        const appConsole = Application.isConsolePlatform;
+        const appFocused = Application.isFocused;
+        const appLanguage = Application.systemLanguage;
+        // 白名单：没有合法 scheme 的串必须被拒（防 shell 注入）。
+        const appOpenBogus = Application.OpenURL("bogus");
+        const appOpenInjected = Application.OpenURL("http://x/a; rm -rf /");
+        Application.backgroundLoadingPriority = ThreadPriority.High;
+        const appPriority = Application.backgroundLoadingPriority;
+        this.platformProbe = [
+            String(sysDeviceType),
+            String(sysFamily),
+            String(sysProcessor > 0),
+            String(sysDeviceName.length > 0),
+            String(sysGraphicsMemory === 0),
+            String(sysShaderLevel === 0),
+            String(sysBattery === -1),
+            String(sysBatteryStatus === 0),
+            String(sysInstancing === false),
+            String(qualityDefault),
+            qualityNameDefault,
+            String(qualityCount),
+            String(qualityNames.length),
+            qualityNames[0],
+            String(qualityAfterSet),
+            String(aaFromPreset),
+            shadowFromPreset.toFixed(1),
+            String(qualityAfterOutOfRange),
+            String(aaSnapped),
+            String(mipClamped),
+            String(qualityAfterReset),
+            String(cursorVisibleDefault),
+            String(cursorLockDefault),
+            String(cursorVisibleAfter),
+            String(cursorLockAfter),
+            String(cursorVisibleReset),
+            maxDelta.toFixed(4),
+            String(captureRate),
+            String(sinceLevelLoad >= 0),
+            String(appIdentifier.indexOf("com.") === 0),
+            String(appMobile === false),
+            String(appConsole === false),
+            String(appFocused),
+            String(appLanguage >= 0),
+            String(appOpenBogus === false),
+            String(appOpenInjected === false),
+            String(appPriority)
         ].join("|");
     }
     /// 走 **JS shim** 的那条停止路径（`g.Behaviour.prototype.StopAllCoroutines`）。

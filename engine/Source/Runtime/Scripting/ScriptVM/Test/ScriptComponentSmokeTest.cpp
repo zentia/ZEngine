@@ -1158,6 +1158,47 @@ int main(int argc, char** argv)
                 mover_value("vecStaticsProbe"),
                 "0.7071|1.0000|0.7071|0.7071|0.0000|90.000|-90.000|0.13477");
 
+        // --- Unity 的 Color 补齐面 + ColorUtility（CX 段）-------------------
+        //
+        // 与 TE 段同一类理由：一半判据在 tsc 那一步就走掉了（少 ZFUNCTION /
+        // ZSCRIPTPROPERTY 就过不了类型检查），运行时这边抓的是"值" —— 尤其是
+        // `80` vs `7F`（四舍五入 vs 截断）和 `#FFF` 必须是纯白这两条。
+        CheckTrue("Z8", "ProbeColorExtras 送到了 JS 侧",
+                  comp2->InvokeMethod("ProbeColorExtras"));
+        CheckEq("Z9", "Color 补齐面端到端：grayscale / HTML 串 / 解析 / 线性",
+                mover_value("colorExtrasProbe"),
+                "0.299|0.587|0.114|0.9|808080|FF000040|FF0000|"
+                "RGBA(1.000, 0.000, 0.000, 1.000)|0.214|0.500|"
+                "true|true|true|FF0000FF|false|true|0.000|true");
+
+        // --- SystemInfo / QualitySettings / Cursor / Time 补项 / Application 补项
+        //
+        // 判据分两处：tsc 那一步抓"名字和类型在不在"（少一个 declare class 就过
+        // 不了类型检查），这里抓"值对不对" —— 尤其是 headless 下的**哨兵值**
+        // 与"离散合法集向下取"这两条，它们在真机上根本走不到。
+        CheckTrue("ZA0", "ProbePlatformFacades 送到了 JS 侧",
+                  comp2->InvokeMethod("ProbePlatformFacades"));
+        CheckEq("ZA1", "平台门面端到端：SystemInfo / QualitySettings / Cursor / Time / Application",
+                mover_value("platformProbe"),
+                // 逐段的含义（顺序与 Mover.ts 的 platformProbe 一致）：
+                //   1-2   DeviceType.Desktop(3) / OperatingSystemFamily.Windows(2)
+                //   3-4   逻辑处理器数 > 0、机器名非空
+                //   5-9   headless 哨兵：显存 0、着色器等级 0、电量 -1、
+                //         电池 Unknown(0)、supportsInstancing = false
+                //   10-21 QualitySettings：默认档 2 / "Medium" / 6 档 /
+                //         names[0] = "Very Low" / 切到 4 档后 MSAA 8、阴影 150 /
+                //         越界 99 不动 / MSAA 3 -> 2（向下取）/ mip 上限 7 -> 3 /
+                //         复位回 2
+                //   22-26 Cursor：默认 true|None(0)，设完 false|Locked(1)，复位回来
+                //   27-29 Time：maximumDeltaTime 1/3、captureFramerate 0、
+                //         timeSinceLevelLoad >= 0
+                //   30-37 Application：identifier 以 com. 开头、非移动非主机、
+                //         有焦点、语种是数字、两条 URL 都被拒、优先级 High(3)
+                "3|2|true|true|true|true|true|true|true|"
+                "2|Medium|6|6|Very Low|4|8|150.0|4|2|3|2|"
+                "true|0|false|1|true|0.3333|0|true|"
+                "true|true|true|true|true|true|true|3");
+
         // --- Unity 的 Transform 补齐面（TE 段）------------------------------
         //
         // 这一段的判据在 tsc 那一步就已经走掉一半了：ZSCRIPTPROPERTY 少一条，

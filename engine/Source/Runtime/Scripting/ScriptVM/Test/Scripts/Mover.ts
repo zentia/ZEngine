@@ -679,6 +679,173 @@ class Mover extends Behaviour {
         ].join("|");
     }
 
+    /// `Color` 补齐面 + `ColorUtility` 的端到端探针。
+    ///
+    /// 判据挑的是"替代实现也满足"之外的那几个：
+    ///   * `GetGrayscale` 的**三个纯色互不相同**（1/3 平均值版三条都是 1/3）；
+    ///   * HTML 串 0.5 -> **80**，而 `Color32` 截断是 127；
+    ///   * 缩写串 `#FFF` 必须是**纯白**（每位 `*17`，不是 `*16` 的 F0）；
+    ///   * 解析失败时 `valid === false` 且 `color` 全 0（含 a）。
+    colorExtrasProbe: string = "";
+
+    ProbeColorExtras(): void {
+        const red: Color = { r: 1, g: 0, b: 0, a: 1 };
+        const grey: Color = { r: 0.5, g: 0.5, b: 0.5, a: 1 };
+
+        const htmlGrey: string = ColorUtility.ToHtmlStringRGB(grey);
+        const alphaKept: string = ColorUtility.ToHtmlStringRGBA({ r: 1, g: 0, b: 0, a: 0.25 });
+        const alphaDropped: string = ColorUtility.ToHtmlStringRGB({ r: 1, g: 0, b: 0, a: 0.25 });
+
+        const white: ColorParseResult = ColorUtility.TryParseHtmlString("#FFF");
+        const longForm: ColorParseResult = ColorUtility.TryParseHtmlString("#FF0000");
+        const bad: ColorParseResult = ColorUtility.TryParseHtmlString("#ZZZZZZ");
+
+        const linear: Color = Color.ToLinear(grey);
+        const warm: Color = Color.CorrelatedColorTemperatureToRGB(1500);
+
+        this.colorExtrasProbe = [
+            Color.GetGrayscale(red).toFixed(3),
+            Color.GetGrayscale({ r: 0, g: 1, b: 0, a: 1 }).toFixed(3),
+            Color.GetGrayscale({ r: 0, g: 0, b: 1, a: 1 }).toFixed(3),
+            Color.GetMaxColorComponent({ r: 0.2, g: 0.9, b: 0.4, a: 1 }).toFixed(1),
+            htmlGrey,
+            alphaKept,
+            alphaDropped,
+            Color.ToString(red),
+            linear.r.toFixed(3),
+            Color.ToGamma(linear).r.toFixed(3),
+            String(white.valid),
+            String(white.color.r === 1 && white.color.g === 1 && white.color.b === 1),
+            String(longForm.valid),
+            ColorUtility.ToHtmlStringRGBA(longForm.color),
+            String(bad.valid),
+            String(bad.color.r === 0 && bad.color.g === 0 && bad.color.b === 0 && bad.color.a === 0),
+            warm.b.toFixed(3),
+            String(warm.a === 1)
+        ].join("|");
+    }
+
+    /// `SystemInfo` / `QualitySettings` / `Cursor` / `Time` 补项 / `Application` 补项
+    /// 的**脚本侧**探针。
+    ///
+    /// C++ 侧的 UnityParitySmokeTest 只钉住"类本身对不对"；这里钉的是"这些名字
+    /// 在 TS 里真的存在且类型对" —— 少了 `.d.ts` 里的 `declare class`、或者
+    /// 静态属性没装到构造器上，C++ 那一侧是全绿的。
+    ///
+    /// ⚠️ 断言的是**哨兵值与夹取规则**，不是"真机上的真值"：这个进程没有
+    /// RenderSystem，图形相关的一律走"拿不到"那条路 —— 那条路才是没人测过的。
+    platformProbe: string = "";
+
+    ProbePlatformFacades(): void {
+        // ---- SystemInfo：headless 下必须是哨兵值 ----
+        const sysDeviceType: number = SystemInfo.deviceType;
+        const sysFamily: number = SystemInfo.operatingSystemFamily;
+        const sysProcessor: number = SystemInfo.processorCount;
+        const sysDeviceName: string = SystemInfo.deviceName;
+        const sysGraphicsMemory: number = SystemInfo.graphicsMemorySize;
+        const sysShaderLevel: number = SystemInfo.graphicsShaderLevel;
+        const sysBattery: number = SystemInfo.batteryLevel;
+        const sysBatteryStatus: number = SystemInfo.batteryStatus;
+        const sysInstancing: boolean = SystemInfo.supportsInstancing;
+
+        // ---- QualitySettings：档位 / 夹取 / 越界 ----
+        QualitySettings.ResetToDefaults();
+        const qualityDefault: number = QualitySettings.qualityLevel;
+        const qualityNameDefault: string = QualitySettings.name;
+        const qualityCount: number = QualitySettings.GetQualityLevelCount();
+        const qualityNames: string[] = QualitySettings.names;
+
+        // ⚠️ 走**属性**而不是 SetQualityLevel：setter 被 codegen 从方法表摘掉了
+        // （静态访问器只能挂一处，见 ScriptTime.h 的 GetRealtimeSinceStartup）。
+        QualitySettings.qualityLevel = 4;
+        const qualityAfterSet: number = QualitySettings.qualityLevel;
+        const aaFromPreset: number = QualitySettings.antiAliasing;
+        const shadowFromPreset: number = QualitySettings.shadowDistance;
+
+        // 越界不动（不是夹紧到最高档）。
+        QualitySettings.qualityLevel = 99;
+        const qualityAfterOutOfRange: number = QualitySettings.qualityLevel;
+
+        // 离散合法集向下取。
+        QualitySettings.antiAliasing = 3;
+        const aaSnapped: number = QualitySettings.antiAliasing;
+
+        QualitySettings.masterTextureLimit = 7;
+        const mipClamped: number = QualitySettings.masterTextureLimit;
+
+        QualitySettings.ResetToDefaults();
+        const qualityAfterReset: number = QualitySettings.qualityLevel;
+
+        // ---- Cursor：设什么读回什么 ----
+        Cursor.ResetToDefaults();
+        const cursorVisibleDefault: boolean = Cursor.visible;
+        const cursorLockDefault: number = Cursor.lockState;
+
+        Cursor.SetCursorState(false, CursorLockMode.Locked);
+        const cursorVisibleAfter: boolean = Cursor.visible;
+        const cursorLockAfter: number = Cursor.lockState;
+
+        Cursor.ResetToDefaults();
+        const cursorVisibleReset: boolean = Cursor.visible;
+
+        // ---- Time 补项 ----
+        const maxDelta: number = Time.maximumDeltaTime;
+        const captureRate: number = Time.captureFramerate;
+        const sinceLevelLoad: number = Time.timeSinceLevelLoad;
+
+        // ---- Application 补项 ----
+        const appIdentifier: string = Application.identifier;
+        const appMobile: boolean = Application.isMobilePlatform;
+        const appConsole: boolean = Application.isConsolePlatform;
+        const appFocused: boolean = Application.isFocused;
+        const appLanguage: number = Application.systemLanguage;
+        // 白名单：没有合法 scheme 的串必须被拒（防 shell 注入）。
+        const appOpenBogus: boolean = Application.OpenURL("bogus");
+        const appOpenInjected: boolean = Application.OpenURL("http://x/a; rm -rf /");
+        Application.backgroundLoadingPriority = ThreadPriority.High;
+        const appPriority: number = Application.backgroundLoadingPriority;
+
+        this.platformProbe = [
+            String(sysDeviceType),
+            String(sysFamily),
+            String(sysProcessor > 0),
+            String(sysDeviceName.length > 0),
+            String(sysGraphicsMemory === 0),
+            String(sysShaderLevel === 0),
+            String(sysBattery === -1),
+            String(sysBatteryStatus === 0),
+            String(sysInstancing === false),
+            String(qualityDefault),
+            qualityNameDefault,
+            String(qualityCount),
+            String(qualityNames.length),
+            qualityNames[0],
+            String(qualityAfterSet),
+            String(aaFromPreset),
+            shadowFromPreset.toFixed(1),
+            String(qualityAfterOutOfRange),
+            String(aaSnapped),
+            String(mipClamped),
+            String(qualityAfterReset),
+            String(cursorVisibleDefault),
+            String(cursorLockDefault),
+            String(cursorVisibleAfter),
+            String(cursorLockAfter),
+            String(cursorVisibleReset),
+            maxDelta.toFixed(4),
+            String(captureRate),
+            String(sinceLevelLoad >= 0),
+            String(appIdentifier.indexOf("com.") === 0),
+            String(appMobile === false),
+            String(appConsole === false),
+            String(appFocused),
+            String(appLanguage >= 0),
+            String(appOpenBogus === false),
+            String(appOpenInjected === false),
+            String(appPriority)
+        ].join("|");
+    }
+
     /// 走 **JS shim** 的那条停止路径（`g.Behaviour.prototype.StopAllCoroutines`）。
     /// C++ 直接调 comp.StopAllCoroutines() 是测不到 shim 的 —— 少一行转发
     /// 照样全绿（变异 SC16 就是这么漏的）。
