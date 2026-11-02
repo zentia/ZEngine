@@ -67,6 +67,43 @@ void AnimatorInstance::Reset()
     }
 }
 
+int AnimatorInstance::GetParameterCount() const
+{
+    return m_Controller != nullptr ? static_cast<int>(m_Controller->parameters.size()) : 0;
+}
+
+const char* AnimatorInstance::GetParameterName(int index) const
+{
+    if (m_Controller == nullptr || index < 0 || index >= static_cast<int>(m_Controller->parameters.size()))
+    {
+        return "";
+    }
+    return m_Controller->parameters[static_cast<size_t>(index)].name.c_str();
+}
+
+int AnimatorInstance::GetStateCount() const
+{
+    return m_Controller != nullptr ? static_cast<int>(m_Controller->states.size()) : 0;
+}
+
+const char* AnimatorInstance::GetStateName(int index) const
+{
+    if (m_Controller == nullptr || index < 0 || index >= static_cast<int>(m_Controller->states.size()))
+    {
+        return "";
+    }
+    return m_Controller->states[static_cast<size_t>(index)].name.c_str();
+}
+
+bool AnimatorInstance::IsCurrentState(const char* state_name) const
+{
+    if (state_name == nullptr || m_Controller == nullptr || m_CurrentState < 0)
+    {
+        return false;
+    }
+    return m_Controller->states[static_cast<size_t>(m_CurrentState)].name == state_name;
+}
+
 const char* AnimatorInstance::GetCurrentStateName() const
 {
     if (m_Controller == nullptr || m_CurrentState < 0 || m_CurrentState >= static_cast<int>(m_Controller->states.size()))
@@ -423,7 +460,9 @@ void AnimatorInstance::Tick(float delta_time)
     {
         return;
     }
-    if (!(delta_time > 0.0f))
+    const float scaled_delta = delta_time * m_Speed;
+
+    if (!(scaled_delta > 0.0f))
     {
         RebuildBlendState();
         return;
@@ -431,17 +470,17 @@ void AnimatorInstance::Tick(float delta_time)
 
     const size_t state_count = m_Controller->states.size();
 
-    AdvanceState(m_CurrentState, delta_time);
+    AdvanceState(m_CurrentState, scaled_delta);
     CollectEvents(m_CurrentState);
 
     if (m_TransitionTarget >= 0)
     {
         // Both sides advance during a fade, and fade completion is what
         // promotes the target to current.
-        AdvanceState(m_TransitionTarget, delta_time);
+        AdvanceState(m_TransitionTarget, scaled_delta);
         CollectEvents(m_TransitionTarget);
 
-        m_TransitionTime += delta_time;
+        m_TransitionTime += scaled_delta;
         if (m_TransitionTime >= m_TransitionDuration)
         {
             m_CurrentState = m_TransitionTarget;

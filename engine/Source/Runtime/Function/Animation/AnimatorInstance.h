@@ -58,6 +58,18 @@ public:
     float GetStateClipLength(int state_index) const;
 
     // ---- Driving ------------------------------------------------------------
+
+    /// Unity 的 `animator.speed`：全局播放速率（1 = 原速，0 = 冻结）。
+    ///
+    /// 放在**实例**上而不是控制器上，与参数值同侧：控制器是共享资产，十个角色
+    /// 共用一份，其中一个角色慢放不能改到别人。Unity 也是这个分法。
+    ///
+    /// ⚠️ 负数夹到 0 而不是原样接受：倒放需要 `AdvanceState` 支持反向推进
+    /// （PingPong 的 `direction` 只覆盖"播到头再往回"，不是负 dt），现在没有那条
+    /// 路 —— 接受 -1 会得到一个"看起来在跑、其实卡在时间 0"的实例。
+    float GetSpeed() const { return m_Speed; }
+    void SetSpeed(float speed) { m_Speed = speed > 0.0f ? speed : 0.0f; }
+
     void Tick(float delta_time);
 
     /// Input for `AnimationSystem::BuildBlendStateWithClipData()`. One clip when
@@ -74,11 +86,42 @@ public:
     /// Events fired during the last `Tick()`, cleared at the start of the next.
     const std::vector<eastl::string>& GetFiredEvents() const { return m_FiredEvents; }
 
+    // ---- 控制器形状（脚本要靠它枚举，不然只能靠作者口述）--------------------
+    //
+    // 这些**只**读共享资产，不改运行时状态，所以是 const 且恒一致。
+    // 没有控制器时一律返回 0 / ""，与上面那组参数 getter 的约定一致。
+
+    /// 参数个数（Unity 的 `animator.parameterCount`）。
+    int GetParameterCount() const;
+    /// 参数名；越界返回空串。
+    const char* GetParameterName(int index) const;
+    /// 状态个数。
+    int GetStateCount() const;
+    /// 状态名；越界返回空串。
+    const char* GetStateName(int index) const;
+
+    /// 当前状态是不是叫这个名字（Unity 的
+    /// `animator.GetCurrentAnimatorStateInfo(0).IsName(name)`）。
+    ///
+    /// 单列一个方法而不是让脚本自己比 `GetCurrentStateName()`：那个字符串每次
+    /// 都要跨边界搬一次，而"我在不在 Idle"是每帧都可能问的事。
+    bool IsCurrentState(const char* state_name) const;
+
     // ---- Explicit control ---------------------------------------------------
     /// Jumps to a state immediately (no fade).
     void Play(const char* state_name, float normalized_time = 0.0f);
     /// Fades to a state over `duration` seconds (0 = snap).
     void CrossFade(const char* state_name, float duration, float normalized_time = 0.0f);
+
+    /// Unity 的 `animator.Rebind()`：播放头归零、参数回到控制器默认值、跳回
+    /// 默认状态。
+    ///
+    /// 与 `Reset()` 的关系：就是它。留两个名字没有意义，所以 `Rebind()` 不在本
+    /// 类里 —— 组件层那个 `Rebind()` 直接调 `Reset()`。
+    ///
+    /// ⚠️ 会把 `SetStateClipLength()` 解析出来的长度一起丢掉（重新按资产值播种）。
+    /// 那是"从资产重新绑定"该有的行为，调用方要的是"回到初始状态"。
+    void Rebind() { Reset(); }
 
     const AnimatorController* GetController() const { return m_Controller; }
 
@@ -129,4 +172,8 @@ private:
 
     BlendState m_BlendState;
     std::vector<eastl::string> m_FiredEvents;
+
+    /// Unity 的 `animator.speed`。`Initialize` 不动它 —— 重新绑定控制器不该把
+    /// 脚本设过的速率一起清掉。
+    float m_Speed {1.0f};
 };
