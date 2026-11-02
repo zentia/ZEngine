@@ -477,3 +477,70 @@ void WindowsWindow::GetCursorPos(double& x, double& y) const
         }
     }
 }
+
+void WindowsWindow::SetCursorVisible(bool visible)
+{
+    // 先记状态（基类那份），再产生 OS 效果 —— 这样"设什么读回什么"在所有
+    // 后端上成立，不管 OS 那边成没成。
+    GenericWindow::SetCursorVisible(visible);
+
+    // ShowCursor 是**引用计数**而不是开关：TRUE 加一、FALSE 减一，计数 < 0 时
+    // 光标隐藏。所以"绝对设置"只能循环到越过 0 —— 直接调一次 ShowCursor(FALSE)
+    // 在嵌套调用（编辑器面板 + 游戏各调一次）下会把计数推到 -2，之后调一次
+    // ShowCursor(TRUE) 仍不显示。这是经典的"光标不见了" bug。
+    if (visible)
+    {
+        while (::ShowCursor(TRUE) < 0)
+        {
+        }
+    }
+    else
+    {
+        while (::ShowCursor(FALSE) >= 0)
+        {
+        }
+    }
+}
+
+void WindowsWindow::SetCursorLockMode(GenericWindow::CursorLockMode mode)
+{
+    GenericWindow::SetCursorLockMode(mode);
+
+    if (!m_Hwnd)
+    {
+        return;
+    }
+    if (mode == GenericWindow::CursorLockMode::None)
+    {
+        ::ClipCursor(nullptr);
+        return;
+    }
+
+    RECT client_rect;
+    if (!::GetClientRect(m_Hwnd, &client_rect))
+    {
+        ::ClipCursor(nullptr);
+        return;
+    }
+    // ClipCursor 要的是**屏幕坐标**，GetClientRect 给的是客户区坐标。
+    POINT top_left {client_rect.left, client_rect.top};
+    POINT bottom_right {client_rect.right, client_rect.bottom};
+    ::ClientToScreen(m_Hwnd, &top_left);
+    ::ClientToScreen(m_Hwnd, &bottom_right);
+
+    if (mode == GenericWindow::CursorLockMode::Confined)
+    {
+        const RECT screen_rect {top_left.x, top_left.y, bottom_right.x, bottom_right.y};
+        ::ClipCursor(&screen_rect);
+        return;
+    }
+
+    // Locked：钉在客户区正中。Unity 的语义是"隐藏 + 锁定在中心"，这里把裁剪
+    // 区域收到 1x1，光标就被夹在中心那一点上 —— 不需要 raw input 也能拿到
+    // Unity 的行为（移动量仍然从光标位置差算得出）。
+    const LONG center_x = (top_left.x + bottom_right.x) / 2;
+    const LONG center_y = (top_left.y + bottom_right.y) / 2;
+    const RECT center_rect {center_x, center_y, center_x + 1, center_y + 1};
+    ::ClipCursor(&center_rect);
+    ::SetCursorPos(center_x, center_y);
+}

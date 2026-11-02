@@ -45,6 +45,11 @@ public:
     // 光标位置（客户区坐标）
     void GetCursorPos(double& x, double& y) const override;
 
+    // 光标状态：这两个 override 是"真的去改 Win32 光标"，而不是只记状态
+    // （基类那份只记录，见 GenericWindow.h）。
+    void SetCursorVisible(bool visible) override;
+    void SetCursorLockMode(GenericWindow::CursorLockMode mode) override;
+
     // 窗口是否请求关闭
     bool ShouldClose() const override { return m_ShouldClose; }
     void SetShouldClose(bool v) { m_ShouldClose = v; }
