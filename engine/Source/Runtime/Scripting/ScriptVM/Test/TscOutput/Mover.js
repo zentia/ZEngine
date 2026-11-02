@@ -157,6 +157,19 @@ class Mover extends Behaviour {
         // 少任何一边（Euler 用了另一套顺序 / GetEulerAngles 换了轴）这里立刻不相等。
         this.quatRoundTrip = "";
         this.quatYToZ = "";
+        // ---- Unity 的 `AnimationCurve` ----------------------------------------
+        //
+        // 与 `Bounds` 同一类理由：这段的价值在 **tsc** 与"端到端真的取值"。曲线是
+        // 值类型（JS 端就是 `{keys, preWrapMode, postWrapMode}`），静态方法挂在同名
+        // 的 `declare class` 上 —— 同名合并只在**真的类型检查器**跑过之后才算成立。
+        //
+        // 判据挑的是"写错了也不报错"的那几个数：
+        //   * `Linear(0,0,10,20)` 在 **t=2.5** 处必须是 5（端点切线为 0 时 Hermite
+        //     才退化成直线；只看端点或中点都分不出过冲的 S 形）；
+        //   * `EaseInOut` 在 t=0.25 处是 0.15625 而不是 0.25；
+        //   * `WrapMode.Loop` 是枚举成员（不是裸数字）—— 写 `WrapMode.Loop` 过不了
+        //     tsc 的话，说明那条 ZENUM 链断了，而 C++ 测试看不见。
+        this.curveProbe = "";
         // ---- Unity 的 FixedUpdate ---------------------------------------------
         //
         // 这一段存在的理由不只是"多一个钩子"：在此之前 `OnFixedUpdate` 在 d.ts 里
@@ -350,6 +363,22 @@ class Mover extends Behaviour {
         // ⚠️ `Math.round` 不是装饰：浮点残差让本来该是 0 的分量是 -4e-8，
         // 直接 `toFixed(0)` 会得到 "-0"，和想要的 "0" 不相等。
         this.quatYToZ = Math.round(r.x) + "," + Math.round(r.y) + "," + Math.round(r.z);
+    }
+    ProbeAnimationCurve() {
+        const line = AnimationCurve.Linear(0, 0, 10, 20);
+        const ease = AnimationCurve.EaseInOut(0, 0, 1, 1);
+        // ⚠️ `AddKey` 是**值语义**：必须接住返回值。忘了接的话曲线一直是空的，
+        // 而空曲线求值是 0 —— 不报错，所以这里故意把两条路都走一遍。
+        const built = AnimationCurve.AddKey(AnimationCurve.AddKey(AnimationCurve.Create(), 0, 0), 2, 4);
+        const looped = AnimationCurve.SetPostWrapMode(line, WrapMode.Loop);
+        this.curveProbe = [
+            AnimationCurve.Evaluate(line, 2.5).toFixed(3),
+            AnimationCurve.Evaluate(ease, 0.25).toFixed(5),
+            String(AnimationCurve.GetKeyCount(built)),
+            AnimationCurve.Evaluate(built, 1).toFixed(3),
+            AnimationCurve.Evaluate(looped, 12.5).toFixed(3),
+            String(AnimationCurve.GetPostWrapMode(looped) === WrapMode.Loop)
+        ].join("|");
     }
     /// 走 **JS shim** 的那条停止路径（`g.Behaviour.prototype.StopAllCoroutines`）。
     /// C++ 直接调 comp.StopAllCoroutines() 是测不到 shim 的 —— 少一行转发

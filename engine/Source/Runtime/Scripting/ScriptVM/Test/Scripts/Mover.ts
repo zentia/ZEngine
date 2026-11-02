@@ -381,6 +381,38 @@ class Mover extends Behaviour {
         this.quatYToZ = Math.round(r.x) + "," + Math.round(r.y) + "," + Math.round(r.z);
     }
 
+    // ---- Unity 的 `AnimationCurve` ----------------------------------------
+    //
+    // 与 `Bounds` 同一类理由：这段的价值在 **tsc** 与"端到端真的取值"。曲线是
+    // 值类型（JS 端就是 `{keys, preWrapMode, postWrapMode}`），静态方法挂在同名
+    // 的 `declare class` 上 —— 同名合并只在**真的类型检查器**跑过之后才算成立。
+    //
+    // 判据挑的是"写错了也不报错"的那几个数：
+    //   * `Linear(0,0,10,20)` 在 **t=2.5** 处必须是 5（端点切线为 0 时 Hermite
+    //     才退化成直线；只看端点或中点都分不出过冲的 S 形）；
+    //   * `EaseInOut` 在 t=0.25 处是 0.15625 而不是 0.25；
+    //   * `WrapMode.Loop` 是枚举成员（不是裸数字）—— 写 `WrapMode.Loop` 过不了
+    //     tsc 的话，说明那条 ZENUM 链断了，而 C++ 测试看不见。
+    curveProbe: string = "";
+
+    ProbeAnimationCurve(): void {
+        const line: AnimationCurve = AnimationCurve.Linear(0, 0, 10, 20);
+        const ease: AnimationCurve = AnimationCurve.EaseInOut(0, 0, 1, 1);
+        // ⚠️ `AddKey` 是**值语义**：必须接住返回值。忘了接的话曲线一直是空的，
+        // 而空曲线求值是 0 —— 不报错，所以这里故意把两条路都走一遍。
+        const built: AnimationCurve = AnimationCurve.AddKey(
+            AnimationCurve.AddKey(AnimationCurve.Create(), 0, 0), 2, 4);
+        const looped: AnimationCurve = AnimationCurve.SetPostWrapMode(line, WrapMode.Loop);
+        this.curveProbe = [
+            AnimationCurve.Evaluate(line, 2.5).toFixed(3),
+            AnimationCurve.Evaluate(ease, 0.25).toFixed(5),
+            String(AnimationCurve.GetKeyCount(built)),
+            AnimationCurve.Evaluate(built, 1).toFixed(3),
+            AnimationCurve.Evaluate(looped, 12.5).toFixed(3),
+            String(AnimationCurve.GetPostWrapMode(looped) === WrapMode.Loop)
+        ].join("|");
+    }
+
     /// 走 **JS shim** 的那条停止路径（`g.Behaviour.prototype.StopAllCoroutines`）。
     /// C++ 直接调 comp.StopAllCoroutines() 是测不到 shim 的 —— 少一行转发
     /// 照样全绿（变异 SC16 就是这么漏的）。

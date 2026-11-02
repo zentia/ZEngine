@@ -32,6 +32,7 @@
 #include "Runtime/BaseClasses/TypeManager.h"
 #include "Runtime/Core/Base/SystemRegistry.h"
 #include "Runtime/Core/Math/Matrix4.h"
+#include "Runtime/Core/Math/AnimationCurve.h"
 #include "Runtime/Core/Math/Frustum.h"
 #include "Runtime/Core/Math/Plane.h"
 #include "Runtime/Core/Math/Math.h"
@@ -40,6 +41,7 @@
 #include "Runtime/Function/Render/DebugDraw/DebugDrawGroup.h"
 #include "Runtime/Function/Render/DebugDraw/DebugDrawManager.h"
 #include "Runtime/Scripting/ScriptGizmos/ScriptGizmos.h"
+#include "Runtime/Scripting/ScriptAnimationCurve/ScriptAnimationCurve.h"
 #include "Runtime/Scripting/ScriptBounds/ScriptBounds.h"
 #include "Runtime/Scripting/ScriptColor/ScriptColor.h"
 #include "Runtime/Function/AI/Navigation/NavMeshAgentComponent.h"
@@ -9590,6 +9592,237 @@ namespace
         }
     }
 
+    // ---- Unity 的 AnimationCurve（AC 组：算术 / ACW 组：接线）--------------
+    //
+    // 这一组的价值集中在三处"写错了也不报错"：
+    //   * 切线有没有乘 `dt`（AC7）—— 等距采样下两种实现给出同一个数；
+    //   * `SmoothTangents` 是加权平均还是算术平均（AC12）—— 时间间距相等时
+    //     两者相同；
+    //   * `ClampForever` 用的是哪一条切线（AC15/AC16）—— 首末斜率相同的曲线
+    //     看不出方向反没反。
+    void TestAnimationCurve()
+    {
+        using ::AnimationCurve;
+        using ::Keyframe;
+        using ::WrapMode;
+
+        // --- 退化情形：不该是 NaN ------------------------------------------
+        AnimationCurve empty;
+        Check(empty.GetKeyCount() == 0, "AC0", "a fresh curve has no keys");
+        Check(empty.Evaluate(0.f) == 0.f && empty.Evaluate(5.f) == 0.f, "AC1",
+              "an empty curve evaluates to 0");
+        Check(empty.GetDuration() == 0.f, "AC2",
+              "its duration is 0 (not NaN -- a division that never happens)");
+        AnimationCurve single;
+        single.AddKey(Keyframe(1.f, 7.f));
+        Check(Near(single.Evaluate(-100.f), 7.f) && Near(single.Evaluate(100.f), 7.f), "AC3",
+              "a one-key curve is that value at every time");
+        // 单帧 + Loop：`GetDuration()` 为 0 时取模会除零。除零产生的 NaN 参与
+        // 后面的比较恒 false，于是静默走到兜底 —— 这里断言它连着包模式一起是
+        // 有定义的。
+        single.preWrapMode = WrapMode::Loop;
+        single.postWrapMode = WrapMode::Loop;
+        Check(Near(single.Evaluate(100.f), 7.f), "AC4",
+              "and wrapping a zero-duration curve does not produce NaN");
+
+        // --- 三个静态工厂 ---------------------------------------------------
+        const AnimationCurve linear = Runtime::AnimationCurve::Linear(0.f, 0.f, 10.f, 20.f);
+        Check(linear.GetKeyCount() == 2, "AC5", "Linear() makes two keys");
+        Check(Near(Runtime::AnimationCurve::Evaluate(linear, 5.f), 10.f), "AC6",
+              "Linear(0,0,10,20) at the midpoint is 10");
+        // ⚠️ 四分之一点：Hermite 在端点切线为 0 时才退化成直线。填成 slope 的话
+        // 端点仍然经过 (0,0) 和 (10,20)，只有中间能看出来。
+        Check(Near(Runtime::AnimationCurve::Evaluate(linear, 2.5f), 5.f), "AC7",
+              "and at a quarter it is 5 (the Hermite really degenerates to a line)");
+
+        // ⚠️ AC8 是"切线要乘 dt"那条判据。dt = 2 时正确的 m0 = outTangent * dt
+        // = 4，漏了那个 `* dt` 就是 2。两者只在**非等距**的段上分得开。
+        AnimationCurve scaled;
+        scaled.AddKey(Keyframe(0.f, 0.f, 0.f, 2.f));
+        scaled.AddKey(Keyframe(2.f, 4.f, 0.f, 0.f));
+        Check(Near(scaled.Evaluate(1.f), 2.5f), "AC8",
+              "the out tangent is scaled by dt before it enters the Hermite basis");
+
+        const AnimationCurve ease = Runtime::AnimationCurve::EaseInOut(0.f, 0.f, 1.f, 1.f);
+        Check(Near(ease.Evaluate(0.5f), 0.5f), "AC9", "EaseInOut at the midpoint is 0.5");
+        // 0.25 处 smoothstep 是 0.15625，线性是 0.25 —— 只测中点分不出这两者。
+        Check(Near(ease.Evaluate(0.25f), 0.15625f), "AC10",
+              "and at a quarter it is 0.15625, not 0.25 (it is not a line)");
+        Check(Near(ease.Evaluate(0.75f), 0.84375f), "AC11",
+              "and at three quarters it is 0.84375 (symmetric, not clipped)");
+
+        const AnimationCurve flat = Runtime::AnimationCurve::Constant(0.f, 10.f, 5.f);
+        Check(Near(flat.Evaluate(0.f), 5.f) && Near(flat.Evaluate(3.7f), 5.f) &&
+                  Near(flat.Evaluate(10.f), 5.f), "AC12",
+              "Constant(0,10,5) is 5 everywhere in range");
+
+        // --- SmoothTangents：加权，不是算术平均 ------------------------------
+        AnimationCurve smooth;
+        smooth.AddKey(Keyframe(0.f, 0.f));
+        smooth.AddKey(Keyframe(1.f, 1.f));
+        smooth.AddKey(Keyframe(4.f, 2.f));
+        smooth.SmoothTangents(1);
+        // 左段斜率 1（dt=1），右段斜率 1/3（dt=3）。加权（权重取**对面**那段的
+        // 时长）得 (1*3 + 1/3*1)/4 = 0.8333；算术平均得 0.6667。
+        Check(Near(smooth.keys[1].inTangent, 0.833333f) &&
+                  Near(smooth.keys[1].outTangent, 0.833333f), "AC13",
+              "SmoothTangents weights each slope by the OTHER segment's length");
+
+        // --- 编辑：排序 / 去重 / 删 / 移 -------------------------------------
+        AnimationCurve sorted;
+        sorted.AddKey(Keyframe(2.f, 20.f));
+        sorted.AddKey(Keyframe(1.f, 10.f));
+        sorted.AddKey(Keyframe(0.f, 0.f));
+        Check(sorted.GetKeyCount() == 3 && sorted.keys[0].time == 0.f && sorted.keys[2].time == 2.f,
+              "AC14", "AddKey keeps the key array sorted by time");
+        Check(Near(sorted.Evaluate(1.f), 10.f), "AC15",
+              "and the curve built out of order still evaluates correctly");
+        sorted.AddKey(Keyframe(1.f, 99.f));
+        Check(sorted.GetKeyCount() == 3 && Near(sorted.Evaluate(1.f), 99.f), "AC16",
+              "adding a key at an existing time replaces it (dt would be 0 otherwise)");
+
+        AnimationCurve edited = Runtime::AnimationCurve::RemoveKey(sorted, 0);
+        Check(edited.GetKeyCount() == 2 && edited.keys[0].time == 1.f, "AC17", "RemoveKey drops it");
+        // MoveKey 挪到时间轴的另一头 ⇒ 必须重新排序。
+        edited = Runtime::AnimationCurve::AddKeyFrame(edited, Keyframe(5.f, 50.f));
+        // 把 index 0（t=1）挪到 t=9：它现在该排在**最后**，不是留在原位。
+        edited = Runtime::AnimationCurve::MoveKey(edited, 0, Keyframe(9.f, 90.f));
+        Check(edited.GetKeyCount() == 3 && edited.keys[0].time == 2.f &&
+                  edited.keys[1].time == 5.f && edited.keys[2].time == 9.f, "AC18",
+              "MoveKey re-sorts (the moved key can land anywhere)");
+        AnimationCurve cleared = Runtime::AnimationCurve::SetPreWrapMode(edited, WrapMode::PingPong);
+        cleared = Runtime::AnimationCurve::ClearKeys(cleared);
+        Check(cleared.GetKeyCount() == 0, "AC19", "ClearKeys leaves zero keys");
+        // wrap 模式属于曲线，不属于帧列表 —— 把它一起清掉是 Unity 没有的行为。
+        Check(Runtime::AnimationCurve::GetPreWrapMode(cleared) == WrapMode::PingPong, "AC19b",
+              "and it does not touch the wrap modes (they belong to the curve, not the keys)");
+        Check(Runtime::AnimationCurve::GetKeyCount(edited) == 3, "AC20",
+              "and the original is untouched (these are value semantics)");
+
+        // --- 访问器 ----------------------------------------------------------
+        Check(Runtime::AnimationCurve::GetDuration(linear) == 10.f, "AC21", "duration is end - start");
+        // ⚠️ 互补的一半：上一条的曲线**从 0 开始**，于是"跨度"和"末帧时间"是同一个
+        // 数 —— `GetDuration` 返回末帧时间的实现在它上面是绿的（变异 ACM15 就是这么
+        // 活的）。必须有一条起点不是 0 的。
+        Check(Runtime::AnimationCurve::GetDuration(
+                  Runtime::AnimationCurve::Linear(1.f, 0.f, 3.f, 6.f)) == 2.f, "AC21b",
+              "and it is the SPAN, not the end time (a curve that does not start at 0)");
+        Check(Runtime::AnimationCurve::GetKey(linear, 1).value == 20.f, "AC22", "GetKey reads a key");
+        const Keyframe out_of_range = Runtime::AnimationCurve::GetKey(linear, 99);
+        Check(out_of_range.time == 0.f && out_of_range.value == 0.f, "AC23",
+              "and an out-of-range index gives a zero key (not a crash)");
+        Check(Runtime::AnimationCurve::GetKeys(linear).size() == 2, "AC24", "GetKeys returns all of them");
+
+        // --- 环绕模式 --------------------------------------------------------
+        // 默认：到端点后**保持**端点值。
+        Check(Near(linear.Evaluate(-1.f), 0.f) && Near(linear.Evaluate(20.f), 20.f), "AC25",
+              "the default wrap holds the end value");
+
+        // ⚠️ ClampForever 用哪一条切线是反直觉的：范围**之前**用首帧的 **out**
+        // 切线（把首帧右侧的斜率往左延长），范围**之后**用末帧的 **in** 切线。
+        // 用反了的话这里会变成 0 和 1（也就是 Once 的值）—— 所以必须配一条
+        // **首末斜率不同**的曲线，对称的曲线分不出这两者。
+        AnimationCurve tailed;
+        tailed.AddKey(Keyframe(0.f, 0.f, 0.f, 1.f));   // out = 1
+        tailed.AddKey(Keyframe(1.f, 1.f, 3.f, 0.f));   // in  = 3
+        tailed.preWrapMode = WrapMode::ClampForever;
+        tailed.postWrapMode = WrapMode::ClampForever;
+        Check(Near(tailed.Evaluate(-1.f), -1.f), "AC26",
+              "before the first key it follows the FIRST key's OUT tangent (0 + -1 * 1)");
+        Check(Near(tailed.Evaluate(2.f), 4.f), "AC27",
+              "after the last key it follows the LAST key's IN tangent (1 + 1 * 3)");
+
+        // Loop / PingPong。用**不对称**的曲线：0→3→0 的三角形，Loop 与 PingPong
+        // 在同一个时间上给出的数不同（线性 0→1 的曲线上两者相同，测不出来）。
+        // ⚠️ 夹具必须**不对称**：0→3→0 这种回原值的曲线关于中点镜像对称，
+        // Loop 与 PingPong 在它上面给出同一个数（曾在这儿白测过一次）。末值取 1
+        // 之后两条段的中点分别是 1.5 和 2.0 —— 这才分得开。
+        AnimationCurve triangle;
+        triangle.AddKey(Keyframe(0.f, 0.f));
+        triangle.AddKey(Keyframe(1.f, 3.f));
+        triangle.AddKey(Keyframe(2.f, 1.f));
+        Check(Near(triangle.Evaluate(0.5f), 1.5f) && Near(triangle.Evaluate(1.5f), 2.0f), "AC28",
+              "(the fixture itself is asymmetric: 0.5 -> 1.5 but 1.5 -> 2.0)");
+        AnimationCurve looping = Runtime::AnimationCurve::SetPreWrapMode(triangle, WrapMode::Loop);
+        looping = Runtime::AnimationCurve::SetPostWrapMode(looping, WrapMode::Loop);
+        Check(Near(looping.Evaluate(2.5f), 1.5f), "AC29",
+              "Loop restarts from the beginning (2.5 -> 0.5 -> 1.5)");
+        AnimationCurve pong = Runtime::AnimationCurve::SetPreWrapMode(triangle, WrapMode::PingPong);
+        pong = Runtime::AnimationCurve::SetPostWrapMode(pong, WrapMode::PingPong);
+        Check(Near(pong.Evaluate(2.5f), 2.0f), "AC30",
+              "PingPong mirrors instead (2.5 -> 1.5 -> 2.0, the 1.5 above would be a Loop)");
+        Check(Near(pong.Evaluate(-0.5f), 1.5f), "AC31",
+              "and PingPong mirrors before the start too (-0.5 -> 0.5 -> 1.5)");
+
+        Check(Runtime::AnimationCurve::GetPreWrapMode(pong) == WrapMode::PingPong &&
+                  Runtime::AnimationCurve::GetPostWrapMode(pong) == WrapMode::PingPong, "AC32",
+              "the wrap modes round-trip through the facade");
+
+        // ⚠️ 非有限输入：NaN 参与 `<=` / `>=` 恒 false，不判掉会一路走到"没找到
+        // 段"的兜底 —— 那和"真的没有段"是分不开的。
+        Check(triangle.Evaluate(std::numeric_limits<float>::quiet_NaN()) == 0.f, "AC33",
+              "a NaN time gives 0 (it cannot be left to fall through the range checks)");
+
+        // --- 脚本侧的形状：SetKeys 会排序 -------------------------------------
+        std::vector<Keyframe> unsorted;
+        unsorted.push_back(Keyframe(3.f, 30.f));
+        unsorted.push_back(Keyframe(1.f, 10.f));
+        const AnimationCurve from_script = Runtime::AnimationCurve::SetKeys(empty, unsorted);
+        Check(from_script.keys[0].time == 1.f && from_script.keys[1].time == 3.f, "AC34",
+              "SetKeys sorts what the script hands over (Evaluate depends on the order)");
+    }
+
+    void TestAnimationCurveWiring()
+    {
+        const std::string header =
+            ReadFile("Source/Runtime/Scripting/ScriptAnimationCurve/ScriptAnimationCurve.h");
+        Check(!header.empty(), "ACW0", "ScriptAnimationCurve.h is readable");
+        if (!header.empty())
+        {
+            // 三个静态工厂 + 两个 wrap 访问器：缺任何一个脚本都只能自己拼。
+            Check(CountOccurrences(header, "static ::AnimationCurve Linear(") >= 1 &&
+                      CountOccurrences(header, "static ::AnimationCurve EaseInOut(") >= 1 &&
+                      CountOccurrences(header, "static ::AnimationCurve Constant(") >= 1, "ACW1",
+                  "the three Unity factory methods are on the facade");
+            Check(CountOccurrences(header, "SetPreWrapMode") >= 1 &&
+                      CountOccurrences(header, "SetPostWrapMode") >= 1, "ACW2",
+                  "both wrap modes are settable");
+        }
+        const std::string value_header = ReadFile("Source/Runtime/Core/Math/AnimationCurve.h");
+        Check(!value_header.empty(), "ACW3", "the value type is readable");
+        if (!value_header.empty())
+        {
+            // ⚠️ WrapMode 必须是 ZENUM：不是的话脚本侧只有一个裸 int，`WrapMode.Loop`
+            // 这样的写法在 .d.ts 里根本不存在，错误落在用户工程。
+            Check(CountOccurrences(value_header, "ZENUM()") >= 1, "ACW4",
+                  "WrapMode is published as a script enum");
+            // 五个数值与 Unity 对齐（脚本里 `WrapMode.Loop` 就是 2）。
+            Check(CountOccurrences(value_header, "Once         = 1") >= 1 &&
+                      CountOccurrences(value_header, "Loop         = 2") >= 1 &&
+                      CountOccurrences(value_header, "PingPong     = 4") >= 1 &&
+                      CountOccurrences(value_header, "ClampForever = 8") >= 1, "ACW5",
+                  "and its four values match Unity's numbering");
+        }
+        const std::string binding_header =
+            ReadFile("Source/Runtime/Scripting/Binding/ScriptBinding.h");
+        Check(!binding_header.empty(), "ACW6", "ScriptBinding.h is readable");
+        if (!binding_header.empty())
+        {
+            Check(CountOccurrences(binding_header, "struct Converter<Keyframe>") >= 1 &&
+                      CountOccurrences(binding_header, "struct Converter<AnimationCurve>") >= 1,
+                  "ACW7", "both value types have a marshaller");
+        }
+        const std::string binding_source =
+            ReadFile("Source/Runtime/Scripting/Binding/ScriptBinding.cpp");
+        Check(!binding_source.empty(), "ACW8", "ScriptBinding.cpp is readable");
+        if (!binding_source.empty())
+        {
+            Check(CountOccurrences(binding_source, "declare interface Keyframe {") >= 1 &&
+                      CountOccurrences(binding_source, "declare interface AnimationCurve {") >= 1,
+                  "ACW9", "both are declared in the .d.ts");
+        }
+    }
+
     void TestMouseEvents()
     {
         ObjectManager* om = GET_SYSTEM(ObjectManager);
@@ -10861,6 +11094,8 @@ int main()
     TestFrustumWiring();
     TestRendererVisibility();
     TestRendererVisibilityWiring();
+    TestAnimationCurve();
+    TestAnimationCurveWiring();
     TestWiringGate();
 
     std::printf("\n=== %d checks, %d failures ===\n", g_Checks, g_Failures);

@@ -274,6 +274,28 @@ namespace
         "    extents: Vector3;\n"
         "}\n"
         "\n"
+        // AnimationCurve / Keyframe：Unity 的曲线与关键帧。键名与
+        // `ZScript::Converter<AnimationCurve>` / `<Keyframe>` 一致。
+        //
+        // ⚠️ `keys` 过边界的是**快照**：改这个数组不影响曲线（见
+        // `Converter<std::vector<T>>` 的说明）。要改曲线得用
+        // `AnimationCurve.AddKey(...)` 并且**接住返回值** —— 值语义，忘了接的话
+        // 曲线一直是空的，而空曲线求值是 0，不报错。
+        "declare interface Keyframe {\n"
+        "    time: number;\n"
+        "    value: number;\n"
+        "    /** 入切线，斜率 dValue/dTime（不是角度）。 */\n"
+        "    inTangent: number;\n"
+        "    /** 出切线，斜率 dValue/dTime。 */\n"
+        "    outTangent: number;\n"
+        "}\n"
+        "\n"
+        "declare interface AnimationCurve {\n"
+        "    keys: Keyframe[];\n"
+        "    preWrapMode: number;\n"
+        "    postWrapMode: number;\n"
+        "}\n"
+        "\n"
         "declare interface Quaternion {\n"
         "    w: number;\n"
         "    x: number;\n"

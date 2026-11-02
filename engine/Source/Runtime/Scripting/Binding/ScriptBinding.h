@@ -41,6 +41,7 @@
 #include "Runtime/Core/Color/Color.h"
 // Bounds is the Unity-shaped AABB value type ({center, extents}); it is a POD
 // like Color, so it crosses as a plain object.
+#include "Runtime/Core/Math/AnimationCurve.h"
 #include "Runtime/Core/Math/Bounds.h"
 #include "Runtime/Core/Math/Matrix4.h"
 #include "Runtime/Core/Math/Quaternion.h"
@@ -715,6 +716,82 @@ namespace ZScript
             pesapi_value extents = apis->get_property(env, v, "extents");
             if (extents != nullptr && apis->is_undefined(env, extents) == 0)
                 out.extents = Converter<Vector3>::FromJs(apis, env, extents);
+            return out;
+        }
+    };
+
+    // Keyframe: Unity's four floats. The two tangents are SLOPES
+    // (dValue/dTime), not angles and not offsets -- see AnimationCurve.h.
+    template <>
+    struct Converter<Keyframe>
+    {
+        static pesapi_value ToJs(pesapi_ffi* apis, pesapi_env env, const Keyframe& v)
+        {
+            pesapi_value o = apis->create_object(env);
+            apis->set_property(env, o, "time", apis->create_double(env, v.time));
+            apis->set_property(env, o, "value", apis->create_double(env, v.value));
+            apis->set_property(env, o, "inTangent", apis->create_double(env, v.inTangent));
+            apis->set_property(env, o, "outTangent", apis->create_double(env, v.outTangent));
+            return o;
+        }
+        static Keyframe FromJs(pesapi_ffi* apis, pesapi_env env, pesapi_value v)
+        {
+            Keyframe out;
+            if (v == nullptr)
+            {
+                return out;
+            }
+            out.time = static_cast<float>(apis->get_value_double(
+                env, apis->get_property(env, v, "time")));
+            out.value = static_cast<float>(apis->get_value_double(
+                env, apis->get_property(env, v, "value")));
+            out.inTangent = static_cast<float>(apis->get_value_double(
+                env, apis->get_property(env, v, "inTangent")));
+            out.outTangent = static_cast<float>(apis->get_value_double(
+                env, apis->get_property(env, v, "outTangent")));
+            return out;
+        }
+    };
+
+    // AnimationCurve: keys + the two wrap modes. `min` / `max` / `size` are
+    // Bounds-style derived quantities and deliberately do NOT cross -- a curve
+    // has no such derived fields in Unity, and carrying them would create a
+    // second source of truth that can drift from `keys`.
+    template <>
+    struct Converter<AnimationCurve>
+    {
+        static pesapi_value ToJs(pesapi_ffi* apis, pesapi_env env, const AnimationCurve& v)
+        {
+            pesapi_value o = apis->create_object(env);
+            apis->set_property(env, o, "keys", Converter<std::vector<Keyframe>>::ToJs(apis, env, v.keys));
+            apis->set_property(env, o, "preWrapMode",
+                               apis->create_int32(env, static_cast<int32_t>(v.preWrapMode)));
+            apis->set_property(env, o, "postWrapMode",
+                               apis->create_int32(env, static_cast<int32_t>(v.postWrapMode)));
+            return o;
+        }
+        static AnimationCurve FromJs(pesapi_ffi* apis, pesapi_env env, pesapi_value v)
+        {
+            AnimationCurve out;
+            if (v == nullptr)
+            {
+                return out;
+            }
+            pesapi_value keys = apis->get_property(env, v, "keys");
+            if (keys != nullptr && apis->is_undefined(env, keys) == 0)
+            {
+                out.keys = Converter<std::vector<Keyframe>>::FromJs(apis, env, keys);
+            }
+            pesapi_value pre = apis->get_property(env, v, "preWrapMode");
+            if (pre != nullptr && apis->is_undefined(env, pre) == 0)
+            {
+                out.preWrapMode = static_cast<WrapMode>(apis->get_value_int32(env, pre));
+            }
+            pesapi_value post = apis->get_property(env, v, "postWrapMode");
+            if (post != nullptr && apis->is_undefined(env, post) == 0)
+            {
+                out.postWrapMode = static_cast<WrapMode>(apis->get_value_int32(env, post));
+            }
             return out;
         }
     };

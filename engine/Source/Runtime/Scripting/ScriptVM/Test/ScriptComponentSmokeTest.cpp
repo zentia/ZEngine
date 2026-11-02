@@ -1078,6 +1078,20 @@ int main(int argc, char** argv)
         CheckEq("U2", "90 度绕 X 把 +Z 转到 -Y（右手系，不是抄实现）",
                 mover_value("quatYToZ"), "0,-1,0");
 
+        // --- Unity 的 AnimationCurve（W 段）--------------------------------
+        //
+        // 与 `Bounds` / `Color32` 那一段（J 组）同一类理由：C++ 侧的算术门
+        // （UnityParitySmokeTest 的 AC 组）证明不了 **tsc 认这两个名字** ——
+        // `declare interface AnimationCurve` 与 `declare class AnimationCurve`
+        // 的同名合并只在真正的类型检查器下才算成立。
+        //
+        // 一条串钉住六个量：两个工厂的形状、值语义的 AddKey、wrap 模式、以及
+        // `WrapMode.Loop` 这个**枚举成员**（不是裸数字）。
+        CheckTrue("W0", "ProbeAnimationCurve 送到了 JS 侧",
+                  comp2->InvokeMethod("ProbeAnimationCurve"));
+        CheckEq("W1", "曲线端到端：Linear / EaseInOut / AddKey / Loop / 枚举成员",
+                mover_value("curveProbe"), "5.000|0.15625|2|2.000|5.000|true");
+
         // --- Unity 的 OnBecameVisible / OnBecameInvisible（V 段）------------
         //
         // 与 T / U 段同一类理由：派发链是 `BaseRenderer` -> `GameObject` ->
