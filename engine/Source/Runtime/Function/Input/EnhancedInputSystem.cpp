@@ -45,6 +45,12 @@ bool EnhancedInputSystem::Initialize()
         ->RegisterOnScrollFunc([this](double xoff, double yoff) {
             OnScroll(xoff, yoff);
         });
+    // 文本输入：`Input.inputString` 的唯一来源。与 OnKey 是两条独立的路
+    // （见 OnChar 的注释）—— 中文输入法和德式布局只有这一条是对的。
+    GET_SYSTEM(WindowSystem)
+        ->RegisterOnCharFunc([this](unsigned int codepoint) {
+            OnChar(codepoint);
+        });
     // 触摸：移动端宿主推入（WindowSystem::PushTouchEvent）。桌面永远不会有
     // 这些事件，注册了也不占什么。
     GET_SYSTEM(WindowSystem)
@@ -126,18 +132,94 @@ void EnhancedInputSystem::OnScroll(double xoffset, double yoffset)
     m_ScrollAccumY += static_cast<float>(yoffset);
 }
 
+void EnhancedInputSystem::OnChar(unsigned int codepoint)
+{
+    // UTF-8 手工编码：codepoint 来自 WM_CHAR（UTF-16 码元）或宿主的 IME 提交，
+    // 可能是任意 Unicode 标量值。
+    //
+    // ⚠️ 代理对（surrogate pair）要宿主自己合成之后再推：这里收到 0xD800..0xDFFF
+    // 之间的孤立码元是**错误数据**，替它编一个 UTF-8 序列会把输入框的文字搞成
+    // 乱码。直接丢弃 —— 丢一个字符比显示一个 U+FFFD 好查。
+    if (codepoint >= 0xD800u && codepoint <= 0xDFFFu)
+    {
+        return;
+    }
+    if (codepoint > 0x10FFFFu)
+    {
+        return;
+    }
+    // 控制字符不进 inputString：Unity 也是这么做的（回车要走 GetKeyDown，
+    // 退格要走自己的处理）。混进来的话每个换行都会变成输入框里的一个字符。
+    if (codepoint < 0x20u || codepoint == 0x7Fu)
+    {
+        return;
+    }
+
+    if (codepoint < 0x80u)
+    {
+        m_InputStringAccum.push_back(static_cast<char>(codepoint));
+    }
+    else if (codepoint < 0x800u)
+    {
+        m_InputStringAccum.push_back(static_cast<char>(0xC0u | (codepoint >> 6)));
+        m_InputStringAccum.push_back(static_cast<char>(0x80u | (codepoint & 0x3Fu)));
+    }
+    else if (codepoint < 0x10000u)
+    {
+        m_InputStringAccum.push_back(static_cast<char>(0xE0u | (codepoint >> 12)));
+        m_InputStringAccum.push_back(static_cast<char>(0x80u | ((codepoint >> 6) & 0x3Fu)));
+        m_InputStringAccum.push_back(static_cast<char>(0x80u | (codepoint & 0x3Fu)));
+    }
+    else
+    {
+        m_InputStringAccum.push_back(static_cast<char>(0xF0u | (codepoint >> 18)));
+        m_InputStringAccum.push_back(static_cast<char>(0x80u | ((codepoint >> 12) & 0x3Fu)));
+        m_InputStringAccum.push_back(static_cast<char>(0x80u | ((codepoint >> 6) & 0x3Fu)));
+        m_InputStringAccum.push_back(static_cast<char>(0x80u | (codepoint & 0x3Fu)));
+    }
+}
+
+double EnhancedInputSystem::NowSeconds()
+{
+    return std::chrono::duration<double>(
+               std::chrono::steady_clock::now().time_since_epoch())
+        .count();
+}
+
+void EnhancedInputSystem::ResetInputAxes()
+{
+    // 只清累积器，不动 m_PressedKeys：见头文件那条注释（Unity 的语义是"轴归
+    // 零"，不是"松开所有键"）。
+    m_ScrollAccumX = 0.0f;
+    m_ScrollAccumY = 0.0f;
+    m_ScrollPrevX  = 0.0f;
+    m_ScrollPrevY  = 0.0f;
+    m_CursorDeltaX = 0.0;
+    m_CursorDeltaY = 0.0;
+    m_CursorDeltaPrevX = 0.0;
+    m_CursorDeltaPrevY = 0.0;
+    m_AccumulatedValues.clear();
+}
+
 void EnhancedInputSystem::OnTouch(int pointer_id, int action, float x, float y)
 {
     using TouchAction = WindowSystem::TouchAction;
     const TouchAction touch_action = static_cast<TouchAction>(action);
     const auto       it = m_Touches.find(pointer_id);
 
+    const double now_s = NowSeconds();
+
     switch (touch_action)
     {
         case TouchAction::Down:
             if (it == m_Touches.end())
             {
-                m_Touches.emplace(pointer_id, TouchPoint{x, y, x, y});
+                TouchPoint point {x, y, x, y};
+                point.phase             = TouchPhase::Began;
+                point.last_event_time_s = now_s;
+                point.delta_time_s      = 0.0f;   // 刚按下：没有"上一次"
+                point.tap_count         = ResolveTapCount(pointer_id, x, y, now_s);
+                m_Touches.emplace(pointer_id, point);
                 // 第一根按下的手指成为 primary：之后它的移动被翻译成光标移动
                 // 与左键拖拽，UI 与相机就都走通了。
                 if (m_PrimaryTouchId < 0)
@@ -155,6 +237,16 @@ void EnhancedInputSystem::OnTouch(int pointer_id, int action, float x, float y)
                 it->second.frame_dy += y - it->second.y;
                 it->second.x = x;
                 it->second.y = y;
+                // 相位：真正挪动了才是 Moved，原地抖动（宿主每帧都推 move 事件
+                // 是常态）在 EndFrame 里收成 Stationary。
+                if (it->second.frame_dx != 0.0f || it->second.frame_dy != 0.0f)
+                {
+                    it->second.phase = TouchPhase::Moved;
+                    it->second.moved_this_frame = true;
+                }
+                it->second.delta_time_s =
+                    static_cast<float>(now_s - it->second.last_event_time_s);
+                it->second.last_event_time_s = now_s;
             }
             break;
 
@@ -162,6 +254,23 @@ void EnhancedInputSystem::OnTouch(int pointer_id, int action, float x, float y)
         case TouchAction::Cancel:
             if (it != m_Touches.end())
             {
+                TouchPoint ended = it->second;
+                ended.phase = (touch_action == TouchAction::Up) ? TouchPhase::Ended
+                                                                : TouchPhase::Canceled;
+                ended.delta_time_s = static_cast<float>(now_s - ended.last_event_time_s);
+                ended.x = x;
+                ended.y = y;
+                // ⚠️ 保留**本帧**的 frame_d*：脚本在抬起那一帧读
+                // `deltaPosition` 要的是"最后这一下甩了多少"，清零了就永远是 0。
+                m_EndedThisFrame.emplace_back(pointer_id, ended);
+
+                // 双击窗口的锚点：位置 + 时间 + 这次的连击数，供下一次 down
+                // 判定要不要 +1。
+                m_LastTapTimeS[pointer_id] = now_s;
+                m_LastTapCount[pointer_id] = ended.tap_count;
+                m_LastTapX[pointer_id]     = x;
+                m_LastTapY[pointer_id]     = y;
+
                 m_Touches.erase(it);
             }
             if (m_PrimaryTouchId == pointer_id)
@@ -197,6 +306,40 @@ void EnhancedInputSystem::OnTouch(int pointer_id, int action, float x, float y)
         FeedCursorFromPrimaryTouch(x, y, false);
         OnMouseButton(0, KeyCodes::RELEASE, 0);
     }
+}
+
+int EnhancedInputSystem::ResolveTapCount(int pointer_id, float x, float y, double now_s) const
+{
+    const auto time_it = m_LastTapTimeS.find(pointer_id);
+    if (time_it == m_LastTapTimeS.end())
+    {
+        return 1;  // 这根手指第一次按
+    }
+    if (now_s - time_it->second > kDoubleTapSeconds)
+    {
+        return 1;  // 超窗：重新从第一击开始
+    }
+
+    const auto x_it = m_LastTapX.find(pointer_id);
+    const auto y_it = m_LastTapY.find(pointer_id);
+    if (x_it == m_LastTapX.end() || y_it == m_LastTapY.end())
+    {
+        return 1;
+    }
+    // 落点容差：双击的第二下不可能落在完全相同的像素上，但不该因此把"在屏幕
+    // 另一头点了第二下"也算成双击。
+    const float dx = x - x_it->second;
+    const float dy = y - y_it->second;
+    if (dx * dx + dy * dy > kDoubleTapSlopPx * kDoubleTapSlopPx)
+    {
+        return 1;
+    }
+
+    const auto count_it = m_LastTapCount.find(pointer_id);
+    const int  previous = (count_it != m_LastTapCount.end()) ? count_it->second : 1;
+    // 连击数封顶：Unity 的 tapCount 是"这一串快速点击里的第几个"，但一直点下去
+    // 不应该无限涨（脚本里 `tapCount == 3` 的分支迟早会撞上）。
+    return previous >= 10 ? 10 : previous + 1;
 }
 
 void EnhancedInputSystem::FeedCursorFromPrimaryTouch(float x, float y, bool reset_anchor)
@@ -804,6 +947,10 @@ void EnhancedInputSystem::EndFrame()
     m_ScrollAccumX = 0.0f;
     m_ScrollAccumY = 0.0f;
 
+    // 文本输入与按键边沿同一时基：收集器滚成读数后清空。
+    m_InputStringPrev.swap(m_InputStringAccum);
+    m_InputStringAccum.clear();
+
     // 触摸的"本帧位移"与鼠标 delta 同语义：用掉即清，清之前已经被 ApplyTouchAxes
     // 写进 m_AccumulatedValues（喂给 "Look"）了。放在这里（而不是 Tick 内）是
     // 为了让脚本在帧末之前也读得到。
@@ -811,7 +958,18 @@ void EnhancedInputSystem::EndFrame()
     {
         entry.second.frame_dx = 0.0f;
         entry.second.frame_dy = 0.0f;
+        // 本帧收过 move 事件但没挪动 => Stationary。Began 那帧不动它：刚落下的
+        // 手指相位就该是 Began（即使宿主立刻补推了一个 move）。
+        if (entry.second.phase == TouchPhase::Moved && !entry.second.moved_this_frame)
+        {
+            entry.second.phase = TouchPhase::Stationary;
+        }
+        entry.second.moved_this_frame = false;
     }
+
+    // 抬起的手指只活一帧：见 GetTouchAt 的注释（Unity 在抬起那一帧仍要能枚举
+    // 到它，之后必须消失，否则 touchCount 会一直涨）。
+    m_EndedThisFrame.clear();
 }
 
 // ============================================================
@@ -865,4 +1023,63 @@ int EnhancedInputSystem::GetTouchIdAt(int index) const
     }
     std::sort(ids.begin(), ids.end());
     return ids[static_cast<size_t>(index)];
+}
+
+int EnhancedInputSystem::GetFrameTouchCount() const
+{
+    return static_cast<int>(m_Touches.size() + m_EndedThisFrame.size());
+}
+
+bool EnhancedInputSystem::GetTouchAt(int index, Touch& out_touch) const
+{
+    if (index < 0 || index >= GetFrameTouchCount())
+    {
+        return false;
+    }
+
+    // 还按着的在前面（按 id 升序），本帧结束的排在后面 —— 与
+    // GetFrameTouchCount() 的计数顺序必须一致，否则"第 N 个"会错位。
+    if (index < static_cast<int>(m_Touches.size()))
+    {
+        std::vector<int> ids;
+        ids.reserve(m_Touches.size());
+        for (const auto& entry : m_Touches)
+        {
+            ids.push_back(entry.first);
+        }
+        std::sort(ids.begin(), ids.end());
+        out_touch = MakeTouch(ids[static_cast<size_t>(index)],
+                              m_Touches.at(ids[static_cast<size_t>(index)]));
+        return true;
+    }
+
+    const std::size_t ended_index = static_cast<std::size_t>(index) - m_Touches.size();
+    const auto&       entry       = m_EndedThisFrame[ended_index];
+    out_touch = MakeTouch(entry.first, entry.second);
+    return true;
+}
+
+Touch EnhancedInputSystem::MakeTouch(int pointer_id, const TouchPoint& point)
+{
+    Touch touch;
+    touch.fingerId = pointer_id;
+    touch.position = Vector2(point.x, point.y);
+    touch.rawPosition = touch.position;
+
+    // ⚠️ Began 帧的 deltaPosition 是 0，不是"从上次抬起点的位移"。Unity 也是
+    // 这个语义：手指刚落下就没有"上一帧的位置"。
+    touch.deltaPosition = Vector2(point.frame_dx, point.frame_dy);
+    touch.deltaTime     = point.delta_time_s;
+    touch.tapCount      = point.tap_count;
+    touch.phase         = point.phase;
+    touch.pressure      = point.pressure;
+    // 不支持压力 / 半径 / 触控笔角度的设备：照 Unity 的规定取 1.0f 与 0
+    // （见 Touch.h 那节注释，这些不是哨兵）。
+    touch.maximumPossiblePressure = 1.0f;
+    touch.type                    = TouchType::Direct;
+    touch.radius                  = 0.0f;
+    touch.radiusVariance          = 0.0f;
+    touch.altitudeAngle           = 0.0f;
+    touch.azimuthAngle            = 0.0f;
+    return touch;
 }

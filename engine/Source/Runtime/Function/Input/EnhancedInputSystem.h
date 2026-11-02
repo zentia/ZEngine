@@ -2,14 +2,18 @@
 
 #include "Runtime/Core/Base/EngineSystem.h"
 #include "Runtime/Function/Input/InputAction.h"
+#include "Runtime/Function/Input/InputEnums.h"
 #include "Runtime/Function/Input/InputMappingContext.h"
 #include "Runtime/Function/Input/InputTriggers.h"
+#include "Runtime/Function/Input/Touch.h"
 
 #include <chrono>
 #include <cmath>
 #include <memory>
+#include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 // ============================================================
@@ -103,6 +107,14 @@ public:
     void OnMouseButton(int button, int action, int mods);
     void OnScroll(double xoffset, double yoffset);
 
+    /// 文本输入（WM_CHAR / 宿主的 IME 提交）。累积成本帧的 `inputString`。
+    ///
+    /// ⚠️ 与 `OnKey` 是**两条独立的路**：OnKey 给的是物理键（"A 键按下了"），
+    /// 这里给的是"用户打出了一个什么字符"。德语键盘上 `Key.Y` 打出的是 'z'，
+    /// 中文输入法提交时 OnKey 只有个回车 —— 想做输入框只能用这一条。
+    /// 桌面由 WindowsWindow 的 WM_CHAR 分支推来（WindowSystem::OnChar）。
+    void OnChar(unsigned int codepoint);
+
     // ---- Touch (mobile hosts) --------------------------------------------
     //
     // 移动端没有 GenericWindow，触摸由宿主（Android 的 AInputEvent / iOS 的
@@ -128,6 +140,42 @@ public:
 
     /// 某根手指本帧的位移（像素，Tick 末尾清零）—— 转视角要的是这个。
     bool GetTouchFrameDelta(int pointer_id, float& out_dx, float& out_dy) const;
+
+    // ---- Unity `Touch` 的元数据查询 ----------------------------------------
+    //
+    // ⚠️ 与上面那组"还在屏幕上的手指"查询分开，是因为 `Ended` / `Canceled`
+    // 的手指**已经被移出 m_Touches** 了 —— 但 Unity 的 `Input.touches` 在抬起
+    // 那一帧仍然要看得见它（否则"松手时把物体放下"写不出来）。所以抬起的手指
+    // 会留一份快照到 `m_EndedThisFrame`，活到下一次 EndFrame()。
+
+    /// 本帧"可枚举"的手指数 = 还按着的 + 本帧刚抬起/取消的。Unity 的
+    /// `Input.touchCount`。与 `GetTouchCount()`（**只数还按着的**）不是一回事
+    /// —— 后者是虚拟摇杆 / 相机那套内部逻辑用的，别混。
+    int GetFrameTouchCount() const;
+
+    /// 第 index 个"可枚举手指"的快照。先数还按着的（按 id 升序），再数本帧
+    /// 结束的，保证同一根手指的索引在一帧内稳定。越界返回 false。
+    bool GetTouchAt(int index, Touch& out_touch) const;
+
+    /// 本帧是否有任意键（含鼠标键）按着。Unity 的 `Input.anyKey`。
+    bool IsAnyKeyDown() const { return !m_PressedKeys.empty(); }
+
+    /// 本帧是否有任意键刚按下。Unity 的 `Input.anyKeyDown`。
+    ///
+    /// ⚠️ 读的是 Prev 集合（见 EndFrame 的注释），与 `WasKeyPressedThisFrame`
+    /// 同一时基。
+    bool WasAnyKeyPressedThisFrame() const { return !m_PressedPrevFrame.empty(); }
+
+    /// 本帧由文本输入累积出来的字符串（UTF-8）。Unity 的 `Input.inputString`。
+    const std::string& GetInputString() const { return m_InputStringPrev; }
+
+    /// 清掉本帧的轴累积（滚轮 / 光标位移 / 动作累积值）。Unity 的
+    /// `Input.ResetInputAxes()`。
+    ///
+    /// ⚠️ 只清"累积器"，不动 `m_PressedKeys`：Unity 的语义是"把所有轴归零"，
+    /// 不是"松开所有键"。用来在弹出菜单 / 切场景的那一帧丢掉残留的输入量，
+    /// 否则相机会因为切场景那一帧的巨大 delta 猛甩一下。
+    void ResetInputAxes();
 
     // ---- 虚拟摇杆 / 触摸视角（移动端）------------------------------------
     //
@@ -257,7 +305,28 @@ private:
         /// delta 同语义），而摇杆要的是相对按下点的累计位移 —— 两者不同。
         float frame_dx {0.0f};
         float frame_dy {0.0f};
+
+        // ---- Unity `Touch` 需要的元数据 ----
+        TouchPhase phase {TouchPhase::Began};
+        int        tap_count {1};
+        /// 不支持压力的设备恒 1.0f（Unity 的规定：`Touch.pressure` 在没有压力
+        /// 数据时是 1，不是 0）。
+        float      pressure {1.0f};
+        /// 上一次收到这根手指事件的时间（steady_clock 秒）。`deltaTime` 是两次
+        /// 事件之差，不是帧长 —— Unity 的 `Touch.deltaTime` 同理。
+        double     last_event_time_s {0.0};
+        float      delta_time_s {0.0f};
+        bool       moved_this_frame {false};
     };
+
+    /// 这一次按下算第几击。窗口内、且落点够近就在上一次的连击数上加一。
+    /// 见 kDoubleTapSeconds / kDoubleTapSlopPx。
+    int ResolveTapCount(int pointer_id, float x, float y, double now_s) const;
+
+private:
+    /// 由一份 TouchPoint 状态拼出给脚本的快照。static：不碰任何成员，单测可以
+    /// 直接调。
+    static Touch MakeTouch(int pointer_id, const TouchPoint& point);
 
     /// 把 primary 手指的位移当成鼠标光标移动累积进去。
     /// 与 OnCursorPos() 的区别：触摸的"按住拖"天然等价于桌面 focus mode 下的
@@ -314,6 +383,30 @@ private:
     // pointer_id -> 状态。pointer_id 由宿主分配，同一根手指的 down/move/up 一致。
     std::unordered_map<int, TouchPoint> m_Touches;
     int m_PrimaryTouchId {-1};  // 第一根按下的手指，被翻译成鼠标语义的那根
+
+    // 本帧刚抬起 / 被取消的手指快照。Unity 的 `Input.touches` 在抬起那一帧仍
+    // 要看得见它们（见 GetTouchAt 的注释），EndFrame() 清空。
+    std::vector<std::pair<int, TouchPoint>> m_EndedThisFrame;
+
+    // 双击判定：上一次"抬起"的时间与位置（按 pointer_id 记）。连击窗口内、
+    // 且落点够近，下一次按下就把 tap_count 加一。
+    std::unordered_map<int, double> m_LastTapTimeS;
+    std::unordered_map<int, int>    m_LastTapCount;
+    std::unordered_map<int, float>  m_LastTapX;
+    std::unordered_map<int, float>  m_LastTapY;
+
+    /// 双击窗口（秒）与落点容差（像素）。Unity 没有公开这两个数，取的是
+    /// 移动端手感上常见的 300ms / 30px —— 写在具名常量里，方便调。
+    static constexpr double kDoubleTapSeconds = 0.3;
+    static constexpr float  kDoubleTapSlopPx  = 30.0f;
+
+    /// 单调时钟秒数。与 ComputeFrameDelta 用的是同一个时钟。
+    static double NowSeconds();
+
+    // ---- 文本输入 ----
+    // 本帧收集到的字符（UTF-8）与脚本实际读到的那份（EndFrame 滚动）。
+    std::string m_InputStringAccum;
+    std::string m_InputStringPrev;
 
     bool  m_TouchStickEnabled {false};
     int   m_TouchStickPointerId {-1};
