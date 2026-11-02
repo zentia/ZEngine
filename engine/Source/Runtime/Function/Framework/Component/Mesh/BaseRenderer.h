@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Runtime/BaseClasses/PPtr.h"
 #include "Runtime/Core/Math/Bounds.h"
 #include "Runtime/Core/Math/Frustum.h"
 #include "Runtime/Function/Framework/Component/Component.h"
@@ -12,6 +13,14 @@
 #include "BaseRenderer.generated.h"
 
 class Transform;
+
+// 材质句柄的完整定义在 ScriptMaterial.h 里。这里只前插声明：`GetMaterial` 的返回
+// 类型只需要一个不完整类型，而反过来 ScriptMaterial.h 要 include 本文件（它转发
+// 到本类的方法），真 include 就成环了。
+//
+// ⚠️ 名字是 `MaterialInstance` 而不是 `Material`：`Material` 被材质**资产**类占用
+// 了，ZHeaderTool 要求反射类名全局唯一。脚本侧靠 d.ts 的类型别名写回 `Material`。
+class MaterialInstance;
 
 ZCLASS()
 class BaseRenderer : public Component
@@ -155,6 +164,62 @@ public:
     ZFUNCTION()
     void ClearCustomParams(int slot);
 
+    // ---- 属性是否存在的查询 ------------------------------------------------
+    //
+    // `Material.HasProperty("_DissolveAmount")` 这类查询的落点。
+    //
+    // ⚠️ 判据与 setter **共用同一张表**（下面的 ResolveShaderProperty 与
+    // MaterialCustomParams::Find*），不是另写一份"认识的名字"清单：两套判据会在
+    // 某次加属性名之后悄悄分叉，于是 `HasFloat` 说有而 `SetFloat` 说没有 —— 那种
+    // bug 只会在某个具体属性上出现，很难复现到。
+    //
+    // `HasMaterialVector` 同时回答 `HasColor`：颜色在这个引擎里就是一个 vec4 属性，
+    // 没有单独的"颜色槽"概念。
+
+    ZFUNCTION()
+    bool HasMaterialProperty(int slot, const eastl::string& name) const;
+    ZFUNCTION()
+    bool HasMaterialFloat(int slot, const eastl::string& name) const;
+    ZFUNCTION()
+    bool HasMaterialVector(int slot, const eastl::string& name) const;
+    ZFUNCTION()
+    bool HasMaterialTexture(int slot, const eastl::string& name) const;
+
+    // =========================================================================
+    // Unity 的 `renderer.material` / `renderer.materials`
+    // =========================================================================
+
+    /// 槽位上那份**运行时**材质的句柄（Unity 的 `renderer.materials[slot]`）。
+    ///
+    /// 句柄自己不带数据（见 `MaterialInstance` 的文件头），所以按槽位缓存一份就
+    /// 够了：脚本每帧 `renderer.material.color = x` 不会每帧造对象，而读到的值仍
+    /// 然是"当前生效值"，因为值本来就在 renderer 上。
+    ///
+    /// 越界返回 nullptr。renderer 被 Destroy 之后句柄自己会退化成"安全默认"
+    /// （PPtr 解析成 nullptr），**不会**悬空。
+    ///
+    /// Unity 的 `renderer.material` 与 `renderer.sharedMaterial` 是两种东西（前者
+    /// 是实例化出来的、后者是资产）。这里只发布前者：`sharedMaterial` 在今天没有
+    /// 对应的脚本对象（材质资产进不了脚本，见 `Material.h` 的注释），发一个返回
+    /// 路径字符串的假 Material 比不发更糟。
+    ZFUNCTION()
+    MaterialInstance* GetMaterial(int slot);
+
+    /// Unity 的 `renderer.material`：槽位 0 那份。
+    ///
+    /// 多 sub-mesh 的网格 Unity 也是 `material` 只给第一份，其余走
+    /// `materials[i]` —— 这里一样：其余按下标用 `GetMaterial(i)`。
+    ZFUNCTION()
+    MaterialInstance* GetMainMaterial() { return GetMaterial(0); }
+    ZSCRIPTPROPERTY(Name = "material", Getter = "GetMainMaterial")
+
+    /// Unity 的 `renderer.materials.length`（= `GetMaterialSlotCount()`）。
+    ///
+    /// 单列一个方法而不是让脚本读数组长度：ZFUNCTION 返回不了
+    /// `std::vector<Material*>`（没有那个 Converter），`materials` 只能按下标取。
+    ZFUNCTION()
+    int GetMaterialCount() const { return static_cast<int>(m_SubMeshes.size()); }
+
     // ---- 贴图属性（per-renderer）----------------------------------------
     //
     // SetTexture("_MainTex", "Textures/rust.asset") —— 名字是 shader 在
@@ -224,6 +289,15 @@ public:
     ZFUNCTION()
     void SetLocalBounds(const Bounds& local_bounds);
     ZSCRIPTPROPERTY(Name="localBounds", Getter="GetLocalBounds", Setter="SetLocalBounds")
+
+    /// 撤掉脚本设过的对象空间包围盒，回到"由网格资产算出来"的默认。
+    ///
+    /// 只有 `SetLocalBounds` 没有反向操作的话，"设过一次"就是单向的：任何一段
+    /// 临时接管包围盒的代码（受击放大一下框、程序化网格算完推进来）结束时都撤
+    /// 不干净，于是包围盒一直停在某个旧值上 —— 而"包围盒没跟着变"在画面上表现
+    /// 为"该被剔掉的没剔掉"或反过来，是最难往回查的一类问题。
+    ZFUNCTION()
+    void ClearLocalBoundsOverride();
 
     /// Unity 的 `renderer.bounds`：**世界空间**的 AABB，只读。
     ///
@@ -309,6 +383,15 @@ private:
 
     /// 每个 sub-mesh 槽位一份，与 m_SubMeshes 同下标。
     std::vector<MaterialInstanceOverride> m_MaterialOverrides;
+
+    /// `GetMaterial(slot)` 的句柄缓存，与 m_SubMeshes 同下标。
+    ///
+    /// 用 PPtr 而不是裸指针：renderer 销毁时句柄可能还被脚本拿着，PPtr 解析成
+    /// nullptr 之后写操作自然变成空操作。裸指针会变成悬空，而脚本那头完全看不出
+    /// 来自己拿着一个死句柄。
+    ///
+    /// 不序列化（脚本每次要都能现造，缓存只是省对象分配）。
+    std::vector<PPtr<MaterialInstance>> m_MaterialHandles;
 
     /// 上一次 BuildRenderParts 算出来的**生效**材质描述。getter 要返回"当前真正
     /// 在画的值"（override 优先，否则资产值），而资产值只在 BuildRenderParts 里

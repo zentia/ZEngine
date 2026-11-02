@@ -11,6 +11,7 @@
 #include "Runtime/Resource/ResType/Data/Material.h"
 #include "Runtime/Resource/ResType/Data/MeshData.h"
 #include "Runtime/Resource/ResType/Data/Shader.h"
+#include "Runtime/Scripting/ScriptMaterial/ScriptMaterial.h"
 
 #include <algorithm>
 #include <limits>
@@ -516,6 +517,12 @@ void BaseRenderer::SetLocalBounds(const Bounds& local_bounds)
 {
     m_LocalBoundsOverride = local_bounds;
     m_HasLocalBoundsOverride = true;
+}
+
+void BaseRenderer::ClearLocalBoundsOverride()
+{
+    m_LocalBoundsOverride = Bounds();
+    m_HasLocalBoundsOverride = false;
 }
 
 Bounds BaseRenderer::GetBounds() const
@@ -1313,6 +1320,79 @@ eastl::string BaseRenderer::GetTexture(int slot, const eastl::string& name) cons
         return slot_override->texture_slot_files[texture_slot];
     }
     return desc != nullptr ? desc->m_TextureSlotFiles[texture_slot] : eastl::string();
+}
+
+// ---- 属性是否存在的查询 --------------------------------------------------
+
+bool BaseRenderer::HasMaterialProperty(int slot, const eastl::string& name) const
+{
+    return HasMaterialFloat(slot, name) || HasMaterialVector(slot, name) || HasMaterialTexture(slot, name);
+}
+
+bool BaseRenderer::HasMaterialFloat(int slot, const eastl::string& name) const
+{
+    // 与 SetFloat 同一套判据：shader 反射表里 components == 1 的那条，或者内置
+    // 名字表里登记为标量的那个。
+    const GameObjectMaterialDesc* desc = cachedMaterialDescAt(m_LastMaterialDescs, slot);
+    const ZEngine::ShaderLab::ShaderPropertySlot* property =
+        desc != nullptr ? ZEngine::ShaderLab::FindSlot(desc->m_ShaderProperties, name.c_str()) : nullptr;
+    if (property != nullptr)
+    {
+        return property->FloatCount() == 1u;
+    }
+    return MaterialCustomParams::FindFloat(name) != nullptr;
+}
+
+bool BaseRenderer::HasMaterialVector(int slot, const eastl::string& name) const
+{
+    const GameObjectMaterialDesc* desc = cachedMaterialDescAt(m_LastMaterialDescs, slot);
+    const ZEngine::ShaderLab::ShaderPropertySlot* property =
+        desc != nullptr ? ZEngine::ShaderLab::FindSlot(desc->m_ShaderProperties, name.c_str()) : nullptr;
+    if (property != nullptr)
+    {
+        // 4 个 float 才算"能整个塞进 SetVector"：2/3 分量的属性走不了这条路径
+        // （SetVector 写满 4 个分量），说它有会让脚本写出一个半截值。
+        return property->FloatCount() == 4u;
+    }
+    return MaterialCustomParams::FindVector(name) != nullptr;
+}
+
+bool BaseRenderer::HasMaterialTexture(int slot, const eastl::string& name) const
+{
+    const GameObjectMaterialDesc* desc = cachedMaterialDescAt(m_LastMaterialDescs, slot);
+    const ZEngine::ShaderLab::ShaderTextureSlotBinding* binding =
+        desc != nullptr ? ZEngine::ShaderLab::FindTextureSlotBinding(desc->m_TextureProperties, name.c_str()) : nullptr;
+    return (binding != nullptr) || (ZEngine::ShaderLab::FindBuiltinTextureSlot(name.c_str()) >= 0);
+}
+
+// ---- renderer.material / renderer.materials -----------------------------
+
+MaterialInstance* BaseRenderer::GetMaterial(int slot)
+{
+    if (slot < 0 || slot >= static_cast<int>(m_SubMeshes.size()))
+    {
+        return nullptr;
+    }
+
+    SyncMaterialOverrideCount();
+    if (static_cast<int>(m_MaterialHandles.size()) != static_cast<int>(m_SubMeshes.size()))
+    {
+        m_MaterialHandles.resize(m_SubMeshes.size());
+    }
+
+    MaterialInstance* handle = m_MaterialHandles[slot];
+    if (handle == nullptr)
+    {
+        ObjectManager* object_manager = GET_SYSTEM(ObjectManager);
+        if (object_manager == nullptr)
+        {
+            return nullptr;
+        }
+        handle = object_manager->NewObject<MaterialInstance>();
+        handle->Bind(this, slot);
+        m_MaterialHandles[slot] = handle;
+    }
+    return handle;
 }
 
 // ---- shader keyword -----------------------------------------------------
