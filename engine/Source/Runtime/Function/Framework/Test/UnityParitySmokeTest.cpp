@@ -124,6 +124,7 @@
 #include "Jolt/Physics/Body/Body.h"
 #include "Jolt/Physics/Body/BodyCreationSettings.h"
 #include "Jolt/Physics/Collision/Shape/BoxShape.h"
+#include "Jolt/Physics/Collision/Shape/RotatedTranslatedShape.h"
 #include "Jolt/Physics/PhysicsSystem.h"
 
 // 本 exe 不编任何 `*.gen.cpp`（编了会拿到第二份 `TypeContainer<T>::m_Type`），
@@ -1012,6 +1013,51 @@ namespace
     uint32_t SpawnBox(PhysicsScene& in_scene, const Vector3& in_position, int32_t in_layer, bool in_dynamic)
     {
         return SpawnBoxSized(in_scene, in_position, Vector3(0.5f, 0.5f, 0.5f), in_layer, in_dynamic);
+    }
+
+    /// 一块**质心不在原点**的盒子（形状整体偏离 body 原点 `in_shape_offset`）。
+    ///
+    /// 质心测试必须有这么一个夹具：质心与 body position 重合的对称形状下，
+    /// "返回局部质心"和"返回零"相等、"世界质心"和"body position"也相等 ——
+    /// 于是 `GetBodyCenterOfMass` 不管怎么写都是绿的（这是本轮差点留下的白测：
+    /// 一开始只用 SpawnBox，RB25 断言的是"质心为零"，而返回零的实现也过）。
+    uint32_t SpawnOffsetComBox(PhysicsScene& in_scene,
+                               const Vector3& in_position,
+                               const Vector3& in_half_extents,
+                               const Vector3& in_shape_offset)
+    {
+        JPH::BodyInterface& body_interface = in_scene.GetJoltPhysicsSystem()->GetBodyInterface();
+
+        JPH::BoxShapeSettings box_settings(toVec3(in_half_extents));
+        box_settings.SetEmbedded();
+        JPH::Shape::ShapeResult box_result = box_settings.Create();
+        if (!box_result.IsValid())
+        {
+            return kInvalidPhysicsBodyId;
+        }
+        JPH::Ref<JPH::Shape> box = box_result.Get();
+
+        // 直接用**具体形状**那个重载：另一个重载收 ShapeSettings，于是又多一层
+        // 需要活到 CreateBody 之后的栈对象。
+        JPH::RotatedTranslatedShapeSettings offset_settings(toVec3(in_shape_offset),
+                                                            JPH::Quat::sIdentity(),
+                                                            box.GetPtr());
+        offset_settings.SetEmbedded();
+
+        JPH::BodyCreationSettings body_settings(&offset_settings,
+                                                JPH::RVec3(toVec3(in_position)),
+                                                JPH::Quat::sIdentity(),
+                                                JPH::EMotionType::Dynamic,
+                                                static_cast<JPH::ObjectLayer>(0));
+
+        JPH::Body* jph_body = body_interface.CreateBody(body_settings);
+        if (jph_body == nullptr)
+        {
+            return kInvalidPhysicsBodyId;
+        }
+
+        body_interface.AddBody(jph_body->GetID(), JPH::EActivation::Activate);
+        return jph_body->GetID().GetIndexAndSequenceNumber();
     }
 
     void StepScene(PhysicsScene& in_scene, int in_steps)
@@ -3226,6 +3272,419 @@ namespace
         rigidbody.SetIsKinematic(false);
         Check(!rigidbody.GetIsKinematic() && rigidbody.GetActorType() == RigidBodyActorType::dynamic,
               "G43", "and back (Unity turns it into a dynamic body, not a static one)");
+    }
+
+    // ---------------------------------------------------------------- RB ---
+    // Unity 的 Rigidbody 剩余面：constraints / 质心 / 惯性 / CCD / 点速度 / 密度。
+    //
+    // 顺序是刻意的：**先**把"Unity 位 <-> Jolt 掩码"这个纯映射钉死（不起物理
+    // 世界），**再**测它有没有真的被用上（真场景、真落体）。反过来做的话，映射
+    // 写反一位的表现是"物体在某个轴上悄悄不动了"，而"冻住没生效"和"映射写反了"
+    // 长得一模一样 —— 分不开。
+    void TestRigidbodyExtras()
+    {
+        // --- 1. 纯映射（不需要物理世界）--------------------------------
+        Check(ToJoltAllowedDOFs(RigidbodyConstraints::None) == 0x3fu, "RB0",
+              "no constraints -> all six Jolt DOFs allowed");
+        Check(ToJoltAllowedDOFs(RigidbodyConstraints::FreezeAll) == 0u, "RB1",
+              "FreezeAll -> no DOF allowed");
+        // Unity 的轴序（X=2 Y=4 Z=8 / rotX=16 rotY=32 rotZ=64）和 Jolt 的轴序
+        // （Tx=1 Ty=2 Tz=4 / Rx=8 Ry=16 Rz=32）**不同**，所以只能逐位搬。这三个
+        // 断言就是"三个位移位分别落到三个不同的 Jolt 位上"。
+        Check(ToJoltAllowedDOFs(RigidbodyConstraints::FreezePositionX) == 0x3eu, "RB2",
+              "FreezePositionX clears Jolt translation X (bit 0) and only that");
+        Check(ToJoltAllowedDOFs(RigidbodyConstraints::FreezePositionZ) == 0x3bu, "RB3",
+              "FreezePositionZ clears Jolt translation Z (bit 2) and only that");
+        Check(ToJoltAllowedDOFs(RigidbodyConstraints::FreezeRotationZ) == 0x1fu, "RB4",
+              "FreezeRotationZ clears Jolt rotation Z (bit 5) and only that");
+        // 组合值：Unity 的 FreezePosition / FreezeRotation 是"三个位一起"，不是
+        // 一个独立的枚举值。按值搬会漏掉组合。
+        Check(ToJoltAllowedDOFs(RigidbodyConstraints::FreezePosition) == 0x38u, "RB5",
+              "FreezePosition leaves exactly the three rotation DOFs");
+        Check(ToJoltAllowedDOFs(RigidbodyConstraints::FreezeRotation) == 0x07u, "RB6",
+              "FreezeRotation leaves exactly the three translation DOFs");
+        // 逆映射。
+        Check(ToRigidbodyConstraints(0x3fu) == RigidbodyConstraints::None, "RB7",
+              "and back: all DOFs allowed reads as no constraint");
+        Check(ToRigidbodyConstraints(0u) == RigidbodyConstraints::FreezeAll, "RB8",
+              "no DOF allowed reads as FreezeAll");
+        Check(ToRigidbodyConstraints(ToJoltAllowedDOFs(RigidbodyConstraints::FreezeRotationY)) ==
+                  RigidbodyConstraints::FreezeRotationY,
+              "RB9", "a single rotation bit round-trips");
+        Check(ToRigidbodyConstraints(ToJoltAllowedDOFs(RigidbodyConstraints::FreezePositionY)) ==
+                  RigidbodyConstraints::FreezePositionY,
+              "RB10", "and so does a single translation bit (Y, not X)");
+        // 未知位（Jolt 掩码里没出现的轴）必须翻译成"冻住"，不是"放开"。
+        Check(ToRigidbodyConstraints(0x3fu & ~(1u << 3)) == RigidbodyConstraints::FreezeRotationX,
+              "RB11", "a missing DOF bit reads as frozen, not free");
+        // CCD 的四个模式里只有 Discrete 不连续。
+        Check(!UsesContinuousCollision(CollisionDetectionMode::Discrete) &&
+                  UsesContinuousCollision(CollisionDetectionMode::Continuous) &&
+                  UsesContinuousCollision(CollisionDetectionMode::ContinuousDynamic) &&
+                  UsesContinuousCollision(CollisionDetectionMode::ContinuousSpeculative),
+              "RB12", "every mode but Discrete asks for continuous collision");
+
+        // --- 2. 真场景：映射有没有真的被用上 ----------------------------
+        PhysicsManager* physics_manager = GET_SYSTEM(PhysicsManager);
+        Check(physics_manager != nullptr, "RB13", "PhysicsManager is reachable");
+        if (physics_manager == nullptr)
+        {
+            return;
+        }
+
+        std::shared_ptr<PhysicsScene> scene = physics_manager->CreatePhysicsScene(Vector3(0.f, 0.f, -9.81f)).lock();
+        Check(scene != nullptr, "RB14", "a physics scene can be created");
+        if (!scene)
+        {
+            return;
+        }
+
+        const uint32_t faller = SpawnBox(*scene, Vector3(0.f, 0.f, 50.f), 0, true);
+        Check(faller != kInvalidPhysicsBodyId, "RB15", "a dynamic body can be spawned");
+        if (faller == kInvalidPhysicsBodyId)
+        {
+            return;
+        }
+
+        // 对照组：不冻任何轴，30 步之后它必须真的往下掉。少了这一条，"冻住 Z"的
+        // 断言在一个**根本不动**的场景里也是绿的（重力没生效和冻结生效长得一样）。
+        StepScene(*scene, 30);
+        Vector3 fallen = Vector3::ZERO;
+        Check(scene->GetRigidBodyPosition(faller, fallen) && fallen.z < 49.0f, "RB16",
+              "an unconstrained body falls (the control for the freeze test)");
+
+        // 冻住 Z 位移 —— 重力正好沿 -Z，所以这是"它掉不下去"。
+        scene->SetRigidBodyPosition(faller, Vector3(0.f, 0.f, 50.f));
+        scene->SetLinearVelocity(faller, Vector3::ZERO);
+        scene->WakeRigidBody(faller);
+        Check(scene->SetBodyAllowedDOFs(faller,
+                                        ToJoltAllowedDOFs(RigidbodyConstraints::FreezePositionZ),
+                                        12.0f),
+              "RB17", "the constraint can be pushed onto a live body");
+        uint32_t read_mask = 0xffu;
+        Check(scene->GetBodyAllowedDOFs(faller, read_mask) && read_mask == 0x3bu, "RB18",
+              "and the body reports exactly the mask that was asked for");
+        StepScene(*scene, 30);
+        Vector3 frozen = Vector3::ZERO;
+        Check(scene->GetRigidBodyPosition(faller, frozen) && Near(frozen.z, 50.0f, 0.01f), "RB19",
+              "freezing Z actually stops the fall (not just a stored flag)");
+        Vector3 frozen_velocity = Vector3::ZERO;
+        Check(scene->GetLinearVelocity(faller, frozen_velocity) && Near(frozen_velocity.z, 0.0f, 1.0e-4f),
+              "RB20", "and the solver never gives it a Z velocity at all");
+
+        // 旋转同理：冻住 Rz 之后同样的力矩不再让它转。
+        scene->SetBodyAllowedDOFs(faller, ToJoltAllowedDOFs(RigidbodyConstraints::FreezeRotationZ), 12.0f);
+        scene->SetAngularVelocity(faller, Vector3::ZERO);
+        scene->WakeRigidBody(faller);
+        scene->AddTorque(faller, Vector3(0.f, 0.f, 500.f));
+        scene->Tick(1.0f / 60.0f);
+        Vector3 spin_frozen = Vector3::ZERO;
+        Check(scene->GetAngularVelocity(faller, spin_frozen) && Near(spin_frozen.z, 0.0f, 1.0e-4f),
+              "RB21", "freezing rotation Z makes the same torque produce no spin");
+
+        scene->SetBodyAllowedDOFs(faller, ToJoltAllowedDOFs(RigidbodyConstraints::None), 12.0f);
+        scene->SetAngularVelocity(faller, Vector3::ZERO);
+        scene->WakeRigidBody(faller);
+        scene->AddTorque(faller, Vector3(0.f, 0.f, 500.f));
+        scene->Tick(1.0f / 60.0f);
+        Vector3 spin_free = Vector3::ZERO;
+        Check(scene->GetAngularVelocity(faller, spin_free) && std::fabs(spin_free.z) > 0.01f, "RB22",
+              "unfreezing it (the control) makes the same torque spin it");
+
+        // --- 改质量不许清掉约束 ----------------------------------------
+        // `SetMassProperties` 把掩码和质量**一起**收，写死 `EAllowedDOFs::All`
+        // 就是"改一次质量，constraints 悄悄没了"。表现是"设了 freezeRotation，
+        // 一改质量就又开始转"。
+        scene->SetBodyAllowedDOFs(faller, ToJoltAllowedDOFs(RigidbodyConstraints::FreezeRotation), 12.0f);
+        Check(scene->SetMass(faller, 30.0f), "RB23", "the mass can be changed on a constrained body");
+        Check(scene->GetBodyAllowedDOFs(faller, read_mask) && read_mask == 0x07u, "RB24",
+              "changing the mass keeps the constraint (it does not reset to All)");
+        scene->SetBodyAllowedDOFs(faller, ToJoltAllowedDOFs(RigidbodyConstraints::None), 12.0f);
+
+        // --- 质心 / 惯性 / 体积 ----------------------------------------
+        // 对称盒子的局部质心是 0，所以仅用它测不出"返回质心"和"返回零"的差别
+        // —— 这里换成一块形状偏离原点的盒子，局部质心必须是那个**非零**偏移。
+        const Vector3 kShapeOffset(0.f, 0.25f, 0.f);
+        const uint32_t offset_body =
+            SpawnOffsetComBox(*scene, Vector3(0.f, 60.f, 0.f), Vector3(0.5f, 0.25f, 0.5f), kShapeOffset);
+        Check(offset_body != kInvalidPhysicsBodyId, "RB25", "a body whose shape is off-centre can be spawned");
+        Vector3 local_com = Vector3::UNIT_X;
+        Check(scene->GetBodyCenterOfMass(offset_body, local_com) &&
+                  Near(local_com, kShapeOffset, 1.0e-4f),
+              "RB26", "the local centre of mass is the shape offset (not zero)");
+        Vector3 world_com = Vector3::ZERO;
+        Vector3 offset_origin = Vector3::ZERO;
+        Check(scene->GetBodyWorldCenterOfMass(offset_body, world_com) &&
+                  scene->GetRigidBodyPosition(offset_body, offset_origin) &&
+                  Near(world_com, offset_origin + kShapeOffset, 1.0e-4f),
+              "RB29", "the world centre of mass is the body ORIGIN plus the local COM");
+        // ⚠️ 这条是"别把两个量搞混"的钉子：Jolt 的 `Body::GetPosition()` 是物体
+        // 原点（`mPosition - rotation * localCOM`），质心是 `mPosition`。形状质心
+        // 不在原点时两者差 0.25 —— 用 `GetRigidBodyPosition` 顶替质心的实现会在这
+        // 里偏出去，而对称盒子上完全看不出来。
+        Check(Near(world_com.y, 60.25f, 0.01f) && Near(offset_origin.y, 60.0f, 0.01f), "RB30",
+              "so worldCenterOfMass != position here (60.25 vs 60.00 on Y)");
+
+        Vector3 inertia_12 = Vector3::ZERO;
+        Quaternion inertia_rotation = Quaternion(99.f, 99.f, 99.f, 99.f);
+        scene->SetMass(faller, 12.0f);
+        Check(scene->GetBodyInertiaTensor(faller, inertia_12, inertia_rotation) &&
+                  inertia_12.x > 0.f && inertia_12.y > 0.f && inertia_12.z > 0.f,
+              "RB29", "a dynamic body reports a positive inertia on every axis");
+        // 惯性正比于质量 —— 判据不依赖任何解析常数。惯性没跟着质量走的话两者相等。
+        Vector3 inertia_24 = Vector3::ZERO;
+        scene->SetMass(faller, 24.0f);
+        Check(scene->GetBodyInertiaTensor(faller, inertia_24, inertia_rotation) &&
+                  Near(inertia_24.x, 2.0f * inertia_12.x, 0.02f * inertia_12.x),
+              "RB30", "doubling the mass doubles the inertia (SetMass scales it too)");
+        Check(Near(inertia_rotation.length(), 1.0f, 1.0e-3f), "RB31",
+              "the inertia rotation is a unit quaternion");
+
+        float volume = 0.f;
+        Check(scene->GetBodyVolume(faller, volume) && Near(volume, 1.0f, 0.01f), "RB32",
+              "a 1x1x1 box has a volume of 1 m3 (that is what density multiplies)");
+        const uint32_t bigger = SpawnBoxSized(*scene, Vector3(0.f, 20.f, 0.f), Vector3(1.f, 1.f, 1.f), 0, true);
+        float bigger_volume = 0.f;
+        Check(bigger != kInvalidPhysicsBodyId && scene->GetBodyVolume(bigger, bigger_volume) &&
+                  Near(bigger_volume, 8.0f, 0.01f),
+              "RB33", "and a 2x2x2 box has 8 (the volume really comes from the shape)");
+
+        // --- CCD --------------------------------------------------------
+        CollisionDetectionMode mode = CollisionDetectionMode::ContinuousSpeculative;
+        Check(scene->GetBodyMotionQuality(faller, mode) && mode == CollisionDetectionMode::Discrete,
+              "RB34", "a new body is Discrete (continuous is opt-in and costs a sweep)");
+        Check(scene->SetBodyMotionQuality(faller, CollisionDetectionMode::ContinuousDynamic) &&
+                  scene->GetBodyMotionQuality(faller, mode) && mode == CollisionDetectionMode::Continuous,
+              "RB35", "ContinuousDynamic is accepted and reads back as Continuous");
+        Check(scene->SetBodyMotionQuality(faller, CollisionDetectionMode::Discrete) &&
+                  scene->GetBodyMotionQuality(faller, mode) && mode == CollisionDetectionMode::Discrete,
+              "RB36", "and it can be turned back off");
+
+        // --- 角速度上限 ---------------------------------------------------
+        float default_max_angular = -1.f;
+        Check(scene->GetBodyMaxAngularVelocity(faller, default_max_angular) && default_max_angular > 0.f,
+              "RB37", "a body has a positive default angular velocity cap");
+        Check(scene->SetBodyMaxAngularVelocity(faller, 2.0f) &&
+                  scene->GetBodyMaxAngularVelocity(faller, default_max_angular) &&
+                  Near(default_max_angular, 2.0f, 1.0e-4f),
+              "RB38", "maxAngularVelocity round-trips");
+        // 行为级：上限要真的挡住。只测"读回来对不对"的话，一个把值存进字段却不
+        // 交给求解器的实现是全绿的。
+        scene->SetAngularVelocity(faller, Vector3::ZERO);
+        scene->SetBodyMaxAngularVelocity(faller, 1.0f);
+        scene->AddAngularImpulse(faller, Vector3(0.f, 0.f, 1000.f));
+        scene->Tick(1.0f / 60.0f);
+        Vector3 capped_spin = Vector3::ZERO;
+        Check(scene->GetAngularVelocity(faller, capped_spin) && std::fabs(capped_spin.z) <= 1.05f,
+              "RB39", "with the cap at 1 rad/s a huge impulse still yields at most ~1 rad/s");
+        scene->SetAngularVelocity(faller, Vector3::ZERO);
+        scene->SetBodyMaxAngularVelocity(faller, 500.0f);
+        scene->AddAngularImpulse(faller, Vector3(0.f, 0.f, 1000.f));
+        scene->Tick(1.0f / 60.0f);
+        Vector3 uncapped_spin = Vector3::ZERO;
+        Check(scene->GetAngularVelocity(faller, uncapped_spin) && std::fabs(uncapped_spin.z) > 2.0f,
+              "RB40", "raising the cap (the control) lets the same impulse spin it much faster");
+
+        // --- 点速度 ------------------------------------------------------
+        // 线速度为 0、绕 Z 以 5 rad/s 自转的刚体：X 方向偏 1 米的那个点，速度是
+        // ω × r = (0, 5, 0)。这正是 `GetPointVelocity` 相对 `velocity` 多出来的
+        // 那一半（"转着的杆子端点比质心快"）。
+        scene->SetLinearVelocity(faller, Vector3::ZERO);
+        scene->SetAngularVelocity(faller, Vector3(0.f, 0.f, 5.f));
+        // ⚠️ 用**这个**刚体自己的质心，不要用上面那段读出来的 offset_origin ——
+        // 那是另一个物体的坐标，拿它当参考点会得到一个"看起来有旋转分量但方向
+        // 不对"的速度，而方向恰恰是这条断言要看的东西。
+        Vector3 spin_com = Vector3::ZERO;
+        Check(scene->GetBodyWorldCenterOfMass(faller, spin_com), "RB41a", "the spinner's COM is readable");
+        Vector3 point_velocity = Vector3::ZERO;
+        Check(scene->GetBodyPointVelocity(faller, spin_com + Vector3(1.f, 0.f, 0.f), point_velocity) &&
+                  Near(point_velocity.y, 5.0f, 0.05f) && Near(point_velocity.x, 0.0f, 0.05f),
+              "RB41", "a point 1 m out on X moves at omega x r = (0, 5, 0), not at the COM velocity");
+        Vector3 com_velocity = Vector3::UNIT_X;
+        Check(scene->GetBodyPointVelocity(faller, spin_com, com_velocity) &&
+                  Near(com_velocity, Vector3::ZERO, 0.05f),
+              "RB42", "the centre of mass itself moves at the linear velocity (zero here)");
+        // 有平移时两者叠加，不能只算旋转分量。
+        scene->SetLinearVelocity(faller, Vector3(2.f, 0.f, 0.f));
+        Check(scene->GetBodyPointVelocity(faller, spin_com, com_velocity) &&
+                  Near(com_velocity.x, 2.0f, 0.05f),
+              "RB43", "with a linear velocity the COM point reports it (rotation is added, not replaced)");
+
+        // --- 无效 body id 一律拒绝 ---------------------------------------
+        uint32_t ignored_mask = 0;
+        float ignored_float = 0.f;
+        Vector3 ignored_vec = Vector3::ZERO;
+        Quaternion ignored_quat = Quaternion::IDENTITY;
+        CollisionDetectionMode ignored_mode = CollisionDetectionMode::Continuous;
+        Check(!scene->GetBodyAllowedDOFs(kInvalidPhysicsBodyId, ignored_mask) &&
+                  !scene->SetBodyAllowedDOFs(kInvalidPhysicsBodyId, 0x3fu, 1.0f) &&
+                  !scene->GetBodyCenterOfMass(kInvalidPhysicsBodyId, ignored_vec) &&
+                  !scene->GetBodyWorldCenterOfMass(kInvalidPhysicsBodyId, ignored_vec) &&
+                  !scene->GetBodyInertiaTensor(kInvalidPhysicsBodyId, ignored_vec, ignored_quat) &&
+                  !scene->GetBodyVolume(kInvalidPhysicsBodyId, ignored_float) &&
+                  !scene->GetBodyMotionQuality(kInvalidPhysicsBodyId, ignored_mode) &&
+                  !scene->SetBodyMotionQuality(kInvalidPhysicsBodyId, CollisionDetectionMode::Discrete) &&
+                  !scene->GetBodyMaxAngularVelocity(kInvalidPhysicsBodyId, ignored_float) &&
+                  !scene->SetBodyMaxAngularVelocity(kInvalidPhysicsBodyId, 1.0f) &&
+                  !scene->GetBodyPointVelocity(kInvalidPhysicsBodyId, Vector3::ZERO, ignored_vec),
+              "RB44", "every new call rejects an invalid body id instead of crashing");
+        // 静态刚体没有 MotionProperties，也就没有"允许哪些轴"这回事。
+        const uint32_t static_body = SpawnBox(*scene, Vector3(0.f, 40.f, 0.f), 0, false);
+        Check(static_body != kInvalidPhysicsBodyId && !scene->GetBodyAllowedDOFs(static_body, ignored_mask) &&
+                  !scene->SetBodyAllowedDOFs(static_body, 0x3fu, 1.0f) &&
+                  !scene->GetBodyMaxAngularVelocity(static_body, ignored_float),
+              "RB45", "a static body has no DOF mask and no angular velocity cap");
+
+        // --- 3. 组件侧：没有活刚体时的降级 ------------------------------
+        RigidBodyComponent rigidbody;
+        Check(!rigidbody.HasBody(), "RB46", "(the component fixture has no body)");
+        Check(rigidbody.GetConstraints() == RigidbodyConstraints::None, "RB47",
+              "constraints read None before anything is set");
+        Check(!rigidbody.GetFreezeRotation(), "RB48", "freezeRotation reads false");
+
+        // 没有活体时读回**脚本设过的值**而不是 None：否则"设了没生效"和"从没设
+        // 过"在读回来时完全一样。
+        rigidbody.SetConstraints(RigidbodyConstraints::FreezeRotation);
+        Check(rigidbody.GetConstraints() == RigidbodyConstraints::FreezeRotation, "RB49",
+              "a constraint set with no body is still readable (it is not silently dropped)");
+        Check(rigidbody.GetFreezeRotation(), "RB50", "and freezeRotation reads true from it");
+
+        // freezeRotation 只动旋转位，位移位必须原样保留。
+        rigidbody.SetConstraints(RigidbodyConstraints::FreezePositionZ);
+        Check(!rigidbody.GetFreezeRotation(), "RB51", "freezing only Z translation does not read as freezeRotation");
+        rigidbody.SetFreezeRotation(true);
+        Check(rigidbody.GetFreezeRotation(), "RB52", "SetFreezeRotation(true) freezes all three rotations");
+        Check((static_cast<int>(rigidbody.GetConstraints()) &
+               static_cast<int>(RigidbodyConstraints::FreezePositionZ)) != 0,
+              "RB53", "and it KEEPS the position freeze that was set before (it does not overwrite)");
+        // 三个旋转位必须一起动：只冻一个轴的"freezeRotation"会让"物体绕另外两个
+        // 轴还在翻"这种事发生。
+        Check((static_cast<int>(rigidbody.GetConstraints()) &
+               static_cast<int>(RigidbodyConstraints::FreezeRotation)) ==
+                  static_cast<int>(RigidbodyConstraints::FreezeRotation),
+              "RB54", "freezeRotation means all three rotation bits, not just one");
+        rigidbody.SetFreezeRotation(false);
+        Check(!rigidbody.GetFreezeRotation(), "RB55", "and it can be turned back off");
+        Check((static_cast<int>(rigidbody.GetConstraints()) &
+               static_cast<int>(RigidbodyConstraints::FreezeRotation)) == 0,
+              "RB56", "unfreezing clears all three bits");
+
+        // 质心 / 惯性：没有刚体时给"零"而不是 NaN。
+        // ⚠️ 没有 `Near(Quaternion, Quaternion)` 重载（有 Matrix4x4 的），所以逐
+        // 分量比。顺带也把"单位四元数"这件事一起钉了：一个没归一化的旋转会让
+        // 惯性张量整体缩错。
+        const Quaternion no_body_inertia_rotation = rigidbody.GetInertiaTensorRotation();
+        Check(Near(rigidbody.GetCenterOfMass(), Vector3::ZERO, 1.0e-6f) &&
+                  Near(rigidbody.GetWorldCenterOfMass(), Vector3::ZERO, 1.0e-6f) &&
+                  Near(rigidbody.GetInertiaTensor(), Vector3::ZERO, 1.0e-6f) &&
+                  Near(no_body_inertia_rotation.x, 0.0f, 1.0e-6f) &&
+                  Near(no_body_inertia_rotation.y, 0.0f, 1.0e-6f) &&
+                  Near(no_body_inertia_rotation.z, 0.0f, 1.0e-6f) &&
+                  Near(no_body_inertia_rotation.w, 1.0f, 1.0e-6f),
+              "RB57", "the centre of mass and the inertia read zero / identity, not NaN");
+
+        // CCD：没有活体时读回作者值，**保留全部四个模式**（Jolt 那个两态的窄化
+        // 只发生在真的落进 Jolt 之后）。
+        Check(rigidbody.GetCollisionDetectionMode() == CollisionDetectionMode::Discrete, "RB58",
+              "collisionDetectionMode defaults to Discrete");
+        rigidbody.SetCollisionDetectionMode(CollisionDetectionMode::ContinuousDynamic);
+        Check(rigidbody.GetCollisionDetectionMode() == CollisionDetectionMode::ContinuousDynamic, "RB59",
+              "and round-trips at full fidelity while there is no body");
+
+        Check(Near(rigidbody.GetMaxAngularVelocity(), 0.0f), "RB60", "maxAngularVelocity reads 0 with no body");
+        Check(Near(rigidbody.GetPointVelocity(Vector3::UNIT_X), Vector3::ZERO, 1.0e-6f) &&
+                  Near(rigidbody.GetRelativePointVelocity(Vector3::UNIT_X), Vector3::ZERO, 1.0e-6f),
+              "RB61", "both point-velocity queries read zero with no body");
+        // 全部写操作必须是安全的空操作。
+        rigidbody.AddRelativeForce(Vector3::UNIT_X);
+        rigidbody.AddRelativeTorque(Vector3::UNIT_Z);
+        rigidbody.SetDensity(2.0f);
+        Check(Near(rigidbody.GetDensity(), 0.0f), "RB62",
+              "density reads 0 with no body (and every setter above was a safe no-op)");
+
+        // --- 4. 接线门 ----------------------------------------------------
+        const std::string rb_header =
+            ReadFile("Source/Runtime/Function/Framework/Component/Rigidbody/RigidbodyComponent.h");
+        Check(!rb_header.empty(), "RB63", "RigidbodyComponent.h is readable");
+        Check(CountOccurrences(rb_header, "GetConstraints() const") >= 1 &&
+                  CountOccurrences(rb_header, "SetConstraints(RigidbodyConstraints") >= 1 &&
+                  CountOccurrences(rb_header, "GetFreezeRotation() const") >= 1 &&
+                  CountOccurrences(rb_header, "GetCenterOfMass() const") >= 1 &&
+                  CountOccurrences(rb_header, "GetInertiaTensor() const") >= 1 &&
+                  CountOccurrences(rb_header, "GetCollisionDetectionMode() const") >= 1 &&
+                  CountOccurrences(rb_header, "GetMaxAngularVelocity() const") >= 1 &&
+                  CountOccurrences(rb_header, "GetPointVelocity(const Vector3&") >= 1 &&
+                  CountOccurrences(rb_header, "AddRelativeForce(const Vector3&") >= 1 &&
+                  CountOccurrences(rb_header, "SetDensity(float density)") >= 1,
+              "RB64", "every Unity-named member is declared on the component");
+        Check(CountOccurrences(rb_header, "Name=\"constraints\"") >= 1 &&
+                  CountOccurrences(rb_header, "Name=\"freezeRotation\"") >= 1 &&
+                  CountOccurrences(rb_header, "Name=\"centerOfMass\"") >= 1 &&
+                  CountOccurrences(rb_header, "Name=\"collisionDetectionMode\"") >= 1 &&
+                  CountOccurrences(rb_header, "Name=\"maxAngularVelocity\"") >= 1,
+              "RB65", "and every one of them is published under its Unity name");
+
+        const std::string rb_source =
+            ReadFile("Source/Runtime/Function/Framework/Component/Rigidbody/RigidbodyComponent.cpp");
+        Check(!rb_source.empty(), "RB66", "RigidbodyComponent.cpp is readable");
+        // 接线门：声明了不算实现。SetConstraints 必须真的走到场景，且走的是
+        // ToJoltAllowedDOFs —— 直接把 Unity 的值当 Jolt 掩码传下去能编译、能
+        // 运行，然后在完全不相干的轴上冻住东西。
+        Check(CountOccurrences(rb_source, "SetBodyAllowedDOFs(") >= 1, "RB67",
+              "SetConstraints reaches the physics scene");
+        Check(CountOccurrences(rb_source, "ToJoltAllowedDOFs(constraints)") >= 1, "RB68",
+              "and converts Unity's bits into Jolt's mask (they are not the same bits)");
+        Check(CountOccurrences(rb_source, "GetBodyMotionQuality(") >= 1 &&
+                  CountOccurrences(rb_source, "SetBodyMotionQuality(") >= 1, "RB69",
+              "the CCD mode is read from and written to the live body");
+        Check(CountOccurrences(rb_source, "GetBodyPointVelocity(") >= 1, "RB70",
+              "GetPointVelocity asks the scene, not a local field");
+
+        // 改质量不许清掉约束（RB24 是行为级，这条保证修法留在源码里）。
+        const std::string scene_source = ReadFile("Source/Runtime/Function/Physics/PhysicsScene.cpp");
+        Check(!scene_source.empty(), "RB71", "PhysicsScene.cpp is readable");
+        Check(CountOccurrences(scene_source, "GetAllowedDOFs()") >= 1, "RB72",
+              "SetMass passes the CURRENT DOF mask through (not EAllowedDOFs::All)");
+
+        // body 重建之后约束要补回去：Awake 里设的约束落在 body 还存在之前，不补
+        // 就是"关卡一加载约束就没了"。
+        Check(CountOccurrences(rb_source, "ApplyRuntimeBodySettings()") >= 4, "RB73",
+              "the constraint is re-applied on every path that creates a body");
+
+        const std::string binding_source = ReadFile("Source/Runtime/Scripting/Binding/ScriptBinding.cpp");
+        Check(CountOccurrences(binding_source, "declare type Rigidbody = RigidBodyComponent;") >= 1, "RB74",
+              "scripts can spell the type the Unity way");
+
+        const std::string null_source = ReadFile("Source/Runtime/Function/Physics/PhysicsSceneNull.cpp");
+        // ⚠️ 每个锚点都带上**参数表**。只写函数名的门是漏的：把符号改名成
+        // `GetBodyPointVelocityRenamed` 之后，`PhysicsScene::GetBodyPointVelocity`
+        // 这个子串**还在**，门照样绿 —— 而那个构建里符号就是真的没了
+        // （-undefined dynamic_lookup ⇒ 第一次调用 EXC_BAD_ACCESS）。
+        Check(CountOccurrences(null_source, "PhysicsScene::SetBodyAllowedDOFs(uint32_t, uint32_t, float)") >= 1 &&
+                  CountOccurrences(null_source,
+                                   "PhysicsScene::GetBodyInertiaTensor(uint32_t, Vector3& out_inertia, "
+                                   "Quaternion& out_rotation) const") >= 1 &&
+                  CountOccurrences(null_source,
+                                   "PhysicsScene::GetBodyPointVelocity(uint32_t, const Vector3&, "
+                                   "Vector3& out_velocity) const") >= 1,
+              "RB75", "the no-physics build defines the new symbols too (a missing one is EXC_BAD_ACCESS)");
+
+        // 相对力 / 相对力矩：不加旋转的话，`AddRelativeForce` 与 `AddForce` 是同一
+        // 个函数 —— 而"车头前方"和"世界前方"在车转过之后是两回事。这条在行为层
+        // 测不到（组件夹具没有活刚体），所以钉在源码上。
+        Check(CountOccurrences(rb_source, "GetRotation() * force") >= 1 &&
+                  CountOccurrences(rb_source, "GetRotation() * torque") >= 1,
+              "RB76", "AddRelativeForce/Torque rotate by the body's own orientation");
+        // 密度必须乘**体积**：写死 1.0 的话 `SetDensity(2)` 在一个 8 m3 的物体上
+        // 给出 2kg 而不是 16kg，而"质量变了"在任何断言里都是真的。
+        Check(CountOccurrences(rb_source, "density * volume") >= 1 &&
+                  CountOccurrences(rb_source, "GetMass() / volume") >= 1,
+              "RB77", "density is mass per volume, not mass per unit");
+        // 相对点速度的等价定义：局部点 -> 世界点 用**物体原点**（transform 位置）
+        // 而不是质心。Unity 的 `relativePoint` 是刚体局部空间里的点，局部空间的
+        // 原点是 transform —— 写成质心会在复合碰撞体上整体偏一个 localCOM。
+        Check(CountOccurrences(rb_source, "GetPosition() + GetRotation() * local_point") >= 1,
+              "RB78", "GetRelativePointVelocity measures from the body origin, not the centre of mass");
     }
 
     // ---------------------------------------------------------------- O ----
@@ -14809,6 +15268,7 @@ int main()
     TestMaterialLightParity();
     TestMeshParity();
     TestAnimatorParity();
+    TestRigidbodyExtras();
     TestGradient();
     TestGradientWiring();
     TestColliderBounds();

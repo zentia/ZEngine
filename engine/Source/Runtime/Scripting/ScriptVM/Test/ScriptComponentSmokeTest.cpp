@@ -1221,6 +1221,9 @@ int main(int argc, char** argv)
         CheckEq("ZA6", "Unity 的 Animator 其余面：speed / Rebind / 控制器形状都进了绑定表",
                 mover_value("animatorProbe"),
                 "true|true|true|true|true|true");
+        CheckEq("ZA7", "Unity 的 Rigidbody 其余面：constraints / 质心 / CCD / 点速度都进了绑定表",
+                mover_value("rigidbodyProbe"),
+                "true|true|true|true|true|true|true|true|true|true|true");
 
         // --- Unity 的 Transform 补齐面（TE 段）------------------------------
         //

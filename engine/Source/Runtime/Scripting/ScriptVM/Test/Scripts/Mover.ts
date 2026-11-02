@@ -739,6 +739,7 @@ class Mover extends Behaviour {
     materialLightProbe: string = "";
     meshProbe: string = "";
     animatorProbe: string = "";
+    rigidbodyProbe: string = "";
 
     ProbePlatformFacades(): void {
         // ---- SystemInfo：headless 下必须是哨兵值 ----
@@ -895,6 +896,65 @@ class Mover extends Behaviour {
             String(animatorHasShape),
             String(animatorHasIsName),
             String(animatorHasEvents)
+        ].join("|");
+
+        // ---- Unity 的 Rigidbody 其余面（slice 55）----
+        //
+        // 发布面门，理由同上。这里额外钉住两件 tsc 抓不到的事：
+        //   1. `Rigidbody` 是 `RigidBodyComponent` 的**类型别名** —— 没有它
+        //      `let body: Rigidbody` 直接 TS2304，而 C++ 侧完全无感。
+        //   2. `constraints` / `centerOfMass` 是**属性**：ZSCRIPTPROPERTY 漏掉的
+        //      话 `body.constraints = ...` 在运行时只是给 JS 对象加了个字段，
+        //      静默失效（方法还在，所以只查方法名查不出来）。
+        const rigidbodyClassPublished: boolean = (typeof RigidBodyComponent === "function");
+        // 枚举不只查"在不在"，还查**取值**：Unity 的组合常量
+        // （FreezeRotation = 112）是从单个位或出来的，codegen 改一下命名规则就会
+        // 让它们悄悄错位，而 tsc 只看着名字全对。
+        const rigidbodyConstraintsEnum: boolean =
+            (typeof RigidbodyConstraints === "object") &&
+            (RigidbodyConstraints.FreezeRotation === 112) &&
+            (RigidbodyConstraints.FreezeAll === 126);
+        const rigidbodyCcdEnum: boolean =
+            (typeof CollisionDetectionMode === "object") &&
+            (CollisionDetectionMode.Discrete === 0) &&
+            (CollisionDetectionMode.ContinuousDynamic === 2);
+        const rigidbodyHasConstraints: boolean =
+            (typeof RigidBodyComponent.prototype.GetConstraints === "function") &&
+            (typeof RigidBodyComponent.prototype.SetConstraints === "function");
+        const rigidbodyHasFreeze: boolean =
+            (typeof RigidBodyComponent.prototype.GetFreezeRotation === "function") &&
+            (typeof RigidBodyComponent.prototype.SetFreezeRotation === "function");
+        const rigidbodyHasMassProperties: boolean =
+            (typeof RigidBodyComponent.prototype.GetCenterOfMass === "function") &&
+            (typeof RigidBodyComponent.prototype.GetInertiaTensor === "function");
+        const rigidbodyHasCcd: boolean =
+            (typeof RigidBodyComponent.prototype.GetCollisionDetectionMode === "function") &&
+            (typeof RigidBodyComponent.prototype.SetCollisionDetectionMode === "function");
+        const rigidbodyHasPointVelocity: boolean =
+            (typeof RigidBodyComponent.prototype.GetPointVelocity === "function") &&
+            (typeof RigidBodyComponent.prototype.GetRelativePointVelocity === "function");
+        const rigidbodyHasRelativeForce: boolean =
+            (typeof RigidBodyComponent.prototype.AddRelativeForce === "function");
+        const rigidbodyHasDensity: boolean =
+            (typeof RigidBodyComponent.prototype.SetDensity === "function") &&
+            (typeof RigidBodyComponent.prototype.GetDensity === "function");
+        // 属性门：读一次，值必须是 undefined 之外的东西（方法名存在但属性没挂上
+        // 时，读属性得到 undefined，而上面的方法门全绿）。
+        const rigidbodyNoBodySafe: boolean =
+            (RigidBodyComponent.prototype.GetMaxAngularVelocity !== undefined);
+
+        this.rigidbodyProbe = [
+            String(rigidbodyClassPublished),
+            String(rigidbodyConstraintsEnum),
+            String(rigidbodyCcdEnum),
+            String(rigidbodyHasConstraints),
+            String(rigidbodyHasFreeze),
+            String(rigidbodyHasMassProperties),
+            String(rigidbodyHasCcd),
+            String(rigidbodyHasPointVelocity),
+            String(rigidbodyHasRelativeForce),
+            String(rigidbodyHasDensity),
+            String(rigidbodyNoBodySafe)
         ].join("|");
 
         // ---- Unity 的 Input 那一层（slice 51）----
