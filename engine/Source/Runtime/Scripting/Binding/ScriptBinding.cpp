@@ -409,6 +409,16 @@ namespace
         // RigidBodyComponent 等组件保持一致的命名），Unity 叫 `Light`。
         "declare type Light = LightComponent;\n"
         "\n"
+        // 第三例：刚体。引擎里的组件叫 `RigidBodyComponent`（大写 B，与
+        // CameraComponent / AudioSourceComponent 一族对齐），Unity 叫
+        // `Rigidbody`（小写 b）。脚本里 `let body: Rigidbody` 是最高频的写法之一，
+        // 所以把 Unity 的拼写也还给脚本。
+        //
+        // ⚠️ 同样只是类型别名：`GetComponent("Rigidbody")` 按**反射名**查，反射
+        // 名仍然是 `RigidBodyComponent`（`AddComponent` / `GetComponent` 收的是
+        // 字符串，与这里的类型名无关）。
+        "declare type Rigidbody = RigidBodyComponent;\n"
+        "\n"
         // Bounds：Unity 存的是 center + **extents（半尺寸）**，`size` / `min` /
         // `max` 都是派生量。键名与 `ZScript::Converter<Bounds>` 一致。
         // 与 `declare class Bounds`（ScriptBounds.h 那批静态方法）同名合并。

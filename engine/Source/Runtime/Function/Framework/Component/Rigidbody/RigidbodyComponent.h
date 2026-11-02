@@ -199,6 +199,124 @@ public:
     ZFUNCTION()
     void SetBounceCombine(PhysicMaterialCombine combine_mode);
 
+    // =========================================================================
+    // 自由度约束（Unity 的 `rigidbody.constraints` / `freezeRotation`）
+    // =========================================================================
+    //
+    // Unity 的 `constraints` 是一个位标志集，"冻住"的是**世界轴**（不是物体局部
+    // 轴）—— `FreezeRotationY` 是"绕世界 Y 轴不转"，物体怎么摆都不影响。Jolt 的
+    // `EAllowedDOFs` 同样是**世界轴**掩码，所以两边语义对得上，只是互为补集且
+    // 位序不同（映射见 `RigidBody.h` 的 `ToJoltAllowedDOFs`）。
+    //
+    // ⚠️ 与 Unity 的一处差别，写在注释里：Jolt 的自由度是**求解器级**的（冻住的
+    // 轴上速度恒为 0，撞上去也推不动），Unity 也是。所以"冻住 Y 位移"的箱子不会
+    // 掉下去 —— 这正是想要的。
+
+    /// 当前生效的约束。有刚体时以刚体为准（模拟出来的才是真在用的），没有时
+    /// 返回脚本上次设的值 —— 与 `GetMass` 同一条"活体优先"的约定。
+    ZFUNCTION()
+    RigidbodyConstraints GetConstraints() const;
+
+    /// 设置约束。同时写活体与组件自己的记录：只写活体的话，关卡重载（body 重建）
+    /// 之后约束就静默没了。
+    ZFUNCTION()
+    void SetConstraints(RigidbodyConstraints constraints);
+
+    /// Unity 的 `rigidbody.freezeRotation`：等价于一次设上 / 撤掉三个旋转位。
+    ///
+    /// ⚠️ **保留其它位**：`freezeRotation = true` 只动旋转位，不动已经设好的位移
+    /// 冻结。把它写成"整体赋 FreezeRotation"会顺手清掉位移约束 —— 而"我明明冻
+    /// 住了 Y 位移"这种 bug 要往回查很久。
+    ZFUNCTION()
+    bool GetFreezeRotation() const;
+    ZFUNCTION()
+    void SetFreezeRotation(bool freeze_rotation);
+
+    // =========================================================================
+    // 质心与惯性（Unity 的 `centerOfMass` / `inertiaTensor`）
+    // =========================================================================
+    //
+    // 这两组是"推一下会怎么转"的唯一判据。`AddForceAtPosition` 有了之后缺的正是
+    // 读回这一半：不知道质心就没法解释"为什么踢角上它没转"。
+
+    /// **对象空间**质心（Unity 的 `rigidbody.centerOfMass`），只读。
+    ZFUNCTION()
+    Vector3 GetCenterOfMass() const;
+
+    /// **世界空间**质心（Unity 的 `rigidbody.worldCenterOfMass`），只读。
+    ZFUNCTION()
+    Vector3 GetWorldCenterOfMass() const;
+
+    /// 惯性张量的对角（Unity 的 `rigidbody.inertiaTensor`），只读。越大越难转。
+    ZFUNCTION()
+    Vector3 GetInertiaTensor() const;
+
+    /// 把上面那个对角旋到对象空间的那次旋转（Unity 的
+    /// `rigidbody.inertiaTensorRotation`），只读。
+    ZFUNCTION()
+    Quaternion GetInertiaTensorRotation() const;
+
+    // =========================================================================
+    // 连续碰撞检测（Unity 的 `rigidbody.collisionDetectionMode`）
+    // =========================================================================
+
+    /// 高速物体穿过薄墙的解药。**代价不小**（LinearCast 每步多一次扫掠），所以
+    /// 只给子弹 / 快速移动平台开，别全场开。
+    ///
+    /// ⚠️ 读回来的粒度比写进去的粗：Jolt 只有 Discrete / LinearCast 两态，写
+    /// `ContinuousDynamic` 读回 `Continuous`。理由见 `RigidBody.h` 的枚举注释。
+    ZFUNCTION()
+    CollisionDetectionMode GetCollisionDetectionMode() const;
+    ZFUNCTION()
+    void SetCollisionDetectionMode(CollisionDetectionMode mode);
+
+    /// Unity 的 `rigidbody.maxAngularVelocity`（弧度/秒），挡"加了一次冲量之后
+    /// 疯转"。默认取 Jolt 的初值（约 47 rad/s）。
+    ZFUNCTION()
+    float GetMaxAngularVelocity() const;
+    ZFUNCTION()
+    void SetMaxAngularVelocity(float max_angular_velocity);
+
+    // =========================================================================
+    // 点速度与相对力
+    // =========================================================================
+
+    /// **世界空间某一点**的速度（Unity 的 `rigidbody.GetPointVelocity`）。
+    /// 与 `velocity` 的差别是它含旋转分量：转着的杆子，端点比质心快。
+    ZFUNCTION()
+    Vector3 GetPointVelocity(const Vector3& world_point) const;
+
+    /// **对象空间某一点**的速度（Unity 的 `rigidbody.GetRelativePointVelocity`），
+    /// 参数是相对**物体原点**（transform 位置）的局部偏移 —— 不是相对质心。
+    ZFUNCTION()
+    Vector3 GetRelativePointVelocity(const Vector3& local_point) const;
+
+    /// 沿物体**自身**轴施加的力（Unity 的 `AddRelativeForce`）。推力器 / 载具
+    /// 用这个：`AddForce(Vector3.forward)` 是"往世界前方"，`AddRelativeForce`
+    /// 才是"往车头前方"。
+    ZFUNCTION()
+    void AddRelativeForce(const Vector3& force);
+
+    /// 沿物体自身轴的力矩（Unity 的 `AddRelativeTorque`）。
+    ZFUNCTION()
+    void AddRelativeTorque(const Vector3& torque);
+
+    // =========================================================================
+    // 密度（Unity 的 `rigidbody.SetDensity`）
+    // =========================================================================
+
+    /// 按密度反推质量：`mass = density * volume`。
+    ///
+    /// Unity 的 `SetDensity` 是"给一个材质密度，让引擎算质量"，比手写质量稳 ——
+    /// 换模型尺寸时不用同步改质量。密度为 0 / 负时夹到极小正数（与 `SetMass`
+    /// 同一条理由：0 质量是 NaN 的入口）。
+    ZFUNCTION()
+    void SetDensity(float density);
+
+    /// 当前密度（质量 / 体积）。拿不到体积时返回 0。
+    ZFUNCTION()
+    float GetDensity() const;
+
     /// Unity 的 `MovePosition` / `MoveRotation`：由物理步按 delta_time 反推速度
     /// 走过去，所以**会**推开路上的东西。运动学物体的正确移动方式。
     ZFUNCTION()
@@ -226,6 +344,15 @@ public:
     ZSCRIPTPROPERTY(Name="rotation", Getter="GetRotation", Setter="SetRotation")
     ZSCRIPTPROPERTY(Name="friction", Getter="GetFriction", Setter="SetFriction")
     ZSCRIPTPROPERTY(Name="bounciness", Getter="GetBounciness", Setter="SetBounciness")
+    ZSCRIPTPROPERTY(Name="constraints", Getter="GetConstraints", Setter="SetConstraints")
+    ZSCRIPTPROPERTY(Name="freezeRotation", Getter="GetFreezeRotation", Setter="SetFreezeRotation")
+    ZSCRIPTPROPERTY(Name="centerOfMass", Getter="GetCenterOfMass")
+    ZSCRIPTPROPERTY(Name="worldCenterOfMass", Getter="GetWorldCenterOfMass")
+    ZSCRIPTPROPERTY(Name="inertiaTensor", Getter="GetInertiaTensor")
+    ZSCRIPTPROPERTY(Name="inertiaTensorRotation", Getter="GetInertiaTensorRotation")
+    ZSCRIPTPROPERTY(Name="collisionDetectionMode", Getter="GetCollisionDetectionMode", Setter="SetCollisionDetectionMode")
+    ZSCRIPTPROPERTY(Name="maxAngularVelocity", Getter="GetMaxAngularVelocity", Setter="SetMaxAngularVelocity")
+    ZSCRIPTPROPERTY(Name="density", Getter="GetDensity", Setter="SetDensity")
 
     void Tick(float delta_time) override {}
     void UpdateGlobalTransform(const TransformTRS& transform, bool is_scale_dirty);
@@ -261,6 +388,12 @@ protected:
     void CreateRigidBody(const TransformTRS& global_transform);
     void RemoveRigidBody();
 
+    /// body 刚建好 / 刚 flush 出来之后把组件记的约束与 CCD 模式推下去。
+    ///
+    /// 不做这一步的话"脚本在 Awake 里设了 freezeRotation"会丢：设的时候 body 还
+    /// 没建（关卡加载期物理场景通常还没发布），body 建出来时是`All`。
+    void ApplyRuntimeBodySettings();
+
     /// 在 PhysicsManager 的 body -> GameObject 表里登记 / 注销自己。
     /// 没有这张表，接触事件里的 body id 翻译不成 GameObject。
     void RegisterOwner();
@@ -282,4 +415,12 @@ protected:
     /// Set by PostLoadResource when no physics scene was active yet; cleared
     /// when the body is actually created.
     bool m_HasPendingBody {false};
+
+    /// 脚本设过的约束与 CCD 模式。
+    ///
+    /// ⚠️ **刻意不序列化**（与 `CameraComponent` 的 near/far clip 同一条取舍）：
+    /// 往 `RigidBodyComponentRes` 里加字段要动它的 `Transfer()` 顺序，而现有
+    /// .zasset 的字段顺序是资产生命线。运行时可写、能读回，只是不存盘。
+    RigidbodyConstraints   m_Constraints {RigidbodyConstraints::None};
+    CollisionDetectionMode m_CollisionDetectionMode {CollisionDetectionMode::Discrete};
 };

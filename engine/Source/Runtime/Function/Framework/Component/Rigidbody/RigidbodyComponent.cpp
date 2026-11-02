@@ -54,6 +54,8 @@ void RigidBodyComponent::PostLoadResource(GameObject* parent_object)
                                                    m_RigidbodyRes,
                                                    CurrentGameObjectLayer());
     m_HasPendingBody = false;
+    // 约束 / CCD 可能在 body 存在之前就被脚本设过（Awake 里设的），建出来要补上。
+    ApplyRuntimeBodySettings();
 }
 
 bool RigidBodyComponent::HasPendingBody() const
@@ -92,6 +94,7 @@ bool RigidBodyComponent::FlushPendingBody()
 
     m_RigidbodyId = body_id;
     m_HasPendingBody = false;
+    ApplyRuntimeBodySettings();
     return true;
 }
 
@@ -126,6 +129,8 @@ void RigidBodyComponent::CreateRigidBody(const TransformTRS& global_transform)
 
     m_RigidbodyId = physics_scene->CreateRigidBody(global_transform, m_RigidbodyRes, CurrentGameObjectLayer());
     RegisterOwner();
+    // 缩放变化会重建 body，重建出来的 body 是"什么都能动"的，约束要补回去。
+    ApplyRuntimeBodySettings();
 }
 
 void RigidBodyComponent::RegisterOwner()
@@ -520,6 +525,235 @@ void RigidBodyComponent::SetRotation(const Quaternion& rotation)
     {
         physics_scene->SetRigidBodyRotation(m_RigidbodyId, rotation);
     }
+}
+
+// --- 约束 / 质心 / 惯性 / CCD -----------------------------------------------
+
+void RigidBodyComponent::ApplyRuntimeBodySettings()
+{
+    if (m_Constraints != RigidbodyConstraints::None)
+    {
+        SetConstraints(m_Constraints);
+    }
+    if (m_CollisionDetectionMode != CollisionDetectionMode::Discrete)
+    {
+        SetCollisionDetectionMode(m_CollisionDetectionMode);
+    }
+}
+
+RigidbodyConstraints RigidBodyComponent::GetConstraints() const
+{
+    std::shared_ptr<PhysicsScene> physics_scene = GetActivePhysicsScene();
+    if (physics_scene)
+    {
+        uint32_t dof_mask = 0;
+        if (physics_scene->GetBodyAllowedDOFs(m_RigidbodyId, dof_mask))
+        {
+            return ToRigidbodyConstraints(dof_mask);
+        }
+    }
+
+    // 没有活体（pending / 已拆除）时返回脚本上次设的值，而不是 `None`：
+    // "我设过 FreezeAll"在读回来变成 None 会让"设了没生效"和"没设过"混在一起。
+    return m_Constraints;
+}
+
+void RigidBodyComponent::SetConstraints(RigidbodyConstraints constraints)
+{
+    m_Constraints = constraints;
+
+    std::shared_ptr<PhysicsScene> physics_scene = GetActivePhysicsScene();
+    if (!physics_scene)
+    {
+        return;
+    }
+
+    // 质量必须一起给（见 PhysicsScene.h 的注释）：Jolt 的 SetMassProperties 收
+    // 完整的 MassProperties，而位移一旦被冻住就再也读不回真实质量。
+    physics_scene->SetBodyAllowedDOFs(m_RigidbodyId, ToJoltAllowedDOFs(constraints), GetMass());
+}
+
+bool RigidBodyComponent::GetFreezeRotation() const
+{
+    const int constraints = static_cast<int>(GetConstraints());
+    return (constraints & static_cast<int>(RigidbodyConstraints::FreezeRotation)) ==
+           static_cast<int>(RigidbodyConstraints::FreezeRotation);
+}
+
+void RigidBodyComponent::SetFreezeRotation(bool freeze_rotation)
+{
+    // 只动三个旋转位，位移位原样保留（理由见头文件注释）。
+    int constraints = static_cast<int>(GetConstraints());
+    constraints &= ~static_cast<int>(RigidbodyConstraints::FreezeRotation);
+    if (freeze_rotation)
+    {
+        constraints |= static_cast<int>(RigidbodyConstraints::FreezeRotation);
+    }
+    SetConstraints(static_cast<RigidbodyConstraints>(constraints));
+}
+
+Vector3 RigidBodyComponent::GetCenterOfMass() const
+{
+    std::shared_ptr<PhysicsScene> physics_scene = GetActivePhysicsScene();
+    if (!physics_scene)
+    {
+        return Vector3::ZERO;
+    }
+
+    Vector3 center_of_mass;
+    return physics_scene->GetBodyCenterOfMass(m_RigidbodyId, center_of_mass) ? center_of_mass : Vector3::ZERO;
+}
+
+Vector3 RigidBodyComponent::GetWorldCenterOfMass() const
+{
+    std::shared_ptr<PhysicsScene> physics_scene = GetActivePhysicsScene();
+    if (!physics_scene)
+    {
+        return Vector3::ZERO;
+    }
+
+    Vector3 center_of_mass;
+    return physics_scene->GetBodyWorldCenterOfMass(m_RigidbodyId, center_of_mass) ? center_of_mass : Vector3::ZERO;
+}
+
+Vector3 RigidBodyComponent::GetInertiaTensor() const
+{
+    std::shared_ptr<PhysicsScene> physics_scene = GetActivePhysicsScene();
+    if (!physics_scene)
+    {
+        return Vector3::ZERO;
+    }
+
+    Vector3 inertia;
+    Quaternion rotation;
+    return physics_scene->GetBodyInertiaTensor(m_RigidbodyId, inertia, rotation) ? inertia : Vector3::ZERO;
+}
+
+Quaternion RigidBodyComponent::GetInertiaTensorRotation() const
+{
+    std::shared_ptr<PhysicsScene> physics_scene = GetActivePhysicsScene();
+    if (!physics_scene)
+    {
+        return Quaternion::IDENTITY;
+    }
+
+    Vector3 inertia;
+    Quaternion rotation;
+    return physics_scene->GetBodyInertiaTensor(m_RigidbodyId, inertia, rotation) ? rotation : Quaternion::IDENTITY;
+}
+
+CollisionDetectionMode RigidBodyComponent::GetCollisionDetectionMode() const
+{
+    std::shared_ptr<PhysicsScene> physics_scene = GetActivePhysicsScene();
+    if (!physics_scene)
+    {
+        return m_CollisionDetectionMode;
+    }
+
+    CollisionDetectionMode mode = CollisionDetectionMode::Discrete;
+    return physics_scene->GetBodyMotionQuality(m_RigidbodyId, mode) ? mode : m_CollisionDetectionMode;
+}
+
+void RigidBodyComponent::SetCollisionDetectionMode(CollisionDetectionMode mode)
+{
+    m_CollisionDetectionMode = mode;
+
+    std::shared_ptr<PhysicsScene> physics_scene = GetActivePhysicsScene();
+    if (physics_scene)
+    {
+        physics_scene->SetBodyMotionQuality(m_RigidbodyId, mode);
+    }
+}
+
+float RigidBodyComponent::GetMaxAngularVelocity() const
+{
+    std::shared_ptr<PhysicsScene> physics_scene = GetActivePhysicsScene();
+    if (!physics_scene)
+    {
+        return 0.f;
+    }
+
+    float max_angular_velocity = 0.f;
+    return physics_scene->GetBodyMaxAngularVelocity(m_RigidbodyId, max_angular_velocity) ? max_angular_velocity : 0.f;
+}
+
+void RigidBodyComponent::SetMaxAngularVelocity(float max_angular_velocity)
+{
+    std::shared_ptr<PhysicsScene> physics_scene = GetActivePhysicsScene();
+    if (physics_scene)
+    {
+        physics_scene->SetBodyMaxAngularVelocity(m_RigidbodyId, max_angular_velocity);
+    }
+}
+
+Vector3 RigidBodyComponent::GetPointVelocity(const Vector3& world_point) const
+{
+    std::shared_ptr<PhysicsScene> physics_scene = GetActivePhysicsScene();
+    if (!physics_scene)
+    {
+        return Vector3::ZERO;
+    }
+
+    Vector3 velocity;
+    return physics_scene->GetBodyPointVelocity(m_RigidbodyId, world_point, velocity) ? velocity : Vector3::ZERO;
+}
+
+Vector3 RigidBodyComponent::GetRelativePointVelocity(const Vector3& local_point) const
+{
+    // 局部偏移 -> 世界点：先按 body 朝向旋过去，再挪到**物体原点**上。
+    //
+    // ⚠️ 用原点（`GetPosition`）而不是质心：Unity 的 `relativePoint` 是刚体**局部
+    // 空间**里的点，而局部空间的原点是 transform 位置 == 物体原点。写成质心的
+    // 话，形状质心不在原点时会整体偏一个 `rotation * localCOM` —— 而那种形状
+    // （复合碰撞体）恰恰是有人会来问点速度的场合。
+    const Vector3 world_point = GetPosition() + GetRotation() * local_point;
+    return GetPointVelocity(world_point);
+}
+
+void RigidBodyComponent::AddRelativeForce(const Vector3& force)
+{
+    AddForce(GetRotation() * force);
+}
+
+void RigidBodyComponent::AddRelativeTorque(const Vector3& torque)
+{
+    AddTorque(GetRotation() * torque);
+}
+
+void RigidBodyComponent::SetDensity(float density)
+{
+    std::shared_ptr<PhysicsScene> physics_scene = GetActivePhysicsScene();
+    if (!physics_scene)
+    {
+        return;
+    }
+
+    float volume = 0.f;
+    if (!physics_scene->GetBodyVolume(m_RigidbodyId, volume) || volume <= 0.f)
+    {
+        // 拿不到体积（body 不在 / 形状退化）就没有密度可言。静默返回而不是照
+        // 着 volume = 0 算出 mass = 0 —— 那是 NaN 的入口。
+        return;
+    }
+
+    SetMass(density * volume);
+}
+
+float RigidBodyComponent::GetDensity() const
+{
+    std::shared_ptr<PhysicsScene> physics_scene = GetActivePhysicsScene();
+    if (!physics_scene)
+    {
+        return 0.f;
+    }
+
+    float volume = 0.f;
+    if (!physics_scene->GetBodyVolume(m_RigidbodyId, volume) || volume <= 0.f)
+    {
+        return 0.f;
+    }
+
+    return GetMass() / volume;
 }
 
 void RigidBodyComponent::MovePosition(const Vector3& position)
