@@ -48,6 +48,10 @@ enum class RigidBodyActorType : unsigned char;
 // Same trick, same reason: the combine-mode enum is only ever passed through
 // here, and its underlying type is fixed so a declaration is a complete type.
 enum class PhysicMaterialCombine : unsigned char;
+// Unity's RigidbodyConstraints / CollisionDetectionMode. Both come from
+// RigidBody.h; the scene only needs them as complete, opaque enum types.
+enum class RigidbodyConstraints : int;
+enum class CollisionDetectionMode : unsigned char;
 
 static constexpr uint32_t s_InvalidRigidbodyId = 0xffffffff;
 static constexpr uint32_t s_InvalidJointId = 0;
@@ -252,6 +256,73 @@ public:
     /// 质量），一旦进积分就是 NaN 位置，而 NaN 物体会把整个 broadphase 拖垮。
     /// Unity 也是这个态度（mass 必须为正）。
     bool SetMass(uint32_t body_id, float mass);
+
+    // --- 自由度约束（Unity 的 `rigidbody.constraints`）----------------------
+    //
+    // Jolt 用 `EAllowedDOFs` 掩码表达"哪些轴还能动"，Unity 用 `RigidbodyConstraints`
+    // 位标志表达"哪些轴被冻住" —— 两者互为补集且位序不同。这里的接口只流通
+    // **Jolt 掩码**，映射（`ToJoltAllowedDOFs` / `ToRigidbodyConstraints`）活在
+    // RigidBody.h 里，与 `ToRigidBodyActorType` 同一条约定：映射只有一份，且能
+    // 被一个不起物理世界的单测断言。
+    //
+    // ⚠️ `SetBodyAllowedDOFs` 额外要一个 `mass`：Jolt 的
+    // `MotionProperties::SetMassProperties` 收的是**完整的** MassProperties
+    // （质量 + 惯性张量），而"位移被全冻住"的 body 倒数质量是 0 —— 从它读不回
+    // 真实质量。不传就会在"冻住全部位移"之后把质量丢掉。
+
+    /// @return false when the body does not exist or is not dynamic.
+    bool GetBodyAllowedDOFs(uint32_t body_id, uint32_t& out_dof_mask) const;
+    bool SetBodyAllowedDOFs(uint32_t body_id, uint32_t dof_mask, float mass);
+
+    // --- 质心与惯性张量 ----------------------------------------------------
+    //
+    // Unity 把这三个都放在 `Rigidbody` 上（`centerOfMass` / `worldCenterOfMass` /
+    // `inertiaTensor` / `inertiaTensorRotation`），它们是"推一下会怎么转"的唯一
+    // 判据，缺了就只能靠试。
+
+    /// **对象空间**质心（Unity 的 `rigidbody.centerOfMass`）。取自形状自己的
+    /// `GetCenterOfMass()`，不含 body 的旋转。
+    bool GetBodyCenterOfMass(uint32_t body_id, Vector3& out_local_center_of_mass) const;
+
+    /// **世界空间**质心（Unity 的 `rigidbody.worldCenterOfMass`）。
+    ///
+    /// ⚠️ 与 `GetRigidBodyPosition()` **不是同一个量**：Jolt 的
+    /// `Body::GetPosition()` 是物体**原点**（`mPosition - rotation * localCOM`），
+    /// 而质心是 `mPosition`。形状质心不在原点时两者相差 `rotation * localCOM`。
+    /// Unity 里同样是两个量（`rigidbody.position` vs `worldCenterOfMass`）。
+    bool GetBodyWorldCenterOfMass(uint32_t body_id, Vector3& out_world_center_of_mass) const;
+
+    /// 惯性张量的对角 + 把它旋到对象空间的那次旋转。
+    ///
+    /// ⚠️ Jolt 存的是**逆**惯性（`GetInverseInertiaDiagonal`），所以这里要取
+    /// 倒数 —— 而某个轴被冻住时该分量是 0，倒数就是 inf。那种轴返回 0 而不是
+    /// inf：脚本拿它只能做"大不大"的比较，而 inf 会一路传成 NaN 角速度。
+    bool GetBodyInertiaTensor(uint32_t body_id, Vector3& out_inertia, Quaternion& out_rotation) const;
+
+    /// 形状体积（立方米）。`SetDensity` 要用它把密度换算成质量。
+    bool GetBodyVolume(uint32_t body_id, float& out_volume) const;
+
+    // --- 连续碰撞检测 ------------------------------------------------------
+
+    /// Unity 的 `rigidbody.collisionDetectionMode`。
+    ///
+    /// ⚠️ 读回来的粒度比写进去的粗：Jolt 只有 Discrete / LinearCast 两态，所以
+    /// 写 `ContinuousDynamic` 读回 `Continuous`。这是**有意的**窄化 —— 在 body
+    /// 旁边另存一份作者值就会多一个会分叉的真值来源。
+    bool GetBodyMotionQuality(uint32_t body_id, CollisionDetectionMode& out_mode) const;
+    bool SetBodyMotionQuality(uint32_t body_id, CollisionDetectionMode mode);
+
+    // --- 速度上限与点速度 --------------------------------------------------
+
+    /// 角速度上限（弧度/秒）。Unity 的 `rigidbody.maxAngularVelocity`，用来挡住
+    /// "加了一次冲量之后疯转"。<= 0 时夹到极小正数。
+    bool GetBodyMaxAngularVelocity(uint32_t body_id, float& out_max_angular_velocity) const;
+    bool SetBodyMaxAngularVelocity(uint32_t body_id, float max_angular_velocity);
+
+    /// **世界空间某一点**的速度（Unity 的 `rigidbody.GetPointVelocity`）。
+    /// 与 `GetLinearVelocity` 的差别是它含旋转带来的分量："转着的杆子，端点比
+    /// 中心快"。
+    bool GetBodyPointVelocity(uint32_t body_id, const Vector3& world_point, Vector3& out_velocity) const;
 
     /// 1 = 受重力，0 = 不受（Unity 的 `rigidbody.useGravity`）。可以取中间值做
     /// "半重力"，Jolt 支持，Unity 不支持 —— 这里照 Unity 只暴露布尔。

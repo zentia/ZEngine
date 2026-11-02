@@ -1017,9 +1017,326 @@ bool PhysicsScene::SetMass(uint32_t body_id, float mass)
 
     // ScaleToMass 把**质量和惯性张量一起**按新质量缩放：只改倒数质量的话，一个
     // 10kg 的箱子会带着 1kg 的转动惯量，推起来对了、转起来飞快。
+    //
+    // ⚠️ 沿用**当前**的自由度掩码而不是写死 `EAllowedDOFs::All`：SetMassProperties
+    // 把掩码和质量一起收，写死 All 等于"改一次质量就把 constraints 悄悄清掉"。
+    // 那种 bug 的表现是"设了 freezeRotation，一改质量就又开始转了"。
     JPH::MassProperties mass_properties = jph_body.GetShape()->GetMassProperties();
     mass_properties.ScaleToMass(safe_mass);
-    motion_properties->SetMassProperties(JPH::EAllowedDOFs::All, mass_properties);
+    motion_properties->SetMassProperties(motion_properties->GetAllowedDOFs(), mass_properties);
+    return true;
+}
+
+bool PhysicsScene::GetBodyAllowedDOFs(uint32_t body_id, uint32_t& out_dof_mask) const
+{
+    if (body_id == s_InvalidRigidbodyId)
+    {
+        return false;
+    }
+
+    JPH::BodyLockRead body_lock(m_Physics.m_JoltPhysicsSystem->GetBodyLockInterface(), JPH::BodyID(body_id));
+    if (!body_lock.Succeeded())
+    {
+        return false;
+    }
+
+    const JPH::Body& jph_body = body_lock.GetBody();
+    if (!jph_body.IsDynamic())
+    {
+        // 非动力学 body 没有 MotionProperties，也就没有"允许哪些轴"这回事 ——
+        // 它本来就一动不动。
+        out_dof_mask = 0;
+        return false;
+    }
+
+    const JPH::MotionProperties* motion_properties = jph_body.GetMotionProperties();
+    if (motion_properties == nullptr)
+    {
+        out_dof_mask = 0;
+        return false;
+    }
+
+    out_dof_mask = static_cast<uint32_t>(motion_properties->GetAllowedDOFs());
+    return true;
+}
+
+bool PhysicsScene::SetBodyAllowedDOFs(uint32_t body_id, uint32_t dof_mask, float mass)
+{
+    if (body_id == s_InvalidRigidbodyId)
+    {
+        return false;
+    }
+
+    JPH::BodyLockWrite body_lock(m_Physics.m_JoltPhysicsSystem->GetBodyLockInterface(), JPH::BodyID(body_id));
+    if (!body_lock.Succeeded())
+    {
+        return false;
+    }
+
+    JPH::Body& jph_body = body_lock.GetBody();
+    if (!jph_body.IsDynamic())
+    {
+        return false;
+    }
+    JPH::MotionProperties* motion_properties = jph_body.GetMotionProperties();
+    if (motion_properties == nullptr)
+    {
+        return false;
+    }
+
+    const float safe_mass = (mass > kMinMass) ? mass : kMinMass;
+
+    // 与 SetMass 同一条路：从形状重新推一份 MassProperties 再按当前质量缩放。
+    // 不用 `motion_properties` 里现成的逆惯性反推 —— 位移一旦被冻住，逆质量就
+    // 是 0，反推出来的质量是错的。
+    JPH::MassProperties mass_properties = jph_body.GetShape()->GetMassProperties();
+    mass_properties.ScaleToMass(safe_mass);
+    motion_properties->SetMassProperties(static_cast<JPH::EAllowedDOFs>(dof_mask & 0x3fu), mass_properties);
+    return true;
+}
+
+bool PhysicsScene::GetBodyCenterOfMass(uint32_t body_id, Vector3& out_local_center_of_mass) const
+{
+    if (body_id == s_InvalidRigidbodyId)
+    {
+        return false;
+    }
+
+    JPH::BodyLockRead body_lock(m_Physics.m_JoltPhysicsSystem->GetBodyLockInterface(), JPH::BodyID(body_id));
+    if (!body_lock.Succeeded())
+    {
+        return false;
+    }
+
+    const JPH::Body& jph_body = body_lock.GetBody();
+    const JPH::Shape* shape = jph_body.GetShape();
+    if (shape == nullptr)
+    {
+        return false;
+    }
+
+    out_local_center_of_mass = toVec3(shape->GetCenterOfMass());
+    return true;
+}
+
+bool PhysicsScene::GetBodyWorldCenterOfMass(uint32_t body_id, Vector3& out_world_center_of_mass) const
+{
+    if (body_id == s_InvalidRigidbodyId)
+    {
+        return false;
+    }
+
+    JPH::BodyLockRead body_lock(m_Physics.m_JoltPhysicsSystem->GetBodyLockInterface(), JPH::BodyID(body_id));
+    if (!body_lock.Succeeded())
+    {
+        return false;
+    }
+
+    // ⚠️ `Body::GetPosition()` 是**物体原点**，不是质心：
+    //   `GetPosition()          = mPosition - rotation * shape->GetCenterOfMass()`
+    //   `GetCenterOfMassPosition() = mPosition`
+    // 形状质心不在原点时两者相差 `rotation * localCOM`。Unity 里这两个也是两个
+    // 量（`rigidbody.position` 是 transform 位置、`worldCenterOfMass` 是质心），
+    // 所以这里**不能**图省事用 `GetRigidBodyPosition()` 顶替。
+    out_world_center_of_mass = toVec3(body_lock.GetBody().GetCenterOfMassPosition());
+    return true;
+}
+
+bool PhysicsScene::GetBodyInertiaTensor(uint32_t body_id, Vector3& out_inertia, Quaternion& out_rotation) const
+{
+    if (body_id == s_InvalidRigidbodyId)
+    {
+        return false;
+    }
+
+    JPH::BodyLockRead body_lock(m_Physics.m_JoltPhysicsSystem->GetBodyLockInterface(), JPH::BodyID(body_id));
+    if (!body_lock.Succeeded())
+    {
+        return false;
+    }
+
+    const JPH::Body& jph_body = body_lock.GetBody();
+    if (!jph_body.IsDynamic())
+    {
+        // 非动力学 body 的逆惯性是 0 —— 也就是"惯性无穷大"，转不动。返回 0 让
+        // 脚本侧"越大越难转"的直觉反过来成立不了，但返回 inf 更糟（会传播成
+        // NaN）。调用方要看的是 `IsDynamic()` 而不该到这儿来问。
+        out_inertia = Vector3::ZERO;
+        out_rotation = Quaternion::IDENTITY;
+        return false;
+    }
+
+    const JPH::MotionProperties* motion_properties = jph_body.GetMotionProperties();
+    if (motion_properties == nullptr)
+    {
+        out_inertia = Vector3::ZERO;
+        out_rotation = Quaternion::IDENTITY;
+        return false;
+    }
+
+    const JPH::Vec3 inverse_diagonal = motion_properties->GetInverseInertiaDiagonal();
+    out_inertia = Vector3(inverse_diagonal.GetX() > 0.f ? 1.f / inverse_diagonal.GetX() : 0.f,
+                          inverse_diagonal.GetY() > 0.f ? 1.f / inverse_diagonal.GetY() : 0.f,
+                          inverse_diagonal.GetZ() > 0.f ? 1.f / inverse_diagonal.GetZ() : 0.f);
+    out_rotation = toQuat(motion_properties->GetInertiaRotation());
+    return true;
+}
+
+bool PhysicsScene::GetBodyVolume(uint32_t body_id, float& out_volume) const
+{
+    if (body_id == s_InvalidRigidbodyId)
+    {
+        return false;
+    }
+
+    JPH::BodyLockRead body_lock(m_Physics.m_JoltPhysicsSystem->GetBodyLockInterface(), JPH::BodyID(body_id));
+    if (!body_lock.Succeeded())
+    {
+        return false;
+    }
+
+    const JPH::Shape* shape = body_lock.GetBody().GetShape();
+    if (shape == nullptr)
+    {
+        return false;
+    }
+
+    out_volume = shape->GetVolume();
+    return true;
+}
+
+bool PhysicsScene::GetBodyMotionQuality(uint32_t body_id, CollisionDetectionMode& out_mode) const
+{
+    if (body_id == s_InvalidRigidbodyId)
+    {
+        return false;
+    }
+
+    JPH::BodyLockRead body_lock(m_Physics.m_JoltPhysicsSystem->GetBodyLockInterface(), JPH::BodyID(body_id));
+    if (!body_lock.Succeeded())
+    {
+        return false;
+    }
+
+    const JPH::Body& jph_body = body_lock.GetBody();
+    const JPH::MotionProperties* motion_properties = jph_body.GetMotionPropertiesUnchecked();
+    if (motion_properties == nullptr)
+    {
+        return false;
+    }
+
+    // 见 RigidBody.h 里 CollisionDetectionMode 的注释：Jolt 只有两态，三个连续
+    // 模式读回来都退化为 Continuous。
+    out_mode = (motion_properties->GetMotionQuality() == JPH::EMotionQuality::LinearCast)
+                   ? CollisionDetectionMode::Continuous
+                   : CollisionDetectionMode::Discrete;
+    return true;
+}
+
+bool PhysicsScene::SetBodyMotionQuality(uint32_t body_id, CollisionDetectionMode mode)
+{
+    if (body_id == s_InvalidRigidbodyId)
+    {
+        return false;
+    }
+
+    // 走 BodyInterface 而不是自己拿写锁：`MotionProperties` 上没有
+    // `SetMotionQuality`（只有 getter），换运动质量必须经 `BodyManager`，而
+    // BodyManager 会自己再拿一次写锁 —— 在外面先持一把就是 Jolt 那条
+    // "lock of same or higher priority" 断言（真会死锁，不是警告）。
+    //
+    // ⚠️ 同理：这里**不能**在其它 BodyLockWrite 的作用域里被调用。
+    JPH::BodyInterface& body_interface = m_Physics.m_JoltPhysicsSystem->GetBodyInterface();
+    body_interface.SetMotionQuality(JPH::BodyID(body_id),
+                                    UsesContinuousCollision(mode) ? JPH::EMotionQuality::LinearCast
+                                                                  : JPH::EMotionQuality::Discrete);
+    return true;
+}
+
+bool PhysicsScene::GetBodyMaxAngularVelocity(uint32_t body_id, float& out_max_angular_velocity) const
+{
+    if (body_id == s_InvalidRigidbodyId)
+    {
+        return false;
+    }
+
+    JPH::BodyLockRead body_lock(m_Physics.m_JoltPhysicsSystem->GetBodyLockInterface(), JPH::BodyID(body_id));
+    if (!body_lock.Succeeded())
+    {
+        return false;
+    }
+
+    const JPH::Body& jph_body = body_lock.GetBody();
+    if (!jph_body.IsDynamic())
+    {
+        out_max_angular_velocity = 0.f;
+        return false;
+    }
+
+    const JPH::MotionProperties* motion_properties = jph_body.GetMotionProperties();
+    if (motion_properties == nullptr)
+    {
+        out_max_angular_velocity = 0.f;
+        return false;
+    }
+
+    out_max_angular_velocity = motion_properties->GetMaxAngularVelocity();
+    return true;
+}
+
+bool PhysicsScene::SetBodyMaxAngularVelocity(uint32_t body_id, float max_angular_velocity)
+{
+    if (body_id == s_InvalidRigidbodyId)
+    {
+        return false;
+    }
+
+    JPH::BodyLockWrite body_lock(m_Physics.m_JoltPhysicsSystem->GetBodyLockInterface(), JPH::BodyID(body_id));
+    if (!body_lock.Succeeded())
+    {
+        return false;
+    }
+
+    JPH::Body& jph_body = body_lock.GetBody();
+    if (!jph_body.IsDynamic())
+    {
+        return false;
+    }
+    JPH::MotionProperties* motion_properties = jph_body.GetMotionProperties();
+    if (motion_properties == nullptr)
+    {
+        return false;
+    }
+
+    // Jolt 断言这个值必须 >= 0。夹到极小正数而不是把 0 传下去：0 表示"完全不能
+    // 转"，那是 freezeRotation 的语义，不该由"上限"表达（上限是挡疯转的，不是
+    // 开关）。
+    const float safe_max = (max_angular_velocity > kMinMass) ? max_angular_velocity : kMinMass;
+    motion_properties->SetMaxAngularVelocity(safe_max);
+    return true;
+}
+
+bool PhysicsScene::GetBodyPointVelocity(uint32_t body_id, const Vector3& world_point, Vector3& out_velocity) const
+{
+    if (body_id == s_InvalidRigidbodyId)
+    {
+        return false;
+    }
+
+    JPH::BodyLockRead body_lock(m_Physics.m_JoltPhysicsSystem->GetBodyLockInterface(), JPH::BodyID(body_id));
+    if (!body_lock.Succeeded())
+    {
+        return false;
+    }
+
+    const JPH::Body& jph_body = body_lock.GetBody();
+    if (!jph_body.IsDynamic())
+    {
+        out_velocity = Vector3::ZERO;
+        return false;
+    }
+
+    out_velocity = toVec3(jph_body.GetPointVelocity(JPH::RVec3(toVec3(world_point))));
     return true;
 }
 

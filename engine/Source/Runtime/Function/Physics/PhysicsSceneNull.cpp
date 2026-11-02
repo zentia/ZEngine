@@ -250,4 +250,72 @@ bool PhysicsScene::ApplyForceOrImpulse(uint32_t, const Vector3&, bool)
     return false;
 }
 
+// --- Rigidbody 的其余面（constraints / 质心 / 惯性 / CCD / 点速度）----------
+//
+// 与上面同一条契约：没有物理就没有 body，一律"查不到" / "什么都没做"。
+
+bool PhysicsScene::GetBodyAllowedDOFs(uint32_t, uint32_t& out_dof_mask) const
+{
+    out_dof_mask = 0;
+    return false;
+}
+
+bool PhysicsScene::SetBodyAllowedDOFs(uint32_t, uint32_t, float)
+{
+    return false;
+}
+
+bool PhysicsScene::GetBodyCenterOfMass(uint32_t, Vector3& out_local_center_of_mass) const
+{
+    out_local_center_of_mass = Vector3::ZERO;
+    return false;
+}
+
+bool PhysicsScene::GetBodyWorldCenterOfMass(uint32_t, Vector3& out_world_center_of_mass) const
+{
+    out_world_center_of_mass = Vector3::ZERO;
+    return false;
+}
+
+bool PhysicsScene::GetBodyInertiaTensor(uint32_t, Vector3& out_inertia, Quaternion& out_rotation) const
+{
+    out_inertia = Vector3::ZERO;
+    out_rotation = Quaternion::IDENTITY;
+    return false;
+}
+
+bool PhysicsScene::GetBodyVolume(uint32_t, float& out_volume) const
+{
+    out_volume = 0.f;
+    return false;
+}
+
+bool PhysicsScene::GetBodyMotionQuality(uint32_t, CollisionDetectionMode& out_mode) const
+{
+    out_mode = CollisionDetectionMode::Discrete;
+    return false;
+}
+
+bool PhysicsScene::SetBodyMotionQuality(uint32_t, CollisionDetectionMode)
+{
+    return false;
+}
+
+bool PhysicsScene::GetBodyMaxAngularVelocity(uint32_t, float& out_max_angular_velocity) const
+{
+    out_max_angular_velocity = 0.f;
+    return false;
+}
+
+bool PhysicsScene::SetBodyMaxAngularVelocity(uint32_t, float)
+{
+    return false;
+}
+
+bool PhysicsScene::GetBodyPointVelocity(uint32_t, const Vector3&, Vector3& out_velocity) const
+{
+    out_velocity = Vector3::ZERO;
+    return false;
+}
+
 #endif  // ZENGINE_SHARED_NO_PHYSICS
