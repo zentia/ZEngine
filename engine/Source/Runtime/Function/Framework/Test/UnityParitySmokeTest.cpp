@@ -73,6 +73,9 @@
 #include "Runtime/Function/Framework/Component/Behaviour.h"
 #include "Runtime/Function/Framework/Component/Camera/CameraComponent.h"
 #include "Runtime/Function/Framework/Component/Mesh/BaseRenderer.h"
+#include "Runtime/Function/Framework/Component/Mesh/MeshRenderer.h"
+#include "Runtime/Function/Framework/Component/Light/LightComponent.h"
+#include "Runtime/Scripting/ScriptMaterial/ScriptMaterial.h"
 #include "Runtime/Function/Framework/Component/MouseEventDispatcher.h"
 #include "Runtime/Function/Framework/Level/Level.h"
 #include "Runtime/Function/Framework/Object/ObjectIdAllocator.h"
@@ -13874,6 +13877,272 @@ namespace
             }
         }
     }
+    // =========================================================================
+    // Unity 的 Material / Light（slice 52）
+    //
+    /// 两个 sub-mesh，**不带材质资产**：`populateMaterialDesc` 在资产路径为空时
+    /// 直接返回，于是整套规则在无 AssetManager、无 GPU 的进程里也能跑。
+    std::vector<SubMeshRes> MakeSubMeshes(int count)
+    {
+        std::vector<SubMeshRes> sub_meshes;
+        for (int i = 0; i < count; ++i)
+        {
+            SubMeshRes sub_mesh;
+            sub_mesh.m_MeshAsset = "test/mesh.zasset";
+            sub_meshes.push_back(sub_mesh);
+        }
+        return sub_meshes;
+    }
+
+    //
+
+    // MI* —— `renderer.material` 那个句柄。判据挑的是"句柄"这个设计真正带来的
+    //         差别：同一 renderer 上槽位之间互相隔离（MI8/MI10），句柄按槽位缓存
+    //         所以 `renderer.material` 两次拿到同一个对象（MI3），以及没绑定目标
+    //         的句柄不崩只返回安全默认（MI21）。
+    // LI* —— `Light` 的 Unity 面。核心是 color × intensity 与引擎的 flux 必须是
+    //         **可逆**的分解（LI2/LI3/LI4），以及 spotAngle 的"全锥角/度"与引擎
+    //         的"半锥角/弧度"换算（LI9/LI10/LI12）—— 这两处写错都看不出明显故障，
+    //         只会"看起来有点不对"。
+    // =========================================================================
+    void TestMaterialLightParity()
+    {
+        ObjectManager* om = GET_SYSTEM(ObjectManager);
+        if (om == nullptr)
+        {
+            om = new ObjectManager();
+            SystemRegistry::GetInstance().RegisterSystem(om);
+            om->Initialize();
+        }
+        Check(om != nullptr, "MI0", "ObjectManager is reachable");
+
+        // ---- renderer.material --------------------------------------------
+        //
+        // ⚠️ 渲染器必须走 `ObjectManager::NewObject`：句柄里存的是 `PPtr`，而 PPtr
+        // 靠 instanceID 解析 —— 栈上 new 出来的 Object 没有注册过 ID（恒 0），
+        // PPtr 会把它当成"已销毁"，调试构建下 UafReporter 直接 ASSERT。真实运行时
+        // 的组件都来自反序列化 / AddComponent，ID 是有的。
+        MeshRenderer* renderer = om->NewObject<MeshRenderer>();
+        renderer->SetSubMeshes(MakeSubMeshes(2));
+
+        Check(renderer->GetMaterialCount() == 2, "MI1",
+              "GetMaterialCount() == sub-mesh count (Unity's materials.length)");
+        Check(renderer->GetMaterialSlotCount() == 2, "MI2", "and it agrees with the slot count");
+
+        MaterialInstance* mat0 = renderer->GetMaterial(0);
+        MaterialInstance* mat1 = renderer->GetMaterial(1);
+        Check(mat0 != nullptr && mat1 != nullptr, "MI3", "every slot hands out a material handle");
+        Check(mat0 != mat1, "MI4", "and each slot gets its own");
+        Check(renderer->GetMaterial(0) == mat0, "MI5",
+              "renderer.material is cached (reading it twice is the same object)");
+        Check(renderer->GetMainMaterial() == mat0, "MI6", "material is slot 0 (Unity's shape)");
+        Check(renderer->GetMaterial(-1) == nullptr && renderer->GetMaterial(2) == nullptr, "MI7",
+              "an out-of-range slot is null, not a handle into nowhere");
+        Check(mat0->IsValid() && mat1->IsValid(), "MI8", "a bound handle reports IsValid()");
+
+        // 主色：句柄与 renderer 是同一个量（w = alpha）。
+        Color tint;
+        tint.r = 0.25f;
+        tint.g = 0.5f;
+        tint.b = 0.75f;
+        tint.a = 0.5f;
+        mat0->SetMainColor(tint);
+        Color read_back = mat0->GetMainColor();
+        Check(Near(read_back.r, 0.25f) && Near(read_back.g, 0.5f) && Near(read_back.b, 0.75f) &&
+                  Near(read_back.a, 0.5f),
+              "MI9", "material.color round-trips through the renderer");
+        Check(Near(renderer->GetBaseColor(0).x, 0.25f) && Near(renderer->GetBaseColor(0).w, 0.5f),
+              "MI10", "and it is the renderer's base color (no second copy)");
+
+        // 槽位隔离 —— 整个"per-sub-mesh 实例"这件事的意义就在这一条。
+        mat1->SetMainColor(tint);
+        Check(Near(renderer->GetBaseColor(1).x, 0.25f), "MI11", "slot 1 takes the tint");
+        mat1->SetMainColor(Color {1.0f, 1.0f, 1.0f, 1.0f});
+        Check(Near(mat0->GetMainColor().r, 0.25f), "MI12",
+              "writing slot 1 leaves slot 0 alone (the bug per-slot overrides exist for)");
+
+        // ---- 具名属性 ------------------------------------------------------
+        Check(mat0->SetFloat("_DissolveAmount", 0.42f), "MI13",
+              "SetFloat returns true for a name the engine knows");
+        Check(Near(mat0->GetFloat("_DissolveAmount"), 0.42f), "MI14", "and reads it back");
+        Check(Near(mat1->GetFloat("_DissolveAmount"), 0.0f), "MI15",
+              "a property set on slot 0 is not visible on slot 1");
+        Check(!mat0->SetFloat("__NoSuchProperty__", 1.0f), "MI16",
+              "SetFloat returns false for a typo (silent failure is the worst kind)");
+        Check(Near(mat0->GetFloat("__NoSuchProperty__"), 0.0f), "MI17",
+              "and reading an unknown name gives 0");
+
+        Check(mat0->HasProperty("_DissolveAmount"), "MI18", "HasProperty agrees with SetFloat");
+        Check(!mat0->HasProperty("__NoSuchProperty__"), "MI19", "and with a typo");
+        Check(mat0->HasFloat("_DissolveAmount") && !mat0->HasFloat("_DissolveEdgeColor"), "MI20",
+              "HasFloat is per-kind (a vec4 is not a float)");
+        Check(mat0->HasVector("_DissolveEdgeColor") && mat0->HasColor("_DissolveEdgeColor"), "MI21",
+              "HasColor and HasVector are the same question here (colour is a vec4)");
+        Check(mat0->HasTexture("_MainTex"), "MI22", "HasTexture finds the built-in _MainTex alias");
+        // ⚠️ HasProperty 必须是三种类型的**并集**：只查标量的话，颜色与贴图属性会
+        // 被报成"不存在"，于是脚本在写之前先问一遍的写法会跳过一半属性。
+        Check(mat0->HasProperty("_DissolveEdgeColor"), "MI37",
+              "HasProperty is true for a vector property too");
+        Check(mat0->HasProperty("_MainTex"), "MI38", "and for a texture property");
+        Check(!mat0->HasVector("_DissolveAmount"), "MI39",
+              "but a float is not a vector (SetVector cannot hold it)");
+        const Color missing_color = mat0->GetColor("__NoSuchProperty__");
+        Check(Near(missing_color.r, 1.0f) && Near(missing_color.g, 1.0f) &&
+                  Near(missing_color.b, 1.0f) && Near(missing_color.a, 1.0f),
+              "MI40", "an unknown colour property reads as white, not transparent black");
+        // ⚠️ 这一条是 MI40 的另一半：白色必须是"名字不存在"的哨兵，不能是"值为 0"
+        // 的哨兵。一条存在且**真的是黑**的属性必须能读出黑 —— 拿返回值当哨兵会
+        // 把"把溶解边缘调成黑色"这个完全合法的操作当成没设过。
+        Color black;
+        black.r = 0.0f;
+        black.g = 0.0f;
+        black.b = 0.0f;
+        black.a = 0.0f;
+        Check(mat0->SetColor("_DissolveEdgeColor", black), "MI41",
+              "black is a settable colour, not 'no value'");
+        const Color black_read = mat0->GetColor("_DissolveEdgeColor");
+        Check(black_read.r == 0.0f && black_read.g == 0.0f && black_read.b == 0.0f, "MI42",
+              "and it reads back black (the sentinel is HasProperty, not the value)");
+
+        const Vector4 edge {1.0f, 0.0f, 0.0f, 1.0f};
+        Check(mat0->SetVector("_DissolveEdgeColor", edge), "MI23", "SetVector on a vec4 property");
+        const Vector4 edge_read = mat0->GetVector("_DissolveEdgeColor");
+        Check(Near(edge_read.x, 1.0f) && Near(edge_read.y, 0.0f) && Near(edge_read.z, 0.0f) &&
+                  Near(edge_read.w, 1.0f),
+              "MI24", "and it round-trips");
+        const Color edge_color = mat0->GetColor("_DissolveEdgeColor");
+        Check(Near(edge_color.r, 1.0f) && Near(edge_color.g, 0.0f) && Near(edge_color.b, 0.0f),
+              "MI25", "GetColor reads the same vec4");
+
+        Check(mat0->SetTexture("_MainTex", "Textures/rust.asset"), "MI26",
+              "SetTexture on a built-in slot");
+        Check(mat0->GetTexture("_MainTex") == "Textures/rust.asset", "MI27",
+              "GetTexture returns what was set (the project-relative spelling)");
+
+        // ---- keyword -------------------------------------------------------
+        Check(!mat0->IsKeywordEnabled("_EMISSION_ON"), "MI28", "a keyword starts off");
+        mat0->EnableKeyword("_EMISSION_ON");
+        Check(mat0->IsKeywordEnabled("_EMISSION_ON"), "MI29", "EnableKeyword turns it on");
+        mat0->DisableKeyword("_EMISSION_ON");
+        Check(!mat0->IsKeywordEnabled("_EMISSION_ON"), "MI30", "and DisableKeyword turns it off");
+
+        // ---- 没绑定目标的句柄 ----------------------------------------------
+        //
+        // 与"renderer 被 Destroy 之后留下的句柄"是同一条代码路径（PPtr 解析成
+        // nullptr），但这里更好复现：脚本 `new Material()` 拿到的就是这种句柄。
+        MaterialInstance* orphan = om->NewObject<MaterialInstance>();
+        Check(!orphan->IsValid(), "MI31", "an unbound handle is not valid");
+        Check(!orphan->SetFloat("_DissolveAmount", 1.0f), "MI32",
+              "its setters are no-ops that say so (false, not a crash)");
+        const Color orphan_color = orphan->GetMainColor();
+        Check(Near(orphan_color.r, 1.0f) && Near(orphan_color.g, 1.0f) &&
+                  Near(orphan_color.b, 1.0f) && Near(orphan_color.a, 1.0f),
+              "MI33", "and it reads back Unity's default white, not transparent black");
+
+        // ---- Light：color × intensity <-> flux -----------------------------
+        LightComponent light;
+
+        Check(Near(light.GetIntensity(), 100.0f), "LI0",
+              "the default flux (100,100,100) reads back as intensity 100");
+        const Color default_color = light.GetLightColor();
+        Check(Near(default_color.r, 1.0f) && Near(default_color.g, 1.0f) &&
+                  Near(default_color.b, 1.0f) && Near(default_color.a, 1.0f),
+              "LI1", "and as white (Unity's default light colour)");
+
+        Color red;
+        red.r = 1.0f;
+        red.g = 0.5f;
+        red.b = 0.25f;
+        red.a = 1.0f;
+        light.SetLightColor(red);
+        const Vector3 flux = light.GetFlux();
+        Check(Near(flux.x, 100.0f) && Near(flux.y, 50.0f) && Near(flux.z, 25.0f), "LI2",
+              "setting colour keeps the intensity (flux = colour * intensity)");
+        const Color color_again = light.GetLightColor();
+        Check(Near(color_again.r, 1.0f) && Near(color_again.g, 0.5f) && Near(color_again.b, 0.25f),
+              "LI3", "and the decomposition is reversible (no pink drift)");
+
+        light.SetIntensity(200.0f);
+        const Vector3 scaled = light.GetFlux();
+        Check(Near(scaled.x, 200.0f) && Near(scaled.y, 100.0f) && Near(scaled.z, 50.0f), "LI4",
+              "intensity scales the flux");
+        Check(Near(light.GetIntensity(), 200.0f), "LI5", "and reads back unchanged");
+        const Color hue_after_intensity = light.GetLightColor();
+        Check(Near(hue_after_intensity.r, 1.0f) && Near(hue_after_intensity.g, 0.5f) &&
+                  Near(hue_after_intensity.b, 0.25f),
+              "LI6", "changing intensity does not change the hue");
+
+        // 零通量：intensity 是 0，除法无意义 —— 这时报白，不是黑。
+        light.SetIntensity(0.0f);
+        Check(Near(light.GetIntensity(), 0.0f), "LI7", "a light with no flux has intensity 0");
+        const Color zero_color = light.GetLightColor();
+        Check(Near(zero_color.r, 1.0f) && Near(zero_color.g, 1.0f) && Near(zero_color.b, 1.0f),
+              "LI8", "and reports white, not black (Unity: white at intensity 0)");
+        light.SetIntensity(100.0f);
+        const Vector3 revived = light.GetFlux();
+        Check(Near(revived.x, 100.0f) && Near(revived.y, 100.0f) && Near(revived.z, 100.0f), "LI9",
+              "so winding intensity back up from 0 gives a white light, not a black one");
+
+        // ⚠️ 上面那条色相 (1, 0.5, 0.25) 的**红通道正好是最亮的那个**，于是
+        // "按最大通道归一化"和"一律按红通道归一化"给出同一个答案 —— 后者是错的
+        // （最亮的是绿/蓝通道时色相会漂）。所以红不是最大值的色相必须单独测。
+        Color green_ish;
+        green_ish.r = 0.25f;
+        green_ish.g = 1.0f;
+        green_ish.b = 0.5f;
+        green_ish.a = 1.0f;
+        light.SetLightColor(green_ish);
+        const Vector3 green_flux = light.GetFlux();
+        Check(Near(green_flux.x, 25.0f) && Near(green_flux.y, 100.0f) && Near(green_flux.z, 50.0f),
+              "LI19", "a hue whose brightest channel is green normalises off the max, not off red");
+        Check(Near(light.GetIntensity(), 100.0f), "LI20", "intensity is still that max channel");
+        const Color green_read = light.GetLightColor();
+        Check(Near(green_read.r, 0.25f) && Near(green_read.g, 1.0f) && Near(green_read.b, 0.5f),
+              "LI21", "and the decomposition is reversible for that hue too (no drift)");
+
+        // range <-> radius
+        light.SetRange(12.0f);
+        Check(Near(light.GetRadius(), 12.0f), "LI10", "range is the attenuation radius");
+        Check(Near(light.GetRange(), 12.0f), "LI11", "and reads back");
+
+        // ⚠️ spotAngle 是**全**锥角**度**，引擎存的是**半**锥角**弧度**。
+        Check(Near(light.GetSpotAngle(), 90.0f, 0.01f), "LI12",
+              "the default half-angle 45° reads back as spotAngle 90° (full angle)");
+        light.SetSpotAngle(60.0f);
+        Check(Near(light.GetOuterConeAngle(), 0.5236f, 1e-3f), "LI13",
+              "spotAngle 60 stores a 30° half-angle in radians");
+        Check(Near(light.GetSpotAngle(), 60.0f, 0.01f), "LI14", "and round-trips");
+        light.SetInnerSpotAngle(30.0f);
+        Check(Near(light.GetInnerConeAngle(), 0.2618f, 1e-3f), "LI15",
+              "innerSpotAngle 30 stores a 15° half-angle");
+        Check(Near(light.GetInnerSpotAngle(), 30.0f, 0.01f), "LI16", "and round-trips");
+
+        // ---- 发布面源码门 --------------------------------------------------
+        const std::string material_source =
+            ReadFile("Source/Runtime/Scripting/ScriptMaterial/ScriptMaterial.h");
+        Check(!material_source.empty(), "MI34", "ScriptMaterial.h is readable");
+        Check(CountOccurrences(material_source, "ZFUNCTION()") >= 18, "MI35",
+              "the Material facade publishes Unity's property-block surface");
+        Check(CountOccurrences(material_source, "ZSCRIPTPROPERTY(") >= 1, "MI36",
+              "and material.color is a property, not a method pair");
+
+        const std::string light_source =
+            ReadFile("Source/Runtime/Function/Framework/Component/Light/LightComponent.h");
+        Check(!light_source.empty(), "LI17", "LightComponent.h is readable");
+        // ⚠️ 比的是 `Name = "xxx"` 这个**模式**（带引号），不是单独的名字：
+        // `color` / `intensity` 这些词在注释里到处都是，只 grep 名字会把注释也算
+        // 进去，于是这条门在属性被删掉之后照样是绿的。
+        //
+        // 另外只数 ZSCRIPTPROPERTY 也数不准：flux / radius / type 那六个是从
+        // ZPROPERTY 自动来的（引擎面），Unity 拼写这五个才是本次加的。
+        Check(CountOccurrences(light_source, "Name = \"color\"") >= 1 &&
+                  CountOccurrences(light_source, "Name = \"intensity\"") >= 1 &&
+                  CountOccurrences(light_source, "Name = \"range\"") >= 1 &&
+                  CountOccurrences(light_source, "Name = \"spotAngle\"") >= 1 &&
+                  CountOccurrences(light_source, "Name = \"innerSpotAngle\"") >= 1,
+              "LI18", "Light publishes the five Unity-spelled properties");
+    }
+
 }  // namespace
 
 int main()
@@ -14057,6 +14326,7 @@ int main()
     TestParticlePlayback();
     TestApplicationExtras();
     TestInputParity();
+    TestMaterialLightParity();
     TestGradient();
     TestGradientWiring();
     TestColliderBounds();

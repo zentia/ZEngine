@@ -276,6 +276,7 @@ class Mover extends Behaviour {
         /// RenderSystem，图形相关的一律走"拿不到"那条路 —— 那条路才是没人测过的。
         this.platformProbe = "";
         this.inputProbe = "";
+        this.materialLightProbe = "";
         // ---- Unity 的 FixedUpdate ---------------------------------------------
         //
         // 这一段存在的理由不只是"多一个钩子"：在此之前 `OnFixedUpdate` 在 d.ts 里
@@ -729,6 +730,32 @@ class Mover extends Behaviour {
         const appOpenInjected = Application.OpenURL("http://x/a; rm -rf /");
         Application.backgroundLoadingPriority = ThreadPriority.High;
         const appPriority = Application.backgroundLoadingPriority;
+        // ---- Unity 的 Material / Light（slice 52）----
+        //
+        // ⚠️ 这一段只能验证**发布面**，做不了真的往返。原因是一条引擎当前的限制：
+        // 跨边界返回的指针按**声明的静态类型**包装（`Converter<T*>` 用
+        // `ZScriptTypeId<T>::Get()`，T 是签名的返回类型），所以
+        // `AddComponent("LightComponent")` 在 JS 侧拿到的是 `Component`，
+        // `as Light` 只是编译期断言、运行时拿不到 `GetFlux()`；`new LightComponent()`
+        // 也没有被绑定（ZHeaderTool 不导构造函数）。
+        //
+        // 于是 color × intensity 的可逆性、spotAngle 的单位换算这些真正的行为规则
+        // **只在 C++ 侧测**（UnityParitySmokeTest 的 LI0..LI16）。这里留下的是
+        // "这两个类确实进了绑定表"这道接线门 —— 它挡的是"实现对了但没发布"。
+        const materialClassPublished = (typeof MaterialInstance === "function");
+        const lightClassPublished = (typeof LightComponent === "function");
+        const rendererClassPublished = (typeof BaseRenderer === "function");
+        const materialHasSetFloat = (typeof MaterialInstance.prototype.SetFloat === "function");
+        const materialHasKeyword = (typeof MaterialInstance.prototype.IsKeywordEnabled === "function");
+        const lightHasSpotAngle = (typeof LightComponent.prototype.GetSpotAngle === "function");
+        this.materialLightProbe = [
+            String(materialClassPublished),
+            String(lightClassPublished),
+            String(rendererClassPublished),
+            String(materialHasSetFloat),
+            String(materialHasKeyword),
+            String(lightHasSpotAngle)
+        ].join("|");
         // ---- Unity 的 Input 那一层（slice 51）----
         // 这个进程没有 InputSystem，所以下面断言的是**安全默认值**与**可写的
         // 进程级设置** —— 跨边界真正要验证的是 `Touch` 值类型有没有被正确地
