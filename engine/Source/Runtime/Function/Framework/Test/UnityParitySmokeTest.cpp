@@ -26,6 +26,8 @@
 
 #include "Runtime/Application/Application.h"
 #include "Runtime/BaseClasses/GameObject.h"
+#include "Runtime/Function/Input/EnhancedInputSystem.h"
+#include "Runtime/Scripting/ScriptInput/ScriptInput.h"
 #include "Runtime/BaseClasses/ObjectDefines.h"
 #include "Runtime/BaseClasses/ObjectManager.h"
 #include "Runtime/BaseClasses/Type.h"
@@ -150,6 +152,7 @@ template<> void RegisterKlass<PlayerPrefs>();
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -158,6 +161,7 @@ template<> void RegisterKlass<PlayerPrefs>();
 #include <memory>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <vector>
 
 #if defined(_MSC_VER) && defined(_DEBUG)
@@ -12487,6 +12491,346 @@ namespace
     ///   * alpha **只**由 alphaKeys 决定，颜色键里自带的 a 不参与（GR4）；
     ///   * `GradientMode.Fixed` **只**作用于颜色键，alpha 键永远插值（GR7）；
     ///   * 键未排序也能用 —— 内部排序不是死代码（GR5）。
+    // =========================================================================
+    // Unity 的 Input 那一层（slice 51）
+    //
+    // 分两段：
+    //   EN* —— 直接驱动 EnhancedInputSystem（不需要 WindowSystem：OnChar /
+    //         OnTouch / EndFrame 都不碰窗口），覆盖文本输入编码、连击判定、
+    //         抬起那一帧仍可枚举这些真正的规则。
+    //   IN* —— 走门面。这个进程没有 InputSystem，所以这一段断言的是**安全默认
+    //         值**（headless 不崩、不返回假数据），以及 AdvanceAxis 那条纯函数
+    //         规则（抽成公开静态方法就是为了能在这里直接喂数）。
+    // =========================================================================
+    /// 把一局 EnhancedInputSystem 的状态清干净，让下一段测试不带上一段的手指。
+    /// 用"把所有手指抬起 + 滚两帧"来做，比加一个测试专用的 Reset() 好 —— 后者
+    /// 会变成一条只有测试走的路，实现改了它也未必跟着改。
+    static void enhanced_input_reset(EnhancedInputSystem& input)
+    {
+        using TouchAction = WindowSystem::TouchAction;
+        const int kUp     = static_cast<int>(TouchAction::Up);
+        for (int i = 0; i < input.GetFrameTouchCount(); ++i)
+        {
+            Touch touch;
+            if (input.GetTouchAt(i, touch) && touch.fingerId >= 0)
+            {
+                input.OnTouch(touch.fingerId, kUp, touch.position.x, touch.position.y);
+            }
+        }
+        input.EndFrame();
+        input.EndFrame();
+    }
+
+    void TestInputParity()
+    {
+        // ---- 文本输入 ----
+        EnhancedInputSystem input;
+
+        input.OnChar('a');
+        input.OnChar('b');
+        input.EndFrame();
+        Check(input.GetInputString() == "ab", "EN0", "OnChar accumulates into inputString");
+
+        // 中文：U+4E2D -> E4 B8 AD
+        input.OnChar(0x4E2Du);
+        input.EndFrame();
+        Check(input.GetInputString() == "\xE4\xB8\xAD", "EN1",
+              "a CJK codepoint is encoded as 3 UTF-8 bytes");
+
+        // ⚠️ 孤立代理对是坏数据：替它编一个 UTF-8 序列会让输入框显示成乱码，
+        // 丢掉比显示 U+FFFD 好查。
+        input.OnChar(0xD800u);
+        input.EndFrame();
+        Check(input.GetInputString().empty(), "EN2",
+              "a lone surrogate is dropped, not encoded into a broken sequence");
+
+        // 控制字符不进 inputString（回车走 GetKeyDown，不变成一个字符）。
+        input.OnChar(static_cast<unsigned int>('\n'));
+        input.OnChar(0x7Fu);
+        input.EndFrame();
+        Check(input.GetInputString().empty(), "EN3",
+              "control characters never reach inputString");
+
+        // emoji：U+1F600 -> F0 9F 98 80
+        input.OnChar(0x1F600u);
+        input.EndFrame();
+        Check(input.GetInputString() == "\xF0\x9F\x98\x80", "EN4",
+              "an astral codepoint is encoded as 4 UTF-8 bytes");
+
+        // ⚠️ 再测一个 **跨过第 18 位** 的 4 字节码位（U+10FFFF -> F4 8F BF BF）。
+        // 只测 U+1F600 是抓不出位移错的：0x1F600 >> 18 和 >> 17 都是 0，两种
+        // 实现编出来的首字节一模一样（0xF0）。首字节里真正带位的是 >= U+40000
+        // 的那一段，所以边界这一侧必须单独有一条。
+        input.OnChar(0x10FFFFu);
+        input.EndFrame();
+        Check(input.GetInputString() == "\xF4\x8F\xBF\xBF", "EN43",
+              "a 4-byte codepoint above the 18-bit boundary encodes its high bits");
+
+        // 读数滚动之后收集器必须清空，否则每个字符会被读到两帧。
+        input.EndFrame();
+        Check(input.GetInputString().empty(), "EN5",
+              "inputString is a one-frame reading (the accumulator is cleared)");
+
+        // 2 字节：U+00E9 (é) -> C3 A9。四档长度各测一次 —— 位错一格在 3 字节上
+        // 看不出来（会变成另一个汉字），在 2 字节上才是明显的乱码。
+        input.OnChar(0x00E9u);
+        input.EndFrame();
+        Check(input.GetInputString() == "\xC3\xA9", "EN42",
+              "a 2-byte codepoint is encoded as 2 UTF-8 bytes");
+
+        // 夹紧：轴上界之外的原始输入不能传出 1（Unity 的轴恒在 [-1,1]）。
+        Check(Input::AdvanceAxis(0.0f, 2.0f, 1.0f) == 1.0f, "IN42",
+              "an out-of-range raw axis clamps to 1");
+
+        // ---- 任意键 ----
+        Check(!input.IsAnyKeyDown(), "EN6", "no keys held at start");
+        Check(!input.WasAnyKeyPressedThisFrame(), "EN7", "and no press edge");
+        input.OnKey(static_cast<int>(KeyCodes::Key::W), 0, KeyCodes::PRESS, 0);
+        Check(input.IsAnyKeyDown(), "EN8", "anyKey follows a held key");
+        input.EndFrame();
+        Check(input.WasAnyKeyPressedThisFrame(), "EN9", "anyKeyDown sees the press edge");
+        input.OnKey(static_cast<int>(KeyCodes::Key::W), 0, KeyCodes::RELEASE, 0);
+        Check(!input.IsAnyKeyDown(), "EN10", "and clears once it is released");
+
+        // ---- 触摸：相位与生命周期 ----
+        using TouchAction = WindowSystem::TouchAction;
+        const int kDown   = static_cast<int>(TouchAction::Down);
+        const int kMove   = static_cast<int>(TouchAction::Move);
+        const int kUp     = static_cast<int>(TouchAction::Up);
+        const int kCancel = static_cast<int>(TouchAction::Cancel);
+
+        enhanced_input_reset(input);
+
+        input.OnTouch(7, kDown, 10.0f, 20.0f);
+        Check(input.GetFrameTouchCount() == 1, "EN11", "a fresh touch is enumerable");
+        Touch began;
+        Check(input.GetTouchAt(0, began), "EN12", "and readable");
+        Check(began.fingerId == 7, "EN13", "the finger id is the host's pointer id");
+        Check(began.phase == TouchPhase::Began, "EN14", "and the phase is Began");
+        Check(began.tapCount == 1, "EN15", "the first press is tap 1");
+        Check(Near(began.position.x, 10.0f) && Near(began.position.y, 20.0f), "EN16",
+              "position is the reported point");
+        Check(Near(began.deltaPosition.x, 0.0f), "EN17",
+              "and Began has no delta (there is no previous point yet)");
+        // 不支持压力的设备上 Unity 规定是 1.0，不是 0。
+        Check(Near(began.pressure, 1.0f) && Near(began.maximumPossiblePressure, 1.0f), "EN18",
+              "pressure is Unity's 1.0 on devices that cannot report it");
+        Check(began.type == TouchType::Direct, "EN19", "and the type is Direct");
+
+        input.OnTouch(7, kMove, 12.0f, 25.0f);
+        Touch moved;
+        input.GetTouchAt(0, moved);
+        Check(moved.phase == TouchPhase::Moved, "EN20", "a real move is phase Moved");
+        Check(Near(moved.deltaPosition.x, 2.0f) && Near(moved.deltaPosition.y, 5.0f), "EN21",
+              "deltaPosition is this frame's movement");
+
+        // ⚠️ 收帧之后还必须是 Moved。"这一帧真的动过"和"上一帧动过"是两个状态：
+        // EndFrame 只把**本帧没动**的 Moved 收成 Stationary，动过的要留着，
+        // 否则拖动脚本在同一帧的收尾处会读到 Stationary 而当成本帧没有输入。
+        input.EndFrame();
+        Touch moved_after;
+        input.GetTouchAt(0, moved_after);
+        Check(moved_after.phase == TouchPhase::Moved, "EN44",
+              "a touch that moved this frame is still Moved after EndFrame()");
+
+        // 原地"移动"（宿主每帧都推 move 事件是常态）=> Stationary
+        input.EndFrame();
+        input.OnTouch(7, kMove, 12.0f, 25.0f);
+        input.EndFrame();
+        Touch stationary;
+        input.GetTouchAt(0, stationary);
+        Check(stationary.phase == TouchPhase::Stationary, "EN22",
+              "a move event that did not move collapses to Stationary");
+        Check(Near(stationary.deltaPosition.x, 0.0f), "EN23", "and its delta is zero");
+
+        // ---- 抬起那一帧仍要能枚举到 ----
+        input.OnTouch(7, kUp, 12.0f, 25.0f);
+        Check(input.GetFrameTouchCount() == 1, "EN24",
+              "an ended touch is still enumerable for that one frame");
+        Touch ended;
+        input.GetTouchAt(0, ended);
+        Check(ended.phase == TouchPhase::Ended, "EN25", "with phase Ended");
+        Check(input.GetTouchCount() == 0, "EN26",
+              "but GetTouchCount() (the internal stick/camera path) already dropped it");
+        input.EndFrame();
+        Check(input.GetFrameTouchCount() == 0, "EN27",
+              "and it is gone the frame after");
+
+        // Canceled 与 Ended 必须是两个不同的相位（系统打断 / 来电 与 正常松手
+        // 在玩法上处理不同）。
+        input.OnTouch(8, kDown, 1.0f, 1.0f);
+        input.EndFrame();
+        input.OnTouch(8, kCancel, 1.0f, 1.0f);
+        Touch canceled;
+        input.GetTouchAt(0, canceled);
+        Check(canceled.phase == TouchPhase::Canceled, "EN28", "a cancel reports Canceled");
+
+        // ---- 连击 ----
+        enhanced_input_reset(input);
+        input.OnTouch(9, kDown, 50.0f, 50.0f);
+        input.OnTouch(9, kUp, 50.0f, 50.0f);
+        input.EndFrame();
+        input.OnTouch(9, kDown, 52.0f, 51.0f);
+        Touch second_tap;
+        input.GetTouchAt(0, second_tap);
+        Check(second_tap.tapCount == 2, "EN29",
+              "a second press inside the window and slop is tap 2");
+
+        // 落点太远：那是"在屏幕另一头点了第二下"，不是双击。
+        enhanced_input_reset(input);
+        input.OnTouch(11, kDown, 10.0f, 10.0f);
+        input.OnTouch(11, kUp, 10.0f, 10.0f);
+        input.EndFrame();
+        input.OnTouch(11, kDown, 400.0f, 400.0f);
+        Touch far_tap;
+        input.GetTouchAt(0, far_tap);
+        Check(far_tap.tapCount == 1, "EN30", "a press beyond the slop is tap 1, not 2");
+
+        // 超窗：等过双击窗口再按，连击数必须从头开始。
+        enhanced_input_reset(input);
+        input.OnTouch(12, kDown, 10.0f, 10.0f);
+        input.OnTouch(12, kUp, 10.0f, 10.0f);
+        input.EndFrame();
+        std::this_thread::sleep_for(std::chrono::milliseconds(350));
+        input.OnTouch(12, kDown, 10.0f, 10.0f);
+        Touch slow_tap;
+        input.GetTouchAt(0, slow_tap);
+        Check(slow_tap.tapCount == 1, "EN31", "a press past the double-tap window is tap 1");
+
+        // ---- 枚举顺序：还按着的在前（按 id 升序），本帧结束的在后 ----
+        enhanced_input_reset(input);
+        input.OnTouch(3, kDown, 1.0f, 1.0f);
+        input.OnTouch(1, kDown, 2.0f, 2.0f);
+        input.OnTouch(5, kDown, 3.0f, 3.0f);
+        input.EndFrame();
+        input.OnTouch(5, kUp, 3.0f, 3.0f);
+        Check(input.GetFrameTouchCount() == 3, "EN32", "two live plus one just-ended");
+        Touch first;
+        Touch second;
+        Touch third;
+        input.GetTouchAt(0, first);
+        input.GetTouchAt(1, second);
+        input.GetTouchAt(2, third);
+        Check(first.fingerId == 1 && second.fingerId == 3, "EN33",
+              "live touches come first, ordered by id (the map order is not stable)");
+        Check(first.phase == TouchPhase::Began && second.phase == TouchPhase::Began, "EN34",
+              "and they are still live");
+        Check(third.phase == TouchPhase::Ended && third.fingerId == 5, "EN35",
+              "the ended one is appended after them");
+        Check(!input.GetTouchAt(3, third) && !input.GetTouchAt(-1, third), "EN36",
+              "GetTouchAt out of range returns false");
+
+        // ---- ResetInputAxes ----
+        enhanced_input_reset(input);
+        input.OnScroll(0.0, 3.0);
+        input.EndFrame();
+        Check(Near(input.GetScrollDeltaY(), 3.0f), "EN37", "the scroll reading rolls over");
+        input.ResetInputAxes();
+        Check(Near(input.GetScrollDeltaY(), 0.0f), "EN38",
+              "ResetInputAxes zeroes the axis accumulators");
+        // ⚠️ ResetInputAxes 不能松开按键：Unity 的语义是"轴归零"，不是"松手"。
+        input.OnKey(static_cast<int>(KeyCodes::Key::D), 0, KeyCodes::PRESS, 0);
+        input.ResetInputAxes();
+        Check(input.IsAnyKeyDown(), "EN39",
+              "ResetInputAxes does NOT release held keys (Unity zeroes axes only)");
+
+        // ---- 门面：没有输入系统时的安全默认值 ----
+        Check(!Input::GetAnyKey(), "IN0", "anyKey is false with no input system");
+        Check(!Input::GetAnyKeyDown(), "IN1", "and so is anyKeyDown");
+        Check(Input::GetInputString().empty(), "IN2", "inputString is empty");
+        Check(Input::GetAxis("Horizontal") == 0.0f, "IN3", "GetAxis is zero");
+        Check(Input::GetAxisRaw("Nope") == 0.0f, "IN4", "an unknown axis name is zero, not a throw");
+        Check(!Input::GetButton("Fire1"), "IN5", "GetButton is false");
+        Check(!Input::GetButtonDown("Jump") && !Input::GetButtonUp("Jump"), "IN6",
+              "and neither button edge fires");
+        Check(Input::GetFrameTouchCount() == 0, "IN7", "touchCount is zero");
+        Check(Input::GetTouches().empty(), "IN8", "touches is empty");
+        Check(Input::GetTouch(0).fingerId == -1, "IN9",
+              "GetTouch out of range carries the -1 sentinel");
+        Check(Input::GetTouch(0).phase == TouchPhase::Canceled, "IN10",
+              "and a Canceled phase, so scripts can test 'no such finger'");
+        Check(Input::GetJoystickNames().empty(), "IN11",
+              "joystick names are empty (there is no gamepad backend, not a fake name)");
+        Check(Input::GetDeviceOrientation() == DeviceOrientation::Unknown, "IN12",
+              "deviceOrientation is Unknown with no orientation sensor");
+        Check(Input::GetAcceleration() == Vector2::ZERO && Input::GetGravity() == Vector2::ZERO,
+              "IN13", "acceleration / gravity are zero with no sensor");
+
+        // ---- 平台能力 ----
+        Check(Input::GetMousePresent(), "IN14", "a desktop process reports a mouse");
+        Check(!Input::GetTouchSupported(), "IN15",
+              "and no touch (the desktop backend has no WM_TOUCH path)");
+        Check(!Input::GetStylusTouchSupported(), "IN16", "no stylus support");
+        Check(!Input::GetTouchPressureSupported(), "IN17", "no pressure support");
+
+        // ---- 进程级设置回环 ----
+        Check(Input::GetMultiTouchEnabled(), "IN18", "multiTouchEnabled defaults to true");
+        Input::SetMultiTouchEnabled(false);
+        Check(!Input::GetMultiTouchEnabled(), "IN19", "and round-trips");
+        Input::SetMultiTouchEnabled(true);
+
+        Check(!Input::GetBackButtonLeavesApp(), "IN20", "backButtonLeavesApp defaults to false");
+        Input::SetBackButtonLeavesApp(true);
+        Check(Input::GetBackButtonLeavesApp(), "IN21", "and round-trips");
+        Input::SetBackButtonLeavesApp(false);
+
+        Check(Input::GetSimulateMouseWithTouches(), "IN22",
+              "simulateMouseWithTouches defaults to true");
+        Input::SetSimulateMouseWithTouches(false);
+        Check(!Input::GetSimulateMouseWithTouches(), "IN23", "and round-trips");
+        Input::SetSimulateMouseWithTouches(true);
+
+        Check(Input::GetImeCompositionMode() == IMECompositionMode::Auto, "IN24",
+              "imeCompositionMode defaults to Auto");
+        Input::SetImeCompositionMode(IMECompositionMode::On);
+        Check(Input::GetImeCompositionMode() == IMECompositionMode::On, "IN25",
+              "and round-trips");
+        Input::SetImeCompositionMode(IMECompositionMode::Auto);
+
+        Check(!Input::GetImeIsSelected(), "IN26", "imeIsSelected is false (no IME backend)");
+        Check(Input::GetCompositionString().empty(), "IN27", "compositionString is empty");
+
+        // ---- 轴的重力 / 灵敏度 / 死区（纯函数，直接喂数）----
+        Check(Near(Input::AdvanceAxis(0.0f, 1.0f, 1.0f / 60.0f), 3.0f / 60.0f), "IN28",
+              "a held key ramps up at Sensitivity, not instantly");
+        Check(Input::AdvanceAxis(0.0f, 1.0f, 1.0f) == 1.0f, "IN29",
+              "and reaches 1 after a second");
+        Check(Input::AdvanceAxis(0.5f, 1.0f, 1.0f) == 1.0f, "IN30",
+              "the ramp is clamped at 1, never overshoots");
+        Check(Near(Input::AdvanceAxis(1.0f, 0.0f, 1.0f / 60.0f), 1.0f - 3.0f / 60.0f), "IN31",
+              "releasing decays at Gravity (Unity's little slide after you let go)");
+        Check(Input::AdvanceAxis(1.0f, 0.0f, 1.0f) == 0.0f, "IN32", "and reaches zero");
+        Check(Input::AdvanceAxis(-1.0f, 0.0f, 1.0f) == 0.0f, "IN33",
+              "the negative side decays toward zero too (not past it)");
+        // ⚠️ 死区要挑"没有死区就**非零**"的输入来测。原来那条用
+        // AdvanceAxis(-0.0005, 0, 1) 是白测的：重力一帧就走 3.0，远超 0.0005，
+        // 越零保护（IN33 那条）本来就把它压成 0 了 —— 死区在不在结果都一样。
+        // 真正的缺口是"推进之后仍停在死区里"这两种：
+        Check(Input::AdvanceAxis(0.0f, 0.0005f, 1.0f) == 0.0f, "IN34",
+              "a raw reading below Dead leaves the axis at exactly 0");
+        Check(Input::AdvanceAxis(0.0009f, 0.0f, 1.0f / 6000.0f) == 0.0f, "IN43",
+              "and a gravity step too small to clear it snaps to 0 instead of jittering");
+        Check(Input::AdvanceAxis(0.0f, -1.0f, 1.0f) == -1.0f, "IN35",
+              "the ramp goes negative as well");
+
+        // ---- 发布面 ----
+        const std::string input_source =
+            ReadFile("Source/Runtime/Scripting/ScriptInput/ScriptInput.h");
+        Check(!input_source.empty(), "IN36", "ScriptInput.h is readable");
+        Check(CountOccurrences(input_source, "ZFUNCTION()") >= 40, "IN37",
+              "the Input facade publishes the Unity surface");
+        Check(CountOccurrences(input_source, "ZSCRIPTPROPERTY(") >= 20, "IN38",
+              "and it is reachable through Unity's property spellings");
+
+        const std::string enhanced_source =
+            ReadFile("Source/Runtime/Function/Input/EnhancedInputSystem.cpp");
+        Check(!enhanced_source.empty(), "IN39", "EnhancedInputSystem.cpp is readable");
+        Check(CountOccurrences(enhanced_source, "RegisterOnCharFunc") >= 1, "IN40",
+              "Initialize() subscribes to the text-input callback");
+        Check(CountOccurrences(enhanced_source, "m_EndedThisFrame.clear()") >= 1, "IN41",
+              "EndFrame() retires the one-frame ended touches");
+    }
+
     void TestGradient()
     {
         // 默认渐变：两端都是不透明白，不是空渐变。
@@ -13712,6 +14056,7 @@ int main()
     TestRenderTextureFacade();
     TestParticlePlayback();
     TestApplicationExtras();
+    TestInputParity();
     TestGradient();
     TestGradientWiring();
     TestColliderBounds();

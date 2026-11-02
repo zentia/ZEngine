@@ -735,6 +735,7 @@ class Mover extends Behaviour {
     /// ⚠️ 断言的是**哨兵值与夹取规则**，不是"真机上的真值"：这个进程没有
     /// RenderSystem，图形相关的一律走"拿不到"那条路 —— 那条路才是没人测过的。
     platformProbe: string = "";
+    inputProbe: string = "";
 
     ProbePlatformFacades(): void {
         // ---- SystemInfo：headless 下必须是哨兵值 ----
@@ -804,6 +805,80 @@ class Mover extends Behaviour {
         const appOpenInjected: boolean = Application.OpenURL("http://x/a; rm -rf /");
         Application.backgroundLoadingPriority = ThreadPriority.High;
         const appPriority: number = Application.backgroundLoadingPriority;
+
+        // ---- Unity 的 Input 那一层（slice 51）----
+        // 这个进程没有 InputSystem，所以下面断言的是**安全默认值**与**可写的
+        // 进程级设置** —— 跨边界真正要验证的是 `Touch` 值类型有没有被正确地
+        // 打包成对象（字段对不上时 TS 侧读到的是 undefined，而不是报错）。
+        // （AdvanceAxis 那条纯函数规则只在 C++ 侧测：它不是 Unity 的 API，不该
+        //  为了可测而把它发布进脚本面。）
+        const anyKey: boolean = Input.anyKey;
+        const anyKeyDown: boolean = Input.anyKeyDown;
+        const inputString: string = Input.inputString;
+        const axisHorizontal: number = Input.GetAxis("Horizontal");
+        const axisBogus: number = Input.GetAxisRaw("NoSuchAxis");
+        const buttonFire: boolean = Input.GetButtonDown("Fire1");
+        const touchCount: number = Input.touchCount;
+        const touches: Touch[] = Input.touches;
+        const missingTouch: Touch = Input.GetTouch(0);
+        const joysticks: string[] = Input.GetJoystickNames();
+        const orientation: number = Input.deviceOrientation;
+        const mousePresent: boolean = Input.mousePresent;
+        const touchSupported: boolean = Input.touchSupported;
+        const pressureSupported: boolean = Input.touchPressureSupported;
+        const imeSelected: boolean = Input.imeIsSelected;
+        const composition: string = Input.compositionString;
+        const mousePos: Vector2 = Input.mousePosition;
+        const scrollDelta: Vector2 = Input.mouseScrollDelta;
+        const acceleration: Vector2 = Input.acceleration;
+
+        // 设置回环
+        Input.multiTouchEnabled = false;
+        const multiOff: boolean = Input.multiTouchEnabled;
+        Input.multiTouchEnabled = true;
+        const multiOn: boolean = Input.multiTouchEnabled;
+        Input.backButtonLeavesApp = true;
+        const backLeaves: boolean = Input.backButtonLeavesApp;
+        Input.backButtonLeavesApp = false;
+        Input.simulateMouseWithTouches = false;
+        const simOff: boolean = Input.simulateMouseWithTouches;
+        Input.simulateMouseWithTouches = true;
+        Input.imeCompositionMode = IMECompositionMode.On;
+        const imeModeOn: boolean = Input.imeCompositionMode === IMECompositionMode.On;
+        Input.imeCompositionMode = IMECompositionMode.Auto;
+
+        this.inputProbe = [
+            String(anyKey === false),
+            String(anyKeyDown === false),
+            String(inputString.length === 0),
+            String(axisHorizontal === 0),
+            String(axisBogus === 0),
+            String(buttonFire === false),
+            String(touchCount === 0),
+            String(touches.length === 0),
+            String(missingTouch.fingerId === -1),
+            String(missingTouch.phase === TouchPhase.Canceled),
+            String(missingTouch.pressure === 1),
+            String(missingTouch.maximumPossiblePressure === 1),
+            // ⚠️ Touch.type 是 number，不是枚举：TS 的 lib.dom 里已经有全局的
+            // `type TouchType`，再导出一个同名 enum 会让脚本侧只能当类型用。
+            String(missingTouch.type === 0),
+            String(joysticks.length === 0),
+            String(orientation === DeviceOrientation.Unknown),
+            String(mousePresent === true),
+            String(touchSupported === false),
+            String(pressureSupported === false),
+            String(imeSelected === false),
+            String(composition.length === 0),
+            String(mousePos.x === 0 && mousePos.y === 0),
+            String(scrollDelta.x === 0 && scrollDelta.y === 0),
+            String(acceleration.x === 0 && acceleration.y === 0),
+            String(multiOff === false),
+            String(multiOn === true),
+            String(backLeaves === true),
+            String(simOff === false),
+            String(imeModeOn === true)
+        ].join("|");
 
         this.platformProbe = [
             String(sysDeviceType),

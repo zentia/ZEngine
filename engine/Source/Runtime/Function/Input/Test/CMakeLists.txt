@@ -41,6 +41,12 @@ set_target_properties(EnhancedInputFrameDeltaSmokeTest PROPERTIES
 target_include_directories(EnhancedInputFrameDeltaSmokeTest PRIVATE
     ${ENGINE_ROOT_DIR}/Source
 )
+# ...except that EngineSystem.h reaches Core/Log/engine_log.h, and that one
+# includes <bq_log/bq_log.h> from 3rdparty. Without this the target dies with
+# C1083 as soon as anything in the chain logs.
+target_include_directories(EnhancedInputFrameDeltaSmokeTest PRIVATE
+    ${ENGINE_ROOT_DIR}/3rdparty/bqlog/include
+)
 
 if(MSVC)
     target_compile_options(EnhancedInputFrameDeltaSmokeTest PRIVATE /W4)

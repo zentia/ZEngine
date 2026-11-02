@@ -1199,6 +1199,20 @@ int main(int argc, char** argv)
                 "true|0|false|1|true|0.3333|0|true|"
                 "true|true|true|true|true|true|true|3");
 
+        // --- Unity 的 Input 面（IP 段）--------------------------------------
+        //
+        // 与 ZA1 同一条路：tsc 抓"名字与类型在不在"，这里抓"值对不对"。这个进程
+        // 没有 InputSystem，所以整串都是"安全默认值 + 可写设置回环" —— 真正要验
+        // 的是 `Touch` 这个**值类型**被打包成 JS 对象时字段有没有对上（对不上时
+        // TS 侧读到 undefined，而不是报错，所以光有 tsc 抓不到）。
+        CheckTrue("ZA2", "ProbePlatformFacades 里那段 Input 探针跑到了",
+                  comp2->InvokeMethod("ProbePlatformFacades"));
+        CheckEq("ZA3", "Unity 的 Input 端到端：默认值 / Touch 值类型 / 设置回环",
+                mover_value("inputProbe"),
+                "true|true|true|true|true|true|true|true|true|true|"
+                "true|true|true|true|true|true|true|true|true|true|"
+                "true|true|true|true|true|true|true|true");
+
         // --- Unity 的 Transform 补齐面（TE 段）------------------------------
         //
         // 这一段的判据在 tsc 那一步就已经走掉一半了：ZSCRIPTPROPERTY 少一条，

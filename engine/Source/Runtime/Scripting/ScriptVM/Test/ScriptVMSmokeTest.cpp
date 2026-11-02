@@ -435,12 +435,20 @@ int main()
             "globalThis.__zResult = [Input.GetKey(Key.Space), Input.GetKeyDown(Key.Space),\n"
             "                        Input.GetKeyUp(Key.Space)].join('|');",
             "false|false|false");
+    // ⚠️ 鼠标那两个量现在只以 Unity 的属性拼写发布（`Input.mousePosition` /
+    // `Input.mouseScrollDelta`）：静态访问器会被 codegen 从方法表里摘掉（同一个
+    // MethodCallback 编进两个 COMDAT 段 ⇒ LNK1179），而 Unity 本来也没有
+    // `Input.GetMousePosition()` 这个方法。所以这里读属性，不读方法。
     CheckJs("E3", "无 InputSystem 时鼠标/触摸查询返回零值", script_env,
-            "var p = Input.GetMousePosition(); var s = Input.GetMouseScrollDelta();\n"
+            "var p = Input.mousePosition; var s = Input.mouseScrollDelta;\n"
             "globalThis.__zResult = __fx(p.x)+','+__fx(p.y)+'|'+__fx(s.x)+','+__fx(s.y)+'|'+\n"
             "                       Input.GetTouchCount()+'|'+Input.GetTouchIdAt(0)+'|'+\n"
             "                       Input.IsActionActive('Jump');",
             "0.0000,0.0000|0.0000,0.0000|0|-1|false");
+    CheckJs("E4", "鼠标那两个量是属性不是方法（Unity 的形状，静态访问器不重复发布）", script_env,
+            "globalThis.__zResult = [typeof Input.mousePosition, typeof Input.mouseScrollDelta,\n"
+            "                        typeof Input.GetMousePosition, typeof Input.GetMouseScrollDelta].join('|');",
+            "object|object|undefined|undefined");
 
     std::printf("\n--- F. console / Debug 通道 ---\n");
 
