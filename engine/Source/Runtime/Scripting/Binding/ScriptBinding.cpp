@@ -395,6 +395,20 @@ namespace
         "    azimuthAngle: number;\n"
         "}\n"
         "\n"
+        // Unity 的 `Material`：引擎里那个类是 `MaterialInstance`
+        // （ScriptMaterial.h 写了为什么 —— `Material` 这个名字被材质**资产**类占用，
+        // ZHeaderTool 要求反射类名全局唯一）。类型别名把 Unity 的拼写还给脚本：
+        // 标注、`renderer.material` 的返回类型都能写 `Material`。
+        //
+        // ⚠️ 只是**类型**别名，不是新类：`new Material()` 不行（Unity 那边要的
+        // 是 `new Material(shader)`，本引擎没有"凭 shader 造一份材质"的入口），
+        // 材质只能从 `renderer.material` 拿。
+        "declare type Material = MaterialInstance;\n"
+        "\n"
+        // 同一件事的另一例：引擎里灯的类叫 `LightComponent`（与 CameraComponent /
+        // RigidBodyComponent 等组件保持一致的命名），Unity 叫 `Light`。
+        "declare type Light = LightComponent;\n"
+        "\n"
         // Bounds：Unity 存的是 center + **extents（半尺寸）**，`size` / `min` /
         // `max` 都是派生量。键名与 `ZScript::Converter<Bounds>` 一致。
         // 与 `declare class Bounds`（ScriptBounds.h 那批静态方法）同名合并。
