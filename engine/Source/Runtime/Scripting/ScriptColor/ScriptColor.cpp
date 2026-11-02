@@ -1,5 +1,9 @@
 #include "Runtime/Scripting/ScriptColor/ScriptColor.h"
 
+// `Mathf::GammaToLinearSpace` / `LinearToGammaSpace` 已经有了，这里复用而不是
+// 抄一份公式 —— 两条 sRGB 曲线存在两处是迟早会对不上的经典配置。
+#include "Runtime/Scripting/ScriptMath/ScriptMath.h"
+
 #include <cmath>
 #include <cstdio>
 #include <string>
@@ -228,5 +232,277 @@ namespace Runtime
         std::snprintf(buffer, sizeof(buffer), "RGBA(%d, %d, %d, %d)", static_cast<int>(c.r), static_cast<int>(c.g),
                       static_cast<int>(c.b), static_cast<int>(c.a));
         return std::string(buffer);
+    }
+
+    // ---- Unity 的实例属性（值类型，所以做成静态工具）------------------------
+
+    float Color::GetGrayscale(const ::Color& c)
+    {
+        // Rec.601 的感知亮度权重，不是 (r+g+b)/3。
+        return c.r * 0.299f + c.g * 0.587f + c.b * 0.114f;
+    }
+
+    float Color::GetMaxColorComponent(const ::Color& c)
+    {
+        float max = c.r;
+        if (c.g > max)
+        {
+            max = c.g;
+        }
+        if (c.b > max)
+        {
+            max = c.b;
+        }
+        return max;
+    }
+
+    ::Color Color::ToLinear(const ::Color& c)
+    {
+        return Make(Mathf::GammaToLinearSpace(c.r), Mathf::GammaToLinearSpace(c.g),
+                    Mathf::GammaToLinearSpace(c.b), c.a);
+    }
+
+    ::Color Color::ToGamma(const ::Color& c)
+    {
+        return Make(Mathf::LinearToGammaSpace(c.r), Mathf::LinearToGammaSpace(c.g),
+                    Mathf::LinearToGammaSpace(c.b), c.a);
+    }
+
+    std::string Color::ToString(const ::Color& c)
+    {
+        char buffer[64];
+        std::snprintf(buffer, sizeof(buffer), "RGBA(%.3f, %.3f, %.3f, %.3f)", static_cast<double>(c.r),
+                      static_cast<double>(c.g), static_cast<double>(c.b), static_cast<double>(c.a));
+        return std::string(buffer);
+    }
+
+    ::Color Color::CorrelatedColorTemperatureToRGB(float kelvin)
+    {
+        // Planckian-locus 近似（Tanner Helland 的分段拟合）。见头文件里那条
+        // ⚠️：Unity 没有公布它用的曲线，所以这里是"可信的近似"而不是"逐位一致"。
+        const float t = kelvin / 100.0f;
+
+        float red;
+        if (t <= 66.0f)
+        {
+            red = 255.0f;
+        }
+        else
+        {
+            red = 329.698727446f * std::pow(t - 60.0f, -0.1332047592f);
+        }
+
+        float green;
+        if (t <= 66.0f)
+        {
+            green = 99.4708025861f * std::log(t) - 161.1195681661f;
+        }
+        else
+        {
+            green = 288.1221695283f * std::pow(t - 60.0f, -0.0755148492f);
+        }
+
+        float blue;
+        if (t >= 66.0f)
+        {
+            blue = 255.0f;
+        }
+        else if (t <= 19.0f)
+        {
+            blue = 0.0f;
+        }
+        else
+        {
+            blue = 138.5177312231f * std::log(t - 10.0f) - 305.0447927307f;
+        }
+
+        // 三段各自都可能算出 <0 或 >255（t 很小时 log(t) 是负的、很大时幂函数
+        // 会溢出），夹住再归一 —— 不夹的话 1000K 会给出负的蓝通道。
+        auto channel = [](float v) {
+            if (v < 0.0f) v = 0.0f;
+            if (v > 255.0f) v = 255.0f;
+            return v / 255.0f;
+        };
+        return Make(channel(red), channel(green), channel(blue), 1.0f);
+    }
+
+    // ---- ColorUtility -------------------------------------------------------
+
+    namespace
+    {
+        /// `Mathf.RoundToInt(Clamp01(v) * 255)`。
+        ///
+        /// ⚠️ **四舍五入**，与 `Color32(Color)` 的**截断**不是一回事（0.5 在这里
+        /// 是 128，在 Color32 里是 127）。Unity 的 `ToHtmlString*` 走的是这条，
+        /// 别图省事复用 `::Color32(c)`。
+        int ChannelToByte(float v)
+        {
+            if (v < 0.0f)
+            {
+                v = 0.0f;
+            }
+            if (v > 1.0f)
+            {
+                v = 1.0f;
+            }
+            return static_cast<int>(std::floor(v * 255.0f + 0.5f));
+        }
+
+        bool IsHexDigit(char ch)
+        {
+            return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f') || (ch >= 'A' && ch <= 'F');
+        }
+
+        int HexValue(char ch)
+        {
+            if (ch >= '0' && ch <= '9')
+            {
+                return ch - '0';
+            }
+            if (ch >= 'a' && ch <= 'f')
+            {
+                return ch - 'a' + 10;
+            }
+            return ch - 'A' + 10;
+        }
+    }  // namespace
+
+    std::string ColorUtility::ToHtmlStringRGB(const ::Color& c)
+    {
+        char buffer[16];
+        std::snprintf(buffer, sizeof(buffer), "%02X%02X%02X", ChannelToByte(c.r), ChannelToByte(c.g),
+                      ChannelToByte(c.b));
+        return std::string(buffer);
+    }
+
+    std::string ColorUtility::ToHtmlStringRGBA(const ::Color& c)
+    {
+        char buffer[16];
+        std::snprintf(buffer, sizeof(buffer), "%02X%02X%02X%02X", ChannelToByte(c.r), ChannelToByte(c.g),
+                      ChannelToByte(c.b), ChannelToByte(c.a));
+        return std::string(buffer);
+    }
+
+    ColorParseResult ColorUtility::TryParseHtmlString(const eastl::string& html)
+    {
+        ColorParseResult result;
+        result.valid = false;
+        result.color = Make(0.0f, 0.0f, 0.0f, 0.0f);
+
+        std::size_t begin = 0;
+        if (!html.empty() && html[0] == '#')
+        {
+            begin = 1;
+        }
+        const std::size_t length = html.size() - begin;
+        if (length != 3 && length != 4 && length != 6 && length != 8)
+        {
+            return result;
+        }
+        for (std::size_t i = begin; i < html.size(); ++i)
+        {
+            if (!IsHexDigit(html[i]))
+            {
+                return result;
+            }
+        }
+
+        // 3 / 4 位的缩写形式：每一位复制成两位（"F0A" == "FF00AA"）。
+        // ⚠️ 是 `n * 17` 而不是 `n * 16` —— 后者会把 "F" 变成 F0 而不是 FF，
+        // 于是 "#FFF" 解析出来不是纯白（差在最低位，肉眼几乎看不出，但和
+        // Unity 对不上）。
+        int components[4] = {0, 0, 0, 255};
+        if (length == 3 || length == 4)
+        {
+            const int count = static_cast<int>(length);
+            for (int i = 0; i < count; ++i)
+            {
+                components[i] = HexValue(html[begin + static_cast<std::size_t>(i)]) * 17;
+            }
+            if (count == 3)
+            {
+                components[3] = 255;
+            }
+        }
+        else
+        {
+            const int pairs = static_cast<int>(length) / 2;
+            for (int i = 0; i < pairs; ++i)
+            {
+                const std::size_t at = begin + static_cast<std::size_t>(i) * 2;
+                components[i] = HexValue(html[at]) * 16 + HexValue(html[at + 1]);
+            }
+            if (pairs == 3)
+            {
+                components[3] = 255;
+            }
+        }
+
+        result.color =
+            Make(static_cast<float>(components[0]) / 255.0f, static_cast<float>(components[1]) / 255.0f,
+                 static_cast<float>(components[2]) / 255.0f, static_cast<float>(components[3]) / 255.0f);
+        result.valid = true;
+        return result;
+    }
+
+    // ---- Gradient -----------------------------------------------------------
+
+    ::Gradient Gradient::Create()
+    {
+        return ::Gradient::CreateDefault();
+    }
+
+    ::Color Gradient::Evaluate(const ::Gradient& g, float time)
+    {
+        return g.Evaluate(time);
+    }
+
+    ::Gradient Gradient::SetKeys(const ::Gradient& g, const std::vector<GradientColorKey>& color_keys,
+                                 const std::vector<GradientAlphaKey>& alpha_keys)
+    {
+        ::Gradient out = g;
+        out.color_keys = color_keys;
+        out.alpha_keys = alpha_keys;
+        return out;
+    }
+
+    std::vector<GradientColorKey> Gradient::GetColorKeys(const ::Gradient& g)
+    {
+        return g.color_keys;
+    }
+
+    std::vector<GradientAlphaKey> Gradient::GetAlphaKeys(const ::Gradient& g)
+    {
+        return g.alpha_keys;
+    }
+
+    ::Gradient Gradient::WithColorKeys(const ::Gradient& g, const std::vector<GradientColorKey>& color_keys)
+    {
+        ::Gradient out = g;
+        out.color_keys = color_keys;
+        return out;
+    }
+
+    ::Gradient Gradient::WithAlphaKeys(const ::Gradient& g, const std::vector<GradientAlphaKey>& alpha_keys)
+    {
+        ::Gradient out = g;
+        out.alpha_keys = alpha_keys;
+        return out;
+    }
+
+    int Gradient::GetMode(const ::Gradient& g)
+    {
+        return static_cast<int>(g.mode);
+    }
+
+    ::Gradient Gradient::WithMode(const ::Gradient& g, int mode)
+    {
+        ::Gradient out = g;
+        // 未知值一律当 Blend：mode 是位掩码式的枚举位，夹到合法集合比"存了个
+        // 3 然后 Evaluate 走 default 分支"好 —— 后者在 Fixed 那一条上会静默
+        // 变成插值。
+        out.mode = (mode == static_cast<int>(::GradientMode::Fixed)) ? ::GradientMode::Fixed
+                                                                    : ::GradientMode::Blend;
+        return out;
     }
 }  // namespace Runtime

@@ -69,3 +69,20 @@ struct Color32
     }
     bool operator!=(const Color32& other) const { return !(*this == other); }
 };
+
+// =============================================================================
+// ColorParseResult —— `ColorUtility.TryParseHtmlString` 的结果
+// =============================================================================
+//
+// Unity 的签名是 `bool TryParseHtmlString(string htmlString, out Color color)`。
+// TS 没有 out 参数，而 `Color` 又是值类型（跨边界是快照），所以"成功与否"和
+// "颜色"只能一起回来 —— 与 `RaycastHit.valid` / `SmoothDampResult` 同一套路。
+//
+// ⚠️ 失败时 `color` 是全 0（含 a = 0，即透明黑），**不是**保留调用方原来的值。
+// 这是有意的：调用方拿到一个"看着像旧值"的结果会当成解析成功继续用，而全 0
+// 至少在屏幕上什么都没有。要不要用得看 `valid`。
+struct ColorParseResult
+{
+    bool valid{false};
+    Color color{};
+};
