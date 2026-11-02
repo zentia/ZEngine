@@ -43,8 +43,60 @@ namespace Runtime
         rotation.ToRotationMatrix(m_TransformDesc.m_Rotation);
     }
 
+    void ParticleComponent::Play()
+    {
+        m_PlayState = ParticlePlayState::Playing;
+    }
+
+    void ParticleComponent::Stop()
+    {
+        m_PlayState = ParticlePlayState::Stopped;
+    }
+
+    void ParticleComponent::Pause()
+    {
+        // 已停止的系统不接受暂停（见头文件注释）。
+        if (m_PlayState == ParticlePlayState::Playing)
+        {
+            m_PlayState = ParticlePlayState::Paused;
+        }
+    }
+
+    void ParticleComponent::Clear()
+    {
+        m_PlayState = ParticlePlayState::Stopped;
+        m_Time      = 0.0f;
+    }
+
+    void ParticleComponent::SetPlayState(ParticlePlayState state)
+    {
+        switch (state)
+        {
+            case ParticlePlayState::Stopped:
+            case ParticlePlayState::Playing:
+            case ParticlePlayState::Paused:
+                m_PlayState = state;
+                break;
+            default:
+                m_PlayState = ParticlePlayState::Stopped;
+                break;
+        }
+    }
+
     void ParticleComponent::Tick(float delta_time)
     {
+        // Stopped：完全不参与。连 transform 更新也跳过 —— 停止的发射器不需要
+        // 知道自己位置变了。
+        if (m_PlayState == ParticlePlayState::Stopped)
+        {
+            return;
+        }
+
+        if (m_PlayState == ParticlePlayState::Playing)
+        {
+            m_Time += delta_time > 0.0f ? delta_time : 0.0f;
+        }
+
         // Emitters are only ever ticked through the render thread's swap data: with no
         // RenderSystem there is nothing to hand the tick to.
         RenderSystem* render_system = GET_SYSTEM(RenderSystem);
@@ -52,11 +104,28 @@ namespace Runtime
         {
             return;
         }
+        // 没挂到对象上（还没 PostLoadResource，或者单测里直接构造出来的）：下面
+        // `m_ParentObject->tryGetComponent(Transform)` 会解引用空指针。以前这条
+        // 走不到，是因为 Tick 只在有 RenderSystem 时才碰到那一行 —— 一旦
+        // RenderSystem 注册进来，一个裸组件就能把进程带下去。
+        //
+        // ⚠️ 判空放在**时钟之后**：播放状态与时钟不需要父对象，把它们也挡在
+        // 后面的话，"单测里造一个裸组件推进时钟"就永远推进不了 —— 而那正是
+        // 唯一能在 headless 下验证这条分支的方式。
+        if (m_ParentObject == nullptr)
+        {
+            return;
+        }
         RenderSwapContext& swap_context = render_system->GetSwapContext();
 
         RenderSwapData& logic_swap_data = swap_context.GetLogicSwapData();
 
-        logic_swap_data.AddTickParticleEmitter(m_TransformDesc.m_Id);
+        // Paused 时**不**推进模拟（不 AddTick），但照旧同步 transform —— 见
+        // 头文件那节注释：暂停中移动发射器，恢复后粒子从新位置继续。
+        if (m_PlayState == ParticlePlayState::Playing)
+        {
+            logic_swap_data.AddTickParticleEmitter(m_TransformDesc.m_Id);
+        }
 
         Transform* transform_component = m_ParentObject->tryGetComponent(Transform);
         if (transform_component->IsDirty())

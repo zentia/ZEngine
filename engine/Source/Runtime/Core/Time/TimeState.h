@@ -72,6 +72,13 @@ public:
     static constexpr int kMinSubstepsCap = 1;
     static constexpr int kMaxSubstepsCap = 64;
 
+    /// 单帧步长的默认上限，与 Unity 的 `Time.maximumDeltaTime` 默认值一致
+    /// （0.3333333 秒）。
+    static constexpr float kDefaultMaximumDeltaTime = 1.0f / 3.0f;
+
+    /// 上限的下限。0 会冻结世界，那不是"限帧"该有的语义。
+    static constexpr float kMinMaximumDeltaTime = 1.0f / 1000.0f;
+
     float GetFixedDeltaTime() const { return m_FixedDeltaTime; }
 
     /// 设置固定步长。<= kMinFixedDeltaTime 的值被夹到 kMinFixedDeltaTime。
@@ -117,8 +124,9 @@ public:
     /// @param frame_delta_time      真实帧间隔（墙钟），不受暂停影响
     /// @param should_update_logic   本帧是否推进逻辑（编辑器暂停时为 false）
     ///
-    /// 顺序：先算本帧 delta（= simulation_delta_time * timeScale，不推进
-    /// 逻辑时为 0），再累加时间、帧数、平滑帧率。
+    /// 顺序：先按 `captureFramerate` 覆盖步长（若开启）、再按
+    /// `maximumDeltaTime` 夹一次，然后算本帧 delta（= 步长 * timeScale，不推进
+    /// 逻辑时为 0），最后累加时间、帧数、平滑帧率。
     void BeginFrame(float simulation_delta_time, float frame_delta_time, bool should_update_logic);
 
     /// 回到初始状态。给测试用，也给"关卡重载 / 退出 Play"这类需要把时间
@@ -154,6 +162,56 @@ public:
 
     /// 本帧是否推进逻辑。编辑器暂停时为 false。
     bool IsLogicUpdating() const { return m_LogicUpdating; }
+
+    // ---- 单帧步长的两个闸门（Unity 的 Time.maximumDeltaTime / captureFramerate）
+    //
+    // 两者都作用在 BeginFrame 的**最前面**，也就是"本帧 delta 诞生之前"。放
+    // 在更后面（比如给脚本的 deltaTime 单独夹一次）会造出一个"世界用了 2 秒、
+    // 脚本看到 0.33 秒"的分叉 —— 那比不夹更糟，因为脚本的积分与世界的积分
+    // 从此不同步。
+
+    /// 单帧逻辑步长的上限（秒）。Unity 的 `Time.maximumDeltaTime`，默认值与
+    /// Unity 相同（1/3 秒）。
+    ///
+    /// 用途：卡一帧（断点、GC、切窗口）之后，deltaTime 会是一个巨大的值，
+    /// 物理一步积分出去就穿墙、角色瞬移出地图。夹住它 = 卡顿时**慢放**而不是
+    /// 让世界跳过去。副作用是模拟时间落后于真实时间 —— 这正是想要的。
+    float GetMaximumDeltaTime() const { return m_MaximumDeltaTime; }
+
+    /// 设置单帧步长上限。<= kMinMaximumDeltaTime 夹到下限（0 会让世界永远不
+    /// 推进，那是"冻结"不是"限帧"，应该用 `SetTimeScale(0)` 表达）。
+    void SetMaximumDeltaTime(float maximum_delta_time);
+
+    /// 固定帧率录制：> 0 时**每一帧的步长都被改成 1/value**。
+    /// Unity 的 `Time.captureFramerate`。
+    ///
+    /// 用它录序列帧：真实帧率 200 也好 12 也好，每帧固定推进 1/30 秒，于是
+    /// 输出的图片序列在时间上是均匀的。0 = 关闭（跟随真实帧率）。
+    ///
+    /// ⚠️ 它覆盖的是**步长**，不是"让引擎真的按这个帧率跑" —— 引擎仍然尽
+    /// 力跑，只是世界推进的量被固定了。要真限帧用
+    /// `Application.targetFrameRate`。
+    int GetCaptureFramerate() const { return m_CaptureFramerate; }
+
+    /// 设置录制帧率。<= 0 表示关闭。
+    void SetCaptureFramerate(int capture_framerate);
+
+    // ---- 关卡时钟 ----
+
+    /// 记一次"关卡已加载"。之后 `GetTimeSinceLevelLoad()` 从这一刻开始算。
+    ///
+    /// 由 SceneManager 在加载成功后调用。为什么不在 TimeState 自己侦测：时间
+    /// 状态刻意不认识 Level / Scene（见文件头"为什么是一个独立的小单例"）——
+    /// 那条依赖一加上，headless 可测性就没了。
+    void NotifyLevelLoaded();
+
+    /// 自上次关卡加载以来的逻辑时间（秒），受 timeScale。
+    /// Unity 的 `Time.timeSinceLevelLoad`。
+    ///
+    /// 与 `GetTime()` 的区别：后者是"自引擎启动"。玩法层的计时（关卡限时、
+    /// 计时赛）一律用这个 —— 用 `GetTime()` 会把"引擎启动到进关卡那几秒"也算
+    /// 进去，编辑器里 PIE 一下就偏一点。
+    float GetTimeSinceLevelLoad() const;
 
     // ---- 时间缩放 ----
 
@@ -199,6 +257,14 @@ private:
     float m_AverageFrameDuration {0.0f};
     int   m_Fps {0};
     bool  m_LogicUpdating {false};
+
+    // 单帧步长的两个闸门（默认都是"不干预"：1/3 秒的上限只在卡顿时生效，
+    // captureFramerate 默认关闭）。
+    float m_MaximumDeltaTime {kDefaultMaximumDeltaTime};
+    int   m_CaptureFramerate {0};
+
+    // 关卡时钟：最近一次 NotifyLevelLoaded 时的 m_Time。
+    float m_LevelLoadTime {0.0f};
 
     // 固定步进
     float m_FixedDeltaTime {kDefaultFixedDeltaTime};

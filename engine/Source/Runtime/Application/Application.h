@@ -49,6 +49,38 @@ enum class RuntimePlatform : int
     HarmonyOSPlayer = 10,
 };
 
+// Unity 的 `UnityEngine.SystemLanguage`。
+//
+// ⚠️ 只列到这里：Unity 那份有 70 多项（含各种小语种与
+// `ChineseSimplified` / `ChineseTraditional` 的细分）。补齐是纯体力活，缺一项
+// 的代价是"那个语种返回 Unknown"，可以接受；而为了凑数把不确定的 locale 映射
+// 到某个语种上，代价是"按语言选字体"静默选错。
+ZENUM()
+enum class SystemLanguage : int
+{
+    Unknown    = 0,
+    English    = 10,
+    Chinese    = 13,
+    Japanese   = 16,
+    Korean     = 17,
+    French     = 21,
+    German     = 24,
+    Spanish    = 32,
+    Russian    = 36,
+    Portuguese = 38,
+    Italian    = 40,
+};
+
+// Unity 的 `UnityEngine.ThreadPriority`。取值与之一致（Low=0 ... High=3）。
+ZENUM()
+enum class ThreadPriority : int
+{
+    Low         = 0,
+    BelowNormal = 1,
+    Normal      = 2,
+    High        = 3,
+};
+
 // ZCLASS 挂在已有的引擎 Application 上（而不是另建一个 `class Application`）：
 // 脚本侧要的就是 `Application.dataPath` 这类拼写，而同名 C++ 类已经存在。
 // 两个同名的类放进同一个二进制会违反 ODR —— 链接器挑一个定义，另一处静默用错
@@ -190,6 +222,34 @@ public:
     ZFUNCTION()
     static std::string GetPlatformName();
 
+    /// 系统语言。Unity 的 `Application.systemLanguage`。
+    ///
+    /// ⚠️ 只映射了主流语种（见 `Application.cpp` 的 `MapLocaleToSystemLanguage`），
+    /// 其余返回 `Unknown` —— 不认识的 locale 编一个"最接近的"出来，会让按语言
+    /// 选字体的代码静默装错字体。
+    ZFUNCTION()
+    static SystemLanguage GetSystemLanguage();
+    ZSCRIPTPROPERTY(Name = "systemLanguage", Getter = "GetSystemLanguage")
+
+    /// 后台加载优先级。Unity 的 `Application.backgroundLoadingPriority`。
+    ///
+    /// ⚠️ 目前**没有**消费方：引擎的资源加载还没有按优先级分队列。它记的是
+    /// "脚本希望后台加载多客气"，等异步加载那一层接进来之后再读。与
+    /// `QualitySettings` 那批开关同一性质（能写能读、语义一致、还不生效）。
+    ///
+    /// ⚠️ 状态在**进程级**而不是实例上，与 `Gizmos.color` / `Cursor` 同一类：
+    /// 挂在 Application 实例上的话，没有 Application 系统的进程（脚本组件冒烟
+    /// 测试就是）里 setter 会**静默丢弃** —— 写了 3 读回 2，而调用方完全看不出
+    /// 自己那次赋值没生效。宁可多一份进程级状态，也不要一个"有时丢"的 setter。
+    ZFUNCTION()
+    static ThreadPriority GetBackgroundLoadingPriority();
+    ZSCRIPTPROPERTY(Name = "backgroundLoadingPriority", Getter = "GetBackgroundLoadingPriority",
+                    Setter = "SetBackgroundLoadingPriority")
+
+    /// 设置后台加载优先级。
+    ZFUNCTION()
+    static void SetBackgroundLoadingPriority(ThreadPriority priority);
+
     /// 目标帧率。<= 0 表示不限（跟随垂直同步）。
     /// Unity 的 `Application.targetFrameRate`。
     ///
@@ -216,6 +276,74 @@ public:
     /// 窗口会变成"未响应"）。
     ZFUNCTION()
     static void SetRunInBackground(bool run);
+
+    /// 应用标识（Unity 的 `Application.identifier`，对位各平台的 bundle id /
+    /// package name）。
+    ///
+    /// 拼法是 `<companyName>.<productName>` 的反转域名形式，与 Unity 的
+    /// `com.Company.ProductName` 一致。两个名字任一为空时退化为
+    /// `"com.zengine.unnamed"` —— 空串会让"上报时按包名分组"这类逻辑静默
+    /// 把全世界归并成一组，那个危害比一个明显的占位串大。
+    ZFUNCTION()
+    static std::string GetIdentifier();
+    ZSCRIPTPROPERTY(Name = "identifier", Getter = "GetIdentifier")
+
+    /// 临时缓存目录。Unity 的 `Application.temporaryCachePath`。
+    ///
+    /// ⚠️ **不保证持久**：这是系统的临时目录（Windows 的 `%TEMP%`、POSIX 的
+    /// `/tmp`），OS 随时可能清。要跨启动保留用 `persistentDataPath`。
+    /// 取不到时返回空串（不 fallback 到 persistentDataPath —— 那会把"可以随
+    /// 手删的缓存"和"存档"混进同一个目录，下一次清理就误删存档）。
+    ZFUNCTION()
+    static std::string GetTemporaryCachePath();
+    ZSCRIPTPROPERTY(Name = "temporaryCachePath", Getter = "GetTemporaryCachePath")
+
+    /// 日志文件该写的地方。Unity 的 `Application.consoleLogPath`。
+    ///
+    /// 是 **persistentDataPath 下的一个路径**，不是"引擎当前正在写的那个日志
+    /// 文件" —— 引擎的日志系统有自己的输出目标（见 `Core/Log/LogSystem.h`）。
+    /// 与 Unity 一致：这一项的含义是"给我一个放日志的地方"。
+    ZFUNCTION()
+    static std::string GetConsoleLogPath();
+    ZSCRIPTPROPERTY(Name = "consoleLogPath", Getter = "GetConsoleLogPath")
+
+    /// 窗口当前是否有焦点。Unity 的 `Application.isFocused`。
+    ///
+    /// 没有窗口系统时返回 **true**（不是 false）：`IsWindowFocused()` 的语义
+    /// 本来就是"没有窗口后端时不挡路"，而 false 会让"失焦就不推进"的逻辑在
+    /// 无窗口进程里把整个世界冻住 —— headless 跑测试时会看到时间不涨。
+    ZFUNCTION()
+    static bool GetIsFocused();
+    ZSCRIPTPROPERTY(Name = "isFocused", Getter = "GetIsFocused")
+
+    /// 是否移动端（Android / iOS / 鸿蒙）。Unity 的
+    /// `Application.isMobilePlatform`。
+    ZFUNCTION()
+    static bool GetIsMobilePlatform();
+    ZSCRIPTPROPERTY(Name = "isMobilePlatform", Getter = "GetIsMobilePlatform")
+
+    /// 是否主机平台。**恒为 false** —— ZEngine 目前没有主机后端，与其按
+    /// "不是桌面也不是移动"推导（那会把 Web 也算成主机），不如显式给假值并
+    /// 说明：要加的时候在这里加一个平台分支。
+    ZFUNCTION()
+    static bool GetIsConsolePlatform();
+    ZSCRIPTPROPERTY(Name = "isConsolePlatform", Getter = "GetIsConsolePlatform")
+
+    /// 用系统默认方式打开一个 URL（浏览器 / 邮件客户端 / 文件管理器）。
+    /// Unity 的 `Application.OpenURL`。
+    ///
+    /// **返回是否成功**，且对 URL 做白名单校验：只接受
+    /// `http://` `https://` `mailto:` `file://` 开头，且不含空白与 shell 元字符。
+    ///
+    /// 为什么要校验：除了 Windows 的 `ShellExecute`，其余平台只能走
+    /// `system("open <url>")` / `system("xdg-open <url>")`，而 `system()` 是
+    /// **走 shell 的** —— 一个带 `;` 或 `$()` 的 URL 就是一条命令注入。Unity
+    /// 的 `OpenURL` 不接受任意串的原因也是这个。
+    ///
+    /// ⚠️ 这条路径会**阻塞**（`system()` 是同步的）。不要在主循环里对不可信
+    /// 来源的 URL 调它。
+    ZFUNCTION()
+    static bool OpenURL(const std::string& url);
 
     // ---- Unity 的应用层消息（OnApplicationFocus / Pause）----------------
     //
@@ -299,4 +427,9 @@ protected:
     // 成员能让"退出 Play 时重置"这件事有明确的归属。
     int  m_TargetFrameRate {-1};
     bool m_RunInBackground {true};
+
+    /// backgroundLoadingPriority 的进程级状态。见上面
+    /// GetBackgroundLoadingPriority 的注释：放在这里而不是实例上，是为了让
+    /// setter 在没有 Application 实例的进程里也不静默丢弃。
+    static ThreadPriority s_BackgroundLoadingPriority;
 };

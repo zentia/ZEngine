@@ -31,16 +31,24 @@
 #if defined(_WIN32)
     #define WIN32_LEAN_AND_MEAN
     #include <windows.h>
+    #include <shellapi.h>  // ShellExecuteA（OpenURL 在 Windows 上唯一不走 shell 的那条路）
 #elif defined(__linux__)
     #include <unistd.h>
 #elif defined(__APPLE__)
     #include <mach-o/dyld.h>
 #endif
 
+#include <cstdlib>  // std::system / std::getenv
+#include <cstring>  // std::strlen / std::strncmp
+
 #include <thread>
 
 bool g_isPlaying {false};
 bool g_isEditor {false};
+
+// 进程级（理由见 Application.h 里 backgroundLoadingPriority 的注释）：没有
+// Application 实例的进程里 setter 不能静默丢弃。
+ThreadPriority Application::s_BackgroundLoadingPriority {ThreadPriority::Normal};
 
 std::unordered_set<std::string> g_editorTickComponentTypes {};
 
@@ -632,6 +640,264 @@ void Application::SetTargetFrameRate(int frame_rate)
     if (Application* self = App())
     {
         self->m_TargetFrameRate = frame_rate;
+    }
+}
+
+std::string Application::GetIdentifier()
+{
+    // Unity 的形状是反转域名 `com.Company.Product`。这里直接按它拼，而不是
+    // 读某个"包名字段" —— 工程里没有那一份设置（PlayerSettings 只有
+    // company / product / version 三项），编一个字段出来只会多一处要维护的
+    // 真相。要支持自定义包名时应该给 PlayerSettings 加字段，而不是在这里加
+    // 特例。
+    const std::string company = GetCompanyName();
+    const std::string product = GetProductName();
+    if (company.empty() || product.empty())
+    {
+        return "com.zengine.unnamed";
+    }
+
+    // 两个名字里可能有空格 / 斜杠（用户在设置里随便填的那种）。逐字符压成
+    // 合法的点分段：Unity 的 bundle id 也只接受 [A-Za-z0-9.-]。
+    auto sanitize = [](const std::string& in) {
+        std::string out;
+        out.reserve(in.size());
+        for (const char c : in)
+        {
+            const bool alnum = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9');
+            out.push_back(alnum ? static_cast<char>(c >= 'A' && c <= 'Z' ? c - 'A' + 'a' : c) : '.');
+        }
+        // 收掉连续的点与首尾的点（"My Game" -> "my.game" 而不是 "my..game"）。
+        std::string collapsed;
+        for (const char c : out)
+        {
+            if (c == '.' && (collapsed.empty() || collapsed.back() == '.'))
+            {
+                continue;
+            }
+            collapsed.push_back(c);
+        }
+        while (!collapsed.empty() && collapsed.back() == '.')
+        {
+            collapsed.pop_back();
+        }
+        return collapsed;
+    };
+
+    const std::string tail = sanitize(company) + "." + sanitize(product);
+    if (tail.empty() || tail == ".")
+    {
+        return "com.zengine.unnamed";
+    }
+    return "com." + tail;
+}
+
+std::string Application::GetTemporaryCachePath()
+{
+    std::error_code ec;
+    const std::filesystem::path temp = std::filesystem::temp_directory_path(ec);
+    if (ec || temp.empty())
+    {
+        // 拿不到系统临时目录时返回空串，不 fallback 到 persistentDataPath ——
+        // 理由见头文件注释（缓存与存档不能混进同一个目录）。
+        return {};
+    }
+    return Normalize(temp).string();
+}
+
+std::string Application::GetConsoleLogPath()
+{
+    const std::string persistent = GetPersistentDataPath();
+    if (persistent.empty())
+    {
+        return {};
+    }
+    return Normalize(std::filesystem::path(persistent) / "Player.log").string();
+}
+
+bool Application::GetIsFocused()
+{
+    const WindowSystem* window_system = GET_SYSTEM(WindowSystem);
+    if (window_system == nullptr)
+    {
+        // 没有窗口系统时按"有焦点"处理：见头文件注释 —— false 会在 headless
+        // 下把整个世界冻住。
+        return true;
+    }
+    return window_system->IsWindowFocused();
+}
+
+bool Application::GetIsMobilePlatform()
+{
+    const RuntimePlatform platform = GetPlatform();
+    return platform == RuntimePlatform::Android || platform == RuntimePlatform::IPhonePlayer ||
+           platform == RuntimePlatform::HarmonyOSPlayer;
+}
+
+bool Application::GetIsConsolePlatform()
+{
+    // ZEngine 目前没有主机后端。显式 false，不用"既不是桌面也不是移动"推导
+    // —— 那样会把 Web 也算成主机。
+    return false;
+}
+
+bool Application::OpenURL(const std::string& url)
+{
+    // ---- 白名单校验（防 shell 注入）----
+    //
+    // POSIX 那两条路都要走 `system()`，而 `system()` 是走 shell 的。URL 常常
+    // 来自外部（服务器下发的公告链接、玩家点的聊天消息），把它直接拼进命令行
+    // 就是一条命令注入。所以这里**先**判定"这串东西长得像一个 URL"。
+    static const char* const kAllowedSchemes[] = {
+        "http://",
+        "https://",
+        "mailto:",
+        "file://",
+    };
+
+    bool scheme_ok = false;
+    for (const char* scheme : kAllowedSchemes)
+    {
+        const std::size_t len = std::strlen(scheme);
+        if (url.size() > len && std::strncmp(url.c_str(), scheme, len) == 0)
+        {
+            scheme_ok = true;
+            break;
+        }
+    }
+    if (!scheme_ok)
+    {
+        return false;
+    }
+
+    // 剩下的字符里不能有空白与任何 shell 元字符。用黑名单而不是"允许字符集"
+    // 白名单，是因为 URL 的合法字符集很大（query 里什么都有），而危险的就那
+    // 十来个。
+    static const std::string kForbidden = " \t\r\n\"'`$\\;|&<>(){}[]*?!#\n";
+    for (const char c : url)
+    {
+        if (c < 0x20 || c == 0x7F)
+        {
+            return false;
+        }
+        if (kForbidden.find(c) != std::string::npos)
+        {
+            return false;
+        }
+    }
+
+#if defined(_WIN32)
+    // ShellExecuteA 不经过 shell，是 Windows 上唯一安全的那一条路。
+    const auto result = reinterpret_cast<INT_PTR>(
+        ShellExecuteA(nullptr, "open", url.c_str(), nullptr, nullptr, SW_SHOWNORMAL));
+    return result > 32;
+#elif defined(__APPLE__)
+    const std::string command = "open \"" + url + "\"";
+    return std::system(command.c_str()) == 0;
+#elif defined(__linux__)
+    const std::string command = "xdg-open \"" + url + "\"";
+    return std::system(command.c_str()) == 0;
+#else
+    // Android / 鸿蒙：没有可移植的"用默认应用打开"CLI，真机上应该走平台的
+    // Intent / Want 机制。显式返回 false（= 没打开），不要假装成功。
+    return false;
+#endif
+}
+
+namespace
+{
+    // locale 名（"zh_CN" / "en" / "ja-JP"）-> SystemLanguage。
+    //
+    // 只比对**语言**那一段（`_` / `-` 之前），不管地区：`zh_TW` 与 `zh_CN` 都
+    // 是 Chinese。Unity 的 `SystemLanguage.Chinese` 也是这个粒度（要区分繁简
+    // 得看 `ChineseSimplified` / `ChineseTraditional`，这里没列，见 Application.h
+    // 的注释）。
+    SystemLanguage MapLocaleToSystemLanguage(const std::string& locale)
+    {
+        std::string language;
+        for (const char c : locale)
+        {
+            if (c == '_' || c == '-' || c == '.')
+            {
+                break;
+            }
+            language.push_back(static_cast<char>(c >= 'A' && c <= 'Z' ? c - 'A' + 'a' : c));
+        }
+
+        if (language == "en") return SystemLanguage::English;
+        if (language == "zh") return SystemLanguage::Chinese;
+        if (language == "ja") return SystemLanguage::Japanese;
+        if (language == "ko") return SystemLanguage::Korean;
+        if (language == "fr") return SystemLanguage::French;
+        if (language == "de") return SystemLanguage::German;
+        if (language == "es") return SystemLanguage::Spanish;
+        if (language == "ru") return SystemLanguage::Russian;
+        if (language == "pt") return SystemLanguage::Portuguese;
+        if (language == "it") return SystemLanguage::Italian;
+        return SystemLanguage::Unknown;
+    }
+}  // namespace
+
+SystemLanguage Application::GetSystemLanguage()
+{
+#if defined(_WIN32)
+    // GetUserDefaultUILanguage 返回 LANGID：低 10 位是主语言 ID。
+    const LANGID lang_id = ::GetUserDefaultUILanguage();
+    const WORD   primary = lang_id & 0x3FF;
+    switch (primary)
+    {
+        case LANG_ENGLISH: return SystemLanguage::English;
+        case LANG_CHINESE: return SystemLanguage::Chinese;
+        case LANG_JAPANESE: return SystemLanguage::Japanese;
+        case LANG_KOREAN: return SystemLanguage::Korean;
+        case LANG_FRENCH: return SystemLanguage::French;
+        case LANG_GERMAN: return SystemLanguage::German;
+        case LANG_SPANISH: return SystemLanguage::Spanish;
+        case LANG_RUSSIAN: return SystemLanguage::Russian;
+        case LANG_PORTUGUESE: return SystemLanguage::Portuguese;
+        case LANG_ITALIAN: return SystemLanguage::Italian;
+        default: return SystemLanguage::Unknown;
+    }
+#else
+    // POSIX：LANG / LC_ALL 是 "zh_CN.UTF-8" 这种形状。
+    //
+    // ⚠️ 用 std::getenv 而不是 setlocale(LC_ALL, "") 再 localeconv —— 后者会
+    // **改进程的 locale**（影响 printf 的数字格式、strtod 的小数点），一个
+    // "我只是想问系统语言"的查询不该有这种副作用。
+    for (const char* var : {"LC_ALL", "LC_MESSAGES", "LANG"})
+    {
+        const char* value = std::getenv(var);
+        if (value != nullptr && value[0] != '\0')
+        {
+            const SystemLanguage mapped = MapLocaleToSystemLanguage(value);
+            if (mapped != SystemLanguage::Unknown)
+            {
+                return mapped;
+            }
+        }
+    }
+    return SystemLanguage::Unknown;
+#endif
+}
+
+ThreadPriority Application::GetBackgroundLoadingPriority()
+{
+    return s_BackgroundLoadingPriority;
+}
+
+void Application::SetBackgroundLoadingPriority(ThreadPriority priority)
+{
+    switch (priority)
+    {
+        case ThreadPriority::Low:
+        case ThreadPriority::BelowNormal:
+        case ThreadPriority::Normal:
+        case ThreadPriority::High:
+            s_BackgroundLoadingPriority = priority;
+            break;
+        default:
+            s_BackgroundLoadingPriority = ThreadPriority::Normal;
+            break;
     }
 }
 

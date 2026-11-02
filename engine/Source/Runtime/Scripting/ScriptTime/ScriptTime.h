@@ -142,6 +142,56 @@ public:
     ZFUNCTION()
     static void ResetTimeScale() { TimeState::Get().ResetTimeScale(); }
 
+    /// 单帧逻辑步长的上限（秒）。Unity 的 `Time.maximumDeltaTime`，默认
+    /// 1/3 秒（与 Unity 相同）。
+    ///
+    /// 卡一顿之后 deltaTime 会变成一个巨大的值：物理一步积分出去就穿墙、
+    /// 角色瞬移出地图。这个上限把那种情况变成"卡顿时慢放"。
+    ///
+    /// ⚠️ 它夹的是**缩放前**的步长（Unity 的语义），所以 `timeScale = 0.1`
+    /// 时上限仍然是 1/3 秒 —— 慢放不会因为限幅变得更细碎。
+    ZFUNCTION()
+    static float GetMaximumDeltaTime() { return TimeState::Get().GetMaximumDeltaTime(); }
+    ZSCRIPTPROPERTY(Name = "maximumDeltaTime", Getter = "GetMaximumDeltaTime",
+                    Setter = "SetMaximumDeltaTime")
+
+    /// 设置单帧步长上限。<= 1ms 的值夹到 1ms（0 会让世界永远不推进 —— 那是
+    /// "冻结"，应该用 `timeScale = 0` 表达，两者语义不同）。
+    ZFUNCTION()
+    static void SetMaximumDeltaTime(float maximum_delta_time)
+    {
+        TimeState::Get().SetMaximumDeltaTime(maximum_delta_time);
+    }
+
+    /// 固定帧率录制：> 0 时每帧步长被钉成 `1/value`。
+    /// Unity 的 `Time.captureFramerate`。0 = 关闭（跟随真实帧率）。
+    ///
+    /// 录序列帧用它：真实帧率 200 也好 12 也好，每帧固定推进 1/30 秒，输出
+    /// 的图片序列在时间上是均匀的。
+    ///
+    /// ⚠️ 它改的是**步长**不是真帧率。要真限帧用
+    /// `Application.targetFrameRate`。
+    ZFUNCTION()
+    static int GetCaptureFramerate() { return TimeState::Get().GetCaptureFramerate(); }
+    ZSCRIPTPROPERTY(Name = "captureFramerate", Getter = "GetCaptureFramerate",
+                    Setter = "SetCaptureFramerate")
+
+    /// 设置录制帧率。<= 0 表示关闭。
+    ZFUNCTION()
+    static void SetCaptureFramerate(int capture_framerate)
+    {
+        TimeState::Get().SetCaptureFramerate(capture_framerate);
+    }
+
+    /// 自上次关卡加载以来的逻辑时间（秒）。Unity 的
+    /// `Time.timeSinceLevelLoad`。
+    ///
+    /// 与 `time` 的区别：后者是"自引擎启动"。关卡限时 / 计时赛这类玩法计时
+    /// 一律用这个 —— 用 `time` 会把"引擎启动到进关卡那几秒"也算进去。
+    ZFUNCTION()
+    static float GetTimeSinceLevelLoad() { return TimeState::Get().GetTimeSinceLevelLoad(); }
+    ZSCRIPTPROPERTY(Name = "timeSinceLevelLoad", Getter = "GetTimeSinceLevelLoad")
+
     // ---- 固定步进（FixedUpdate）----
 
     /// 固定步长（秒）。Unity 的 `Time.fixedDeltaTime`。

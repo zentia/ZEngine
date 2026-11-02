@@ -3,6 +3,7 @@
 #include "Runtime/BaseClasses/GameObject.h"
 #include "Runtime/BaseClasses/ObjectManager.h"
 #include "Runtime/Function/Framework/Component/Transform/Transform.h"
+#include "Runtime/Core/Time/TimeState.h"
 #include "Runtime/Function/Framework/World/WorldManager.h"
 #include "Runtime/Function/Framework/Level/Level.h"
 
@@ -229,7 +230,12 @@ bool SceneManager::LoadScene(const eastl::string& path)
     {
         return false;
     }
-    return world->OpenScene(path);
+    const bool ok = world->OpenScene(path);
+    if (ok)
+    {
+        TimeState::Get().NotifyLevelLoaded();
+    }
+    return ok;
 }
 
 bool SceneManager::LoadSceneAdditive(const eastl::string& path)
@@ -239,7 +245,14 @@ bool SceneManager::LoadSceneAdditive(const eastl::string& path)
     {
         return false;
     }
-    return world->LoadLevelAdditive(path);
+    const bool ok = world->LoadLevelAdditive(path);
+    if (ok)
+    {
+        // 叠加加载也重置关卡时钟：Unity 的 timeSinceLevelLoad 是"自**最后
+        // 一次**加载"，加载即重置，不管是不是叠加。
+        TimeState::Get().NotifyLevelLoaded();
+    }
+    return ok;
 }
 
 bool SceneManager::UnloadScene(const eastl::string& path)
@@ -275,5 +288,6 @@ bool SceneManager::ReloadActiveScene()
         return false;
     }
     world->ReloadCurrentLevel();
+    TimeState::Get().NotifyLevelLoaded();
     return true;
 }

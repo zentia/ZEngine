@@ -11,15 +11,37 @@ TimeState& TimeState::Get()
 
 void TimeState::BeginFrame(float simulation_delta_time, float frame_delta_time, bool should_update_logic)
 {
+    // 两个闸门都在这里、在"本帧 delta 诞生"之前生效。放在更后面会造出
+    // "世界用一个数、脚本看到另一个数"的分叉，那比不夹更糟。
+    float sim_delta   = simulation_delta_time;
+    float frame_delta = frame_delta_time;
+
+    if (m_CaptureFramerate > 0)
+    {
+        // 录制模式：步长被钉死，真实帧率不再影响世界推进。
+        sim_delta   = 1.0f / static_cast<float>(m_CaptureFramerate);
+        frame_delta = sim_delta;
+    }
+
     // 负的 delta 只可能来自时钟回拨或调用方算错。让它进到累计时间里的后果
     // 是"时间倒流"—— 物理往回积分、动画往回采样，而且是静默的。夹到 0。
-    m_UnscaledDeltaTime = frame_delta_time > 0.0f ? frame_delta_time : 0.0f;
+    sim_delta   = sim_delta > 0.0f ? sim_delta : 0.0f;
+    frame_delta = frame_delta > 0.0f ? frame_delta : 0.0f;
+
+    // 卡顿闸门：夹上限之后再乘 timeScale。
+    //
+    // 顺序很重要：**先夹再缩放**，不是先缩放再夹。Unity 的语义是
+    // "maximumDeltaTime 限制的是缩放后的实际步长" —— 于是 timeScale=0.1 时
+    // 上限仍然是 0.333 秒（而不是 0.0333），慢放不会因为限幅变得更细碎。
+    sim_delta = std::min(sim_delta, m_MaximumDeltaTime);
+
+    m_UnscaledDeltaTime = frame_delta;
 
     m_LogicUpdating = should_update_logic;
 
     if (should_update_logic)
     {
-        const float scaled = simulation_delta_time * m_TimeScale;
+        const float scaled = sim_delta * m_TimeScale;
         m_DeltaTime = scaled > 0.0f ? scaled : 0.0f;
     }
     else
@@ -106,6 +128,32 @@ void TimeState::SetMaxSubsteps(int max_substeps)
     m_MaxSubsteps = std::clamp(max_substeps, kMinSubstepsCap, kMaxSubstepsCap);
 }
 
+void TimeState::SetMaximumDeltaTime(float maximum_delta_time)
+{
+    m_MaximumDeltaTime = std::max(maximum_delta_time, kMinMaximumDeltaTime);
+}
+
+void TimeState::SetCaptureFramerate(int capture_framerate)
+{
+    // <= 0 一律当"关闭"，而不是夹到 1fps —— 传 0 是明确的"我要关掉"，
+    // 夹到 1 会变成"每帧 1 秒"的慢动作，那看起来就像引擎挂了。
+    m_CaptureFramerate = capture_framerate > 0 ? capture_framerate : 0;
+}
+
+void TimeState::NotifyLevelLoaded()
+{
+    m_LevelLoadTime = m_Time;
+}
+
+float TimeState::GetTimeSinceLevelLoad() const
+{
+    const float elapsed = m_Time - m_LevelLoadTime;
+    // 正常路径下不会为负 —— 除非 Reset() 把 m_Time 归零而关卡时钟还留在
+    // 后面（测试里很常见）。夹到 0：负的关卡时间会让"倒计时还剩 -3 秒"这种
+    // UI 出现在玩家面前。
+    return elapsed > 0.0f ? elapsed : 0.0f;
+}
+
 void TimeState::SetTimeScale(float scale)
 {
     // 负数夹到 0，理由见头文件注释：负的时间步长是静默的错误数据。
@@ -132,4 +180,8 @@ void TimeState::Reset()
     m_FixedStepTotal   = 0;
     m_FixedTime        = 0.0f;
     m_FixedAlpha       = 0.0f;
+
+    // 关卡时钟归零：m_Time 归零了，"自上次加载"也该归零，否则
+    // GetTimeSinceLevelLoad() 会夹在 0 上一段时间才重新开始涨。
+    m_LevelLoadTime = 0.0f;
 }
