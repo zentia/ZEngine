@@ -310,6 +310,9 @@ void Transform::WriteLocalToSerializedFields()
 void Transform::MarkTransformDirty(bool scale_changed)
 {
     m_IsDirty = true;
+    // Unity 的 `hasChanged` 也是"任何一次改动都置位"，包括父级重挂、兄弟顺序
+    // 变化 —— 这些走的都是本函数。只有 `SetHasChanged(false)` 能清掉它。
+    m_HasChanged = true;
     if (scale_changed)
     {
         m_IsScaleDirty = true;
@@ -353,6 +356,10 @@ void Transform::PostLoadResource(GameObject* parent_gobject)
     m_ParentObject = parent_gobject;
     ApplySerializedLocalToBuffers();
     MarkTransformDirty(true);
+    // 加载是基准线，不是一次"改动"：这里把 hasChanged 清回 false，否则脚本
+    // 一拿到刚加载的 transform 就看到 true，轮询式用法（读完清零）第一次必然
+    // 误判成"加载后被改过"。
+    m_HasChanged = false;
 
     if (m_Father == nullptr && parent_gobject != nullptr)
     {
@@ -771,6 +778,17 @@ void Transform::SetSiblingIndex(int new_index)
         return;
     }
 
+    ReorderWithinParent(parent, new_index);
+}
+
+void Transform::ReorderWithinParent(Transform* parent, int new_index)
+{
+    std::vector<PPtr<Transform>>& siblings = parent->m_Children;
+    if (siblings.empty())
+    {
+        return;
+    }
+
     const int current_index = GetSiblingIndex();
     PPtr<Transform> self = this;
     siblings.erase(siblings.begin() + current_index);
@@ -824,6 +842,116 @@ void Transform::SetSiblingIndex(int new_index)
 void Transform::SetAsLastSibling()
 {
     SetSiblingIndex(INT_MAX);
+}
+
+void Transform::MoveAfterSibling(Transform* sibling)
+{
+    if (sibling == nullptr || sibling == this)
+    {
+        return;
+    }
+
+    Transform* parent = m_Father;
+    // 父节点不同（含"自己是根"）时不搬：跨父级搬移的语义是 SetParent —— 它要
+    // 决定 worldPositionStays，这里猜不出来。
+    if (parent == nullptr || sibling->m_Father != parent)
+    {
+        return;
+    }
+
+    const std::vector<PPtr<Transform>>& siblings = parent->m_Children;
+    int self_index = -1;
+    int sibling_index = -1;
+    for (size_t i = 0; i < siblings.size(); ++i)
+    {
+        if (siblings[i] == this)
+        {
+            self_index = static_cast<int>(i);
+        }
+        if (siblings[i] == sibling)
+        {
+            sibling_index = static_cast<int>(i);
+        }
+    }
+    if (self_index < 0 || sibling_index < 0)
+    {
+        return;
+    }
+
+    // 目标下标按**移除自己之后**的列表算，这是最容易写错的一处：
+    //   我在它前面 → 移除后它左移一位 → 插到 (sib-1)+1 = sib
+    //   我在它后面 → 它不动           → 插到 sib+1
+    // 写成 `sibling_index + 1` 的话，"往前挪一个位置"会变成空操作。
+    const int target = (self_index < sibling_index) ? sibling_index : sibling_index + 1;
+    ReorderWithinParent(parent, target);
+}
+
+int Transform::GetHierarchyCount() const
+{
+    Transform* root = const_cast<Transform*>(this)->GetRoot();
+    if (root == nullptr)
+    {
+        return 1;
+    }
+
+    if (root->IsTransformHierarchyInitialized())
+    {
+        // deep_child_count[0] 是根节点的"自己 + 全部后代"，也就是整份层级的
+        // 节点数（含根节点本身）。
+        return static_cast<int>(GetDeepChildCount(*root->m_TransformData.hierarchy, 0));
+    }
+
+    // 层级还没建（还没进场景）：退化为按 m_Children 递归，数出来的东西一样。
+    return static_cast<int>(root->CountNodesDeep());
+}
+
+int Transform::GetHierarchyCapacity() const
+{
+    Transform* root = const_cast<Transform*>(this)->GetRoot();
+    if (root == nullptr)
+    {
+        return 1;
+    }
+
+    if (root->IsTransformHierarchyInitialized())
+    {
+        return static_cast<int>(root->m_TransformData.hierarchy->transform_capacity);
+    }
+
+    // 没建层级时"容量"这个概念还不存在（第一次 EnsureTransformHierarchyExists
+    // 才分配数组）。返回实际用到的节点数，保证 capacity >= count 恒成立。
+    return static_cast<int>(root->CountNodesDeep());
+}
+
+void Transform::SetHierarchyCapacity(int capacity)
+{
+    Transform* root = GetRoot();
+    if (root == nullptr || capacity <= 0)
+    {
+        return;
+    }
+
+    // 容量不能小于已经在用的节点数，否则数组装不下活着的节点。
+    const int minimum = GetHierarchyCount();
+    if (capacity < minimum)
+    {
+        capacity = minimum;
+    }
+
+    root->EnsureTransformHierarchyExists();
+    if (!root->IsTransformHierarchyInitialized())
+    {
+        return;
+    }
+
+    TransformHierarchy* hierarchy = root->m_TransformData.hierarchy;
+    if (capacity <= static_cast<int>(hierarchy->transform_capacity))
+    {
+        // 只增不减，见头文件注释。
+        return;
+    }
+
+    GrowTransformHierarchyCapacity(hierarchy, static_cast<uint32_t>(capacity));
 }
 
 // =============================================================================

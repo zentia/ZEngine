@@ -76,6 +76,20 @@ public:
     ZSCRIPTPROPERTY(Name="root", Getter="GetRoot")
     ZSCRIPTPROPERTY(Name="parent", Getter="GetParent")
 
+    // Unity 里这两个是**属性**（`Matrix4x4 m = t.localToWorldMatrix;`），方法拼写
+    // （`GetLocalToWorldMatrix()`）也已经导出。两条路都留着：属性给"读起来像
+    // Unity"的脚本，方法给已经写出来的一堆旧脚本。
+    //
+    // 只读：Unity 也不允许写（矩阵是 position/rotation/scale 的派生量，写它没有
+    // 唯一解——非均匀缩放 + 剪切分不开）。
+    ZSCRIPTPROPERTY(Name="localToWorldMatrix", Getter="GetLocalToWorldMatrix")
+    ZSCRIPTPROPERTY(Name="worldToLocalMatrix", Getter="GetWorldToLocalMatrix")
+
+    // `hasChanged` / `hierarchyCapacity` / `hierarchyCount` 见下面各处的注释。
+    ZSCRIPTPROPERTY(Name="hasChanged", Getter="GetHasChanged", Setter="SetHasChanged")
+    ZSCRIPTPROPERTY(Name="hierarchyCapacity", Getter="GetHierarchyCapacity", Setter="SetHierarchyCapacity")
+    ZSCRIPTPROPERTY(Name="hierarchyCount", Getter="GetHierarchyCount")
+
     // ---- local space ----
     // ZFUNCTION() markers are compiler no-ops picked up by ZHeaderTool, which
     // turns them into pesapi bindings and `declare class Transform` members.
@@ -96,6 +110,15 @@ public:
     void SetLocalRotation(const Quaternion& local_rotation);
     ZFUNCTION()
     void SetLocalScale(const Vector3& local_scale);
+
+    /// 一次设完 local 的位置和朝向（Unity 的 `SetLocalPositionAndRotation`）。
+    ///
+    /// 导出它的理由不是"少打一行"，而是**少一次矩阵重算**：分两次调
+    /// `SetLocalPosition` + `SetLocalRotation` 会各触发一次
+    /// `OnLocal*Changed` 并把 transform 排进变更队列两次。这里底层就是那两次
+    /// 调用（没有更省的写法），但脚本侧写起来和 Unity 一样，将来内部做成单
+    /// 次更新时脚本不用改。
+    ZFUNCTION()
     void SetLocalPositionAndRotation(const Vector3& local_position, const Quaternion& local_rotation);
 
     // ---- world space ----
@@ -114,6 +137,10 @@ public:
     void SetPosition(const Vector3& world_position) { SetPosition(Vector3d(world_position)); }
     ZFUNCTION()
     void SetRotation(const Quaternion& world_rotation);
+
+    /// 世界空间的 `SetLocalPositionAndRotation`（Unity 的 `SetPositionAndRotation`）。
+    /// 同样是为了"一次设完"，细节见上面 local 版本的注释。
+    ZFUNCTION()
     void SetPositionAndRotation(const Vector3& world_position, const Quaternion& world_rotation);
 
     void GetPositionAndRotation(Vector3& world_position, Quaternion& world_rotation) const;
@@ -328,6 +355,68 @@ public:
     ZFUNCTION()
     void SetAsLastSibling();
 
+    /// 把自己挪到 `sibling` **后面**（Unity 2020.1+ 的 `MoveAfterSibling`）。
+    ///
+    /// 与 `SetSiblingIndex` 的区别：那一个要脚本自己知道"目标下标是多少"，而
+    /// 典型需求是"排到某个兄弟之后"—— UI 里插入一个元素、排序时把 A 挪到 B
+    /// 后面。用下标表达这件事要处理"我在它前面 / 后面"的 off-by-one，
+    /// 几乎每次都写错。
+    ///
+    /// 静默空操作的三种输入（Unity 也是记一条错误日志然后什么都不做，不抛）：
+    ///   - `sibling` 为 nullptr / 是自己；
+    ///   - 自己没有父节点（根节点之间没有"兄弟顺序"）；
+    ///   - 两者父节点不同 —— 跨父级搬移要用 `SetParent`，它的语义
+    ///     （worldPositionStays）根本不一样。
+    ZFUNCTION()
+    void MoveAfterSibling(Transform* sibling);
+
+    // ---- Unity 的 hasChanged / hierarchyCapacity / hierarchyCount ----------
+    //
+    // 这三个都是 Unity 的 Transform 上真实存在的成员，而且**不是**语法糖：
+    // 前两个是性能/诊断工具，第三个是层级快照。
+
+    /// 上次把 `hasChanged` 写回 false 之后，这个 transform 有没有被改过。
+    ///
+    /// 用法是"轮询 + 自己清零"：
+    ///
+    ///     if (transform.HasChanged()) { ...; transform.SetHasChanged(false); }
+    ///
+    /// 与 Component::IsDirty() 是**两回事**，别混：
+    ///   - `m_IsDirty` 是引擎内部的"世界矩阵待重算"，每帧末被消费掉；
+    ///   - `m_HasChanged` 只有用户显式写 false 才清，不被帧循环碰。
+    /// 用 m_IsDirty 顶替的话，轮询会在某一帧之后永远读到 false。
+    ///
+    /// 只标记**自己**：子节点动不影响父节点的 hasChanged（Unity 同）。
+    /// 刚 `PostLoadResource` 完是 false —— 加载是基准线，不是一次"改动"。
+    ZFUNCTION()
+    bool GetHasChanged() const { return m_HasChanged; }
+    ZFUNCTION()
+    void SetHasChanged(bool has_changed) { m_HasChanged = has_changed; }
+
+    /// 这个 transform 所在层级当前**用了**多少个节点（根 + 全部后代）。
+    ///
+    /// 注意是"所在层级"而不是"自己的子树"：`hierarchyCapacity` / `hierarchyCount`
+    /// 在 Unity 里描述的是同一份层级数据结构，同层级内任何 transform 读到的都
+    /// 一样。要自己子树的大小请用 **`CountNodesDeep()`**（C++ 侧）或自己累加
+    /// `childCount`。
+    ///
+    /// 层级还没建起来时（还没进场景）退化成按 m_Children 递归数一遍，返回的
+    /// 是同一个数 —— 只是不做缓存。
+    ZFUNCTION()
+    int GetHierarchyCount() const;
+
+    /// 层级数据结构的容量。读出来的值 >= `hierarchyCount`（多出来的是预留，
+    /// 避免每次加一个节点都重新分配整个层级）。
+    ///
+    /// **只增不减**：容量小于当前值时静默忽略。原因是层级是一组定长数组
+    /// （`TransformHierarchy` 的 local_transforms / parent_indices / ...），缩小
+    /// 就得搬移活着的数据，而"用户想把容量压回去"这个需求换来的只是省一点内存，
+    /// 风险和 Unity 那边的语义（容量是提示，不是承诺）都不划算。
+    ZFUNCTION()
+    int GetHierarchyCapacity() const;
+    ZFUNCTION()
+    void SetHierarchyCapacity(int capacity);
+
     void Tick(float delta_time) override;
 
     void TryUpdateRigidBodyComponent();
@@ -364,6 +453,15 @@ protected:
     TransformAccess m_TransformData;
 
 private:
+    /// `SetSiblingIndex` 里"真的改顺序 + 修层级"的那一段。拆出来是为了让
+    /// `MoveAfterSibling` 能复用它 —— 但**不带** `SetSiblingIndex` 那个
+    /// "已经在那儿了就返回"的提前退出：
+    ///
+    /// 子节点 [A, B, C] 里 `A.MoveAfterSibling(B)` 算出的目标下标是 0，正好是
+    /// A 现在的位置，走提前退出就变成空操作了（应该变成 [B, A, C]）。
+    /// `MoveAfterSibling` 的语义是"排到谁后面"，不是"挪到第几位"。
+    void ReorderWithinParent(Transform* parent, int new_index);
+
     void SetSceneRootLinks(Transform* prev, Transform* next);
 
     void ApplySerializedLocalToBuffers();
@@ -386,4 +484,8 @@ private:
 
     Transform* m_NextSceneRoot {nullptr};
     Transform* m_PrevSceneRoot {nullptr};
+
+    /// 见 `GetHasChanged()`。不参与序列化 —— Transform 是 CustomTransfer，
+    /// 而且它是运行期的"有没有动过"标记，跨会话没有意义。
+    bool m_HasChanged {false};
 };

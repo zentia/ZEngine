@@ -12047,6 +12047,304 @@ namespace
         Check(continuous, "MF5", "and it is continuous (no jumps bigger than 0.1 per 0.01 step)");
     }
 
+    /// 把 parent 的子节点顺序读成 "ABC" 这种串。
+    ///
+    /// 判据用**整串**而不是"被挪那个的下标"：MoveAfterSibling 的 off-by-one
+    /// 只在"跨过目标"时才触发，被挪的那个自己往往是对的、另外两个的相对顺序
+    /// 反了。只看挪动者会完全漏掉（B 挪到 A 后面，B 的下标确实变了）。
+    static std::string ChildOrder3(Transform* parent, Transform* a, Transform* b, Transform* c)
+    {
+        std::string out;
+        const int count = parent->GetChildrenCount();
+        for (int i = 0; i < count; ++i)
+        {
+            Transform* child = parent->GetChild(i);
+            out += (child == a) ? 'A' : (child == b) ? 'B' : (child == c) ? 'C' : '?';
+        }
+        return out;
+    }
+
+    // ---------------------------------------------------------------- TE ---
+    /// Unity Transform 上还缺的那一组：`SetPositionAndRotation` /
+    /// `SetLocalPositionAndRotation` / `hasChanged` / `hierarchyCapacity` /
+    /// `hierarchyCount` / `MoveAfterSibling`。
+    ///
+    /// 夹具（**故意不对称**：root 有位移、A 带一个子节点、子节点顺序 ABC）：
+    ///
+    ///     root(10,0,0)
+    ///      ├── A ── G
+    ///      ├── B
+    ///      └── C
+    ///
+    /// 层级节点数 5，A 自己的子树 2 —— 这两个数不一样，是分开
+    /// "hierarchyCount 指整份层级" 和 "指自己子树" 的唯一判据。
+    void TestTransformExtras()
+    {
+        ObjectManager* om = GET_SYSTEM(ObjectManager);
+        if (om == nullptr)
+        {
+            om = new ObjectManager();
+            SystemRegistry::GetInstance().RegisterSystem(om);
+            om->Initialize();
+        }
+        Check(om != nullptr, "TE0", "ObjectManager is reachable");
+        if (om == nullptr)
+        {
+            return;
+        }
+
+        GameObject* o_root = nullptr;
+        GameObject* o_a = nullptr;
+        GameObject* o_b = nullptr;
+        GameObject* o_c = nullptr;
+        GameObject* o_g = nullptr;
+        GameObject* o_d = nullptr;
+        Transform* root = MakeTransform(*om, o_root);
+        Transform* a = MakeTransform(*om, o_a);
+        Transform* b = MakeTransform(*om, o_b);
+        Transform* c = MakeTransform(*om, o_c);
+        Transform* g = MakeTransform(*om, o_g);
+        Check(root != nullptr && a != nullptr && b != nullptr && c != nullptr && g != nullptr,
+              "TE1", "five transforms exist");
+        if (root == nullptr || a == nullptr || b == nullptr || c == nullptr || g == nullptr)
+        {
+            return;
+        }
+
+        a->SetParent(root, false);
+        b->SetParent(root, false);
+        c->SetParent(root, false);
+        g->SetParent(a, false);
+        root->SetLocalPosition(Vector3(10.f, 0.f, 0.f));
+        root->SetLocalRotation(Quaternion::IDENTITY);
+
+        // --- SetPositionAndRotation / SetLocalPositionAndRotation -----------
+        // 90° 绕 Z（w=cos45, z=sin45）。用**朝向**当判据而不是比较四元数分量：
+        // identity 的 forward 是 -Y，转 90° 后变成 +X，是"位置对了但朝向没设"
+        // 这种漏设一眼能分开的判据。
+        const Quaternion qz90(0.7071068f, 0.f, 0.f, 0.7071068f);
+        a->SetPositionAndRotation(Vector3(1.f, 2.f, 3.f), qz90);
+        Check(Near(a->GetPosition(), Vector3(1.f, 2.f, 3.f)), "TE2",
+              "SetPositionAndRotation sets the WORLD position");
+        // root 在 (10,0,0)，所以世界 (1,2,3) 的 local 是 (-9,2,3)。**不是** (1,2,3)
+        // —— 这一条把"写成了 SetLocalPositionAndRotation"直接钉死。
+        Check(Near(a->GetLocalPosition(), Vector3(-9.f, 2.f, 3.f)), "TE3",
+              "and the local position is offset by the parent (so it really was world space)");
+        Check(Near(a->GetForward(), Vector3(1.f, 0.f, 0.f)), "TE4",
+              "and the rotation was applied too (forward -Y -> +X), not just the position");
+
+        a->SetLocalPositionAndRotation(Vector3(4.f, 5.f, 6.f), Quaternion::IDENTITY);
+        Check(Near(a->GetLocalPosition(), Vector3(4.f, 5.f, 6.f)), "TE5",
+              "SetLocalPositionAndRotation sets the LOCAL position");
+        Check(Near(a->GetPosition(), Vector3(14.f, 5.f, 6.f)), "TE6",
+              "and the world position follows the parent (so it really was local space)");
+        Check(Near(a->GetForward(), Vector3(0.f, -1.f, 0.f)), "TE7",
+              "and the local rotation was reset to identity (forward back to -Y)");
+
+        // --- 矩阵属性 -------------------------------------------------------
+        // ZSCRIPTPROPERTY 挂的是已有的 Get* 方法，所以 C++ 侧只能验"两个矩阵互为
+        // 逆"这件事本身（属性拼写由 TS 探针 TEW / ScriptComponentSmokeTest 覆盖）。
+        const Matrix4x4 l2w = a->GetLocalToWorldMatrix();
+        const Matrix4x4 w2l = a->GetWorldToLocalMatrix();
+        Check(Near(l2w * w2l, Matrix4x4::IDENTITY), "TE8", "localToWorld * worldToLocal is the identity");
+        Check(Near(w2l * l2w, Matrix4x4::IDENTITY), "TE9", "and it holds both ways round");
+        // 局部原点变换过去就是世界位置：矩阵没跟上 TRS 的话这条先炸。
+        Check(Near(l2w * Vector3::ZERO, a->GetPosition()), "TE10",
+              "localToWorld maps the local origin onto GetPosition()");
+
+        // --- hasChanged ------------------------------------------------------
+        // 加载刚完是 false —— 加载是基准线，不是一次改动。少这一条的话脚本一拿到
+        // 新 transform 就看到 true，"轮询 + 清零"的第一次必然误判成"被改过"。
+        // ⚠️ 用**全新的** transform 判，不能用 a：a 上面刚被设过好几次。
+        GameObject* o_fresh = nullptr;
+        Transform* fresh = MakeTransform(*om, o_fresh);
+        Check(fresh != nullptr && fresh->GetHasChanged() == false, "TE11b",
+              "a freshly loaded transform starts with hasChanged == false");
+        a->SetHasChanged(false);
+        Check(a->GetHasChanged() == false, "TE11", "hasChanged can be cleared");
+        a->SetLocalPosition(Vector3(0.f, 0.f, 0.f));
+        Check(a->GetHasChanged(), "TE12", "and any local change sets it");
+        // 读取**不**清零：轮询式用法如果读一次就清，第二次读必然是 false。
+        Check(a->GetHasChanged(), "TE13", "reading hasChanged does NOT clear it");
+        a->SetHasChanged(false);
+        Check(a->GetHasChanged() == false, "TE14", "and writing false clears it again");
+
+        // 只标记自己：子节点动不影响父节点（Unity 同）。
+        root->SetHasChanged(false);
+        g->SetLocalPosition(Vector3(0.f, 1.f, 0.f));
+        Check(g->GetHasChanged(), "TE15", "a child's change flags the child");
+        Check(root->GetHasChanged() == false, "TE16", "but NOT the parent (hasChanged is per-transform)");
+        // 与 Component::IsDirty() 是两回事：后者每帧被消费，不设 false 也能变回
+        // false。这里的要求是"只有 SetHasChanged(false) 能清"。
+        Check(a->GetHasChanged() == false && a->IsDirty() == true, "TE17",
+              "hasChanged is a flag of its own, not Component::IsDirty()");
+
+        // --- hierarchyCount / hierarchyCapacity ------------------------------
+        Check(a->GetHierarchyCount() == 5, "TE18",
+              "hierarchyCount is the WHOLE hierarchy (5 nodes), not the subtree (2)");
+        Check(root->GetHierarchyCount() == 5, "TE19", "and the root reads the same number");
+        Check(g->GetHierarchyCount() == 5, "TE20", "and so does a grandchild");
+        Check(root->GetHierarchyCapacity() >= root->GetHierarchyCount(), "TE21",
+              "capacity is never smaller than the count");
+
+        // 扩容：要 64，拿到的必须 >= 64（只增不减那一条由 TE24 覆盖）。
+        root->SetHierarchyCapacity(64);
+        Check(root->GetHierarchyCapacity() >= 64, "TE22", "SetHierarchyCapacity grows to at least what was asked");
+        Check(root->GetHierarchyCount() == 5, "TE23", "and growing does not change the node count");
+
+        // 扩容之后还**能继续加节点**：这才是"扩容没把层级搞坏"的判据。只断言
+        // 容量数字的话，深拷贝漏搬一两个数组（parent_indices / next_indices）
+        // 完全看不出来。
+        //
+        // ⚠️ 这一段必须排在 MoveAfterSibling **之后**：ChildOrder3 的判据是整串
+        // 顺序，多挂一个 D 进去后面每一条都得多写一个 '?'，而 '?' 一多，"跑到
+        // 最后一位"这种断言就认不出来了（D 掺在中间也还是 '?'）。
+        GameObject* o_d_ref = o_d;
+        Transform* d = MakeTransform(*om, o_d_ref);
+        Check(d != nullptr, "TE24", "a sixth transform exists");
+        if (d != nullptr)
+        {
+            d->SetParent(root, false);
+            Check(root->GetHierarchyCount() == 6, "TE25",
+                  "the hierarchy still counts correctly after a capacity grow");
+            Check(root->GetChildrenCount() == 4, "TE26", "and the new child really got attached");
+
+            // 只增不减：要 1 不能把容量压到 6 以下。
+            root->SetHierarchyCapacity(1);
+            Check(root->GetHierarchyCapacity() >= root->GetHierarchyCount(), "TE27",
+                  "a smaller capacity than the count is ignored (never shrinks)");
+            Check(root->GetHierarchyCount() == 6, "TE28", "and nothing was dropped");
+            root->SetHierarchyCapacity(-7);
+            Check(root->GetHierarchyCount() == 6, "TE29", "a negative capacity is ignored, not a crash");
+        }
+    }
+
+    /// `MoveAfterSibling` 单独一段：它需要一个"正好三个儿子"的父节点，所以不能
+    /// 和上面扩容那一段共用夹具（那段会挂上第四个）。
+    void TestTransformMoveAfterSibling()
+    {
+        ObjectManager* om = GET_SYSTEM(ObjectManager);
+        if (om == nullptr)
+        {
+            om = new ObjectManager();
+            SystemRegistry::GetInstance().RegisterSystem(om);
+            om->Initialize();
+        }
+        Check(om != nullptr, "MA0", "ObjectManager is reachable");
+        if (om == nullptr)
+        {
+            return;
+        }
+
+        GameObject* o_root = nullptr;
+        GameObject* o_a = nullptr;
+        GameObject* o_b = nullptr;
+        GameObject* o_c = nullptr;
+        GameObject* o_g = nullptr;
+        Transform* root = MakeTransform(*om, o_root);
+        Transform* a = MakeTransform(*om, o_a);
+        Transform* b = MakeTransform(*om, o_b);
+        Transform* c = MakeTransform(*om, o_c);
+        Transform* g = MakeTransform(*om, o_g);
+        Check(root != nullptr && a != nullptr && b != nullptr && c != nullptr && g != nullptr,
+              "MA1", "five transforms exist");
+        if (root == nullptr || a == nullptr || b == nullptr || c == nullptr || g == nullptr)
+        {
+            return;
+        }
+        a->SetParent(root, false);
+        b->SetParent(root, false);
+        c->SetParent(root, false);
+        g->SetParent(a, false);
+
+        // --- MoveAfterSibling -------------------------------------------------
+        Check(ChildOrder3(root, a, b, c) == "ABC", "MA2", "the fixture starts in the order ABC");
+        // ⚠️ "排到自己后面"必须在**自己不是最后一个**时判：A 在末尾时，移除自己
+        // 之后目标下标会被夹回末尾，顺序碰巧不变 —— 少了那道闸也看不出来。
+        a->MoveAfterSibling(a);
+        Check(ChildOrder3(root, a, b, c) == "ABC", "MA2b",
+              "MoveAfterSibling(self) is a no-op even when self is NOT last");
+        a->MoveAfterSibling(b);
+        Check(ChildOrder3(root, a, b, c) == "BAC", "MA3", "MoveAfterSibling(b) moves A after B");
+        Check(a->GetSiblingIndex() == 1 && b->GetSiblingIndex() == 0 && c->GetSiblingIndex() == 2, "MA4",
+              "and GetSiblingIndex agrees with the new order");
+
+        // 往前挪（跨过目标）：self 在目标之后时，移除自己**不会**让目标左移，
+        // 目标下标要 +1。写错成统一 +1 的话这一步是空操作。
+        b->MoveAfterSibling(a);
+        Check(ChildOrder3(root, a, b, c) == "ABC", "MA5",
+              "moving forwards across the target works (the off-by-one case)");
+
+        a->MoveAfterSibling(c);
+        Check(ChildOrder3(root, a, b, c) == "BCA", "MA6", "A can move to the very end");
+        c->MoveAfterSibling(b);
+        Check(ChildOrder3(root, a, b, c) == "BCA", "MA7", "already-after is a stable no-op, not a swap");
+
+        // 三种静默空操作。
+        const std::string before = ChildOrder3(root, a, b, c);
+        a->MoveAfterSibling(nullptr);
+        Check(ChildOrder3(root, a, b, c) == before, "MA8", "MoveAfterSibling(null) is a no-op");
+        a->MoveAfterSibling(a);
+        Check(ChildOrder3(root, a, b, c) == before, "MA9", "MoveAfterSibling(self) is a no-op");
+        root->MoveAfterSibling(a);
+        Check(ChildOrder3(root, a, b, c) == before, "MA11", "a root has no siblings to move among");
+        // 跨父级：G 挂在 A 下、B 挂在 root 下。真搬要用 SetParent（它要决定
+        // worldPositionStays），这里猜不出来，所以什么都不做。
+        g->MoveAfterSibling(b);
+        Check(g->GetParent() == a, "MA12", "MoveAfterSibling across parents does NOT re-parent");
+
+        // 改顺序也要置脏：只改 m_Children 而忘了 MarkTransformDirty，表现是
+        // "UI 上的顺序变了、渲染顺序没变"，而且只在有层级同步时才看得见。
+        a->SetHasChanged(false);
+        a->MoveAfterSibling(b);
+        Check(a->GetHasChanged(), "MA13", "reordering marks the transform as changed");
+    }
+
+    void TestTransformExtrasWiring()
+    {
+        const std::string header = ReadFile("Source/Runtime/Function/Framework/Component/Transform/Transform.h");
+        Check(!header.empty(), "TEW0", "Transform.h is readable");
+        // ⚠️ 判据**必须带上 `ZFUNCTION()` 并连着声明那一行**：只 grep 方法名的
+        // 话，删掉 ZFUNCTION 之后"声明还在"依然为真 —— 而脚本里那个名字已经是
+        // 不存在的了（变异 TEM15 就是这么漏的）。
+        Check(CountOccurrences(header, "ZFUNCTION()\n    void MoveAfterSibling(Transform* sibling);") >= 1,
+              "TEW1", "MoveAfterSibling is published (ZFUNCTION sits on its declaration)");
+        Check(CountOccurrences(header, "ZFUNCTION()\n    bool GetHasChanged() const { return m_HasChanged; }") >= 1,
+              "TEW2", "GetHasChanged is published");
+        Check(CountOccurrences(header, "SetHasChanged") >= 1, "TEW3", "SetHasChanged is declared");
+        Check(CountOccurrences(header, "ZFUNCTION()\n    int GetHierarchyCount() const;") >= 1,
+              "TEW4", "GetHierarchyCount is published");
+        Check(CountOccurrences(header, "ZFUNCTION()\n    void SetHierarchyCapacity(int capacity);") >= 1,
+              "TEW5", "SetHierarchyCapacity is published");
+        // 属性拼写：getter 标了 ZFUNCTION 还不够，得有 ZSCRIPTPROPERTY 才会变成
+        // `t.hasChanged` —— 少了它脚本只能用 `t.GetHasChanged()`，与 Unity 不同形。
+        Check(CountOccurrences(header, "Name=\"hasChanged\"") >= 1, "TEW6", "hasChanged is a script property");
+        Check(CountOccurrences(header, "Name=\"hierarchyCapacity\"") >= 1, "TEW7",
+              "hierarchyCapacity is a script property");
+        Check(CountOccurrences(header, "Name=\"hierarchyCount\"") >= 1, "TEW8",
+              "hierarchyCount is a script property");
+        Check(CountOccurrences(header, "Name=\"localToWorldMatrix\"") >= 1, "TEW9",
+              "localToWorldMatrix is a script property");
+        Check(CountOccurrences(header, "Name=\"worldToLocalMatrix\"") >= 1, "TEW10",
+              "worldToLocalMatrix is a script property");
+        // m_HasChanged 必须是**独立**成员：拿 Component::m_IsDirty 顶替的话，
+        // 帧循环每帧清一次，轮询式用法永远读不到 true。
+        Check(CountOccurrences(header, "m_HasChanged") >= 1, "TEW11", "hasChanged has its own member");
+
+        const std::string source = ReadFile("Source/Runtime/Function/Framework/Component/Transform/Transform.cpp");
+        Check(!source.empty(), "TEW12", "Transform.cpp is readable");
+        // 置位必须在 MarkTransformDirty 里 —— 那里是所有改动的公共出口。写在
+        // SetLocalPosition 里的话，SetParent / SetSiblingIndex 就漏了。
+        Check(CountOccurrences(source, "m_HasChanged = true") >= 1, "TEW13",
+              "MarkTransformDirty sets hasChanged");
+        // 加载后清零：不清的话脚本一拿到刚加载的 transform 就看到 true。
+        Check(CountOccurrences(source, "m_HasChanged = false") >= 1, "TEW14",
+              "PostLoadResource clears hasChanged");
+        // MoveAfterSibling 必须复用"修层级"的那一段，而不是自己改一遍 m_Children。
+        Check(CountOccurrences(source, "ReorderWithinParent") >= 2, "TEW15",
+              "MoveAfterSibling reuses the hierarchy-repair path (declared AND called)");
+    }
+
     void TestWiringGate()
     {
         const std::string go_header = ReadFile("Source/Runtime/BaseClasses/GameObject.h");
@@ -12251,6 +12549,9 @@ int main()
     TestVector3Statics();
     TestVector3StaticsWiring();
     TestMathfTail();
+    TestTransformExtras();
+    TestTransformMoveAfterSibling();
+    TestTransformExtrasWiring();
     TestWiringGate();
 
     std::printf("\n=== %d checks, %d failures ===\n", g_Checks, g_Failures);

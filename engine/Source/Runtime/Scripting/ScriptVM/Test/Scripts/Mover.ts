@@ -608,6 +608,77 @@ class Mover extends Behaviour {
         ].join("|");
     }
 
+    /// `Transform` 补齐面的端到端探针：`hasChanged` / `hierarchyCount` /
+    /// `hierarchyCapacity` / `localToWorldMatrix` / `worldToLocalMatrix` /
+    /// `SetPositionAndRotation` / `SetLocalPositionAndRotation`。
+    ///
+    /// 这一段真正要抓的**不是**算法（C++ 的 TE / MA 段已经钉死了），而是
+    /// 「属性拼写真的进了 d.ts」：ZSCRIPTPROPERTY 少写一条，tsc 直接报
+    /// `Property 'hasChanged' does not exist on type 'Transform'` —— 比任何
+    /// 运行时断言都早，而且 C++ 侧一个测试都发现不了。
+    ///
+    /// 运行时这部分只验两件 tsc 验不了的事：
+    ///   1. 属性和方法**是同一个东西**（`t.hierarchyCount` vs
+    ///      `t.GetHierarchyCount()`）—— getter 挂错方法时类型是对的、值是错的；
+    ///   2. 矩阵属性和 `TransformPoint` 是同一套（getter 挂到 worldToLocal 上
+    ///      的话仍然是个 Matrix4x4，类型检查一样过）。
+    transformExtrasProbe: string = "";
+
+    ProbeTransformExtras(): void {
+        const t: Transform = this.transform;
+
+        // hasChanged：写 false -> 读 -> 改 -> 读 -> 写 false -> 读。
+        // 「读不清零」这一条是轮询式用法的命根子，省略了就变成只读一次。
+        t.SetHasChanged(false);
+        const cleared: boolean = t.hasChanged;
+        t.SetLocalPosition({ x: 7, y: 0, z: 0 });
+        const afterSet: boolean = t.hasChanged;
+        t.SetHasChanged(false);
+        const clearedAgain: boolean = t.hasChanged;
+
+        const countByProperty: number = t.hierarchyCount;
+        const countByMethod: number = t.GetHierarchyCount();
+        const capacity: number = t.hierarchyCapacity;
+
+        // 矩阵属性必须和 TransformPoint / InverseTransformPoint 一致。
+        // 用 (1,2,3) 这种**非零点**当样本：只看平移列的话，矩阵里的旋转部分
+        // 写错（转置 / 少乘一项）完全看不出来。
+        const p: Vector3 = { x: 1, y: 2, z: 3 };
+        const m: Matrix4x4 = t.localToWorldMatrix;
+        const im: Matrix4x4 = t.worldToLocalMatrix;
+        const viaMatrix: Vector3 = {
+            x: m.m00 * p.x + m.m01 * p.y + m.m02 * p.z + m.m03,
+            y: m.m10 * p.x + m.m11 * p.y + m.m12 * p.z + m.m13,
+            z: m.m20 * p.x + m.m21 * p.y + m.m22 * p.z + m.m23
+        };
+        const viaInverseMatrix: Vector3 = {
+            x: im.m00 * p.x + im.m01 * p.y + im.m02 * p.z + im.m03,
+            y: im.m10 * p.x + im.m11 * p.y + im.m12 * p.z + im.m13,
+            z: im.m20 * p.x + im.m21 * p.y + im.m22 * p.z + im.m23
+        };
+        const forward: Vector3 = t.TransformPoint(p);
+        const backward: Vector3 = t.InverseTransformPoint(p);
+
+        t.SetPositionAndRotation({ x: 11, y: 12, z: 13 }, { w: 1, x: 0, y: 0, z: 0 });
+        const worldPos: Vector3 = t.position;
+
+        this.transformExtrasProbe = [
+            String(cleared),
+            String(afterSet),
+            String(clearedAgain),
+            String(countByProperty === countByMethod),
+            String(capacity >= countByProperty),
+            String(countByProperty),
+            String(Math.abs(viaMatrix.x - forward.x) < 0.001 &&
+                   Math.abs(viaMatrix.y - forward.y) < 0.001 &&
+                   Math.abs(viaMatrix.z - forward.z) < 0.001),
+            String(Math.abs(viaInverseMatrix.x - backward.x) < 0.001 &&
+                   Math.abs(viaInverseMatrix.y - backward.y) < 0.001 &&
+                   Math.abs(viaInverseMatrix.z - backward.z) < 0.001),
+            worldPos.x.toFixed(2) + "," + worldPos.y.toFixed(2) + "," + worldPos.z.toFixed(2)
+        ].join("|");
+    }
+
     /// 走 **JS shim** 的那条停止路径（`g.Behaviour.prototype.StopAllCoroutines`）。
     /// C++ 直接调 comp.StopAllCoroutines() 是测不到 shim 的 —— 少一行转发
     /// 照样全绿（变异 SC16 就是这么漏的）。

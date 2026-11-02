@@ -1158,6 +1158,17 @@ int main(int argc, char** argv)
                 mover_value("vecStaticsProbe"),
                 "0.7071|1.0000|0.7071|0.7071|0.0000|90.000|-90.000|0.13477");
 
+        // --- Unity 的 Transform 补齐面（TE 段）------------------------------
+        //
+        // 这一段的判据在 tsc 那一步就已经走掉一半了：ZSCRIPTPROPERTY 少一条，
+        // Mover.ts 里 `t.hasChanged` 过不了类型检查。运行时这边再抓 tsc 抓不到
+        // 的 —— 属性与方法是不是同一个东西、矩阵属性和 TransformPoint 一不一致。
+        CheckTrue("Z6", "ProbeTransformExtras 送到了 JS 侧",
+                  comp2->InvokeMethod("ProbeTransformExtras"));
+        CheckEq("Z7", "Transform 补齐面端到端：hasChanged / hierarchy* / 矩阵属性",
+                mover_value("transformExtrasProbe"),
+                "false|true|false|true|true|2|true|true|11.00,12.00,13.00");
+
         // --- Unity 的 OnBecameVisible / OnBecameInvisible（V 段）------------
         //
         // 与 T / U 段同一类理由：派发链是 `BaseRenderer` -> `GameObject` ->
