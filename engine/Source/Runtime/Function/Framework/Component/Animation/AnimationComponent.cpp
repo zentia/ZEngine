@@ -291,3 +291,13 @@ const Skeleton& AnimationComponent::GetSkeleton() const
 {
     return m_Skeleton;
 }
+
+eastl::string AnimationComponent::GetFiredEvent(int index) const
+{
+    const std::vector<eastl::string>& events = m_Animator.GetFiredEvents();
+    if (index < 0 || index >= static_cast<int>(events.size()))
+    {
+        return eastl::string();
+    }
+    return events[static_cast<size_t>(index)];
+}

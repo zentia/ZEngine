@@ -87,6 +87,76 @@ public:
     ZFUNCTION()
     float GetNormalizedTime() const { return m_Animator.GetNormalizedTime(m_Animator.GetCurrentStateIndex()); }
 
+    // =========================================================================
+    // Unity 的 `Animator` 其余面（speed / Rebind / 控制器形状 / 事件）
+    // =========================================================================
+
+    /// Unity 的 `animator.speed`：全局播放速率（1 = 原速，0 = 冻结）。
+    ///
+    /// 落在**实例**上而不是控制器上：控制器是共享资产，十个角色共用一份，其中
+    /// 一个慢放不能改到别人。
+    ///
+    /// ⚠️ 负数夹到 0（见 AnimatorInstance 里那条注释）：倒放没有后端，接受 -1
+    /// 会得到一个"看起来在跑、其实卡在时间 0"的组件。
+    ZFUNCTION()
+    float GetSpeed() const { return m_Animator.GetSpeed(); }
+    ZFUNCTION()
+    void SetSpeed(float speed) { m_Animator.SetSpeed(speed); }
+    ZSCRIPTPROPERTY(Name = "speed", Getter = "GetSpeed", Setter = "SetSpeed")
+
+    /// Unity 的 `animator.Rebind()`：播放头归零、参数回到控制器默认值、跳回默认
+    /// 状态。
+    ZFUNCTION()
+    void Rebind() { m_Animator.Rebind(); }
+
+    /// Unity 的 `animator.parameterCount`。没控制器 = 0。
+    ZFUNCTION()
+    int GetParameterCount() const { return m_Animator.GetParameterCount(); }
+
+    /// 第 `index` 个参数的名字；越界返回空串。
+    ///
+    /// 发它是为了让脚本能**枚举**而不是靠作者口述：照 Unity 写的代码常常要先
+    /// 确认某个参数在不在，而"打错名字静默失效"是这类 API 最难查的失败方式。
+    ZFUNCTION()
+    eastl::string GetParameterName(int index) const { return eastl::string(m_Animator.GetParameterName(index)); }
+
+    /// 状态数。Unity 的 `AnimatorController` 有 layer，这里恒为"控制器里的状态
+    /// 数"（layerCount 在今天恒为 1）。
+    ZFUNCTION()
+    int GetStateCount() const { return m_Animator.GetStateCount(); }
+    ZFUNCTION()
+    eastl::string GetStateName(int index) const { return eastl::string(m_Animator.GetStateName(index)); }
+
+    /// Unity 的 `animator.GetCurrentAnimatorStateInfo(0).IsName(name)`。
+    ZFUNCTION()
+    bool IsName(const eastl::string& state_name) const { return m_Animator.IsCurrentState(state_name.c_str()); }
+
+    /// Unity 拼字：`GetInteger` / `SetInteger`（引擎内部那对叫 `GetInt` /
+    /// `SetInt`，两边都留着 —— 照 Unity 文档抄过来的代码用的是 Integer）。
+    ZFUNCTION()
+    int GetInteger(const eastl::string& name) const { return m_Animator.GetInt(name.c_str()); }
+    ZFUNCTION()
+    void SetInteger(const eastl::string& name, int value) { m_Animator.SetInt(name.c_str(), value); }
+
+    /// Unity 的 `animator.Update(deltaTime)`：手动推进（不经过帧循环）。
+    ZFUNCTION()
+    void Update(float delta_time) { m_Animator.Tick(delta_time); }
+
+    /// 上一次 `Tick()`（或 `Update()`）里触发的事件条数。
+    ///
+    /// ⚠️ 与 Unity 的形状不一样，写在前面：Unity 的 AnimationEvent 是**回调**
+    /// （调到 MonoBehaviour 上的同名方法），这里是"这一帧触发了哪些名字"的列表，
+    /// 由脚本自己轮询。做成回调要靠字符串找方法，跨语言边界查函数比轮询贵且脆。
+    ///
+    /// 列表在每次 Tick 开头清空，所以"这一帧"就是"上一次推进"—— 不退化的话同一
+    /// 个事件会被脚本读到两次。
+    ZFUNCTION()
+    int GetFiredEventCount() const { return static_cast<int>(m_Animator.GetFiredEvents().size()); }
+    /// 第 `index` 个事件名（= 控制器里 `AnimatorEvent::function_name`）；越界
+    /// 返回空串。
+    ZFUNCTION()
+    eastl::string GetFiredEvent(int index) const;
+
     // ---- Editor-facing slot access -----------------------------------------
     // `m_AnimationRes` stays protected on purpose. A BlendState is a set of
     // PARALLEL vectors and a clip only plays when its bone map, length, ratio
