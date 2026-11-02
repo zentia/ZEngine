@@ -72,6 +72,9 @@
 // be marshallable here, and PhysicsScene.h would pull Jolt/Jolt.h into every
 // generated .gen.cpp (and into the Web build, which does not link Jolt).
 #include "Runtime/Function/Physics/PhysicsQuery.h"
+// Touch.h 是纯值类型（只依赖 Vector2 与几个 ZENUM），不会把 InputSystem /
+// WindowSystem 拖进每个 .gen.cpp。
+#include "Runtime/Function/Input/Touch.h"
 #include "pesapi.h"
 
 #include <eastl/string.h>
@@ -863,6 +866,83 @@ namespace ZScript
             ColorParseResult out;
             out.valid = apis->get_value_bool(env, apis->get_property(env, v, "valid"));
             out.color = Converter<Color>::FromJs(apis, env, apis->get_property(env, v, "color"));
+            return out;
+        }
+    };
+
+    // Touch: `Input.GetTouch(i)` / `Input.touches` bring back a per-frame
+    // snapshot of one finger (see Touch.h -- it is a value type, so scripts get a
+    // copy and cannot "hold on to" a touch).
+    //
+    // ⚠️ 必须排在 `Converter<Vector2>`（第 590 行附近）**之后**：position /
+    // rawPosition / deltaPosition 都走 `Converter<Vector2>::ToJs`。顺序错了 MSVC
+    // 报的是 "'ToJs': is not a member of Converter<Vector2>" 加一串
+    // "already instantiated"，看不出真因。
+    template <>
+    struct Converter<Touch>
+    {
+        static pesapi_value ToJs(pesapi_ffi* apis, pesapi_env env, const Touch& v)
+        {
+            pesapi_value o = apis->create_object(env);
+            apis->set_property(env, o, "fingerId", apis->create_int32(env, v.fingerId));
+            apis->set_property(env, o, "position", Converter<Vector2>::ToJs(apis, env, v.position));
+            apis->set_property(env, o, "rawPosition",
+                               Converter<Vector2>::ToJs(apis, env, v.rawPosition));
+            apis->set_property(env, o, "deltaPosition",
+                               Converter<Vector2>::ToJs(apis, env, v.deltaPosition));
+            apis->set_property(env, o, "deltaTime", apis->create_double(env, v.deltaTime));
+            apis->set_property(env, o, "tapCount", apis->create_int32(env, v.tapCount));
+            apis->set_property(env, o, "phase",
+                               apis->create_int32(env, static_cast<int32_t>(v.phase)));
+            apis->set_property(env, o, "pressure", apis->create_double(env, v.pressure));
+            apis->set_property(env, o, "maximumPossiblePressure",
+                               apis->create_double(env, v.maximumPossiblePressure));
+            apis->set_property(env, o, "type",
+                               apis->create_int32(env, static_cast<int32_t>(v.type)));
+            apis->set_property(env, o, "radius", apis->create_double(env, v.radius));
+            apis->set_property(env, o, "radiusVariance",
+                               apis->create_double(env, v.radiusVariance));
+            apis->set_property(env, o, "altitudeAngle", apis->create_double(env, v.altitudeAngle));
+            apis->set_property(env, o, "azimuthAngle", apis->create_double(env, v.azimuthAngle));
+            return o;
+        }
+
+        // 反向只在"脚本把一个 Touch 传回来"时用得到（比如自己缓存一份再喂给某个
+        // 工具函数）。字段缺失一律留默认值 —— Touch 是引擎采出来的，脚本造的
+        // 残缺对象不该让绑定层抛异常。
+        static Touch FromJs(pesapi_ffi* apis, pesapi_env env, pesapi_value v)
+        {
+            Touch out;
+            if (v == nullptr)
+            {
+                return out;
+            }
+            out.fingerId = apis->get_value_int32(env, apis->get_property(env, v, "fingerId"));
+            out.position =
+                Converter<Vector2>::FromJs(apis, env, apis->get_property(env, v, "position"));
+            out.rawPosition =
+                Converter<Vector2>::FromJs(apis, env, apis->get_property(env, v, "rawPosition"));
+            out.deltaPosition =
+                Converter<Vector2>::FromJs(apis, env, apis->get_property(env, v, "deltaPosition"));
+            out.deltaTime = static_cast<float>(
+                apis->get_value_double(env, apis->get_property(env, v, "deltaTime")));
+            out.tapCount = apis->get_value_int32(env, apis->get_property(env, v, "tapCount"));
+            out.phase    = static_cast<TouchPhase>(
+                   apis->get_value_int32(env, apis->get_property(env, v, "phase")));
+            out.pressure = static_cast<float>(
+                apis->get_value_double(env, apis->get_property(env, v, "pressure")));
+            out.maximumPossiblePressure = static_cast<float>(apis->get_value_double(
+                env, apis->get_property(env, v, "maximumPossiblePressure")));
+            out.type = static_cast<TouchType>(
+                apis->get_value_int32(env, apis->get_property(env, v, "type")));
+            out.radius = static_cast<float>(
+                apis->get_value_double(env, apis->get_property(env, v, "radius")));
+            out.radiusVariance = static_cast<float>(
+                apis->get_value_double(env, apis->get_property(env, v, "radiusVariance")));
+            out.altitudeAngle = static_cast<float>(
+                apis->get_value_double(env, apis->get_property(env, v, "altitudeAngle")));
+            out.azimuthAngle = static_cast<float>(
+                apis->get_value_double(env, apis->get_property(env, v, "azimuthAngle")));
             return out;
         }
     };

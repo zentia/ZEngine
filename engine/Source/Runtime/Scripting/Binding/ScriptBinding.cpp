@@ -370,6 +370,31 @@ namespace
         "    color: Color;\n"
         "}\n"
         "\n"
+        // Touch：一次触摸在某一帧的快照（`Input.GetTouch(i)` / `Input.touches`）。
+        //
+        // ⚠️ 字段名与 `ZScript::Converter<Touch>` 写的键**逐字对应**，改一处就要
+        // 改另一处 —— 少了字段 TS 会报"属性不存在"，多了字段运行时是 undefined。
+        //
+        // ⚠️ `pressure` / `maximumPossiblePressure` 在不支持压力的设备上是 **1**，
+        // 不是 0（Unity 的规定，见 Touch.h）。脚本里拿压力做笔刷的话，判据是
+        // `Input.touchPressureSupported`，不是 `pressure > 0`。
+        "declare interface Touch {\n"
+        "    fingerId: number;\n"
+        "    position: Vector2;\n"
+        "    rawPosition: Vector2;\n"
+        "    deltaPosition: Vector2;\n"
+        "    deltaTime: number;\n"
+        "    tapCount: number;\n"
+        "    phase: TouchPhase;\n"
+        "    pressure: number;\n"
+        "    maximumPossiblePressure: number;\n"
+        "    type: number;\n"
+        "    radius: number;\n"
+        "    radiusVariance: number;\n"
+        "    altitudeAngle: number;\n"
+        "    azimuthAngle: number;\n"
+        "}\n"
+        "\n"
         // Bounds：Unity 存的是 center + **extents（半尺寸）**，`size` / `min` /
         // `max` 都是派生量。键名与 `ZScript::Converter<Bounds>` 一致。
         // 与 `declare class Bounds`（ScriptBounds.h 那批静态方法）同名合并。
