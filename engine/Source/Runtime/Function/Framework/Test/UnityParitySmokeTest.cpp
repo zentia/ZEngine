@@ -36,7 +36,9 @@
 #include "Runtime/Core/Math/Frustum.h"
 #include "Runtime/Core/Math/Plane.h"
 #include "Runtime/Core/Math/Math.h"
+#include "Runtime/Core/Math/SmoothDamp.h"
 #include "Runtime/Core/Math/UnityRandom.h"
+#include "Runtime/Core/Time/TimeState.h"
 #include "Runtime/Core/Math/Vector4.h"
 #include "Runtime/Function/Render/DebugDraw/DebugDrawGroup.h"
 #include "Runtime/Function/Render/DebugDraw/DebugDrawManager.h"
@@ -4281,8 +4283,8 @@ namespace
         const std::string math_header = ReadFile("Source/Runtime/Scripting/ScriptMath/ScriptMath.h");
         Check(!math_header.empty(), "AJ0", "ScriptMath.h is readable");
         // 48 是 VectorMath + QuaternionMath 原有的；Mathf 这一块是 49。
-        Check(CountOccurrences(math_header, "ZFUNCTION()") == 98, "AJ1",
-              "ScriptMath declares exactly 98 script methods (a dropped ZFUNCTION is a silent API loss)");
+        Check(CountOccurrences(math_header, "ZFUNCTION()") == 100, "AJ1",
+              "ScriptMath declares exactly 100 script methods (a dropped ZFUNCTION is a silent API loss)");
         // Unity 的拼写，一个都不能少。
         Check(CountOccurrences(math_header, "static float Abs(") >= 1 &&
                   CountOccurrences(math_header, "static float Ceil(") >= 1 &&
@@ -4452,8 +4454,8 @@ namespace
     {
         const std::string math_header = ReadFile("Source/Runtime/Scripting/ScriptMath/ScriptMath.h");
         Check(!math_header.empty(), "AL0", "ScriptMath.h is readable");
-        Check(CountOccurrences(math_header, "ZFUNCTION()") == 98, "AL1",
-              "ScriptMath declares exactly 98 script methods");
+        Check(CountOccurrences(math_header, "ZFUNCTION()") == 100, "AL1",
+              "ScriptMath declares exactly 100 script methods");
         Check(CountOccurrences(math_header, "static Vector3 Slerp(") >= 1 &&
                   CountOccurrences(math_header, "static Vector3 LerpUnclamped(") >= 1 &&
                   CountOccurrences(math_header, "static Vector3 RotateTowards(") >= 1 &&
@@ -10533,6 +10535,230 @@ namespace
               "GeometryUtility.TestPlanesAABB exists");
     }
 
+    // =========================================================================
+    // SmoothDamp（Mathf / Vector3）
+    // =========================================================================
+    //
+    // 在此之前 `SmoothDamp` 在整个 `engine/` 里**零命中**。它缺席的原因是"TS
+    // 没有 out/ref 参数"（`ref currentVelocity` 传不出去），而绕过这个限制的正
+    // 确做法不是删掉这个 API，是"新值 + 新速度一起返回"。
+    //
+    // ⚠️ 这个算法的错**全都是静默的** —— 输出仍然是平滑的、仍然收敛，只是曲线
+    // 不是 Unity 的那条。所以判据不是"能不能用"，是"数字对不对"：
+    //   * `exp` 必须是 Unity 的多项式近似，不是 `std::exp`（SD0/SD1 用黄金数）；
+    //   * 过冲守卫（SD7/SD8）：少了它会在速度大时冲过目标，而它仍然收敛；
+    //   * `maxSpeed` 夹的是 `change`，上限 `maxSpeed * smoothTime`（不是
+    //     `* deltaTime`）—— 写错了限速会随帧率变（SD5/SD6）；
+    //   * `SmoothDampAngle` 必须先走最短弧（SD11），否则 350° → 10° 绕一大圈。
+    void TestSmoothDamp()
+    {
+        using ::SmoothDampResult;
+        using ::Vector3SmoothDampResult;
+
+        const float dt = 1.f / 60.f;
+
+        // --- 黄金数：与 Unity 的实现逐位对齐 ---------------------------------
+        // current=0, target=1, vel=0, smoothTime=0.5, dt=1/60
+        //   omega = 4, x = 1/15, exp = 1/(1 + x + 0.48x² + 0.235x³) = 0.935568
+        //   temp = -1/15, velocity = 0.249485, output = 0.002061
+        const SmoothDampResult first = Mathf::SmoothDamp(0.f, 1.f, 0.f, 0.5f, 0.f, dt);
+        Check(Near(first.value, 0.002061f, 1e-6f), "SD0",
+              "SmoothDamp's first step matches Unity's polynomial (0.002061, not exp(-x))");
+        Check(Near(first.velocity, 0.249485f, 1e-6f), "SD1",
+              "and so does the velocity it hands back (0.249485)");
+        // ⚠️ 互补的一半：把多项式换成 `std::exp(-x)` 的话 exp = 0.935507 而不是
+        // 0.935568。差 6e-5 看起来微不足道，但在 value 上就是 0.002126 而不是
+        // 0.002061（3%），在 velocity 上是 0.249469 而不是 0.249485（1.6e-5）。
+        // 两条曲线**都平滑**、**都收敛** —— 只有 1e-6 的黄金数能看见。这是
+        // 为什么容差取 1e-6 而不是 1e-4：1e-4 会让 std::exp 静默通过。
+
+        // --- 速度是跨帧状态：必须接住 -----------------------------------------
+        // 第二帧接着用第一帧的速度 ⇒ 比"每帧从静止重来"走得远得多。
+        const SmoothDampResult second =
+            Mathf::SmoothDamp(first.value, 1.f, first.velocity, 0.5f, 0.f, dt);
+        const SmoothDampResult from_rest =
+            Mathf::SmoothDamp(first.value, 1.f, 0.f, 0.5f, 0.f, dt);
+        Check(second.value > from_rest.value, "SD2",
+              "carrying the velocity over goes further than restarting from rest");
+        Check(Near(second.velocity, 0.466820f, 1e-6f), "SD3",
+              "the second step's velocity is the carried one (0.466820)");
+
+        // --- 收敛 -------------------------------------------------------------
+        float value = 0.f;
+        float velocity = 0.f;
+        for (int i = 0; i < 300; ++i)
+        {
+            const SmoothDampResult r = Mathf::SmoothDamp(value, 1.f, velocity, 0.5f, 0.f, dt);
+            value = r.value;
+            velocity = r.velocity;
+        }
+        Check(Near(value, 1.f, 1e-4f), "SD4",
+              "after 5 seconds it is on the target (smoothTime 0.5 -> 300 frames at 60Hz)");
+        Check(std::isfinite(velocity), "SD4b", "and the velocity is finite there (no drift to NaN)");
+
+        // --- maxSpeed ----------------------------------------------------------
+        // max_change = maxSpeed * smoothTime = 0.5（**不是** maxSpeed * dt）。
+        const SmoothDampResult limited = Mathf::SmoothDamp(0.f, 1000.f, 0.f, 0.5f, 1.f, dt);
+        const SmoothDampResult unlimited = Mathf::SmoothDamp(0.f, 1000.f, 0.f, 0.5f, 0.f, dt);
+        Check(Near(limited.value, 0.001031f, 1e-6f), "SD5",
+              "maxSpeed clamps the step to 0.5 (maxSpeed * smoothTime), giving 0.001031");
+        // ⚠️ 互补的一半：不限速时同一帧走到 2.061 —— 差三个数量级。只断言
+        // "limited < unlimited" 的话，任何限速都过；这里两边都是黄金数。
+        Check(Near(unlimited.value, 2.061f, 1e-3f), "SD6",
+              "and without it the same frame reaches 2.061 (three orders of magnitude apart)");
+        // ⚠️ 写成 `maxSpeed * deltaTime` 的话上限是 1/60 而不是 0.5，value 会是
+        // 3.4e-5 —— 而且**随帧率变**，这是最坏的一种错：30Hz 与 60Hz 的限速不同，
+        // 而每一帧看都"确实在限速"。
+        Check(!Near(limited.value, Mathf::SmoothDamp(0.f, 1000.f, 0.f, 0.5f, 1.f, 1.f / 30.f).value,
+                    1e-6f),
+              "SD6b", "the clamp does not track the frame rate (dt is not in the limit)");
+
+        // --- 过冲守卫 -----------------------------------------------------------
+        // 初速很大、朝着目标冲：不钉住的话这一步会冲到 1.56。
+        const SmoothDampResult overshoot = Mathf::SmoothDamp(0.f, 1.f, 100.f, 0.5f, 0.f, dt);
+        Check(overshoot.value == 1.f, "SD7",
+              "a big velocity towards the target is pinned to the target (no overshoot)");
+        Check(overshoot.velocity == 0.f, "SD8",
+              "and the velocity is zeroed there (Unity divides (output - target) by dt)");
+        // 反向（初速背离目标）不该被钉住。
+        const SmoothDampResult away = Mathf::SmoothDamp(0.f, 1.f, -100.f, 0.5f, 0.f, dt);
+        Check(away.value < 0.f, "SD9",
+              "but a velocity AWAY from the target is not pinned (it still moves backwards first)");
+
+        // --- 退化输入 -----------------------------------------------------------
+        // dt <= 0 就是"用引擎当前帧的 delta"（哨兵，因为 TS 没有可选参数）。
+        // 引擎自己暂停（delta 为 0）时，不动、速度原样带过去 —— Unity 在这个
+        // 帧上会得到 NaN，而 NaN 会静默污染后面的每一帧。
+        TimeState::Get().BeginFrame(0.f, 0.f, true);
+        Check(Time::GetDeltaTime() == 0.f, "SD10a",
+              "the engine really reports a 0 delta for the paused-frame case");
+        const SmoothDampResult no_dt = Mathf::SmoothDamp(3.f, 10.f, 7.f, 0.5f, 0.f, 0.f);
+        Check(no_dt.value == 3.f && no_dt.velocity == 7.f, "SD10",
+              "a paused frame holds position and keeps the velocity (NaN would poison every "
+              "later frame)");
+        // ⚠️ current == target 是"过冲守卫"唯一会在 dt==0 上触发的角落：它算出
+        // `(output - target) / 0`，也就是 NaN。少了 Step 里那个 dt<=0 的早退，
+        // 速度会变成 NaN —— 而**值**仍然是对的（5），所以只断言 value 的测试
+        // 看不见。变异 SDM06 就是这么漏的。
+        const SmoothDampResult at_target = Mathf::SmoothDamp(5.f, 5.f, 0.f, 0.5f, 0.f, 0.f);
+        Check(at_target.value == 5.f && at_target.velocity == 0.f, "SD10b",
+              "sitting on the target during a paused frame stays there with a ZERO velocity "
+              "(the overshoot guard would divide by dt and give NaN)");
+
+        // ⚠️ dt <= 0 这个哨兵的**另一半**：它必须真的取到引擎的 delta。只测
+        // "引擎 delta 也是 0 时不动"证明不了这一点（两种实现都给出"不动"）。
+        TimeState::Get().BeginFrame(dt, dt, true);
+        const float engine_dt = Time::GetDeltaTime();
+        Check(engine_dt > 0.f, "SD10c", "the engine reports a non-zero delta for the live frame");
+        const SmoothDampResult sentinel = Mathf::SmoothDamp(0.f, 1.f, 0.f, 0.5f, 0.f, 0.f);
+        const SmoothDampResult explicit_dt =
+            Mathf::SmoothDamp(0.f, 1.f, 0.f, 0.5f, 0.f, engine_dt);
+        Check(Near(sentinel.value, explicit_dt.value, 1e-9f), "SD10d",
+              "deltaTime <= 0 really falls back to the engine's delta (not to a zero-length step)");
+        // Vector3 版有自己的一份哨兵（Mathf 那份救不了它）。
+        const Vector3SmoothDampResult v3_sentinel = Runtime::Vector3::SmoothDamp(
+            Vector3::ZERO, Vector3(1.f, 1.f, 1.f), Vector3::ZERO, 0.5f, 0.f, 0.f);
+        Check(Near(v3_sentinel.value.x, explicit_dt.value, 1e-9f), "SD10e",
+              "and Vector3.SmoothDamp has its own copy of that sentinel");
+        // smoothTime <= 0：Unity 内部取 Max(0.0001, smoothTime) ⇒ 几乎瞬时到达。
+        const SmoothDampResult no_time = Mathf::SmoothDamp(0.f, 1.f, 0.f, 0.f, 0.f, dt);
+        Check(Near(no_time.value, 1.f, 1e-3f), "SD11",
+              "smoothTime <= 0 is clamped to 0.0001 (no division by zero, and it snaps at once)");
+
+        // --- SmoothDampAngle：必须先走最短弧 -------------------------------------
+        // 350° → 10°：最短弧是 **+20**（跨过 0），不是 -340。
+        const SmoothDampResult angle = Mathf::SmoothDampAngle(350.f, 10.f, 0.f, 0.5f, 0.f, dt);
+        // ⚠️ 判据是"值往**上**走"（350 → 350.04），而不是往下（349.3）。少了
+        // DeltaAngle 那一步实现照样平滑、照样收敛到 10°，只是绕了一大圈。
+        Check(angle.value > 350.f, "SD12",
+              "350 -> 10 takes the SHORT arc: the value increases past 360, it does not go back");
+        Check(Near(angle.value, 350.041f, 1e-3f), "SD13", "and it lands on 350.041 (Unity's number)");
+        // 不跨 0 的情形：与标量版完全一致（那一步 DeltaAngle 是恒等）。
+        Check(Near(Mathf::SmoothDampAngle(10.f, 50.f, 0.f, 0.5f, 0.f, dt).value,
+                   Mathf::SmoothDamp(10.f, 50.f, 0.f, 0.5f, 0.f, dt).value, 1e-6f),
+              "SD14", "and when the arc does not wrap it is identical to the scalar version");
+
+        // --- Vector3.SmoothDamp：分量各自跑标量版 ---------------------------------
+        const Vector3SmoothDampResult v3 = Runtime::Vector3::SmoothDamp(
+            Vector3(0.f, 0.f, 0.f), Vector3(100.f, 100.f, 0.f), Vector3::ZERO, 0.5f, 1.f, dt);
+        const SmoothDampResult scalar = Mathf::SmoothDamp(0.f, 100.f, 0.f, 0.5f, 1.f, dt);
+        // ⚠️ 这一条同时是"分量式"与"两份实现同源"的判据：整向量限速的实现（把
+        // delta 归一化再夹长度）给不出 100 和 100 各自等于标量版的数。
+        Check(Near(v3.value.x, scalar.value, 1e-6f) && Near(v3.value.y, scalar.value, 1e-6f),
+              "SD15", "Vector3.SmoothDamp runs the SCALAR version per component (Unity does too)");
+        Check(Near(v3.velocity.x, scalar.velocity, 1e-6f) &&
+                  Near(v3.velocity.y, scalar.velocity, 1e-6f), "SD16",
+              "and its velocity is per component as well");
+        // 已经在目标上的那个分量不动。
+        Check(v3.value.z == 0.f && v3.velocity.z == 0.f, "SD17",
+              "a component already on its target stays there");
+        // ⚠️ 分量式限速的后果（Unity 就是这样）：对角方向的**合成**速度可以超过
+        // maxSpeed。照 Unity 做，不"修"。
+        Check(Near(Vector2(v3.value.x, v3.value.y).length(),
+                   scalar.value * std::sqrt(2.f), 1e-6f),
+              "SD18", "so a diagonal move covers sqrt(2) times one component (Unity's behaviour)");
+        // 三个分量各不相同 ⇒ 各自收敛。
+        Vector3 v_value(0.f, 10.f, -5.f);
+        Vector3 v_vel = Vector3::ZERO;
+        for (int i = 0; i < 300; ++i)
+        {
+            const Vector3SmoothDampResult r = Runtime::Vector3::SmoothDamp(
+                v_value, Vector3(3.f, -2.f, 4.f), v_vel, 0.5f, 0.f, dt);
+            v_value = r.value;
+            v_vel = r.velocity;
+        }
+        Check(Near(v_value.x, 3.f, 1e-4f) && Near(v_value.y, -2.f, 1e-4f) &&
+                  Near(v_value.z, 4.f, 1e-4f), "SD19",
+              "all three components converge independently");
+    }
+
+    void TestSmoothDampWiring()
+    {
+        const std::string math_header =
+            ReadFile("Source/Runtime/Scripting/ScriptMath/ScriptMath.h");
+        Check(!math_header.empty(), "SDW0", "ScriptMath.h is readable");
+        if (math_header.empty()) { return; }
+        // ⚠️ Mathf 与 Vector3 必须**共用**一份实现：两份迟早漂移，而漂移后的两条
+        // 曲线都仍然平滑 —— 只有源码门能看见它们是不是同一个函数。
+        Check(CountOccurrences(math_header, "SmoothDampDetail::Step") >= 1, "SDW1",
+              "Mathf.SmoothDamp goes through the shared implementation");
+
+        const std::string vector_source =
+            ReadFile("Source/Runtime/Scripting/ScriptVector/ScriptVector.cpp");
+        Check(!vector_source.empty(), "SDW2", "ScriptVector.cpp is readable");
+        if (!vector_source.empty())
+        {
+            Check(CountOccurrences(vector_source, "SmoothDampDetail::Step") >= 3, "SDW3",
+                  "Vector3.SmoothDamp calls the same shared implementation (once per component)");
+        }
+
+        const std::string header = ReadFile("Source/Runtime/Core/Math/SmoothDamp.h");
+        Check(!header.empty(), "SDW4", "SmoothDamp.h is readable");
+        if (!header.empty())
+        {
+            // ⚠️ `exp` 必须是 Unity 的多项式，不是 std::exp。只 grep 名字看不出。
+            Check(CountOccurrences(header, "0.48f * x * x + 0.235f * x * x * x") >= 1, "SDW5",
+                  "the damping term is Unity's polynomial, not std::exp(-x)");
+            // 过冲守卫：少了它仍然收敛，看不出来。
+            Check(CountOccurrences(header, "original_to - current > 0.f") >= 1, "SDW6",
+                  "the overshoot guard is still there");
+            // maxSpeed 的上限是 maxSpeed * smoothTime，不是 * deltaTime。
+            Check(CountOccurrences(header, "max_speed * smooth_time") >= 1, "SDW7",
+                  "the speed limit is maxSpeed * smoothTime (it must not track the frame rate)");
+        }
+
+        const std::string binding_source =
+            ReadFile("Source/Runtime/Scripting/Binding/ScriptBinding.cpp");
+        Check(!binding_source.empty(), "SDW8", "ScriptBinding.cpp is readable");
+        if (!binding_source.empty())
+        {
+            Check(CountOccurrences(binding_source, "declare interface SmoothDampResult {") >= 1 &&
+                      CountOccurrences(binding_source,
+                                       "declare interface Vector3SmoothDampResult {") >= 1,
+                  "SDW9", "both result structs are declared in the .d.ts");
+        }
+    }
+
     void TestMouseEvents()
     {
         ObjectManager* om = GET_SYSTEM(ObjectManager);
@@ -11811,6 +12037,8 @@ int main()
     TestRectWiring();
     TestPlaneAndGeometryUtility();
     TestPlaneWiring();
+    TestSmoothDamp();
+    TestSmoothDampWiring();
     TestWiringGate();
 
     std::printf("\n=== %d checks, %d failures ===\n", g_Checks, g_Failures);

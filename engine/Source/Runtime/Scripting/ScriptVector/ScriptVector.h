@@ -3,6 +3,9 @@
 #include "Runtime/BaseClasses/Object.h"
 #include "Runtime/Core/Math/Matrix4.h"
 #include "Runtime/Core/Math/Quaternion.h"
+// SmoothDamp 的实现与结果结构：与 `Mathf.SmoothDamp`（ScriptMath.h）**同一份**，
+// 不另写一遍（两份实现迟早漂移）。
+#include "Runtime/Core/Math/SmoothDamp.h"
 #include "Runtime/Core/Math/Vector2.h"
 #include "Runtime/Core/Math/Vector3.h"
 #include "Runtime/Core/Math/Vector4.h"
@@ -189,6 +192,26 @@ namespace Runtime
         /// 把长度夹到 max_length 以内。Unity 的 `Vector3.ClampMagnitude`。
         ZFUNCTION()
         static ::Vector3 ClampMagnitude(const ::Vector3& v, float max_length);
+
+        /// Unity 的 `Vector3.SmoothDamp`：三个分量各一套 SmoothDamp。
+        ///
+        /// ⚠️ 与 `Mathf.SmoothDamp` 同一个理由：Unity 用 `ref currentVelocity`
+        /// 传跨帧状态，TS 没有，所以"新值 + 新速度"一起返回。
+        ///
+        ///     const r = Vector3.SmoothDamp(pos, target, vel, 0.3, 0, dt);
+        ///     pos = r.value;  vel = r.velocity;
+        ///
+        /// `maxSpeed <= 0` = 不限速（Unity 的 `Mathf.Infinity`）；
+        /// `deltaTime <= 0` = 取 `Time.deltaTime`。
+        ///
+        /// ⚠️ 分量各自限速与"整向量限速"不是一回事：Unity 是分量式的
+        /// （`Vector3.SmoothDamp` 内部对 x/y/z 分别调标量版），所以
+        /// `maxSpeed = 1` 时对角方向的合成速度可以到 √3。照 Unity 做，不"修"。
+        ZFUNCTION()
+        static Vector3SmoothDampResult SmoothDamp(const ::Vector3& current, const ::Vector3& target,
+                                                  const ::Vector3& current_velocity,
+                                                  float smooth_time, float max_speed,
+                                                  float delta_time);
 
         /// 关于法线反射。Unity 的 `Vector3.Reflect`。
         ZFUNCTION()

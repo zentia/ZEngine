@@ -1123,6 +1123,22 @@ int main(int argc, char** argv)
         CheckEq("Y1", "平面端到端：distance 符号 / Raycast 只打正面 / TestPlanesAABB",
                 mover_value("planeProbe"), "-3|2|4|-1|5|true|false");
 
+        // --- Unity 的 SmoothDamp（Z 段）-------------------------------------
+        //
+        // ⚠️ 这一段是**唯一**能看见"结构体返回值跨边界"的地方。C++ 的
+        // `TestSmoothDamp`（UnityParitySmokeTest 的 SD 组）直接调 `Mathf::SmoothDamp`，
+        // 压根不经过 `Converter<SmoothDampResult>`；少了那个 Converter，TS 侧
+        // 拿到 `undefined`，`.value` 也是 `undefined`，`String(undefined)` 照样
+        // 能拼进探针字符串 —— 只有这里会红。
+        CheckTrue("Z0", "ProbeSmoothDamp 送到了 JS 侧", comp2->InvokeMethod("ProbeSmoothDamp"));
+        // ⚠️ 四个判据各占一位：0.002061（Unity 的多项式，不是 std::exp 的
+        // 0.002126）、0.001031 vs 2.061（限速上限是 maxSpeed*smoothTime，不是
+        // *dt）、350.041（跨 0 走短弧，往上是 +20 不是 -340）、末位 0（已经在
+        // 目标上的分量不动）。
+        CheckEq("Z1", "SmoothDamp 端到端：多项式 exp / 限速 / 最短弧 / 分量式",
+                mover_value("smoothDampProbe"),
+                "0.002061|0.249485|0.001031|2.061|350.041|0.001031|0.001031|0");
+
         // --- Unity 的 OnBecameVisible / OnBecameInvisible（V 段）------------
         //
         // 与 T / U 段同一类理由：派发链是 `BaseRenderer` -> `GameObject` ->

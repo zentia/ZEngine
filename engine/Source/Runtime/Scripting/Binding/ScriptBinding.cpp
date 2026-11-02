@@ -258,6 +258,23 @@ namespace
         "    z: number;\n"
         "}\n"
         "\n"
+        // SmoothDampResult / Vector3SmoothDampResult：Unity 的 SmoothDamp 用
+        // `ref currentVelocity` 传跨帧状态，TS 没有 ref、ZEngine 的值类型跨边界
+        // 又是快照，所以"新值 + 新速度"只能一起回来。Unity 没有这两个结构
+        // （它不需要），名字是我们起的。
+        //
+        // ⚠️ 只接 `value` 不接 `velocity` 是**静默**的：看着在动，只是每帧从静止
+        // 重新开始，永远慢一拍。
+        "declare interface SmoothDampResult {\n"
+        "    value: number;\n"
+        "    velocity: number;\n"
+        "}\n"
+        "\n"
+        "declare interface Vector3SmoothDampResult {\n"
+        "    value: Vector3;\n"
+        "    velocity: Vector3;\n"
+        "}\n"
+        "\n"
         // Plane：Unity 的 `UnityEngine.Plane` —— `{normal, distance}`，平面方程
         // `dot(normal, p) + distance == 0`。与 `declare class Plane`
         // （ZHeaderTool 从 ScriptPlane.h 生成，带 `FromPoints` / `Raycast`

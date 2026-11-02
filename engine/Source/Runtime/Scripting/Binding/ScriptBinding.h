@@ -50,6 +50,10 @@
 #include "Runtime/Core/Math/Quaternion.h"
 // RectT<float> == Unity's Rect, RectT<int> == RectInt. Both are four-field PODs
 // (x, y, width, height) so they cross as plain objects, no conversion needed.
+// SmoothDampResult / Vector3SmoothDampResult: Unity's SmoothDamp carries
+// `currentVelocity` by `ref`; TS has no out/ref and ZEngine value types cross as
+// snapshots, so the new value and the new velocity come back together.
+#include "Runtime/Core/Math/SmoothDamp.h"
 #include "Runtime/Core/Math/Rect.h"
 #include "Runtime/Core/Math/Vector2.h"
 #include "Runtime/Core/Math/Vector3.h"
@@ -641,6 +645,52 @@ namespace ZScript
             out.x = static_cast<int>(apis->get_value_double(env, apis->get_property(env, v, "x")));
             out.y = static_cast<int>(apis->get_value_double(env, apis->get_property(env, v, "y")));
             out.z = static_cast<int>(apis->get_value_double(env, apis->get_property(env, v, "z")));
+            return out;
+        }
+    };
+
+    // SmoothDamp results: `{value, velocity}` -- or `{value: {x,y,z}, velocity: {...}}`
+    // for the vector version. These are the only structs whose fields are named
+    // `value` / `velocity` rather than Unity's own, because Unity has no such
+    // struct (it uses `ref`); the names are chosen so the calling code reads
+    // `r.value` / `r.velocity`, which is what the ref parameter meant.
+    template <>
+    struct Converter<SmoothDampResult>
+    {
+        static pesapi_value ToJs(pesapi_ffi* apis, pesapi_env env, const SmoothDampResult& v)
+        {
+            pesapi_value o = apis->create_object(env);
+            apis->set_property(env, o, "value", apis->create_double(env, v.value));
+            apis->set_property(env, o, "velocity", apis->create_double(env, v.velocity));
+            return o;
+        }
+        static SmoothDampResult FromJs(pesapi_ffi* apis, pesapi_env env, pesapi_value v)
+        {
+            SmoothDampResult out;
+            out.value =
+                static_cast<float>(apis->get_value_double(env, apis->get_property(env, v, "value")));
+            out.velocity =
+                static_cast<float>(apis->get_value_double(env, apis->get_property(env, v, "velocity")));
+            return out;
+        }
+    };
+
+    template <>
+    struct Converter<Vector3SmoothDampResult>
+    {
+        static pesapi_value ToJs(pesapi_ffi* apis, pesapi_env env, const Vector3SmoothDampResult& v)
+        {
+            pesapi_value o = apis->create_object(env);
+            apis->set_property(env, o, "value", Converter<Vector3>::ToJs(apis, env, v.value));
+            apis->set_property(env, o, "velocity", Converter<Vector3>::ToJs(apis, env, v.velocity));
+            return o;
+        }
+        static Vector3SmoothDampResult FromJs(pesapi_ffi* apis, pesapi_env env, pesapi_value v)
+        {
+            Vector3SmoothDampResult out;
+            out.value = Converter<Vector3>::FromJs(apis, env, apis->get_property(env, v, "value"));
+            out.velocity =
+                Converter<Vector3>::FromJs(apis, env, apis->get_property(env, v, "velocity"));
             return out;
         }
     };

@@ -1,6 +1,8 @@
 #include "Runtime/Scripting/ScriptVector/ScriptVector.h"
 
 #include "Runtime/Scripting/ScriptMath/ScriptMath.h"
+// `deltaTime <= 0` 时退回 Unity 的默认值 `Time.deltaTime`。
+#include "Runtime/Scripting/ScriptTime/ScriptTime.h"
 
 #include <algorithm>
 #include <cmath>
@@ -156,6 +158,28 @@ namespace Runtime
     ::Vector3 Vector3::ClampMagnitude(const ::Vector3& v, float max_length)
     {
         return VectorMath::ClampMagnitude(v, max_length);
+    }
+
+    Vector3SmoothDampResult Vector3::SmoothDamp(const ::Vector3& current, const ::Vector3& target,
+                                                const ::Vector3& current_velocity,
+                                                float smooth_time, float max_speed,
+                                                float delta_time)
+    {
+        if (!(delta_time > 0.f))
+        {
+            delta_time = Time::GetDeltaTime();
+        }
+        Vector3SmoothDampResult out;
+        // ⚠️ 三个分量**各自**跑标量版 —— Unity 的 `Vector3.SmoothDamp` 就是这么做
+        // 的，于是 `maxSpeed` 是"每个分量的上限"，不是合成速度的上限（对角方向
+        // 可以到 √3 倍）。别"修"成整向量限速，那和 Unity 不是同一条曲线。
+        out.value.x = SmoothDampDetail::Step(current.x, target.x, current_velocity.x, smooth_time,
+                                             max_speed, delta_time, out.velocity.x);
+        out.value.y = SmoothDampDetail::Step(current.y, target.y, current_velocity.y, smooth_time,
+                                             max_speed, delta_time, out.velocity.y);
+        out.value.z = SmoothDampDetail::Step(current.z, target.z, current_velocity.z, smooth_time,
+                                             max_speed, delta_time, out.velocity.z);
+        return out;
     }
 
     ::Vector3 Vector3::Reflect(const ::Vector3& v, const ::Vector3& normal)

@@ -3,7 +3,12 @@
 #include "Runtime/BaseClasses/Object.h"
 #include "Runtime/Core/Math/Math.h"
 #include "Runtime/Core/Math/Quaternion.h"
+// SmoothDamp：Unity 那对 `ref currentVelocity` 的渐进函数。实现放在这里，
+// Mathf 与 Vector3（ScriptVector.h）**共用一份** —— 两份实现迟早漂移。
+#include "Runtime/Core/Math/SmoothDamp.h"
 #include "Runtime/Core/Math/Vector3.h"
+// `deltaTime <= 0` 时退回 Unity 的默认值 `Time.deltaTime`。
+#include "Runtime/Scripting/ScriptTime/ScriptTime.h"
 
 #include "ScriptMath.generated.h"
 
@@ -684,6 +689,45 @@ public:
     {
         const float delta = DeltaAngle(a, b);
         return a + delta * Clamp01(t);
+    }
+
+    // ---- SmoothDamp -------------------------------------------------------
+    //
+    // Unity 是 `SmoothDamp(current, target, ref currentVelocity, ...)`：速度是
+    // **跨帧状态**，靠 `ref` 传进传出。TS 没有 `ref`，而 ZEngine 的值类型跨边界
+    // 是快照（改传进来的对象不会写回调用方），所以只能"新值 + 新速度一起返回"。
+    //
+    //     const r = Mathf.SmoothDamp(pos, target, vel, 0.3, 0, dt);
+    //     pos = r.value;  vel = r.velocity;   // ⚠️ 少了第二行 = 每帧从静止重来
+    //
+    // 参数与 Unity 一致，两处默认值用哨兵表达（TS 没有可选参数的默认实参）：
+    //   * `maxSpeed <= 0`  = Unity 的 `Mathf.Infinity`（不限速）；
+    //   * `deltaTime <= 0` = Unity 的 `Time.deltaTime`（取引擎当前帧的 delta）。
+    ZFUNCTION()
+    static SmoothDampResult SmoothDamp(float current, float target, float current_velocity,
+                                       float smooth_time, float max_speed, float delta_time)
+    {
+        SmoothDampResult out;
+        if (!(delta_time > 0.f))
+        {
+            delta_time = Time::GetDeltaTime();
+        }
+        out.value = SmoothDampDetail::Step(current, target, current_velocity, smooth_time,
+                                           max_speed, delta_time, out.velocity);
+        return out;
+    }
+
+    /// 角度版（度）：先把 target 折到"最短弧"上再走同一个算法 —— 也就是
+    /// `SmoothDamp(current, current + DeltaAngle(current, target), ...)`。
+    ///
+    /// ⚠️ 少了 `DeltaAngle` 那一步，350° → 10° 会往**反方向**转 340°；而它仍然
+    /// 平滑、仍然收敛到 10°，只是绕了一大圈 —— 静默的错行为。
+    ZFUNCTION()
+    static SmoothDampResult SmoothDampAngle(float current, float target, float current_velocity,
+                                            float smooth_time, float max_speed, float delta_time)
+    {
+        return SmoothDamp(current, current + DeltaAngle(current, target), current_velocity,
+                          smooth_time, max_speed, delta_time);
     }
 
     /// 朝目标角走，单步不超过 max_delta（度），走最短弧。

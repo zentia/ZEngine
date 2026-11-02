@@ -515,6 +515,43 @@ class Mover extends Behaviour {
         ].join("|");
     }
 
+    /// `Mathf.SmoothDamp` / `Vector3.SmoothDamp` 的端到端探针。
+    ///
+    /// ⚠️ 这一条必须走 **TS**，C++ 侧的 `TestSmoothDamp` 测不到它：值类型跨边界
+    /// 是**快照**，而 SmoothDamp 的返回值是两个 float（或六个）的**结构体**。
+    /// 少一个 `Converter<SmoothDampResult>`，TS 侧拿到的是 `undefined`，`.value`
+    /// 读出来是 `undefined` —— 而 `String(undefined)` 照样能拼进字符串，不报错。
+    ///
+    /// 判据挑的是"写错了也不报错"的那几个数：
+    ///   * 第一帧 **0.002061**：换成 `std::exp(-x)` 会是 0.002126。两条曲线都平滑、
+    ///     都收敛，只有这个数能分清；
+    ///   * 限速 **0.001031** vs 不限速 **2.061**：差三个数量级。只比大小的话任何
+    ///     限速都过；
+    ///   * `SmoothDampAngle(350, 10)` 必须 **> 350**（跨 0 走 +20 的短弧），往下走
+    ///     说明少了 `DeltaAngle`；
+    ///   * `Vector3` 版的 z 分量（已经在目标上）必须是 **0**。
+    smoothDampProbe: string = "";
+
+    ProbeSmoothDamp(): void {
+        const dt: number = 1.0 / 60.0;
+        const first: SmoothDampResult = Mathf.SmoothDamp(0, 1, 0, 0.5, 0, dt);
+        const limited: SmoothDampResult = Mathf.SmoothDamp(0, 1000, 0, 0.5, 1, dt);
+        const free: SmoothDampResult = Mathf.SmoothDamp(0, 1000, 0, 0.5, 0, dt);
+        const angle: SmoothDampResult = Mathf.SmoothDampAngle(350, 10, 0, 0.5, 0, dt);
+        const v3: Vector3SmoothDampResult = Vector3.SmoothDamp(
+            { x: 0, y: 0, z: 0 }, { x: 100, y: 100, z: 0 }, { x: 0, y: 0, z: 0 }, 0.5, 1, dt);
+        this.smoothDampProbe = [
+            first.value.toFixed(6),
+            first.velocity.toFixed(6),
+            limited.value.toFixed(6),
+            free.value.toFixed(3),
+            angle.value.toFixed(3),
+            v3.value.x.toFixed(6),
+            v3.value.y.toFixed(6),
+            String(v3.value.z)
+        ].join("|");
+    }
+
     /// 走 **JS shim** 的那条停止路径（`g.Behaviour.prototype.StopAllCoroutines`）。
     /// C++ 直接调 comp.StopAllCoroutines() 是测不到 shim 的 —— 少一行转发
     /// 照样全绿（变异 SC16 就是这么漏的）。
