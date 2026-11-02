@@ -278,6 +278,7 @@ class Mover extends Behaviour {
         this.inputProbe = "";
         this.materialLightProbe = "";
         this.meshProbe = "";
+        this.animatorProbe = "";
         // ---- Unity 的 FixedUpdate ---------------------------------------------
         //
         // 这一段存在的理由不只是"多一个钩子"：在此之前 `OnFixedUpdate` 在 d.ts 里
@@ -782,6 +783,28 @@ class Mover extends Behaviour {
             String(meshHasUvChannel),
             String(filterHasShared),
             String(filterHasRenderer)
+        ].join("|");
+        // ---- Unity 的 Animator 其余面（slice 54）----
+        //
+        // 还是发布面门，理由同上面两段（拿不到构造函数、AddComponent 按声明类型
+        // 包装）。这里额外钉住一件 tsc 抓不到的事：`speed` 是**属性**而不是一对
+        // 方法 —— ZSCRIPTPROPERTY 漏掉的话 `Animator.speed = 2` 在运行时是给一个
+        // 普通 JS 对象加了个字段，静默失效。
+        const animatorClassPublished = (typeof AnimationComponent === "function");
+        const animatorHasSpeed = (typeof AnimationComponent.prototype.GetSpeed === "function") &&
+            (typeof AnimationComponent.prototype.SetSpeed === "function");
+        const animatorHasRebind = (typeof AnimationComponent.prototype.Rebind === "function");
+        const animatorHasShape = (typeof AnimationComponent.prototype.GetParameterCount === "function") &&
+            (typeof AnimationComponent.prototype.GetStateName === "function");
+        const animatorHasIsName = (typeof AnimationComponent.prototype.IsName === "function");
+        const animatorHasEvents = (typeof AnimationComponent.prototype.GetFiredEventCount === "function");
+        this.animatorProbe = [
+            String(animatorClassPublished),
+            String(animatorHasSpeed),
+            String(animatorHasRebind),
+            String(animatorHasShape),
+            String(animatorHasIsName),
+            String(animatorHasEvents)
         ].join("|");
         // ---- Unity 的 Input 那一层（slice 51）----
         // 这个进程没有 InputSystem，所以下面断言的是**安全默认值**与**可写的

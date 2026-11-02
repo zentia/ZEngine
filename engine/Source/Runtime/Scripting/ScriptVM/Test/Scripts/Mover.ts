@@ -738,6 +738,7 @@ class Mover extends Behaviour {
     inputProbe: string = "";
     materialLightProbe: string = "";
     meshProbe: string = "";
+    animatorProbe: string = "";
 
     ProbePlatformFacades(): void {
         // ---- SystemInfo：headless 下必须是哨兵值 ----
@@ -865,6 +866,35 @@ class Mover extends Behaviour {
             String(meshHasUvChannel),
             String(filterHasShared),
             String(filterHasRenderer)
+        ].join("|");
+
+        // ---- Unity 的 Animator 其余面（slice 54）----
+        //
+        // 还是发布面门，理由同上面两段（拿不到构造函数、AddComponent 按声明类型
+        // 包装）。这里额外钉住一件 tsc 抓不到的事：`speed` 是**属性**而不是一对
+        // 方法 —— ZSCRIPTPROPERTY 漏掉的话 `Animator.speed = 2` 在运行时是给一个
+        // 普通 JS 对象加了个字段，静默失效。
+        const animatorClassPublished: boolean = (typeof AnimationComponent === "function");
+        const animatorHasSpeed: boolean =
+            (typeof AnimationComponent.prototype.GetSpeed === "function") &&
+            (typeof AnimationComponent.prototype.SetSpeed === "function");
+        const animatorHasRebind: boolean =
+            (typeof AnimationComponent.prototype.Rebind === "function");
+        const animatorHasShape: boolean =
+            (typeof AnimationComponent.prototype.GetParameterCount === "function") &&
+            (typeof AnimationComponent.prototype.GetStateName === "function");
+        const animatorHasIsName: boolean =
+            (typeof AnimationComponent.prototype.IsName === "function");
+        const animatorHasEvents: boolean =
+            (typeof AnimationComponent.prototype.GetFiredEventCount === "function");
+
+        this.animatorProbe = [
+            String(animatorClassPublished),
+            String(animatorHasSpeed),
+            String(animatorHasRebind),
+            String(animatorHasShape),
+            String(animatorHasIsName),
+            String(animatorHasEvents)
         ].join("|");
 
         // ---- Unity 的 Input 那一层（slice 51）----

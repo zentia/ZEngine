@@ -78,6 +78,8 @@
 #include "Runtime/Function/Framework/Component/Light/LightComponent.h"
 #include "Runtime/Scripting/ScriptMaterial/ScriptMaterial.h"
 #include "Runtime/Scripting/ScriptMesh/ScriptMesh.h"
+#include "Runtime/Function/Framework/Component/Animation/AnimationComponent.h"
+#include "Runtime/Resource/ResType/Data/AnimatorController.h"
 #include "Runtime/Function/Framework/Component/MouseEventDispatcher.h"
 #include "Runtime/Function/Framework/Level/Level.h"
 #include "Runtime/Function/Framework/Object/ObjectIdAllocator.h"
@@ -14433,6 +14435,194 @@ namespace
               "ME45", "MeshFilter publishes mesh and sharedMeshPath");
     }
 
+    //
+    // AN* —— Unity 的 `Animator` 其余面（speed / Rebind / 控制器形状 / 事件）
+    //
+    // 判据围绕两件事：
+    //   1. **能算的必须算出具体数字**：speed 的倍数、Rebind 之后的播放头、事件
+    //      在越过时间点那一刻触发一次。这些都有唯一正确答案，"调了不崩"不算测。
+    //   2. **没控制器时全部走安全默认**且**不崩** —— 那是一条真实存在的路径
+    //      （组件挂了但资产没导入完），而且它最容易在加了新成员之后忘记判空。
+    //
+    // 控制器是**在内存里现搭**的（`AnimatorInstance::Initialize` 收 const 引用，
+    // 不碰资产系统），所以这一组不依赖任何 .zasset —— 与 `Mesh` 那一组同样的
+    // 理由：资产门面的测试在本工程里一贯很弱。
+    //
+    void TestAnimatorParity()
+    {
+        ObjectManager* om = GET_SYSTEM(ObjectManager);
+        Check(om != nullptr, "BN0", "ObjectManager is reachable");
+
+        // ---- 一个两状态 / 两参数的控制器 ------------------------------------
+        AnimatorController controller;
+
+        AnimatorParameter speed_parameter;
+        speed_parameter.name = "speed";
+        speed_parameter.type = static_cast<int>(AnimatorParameterType::Float);
+        speed_parameter.default_float = 0.0f;
+        controller.parameters.push_back(speed_parameter);
+
+        AnimatorParameter combo_parameter;
+        combo_parameter.name = "combo";
+        combo_parameter.type = static_cast<int>(AnimatorParameterType::Int);
+        combo_parameter.default_int = 3;
+        controller.parameters.push_back(combo_parameter);
+
+        AnimatorState idle;
+        idle.name = "Idle";
+        idle.clip_file_path = "clips/idle.zasset";
+        idle.wrap_mode = static_cast<int>(AnimatorWrapMode::Loop);
+        idle.clip_length = 2.0f;
+        AnimatorEvent footstep;
+        footstep.normalized_time = 0.5f;      // 1.0 秒处
+        footstep.function_name = "Footstep";
+        idle.events.push_back(footstep);
+        controller.states.push_back(idle);
+
+        AnimatorState run;
+        run.name = "Run";
+        run.clip_file_path = "clips/run.zasset";
+        run.wrap_mode = static_cast<int>(AnimatorWrapMode::Loop);
+        run.clip_length = 1.0f;
+        controller.states.push_back(run);
+
+        // ⚠️ 第三个状态是**故意**的：参数 2 个、状态 3 个。数量一样的话
+        // "参数数报成状态数"和"状态数报成参数数"这两个错误都**不可观测**
+        // （2 == 2），那两条计数断言就成了白测。名字那一组（BN9 / BN12）也
+        // 一样：两边各 2 个时，把参数名换成状态名在计数上毫无痕迹。
+        AnimatorState jump;
+        jump.name = "Jump";
+        jump.clip_file_path = "clips/jump.zasset";
+        jump.wrap_mode = static_cast<int>(AnimatorWrapMode::Once);
+        jump.clip_length = 0.5f;
+        controller.states.push_back(jump);
+
+        // Idle -> Run：`speed > 0.5`，0.4 秒混出。
+        AnimatorTransition to_run;
+        to_run.from_state = 0;
+        to_run.to_state = 1;
+        AnimatorCondition condition;
+        condition.parameter = "speed";
+        condition.mode = static_cast<int>(AnimatorConditionMode::Greater);
+        condition.threshold = 0.5f;
+        to_run.conditions.push_back(condition);
+        to_run.duration = 0.4f;
+        controller.transitions.push_back(to_run);
+
+        controller.default_state = 0;
+
+        // ---- 没控制器时的安全默认 ------------------------------------------
+        AnimationComponent* bare = om->NewObject<AnimationComponent>();
+        Check(bare->GetStateCount() == 0 && bare->GetParameterCount() == 0, "BN1",
+              "a component with no controller reports zero states and parameters");
+        Check(bare->GetStateName(0).empty() && bare->GetParameterName(0).empty(), "BN2",
+              "and empty names rather than a crash");
+        Check(!bare->IsName("Idle"), "BN3", "IsName is false with nothing loaded");
+        Check(bare->GetFiredEventCount() == 0 && bare->GetFiredEvent(0).empty(), "BN4",
+              "no events fire without a controller");
+        Check(Near(bare->GetSpeed(), 1.0f), "BN5", "speed defaults to 1");
+        bare->Update(0.5f);   // 不崩
+        Check(true, "BN6", "Update on a bare component does not crash");
+
+        // ---- 装上控制器 ----------------------------------------------------
+        AnimationComponent* animator = om->NewObject<AnimationComponent>();
+        std::string init_error;
+        Check(animator->GetAnimator().Initialize(controller, init_error), "BN7",
+              "the in-memory controller initializes");
+
+        Check(animator->GetStateCount() == 3, "BN8", "stateCount comes from the controller");
+        Check(animator->GetStateName(0) == "Idle" && animator->GetStateName(1) == "Run" &&
+                  animator->GetStateName(2) == "Jump",
+              "BN9", "and the names are the authored ones");
+        Check(animator->GetStateName(3).empty() && animator->GetStateName(-1).empty(), "BN10",
+              "out-of-range state names are empty, not a crash");
+
+        Check(animator->GetParameterCount() == 2, "BN11",
+              "parameterCount comes from the controller (and is NOT the state count)");
+        Check(animator->GetParameterName(0) == "speed" && animator->GetParameterName(1) == "combo",
+              "BN12", "and so do the parameter names");
+        Check(animator->GetParameterName(2).empty(), "BN13", "out-of-range is empty");
+
+        // 默认状态与默认值
+        Check(animator->IsName("Idle"), "BN14", "the default state is current after Initialize");
+        Check(Near(animator->GetFloat("speed"), 0.0f), "BN15",
+              "float parameters are seeded from the controller default");
+        Check(animator->GetInteger("combo") == 3, "BN16",
+              "and so are int parameters (GetInteger is Unity's spelling)");
+        animator->SetInteger("combo", 7);
+        Check(animator->GetInt("combo") == 7, "BN17",
+              "SetInteger / GetInt are the same slot (both spellings stay in sync)");
+
+        // ---- speed ----------------------------------------------------------
+        //
+        // ⚠️ 判的是**倍数关系**而不是"时间变了"：Idle 的 clip_length 是 2 秒，
+        // 所以 0.5 秒 * speed 2 = 1 秒 = 归一化 0.5。只断言"推进了"会把"乘了
+        // 1.5 倍"和"乘了 2 倍"都放过。
+        animator->Update(0.5f);
+        Check(Near(animator->GetNormalizedTime(), 0.25f), "BN18",
+              "speed 1 advances the playhead by deltaTime (0.5s of a 2s clip = 0.25)");
+
+        animator->SetSpeed(2.0f);
+        Check(Near(animator->GetSpeed(), 2.0f), "BN19", "speed round-trips");
+        animator->Update(0.5f);
+        Check(Near(animator->GetNormalizedTime(), 0.75f), "BN20",
+              "speed 2 advances twice as far (0.25 + 0.5 = 0.75)");
+
+        // 负数夹到 0：倒放没有后端，接受 -1 会得到一个"看着在跑其实卡住"的组件。
+        animator->SetSpeed(-1.0f);
+        Check(Near(animator->GetSpeed(), 0.0f), "BN21", "a negative speed clamps to 0");
+        animator->Update(0.5f);
+        Check(Near(animator->GetNormalizedTime(), 0.75f), "BN22",
+              "and a frozen animator does not move the playhead");
+
+        // ---- 事件：越过时间点触发一次，下一次推进清空 ------------------------
+        animator->SetSpeed(1.0f);
+        animator->Rebind();
+        Check(animator->GetFiredEventCount() == 0, "BN23", "Rebind clears the fired-event list");
+        animator->Update(0.5f);
+        Check(animator->GetFiredEventCount() == 0, "BN24",
+              "an event at normalized 0.5 has not fired at 0.25");
+        animator->Update(0.75f);   // 归一化 0.5，正好越过
+        Check(animator->GetFiredEventCount() == 1 && animator->GetFiredEvent(0) == "Footstep",
+              "BN25", "and fires once when the playhead crosses it");
+        animator->Update(0.01f);
+        Check(animator->GetFiredEventCount() == 0, "BN26",
+              "the list is cleared at the start of every advance (no double-read)");
+
+        // ---- 过渡 + Rebind ----------------------------------------------------
+        animator->Rebind();
+        Check(animator->IsName("Idle"), "BN27", "Rebind returns to the default state");
+        Check(Near(animator->GetFloat("speed"), 0.0f), "BN28",
+              "and restores the controller defaults (the parameter was set to 1 earlier)");
+
+        animator->SetFloat("speed", 1.0f);
+        animator->Update(0.016f);
+        Check(animator->IsInTransition(), "BN29", "a satisfied condition starts a transition");
+        animator->Update(0.5f);   // 超过 0.4 秒的混出时长
+        Check(animator->IsName("Run"), "BN30", "and the target state is current once the fade ends");
+
+        animator->PlayState("Idle");
+        Check(animator->IsName("Idle"), "BN31", "PlayState still jumps directly");
+        Check(!animator->IsName("Run"), "BN32", "IsName is exact, not a prefix match");
+
+        // ---- 发布面源码门 ------------------------------------------------------
+        const std::string animator_source =
+            ReadFile("Source/Runtime/Function/Framework/Component/Animation/AnimationComponent.h");
+        Check(!animator_source.empty(), "BN33", "AnimationComponent.h is readable");
+        Check(CountOccurrences(animator_source, "Name = \"speed\"") >= 1, "BN34",
+              "speed is a script property, not a method pair");
+        Check(CountOccurrences(animator_source, "GetParameterCount") >= 1 &&
+                  CountOccurrences(animator_source, "IsName") >= 1 &&
+                  CountOccurrences(animator_source, "Rebind") >= 1,
+              "BN35", "the controller-shape and Rebind entry points are published");
+
+        const std::string instance_source = ReadFile("Source/Runtime/Function/Animation/AnimatorInstance.h");
+        Check(!instance_source.empty(), "BN36", "AnimatorInstance.h is readable");
+        Check(CountOccurrences(instance_source, "GetParameterName") >= 1 &&
+                  CountOccurrences(instance_source, "GetStateName") >= 1,
+              "BN37", "the shape queries live on the instance, next to the runtime state");
+    }
+
 }  // namespace
 
 int main()
@@ -14618,6 +14808,7 @@ int main()
     TestInputParity();
     TestMaterialLightParity();
     TestMeshParity();
+    TestAnimatorParity();
     TestGradient();
     TestGradientWiring();
     TestColliderBounds();
