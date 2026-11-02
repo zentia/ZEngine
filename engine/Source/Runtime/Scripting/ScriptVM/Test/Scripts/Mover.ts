@@ -737,6 +737,7 @@ class Mover extends Behaviour {
     platformProbe: string = "";
     inputProbe: string = "";
     materialLightProbe: string = "";
+    meshProbe: string = "";
 
     ProbePlatformFacades(): void {
         // ---- SystemInfo：headless 下必须是哨兵值 ----
@@ -836,6 +837,34 @@ class Mover extends Behaviour {
             String(materialHasSetFloat),
             String(materialHasKeyword),
             String(lightHasSpotAngle)
+        ].join("|");
+
+        // ---- Unity 的 Mesh / MeshFilter（slice 53）----
+        //
+        // 与上面同一条限制：`new Mesh()` 没有被绑定（ZHeaderTool 不导构造函数），
+        // 所以做不了"造一个网格、填顶点、读回来"这种往返。这里钉住的是发布面：
+        // 两个类进了绑定表、以及 `Mesh` 的数据 API 里那几个**形状特殊**的成员
+        // （返回数组、返回 bool 的 SetUVs）确实挂上了。
+        //
+        // 数组返回类型是这一段真正要挡的东西：`std::vector<Vector3>` ->
+        // `Vector3[]` 的映射在 ZHeaderTool 里是一条独立的分支，挂不上的话这些
+        // 方法会从 d.ts 里**消失**（不是变成 any），而 TS 侧毫无察觉。
+        const meshClassPublished: boolean = (typeof Mesh === "function");
+        const filterClassPublished: boolean = (typeof MeshFilter === "function");
+        const meshHasVertices: boolean = (typeof Mesh.prototype.GetVertices === "function");
+        const meshHasBounds: boolean = (typeof Mesh.prototype.RecalculateBounds === "function");
+        const meshHasUvChannel: boolean = (typeof Mesh.prototype.GetUVs === "function");
+        const filterHasShared: boolean = (typeof MeshFilter.prototype.SetSharedMeshPath === "function");
+        const filterHasRenderer: boolean = (typeof MeshFilter.prototype.HasRenderer === "function");
+
+        this.meshProbe = [
+            String(meshClassPublished),
+            String(filterClassPublished),
+            String(meshHasVertices),
+            String(meshHasBounds),
+            String(meshHasUvChannel),
+            String(filterHasShared),
+            String(filterHasRenderer)
         ].join("|");
 
         // ---- Unity 的 Input 那一层（slice 51）----

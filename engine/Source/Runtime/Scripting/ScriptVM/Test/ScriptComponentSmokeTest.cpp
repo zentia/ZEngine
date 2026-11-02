@@ -1215,6 +1215,9 @@ int main(int argc, char** argv)
         CheckEq("ZA4", "Unity 的 Material / Light 发布面：类与方法确实进了绑定表",
                 mover_value("materialLightProbe"),
                 "true|true|true|true|true|true");
+        CheckEq("ZA5", "Unity 的 Mesh / MeshFilter 发布面：数组返回类型也挂上了",
+                mover_value("meshProbe"),
+                "true|true|true|true|true|true|true");
 
         // --- Unity 的 Transform 补齐面（TE 段）------------------------------
         //

@@ -74,8 +74,10 @@
 #include "Runtime/Function/Framework/Component/Camera/CameraComponent.h"
 #include "Runtime/Function/Framework/Component/Mesh/BaseRenderer.h"
 #include "Runtime/Function/Framework/Component/Mesh/MeshRenderer.h"
+#include "Runtime/Function/Framework/Component/Mesh/MeshFilter.h"
 #include "Runtime/Function/Framework/Component/Light/LightComponent.h"
 #include "Runtime/Scripting/ScriptMaterial/ScriptMaterial.h"
+#include "Runtime/Scripting/ScriptMesh/ScriptMesh.h"
 #include "Runtime/Function/Framework/Component/MouseEventDispatcher.h"
 #include "Runtime/Function/Framework/Level/Level.h"
 #include "Runtime/Function/Framework/Object/ObjectIdAllocator.h"
@@ -2154,6 +2156,15 @@ namespace
         RegisterKlass<Camera>();
         RegisterKlass<Ray>();
         RegisterKlass<BaseRenderer>();
+        // ⚠️ `MeshRenderer` / `MeshFilter` / `Mesh` 必须**逐个**注册：这张表是
+        // "本测试要 Cast 到哪些类型"的清单，不是"引擎有哪些类型"（生产环境走
+        // `RegisterRuntimeType()` 里的 `ExecuteAllRegistrations()`，全注册）。
+        // 漏了 `MeshRenderer` 的话 `Cast<BaseRenderer>(mesh_renderer)` 恒为
+        // nullptr —— 于是 MeshFilter 找不到同对象的渲染器，整套接线断言全线红，
+        // 而错看起来像"组件没写回"。
+        RegisterKlass<MeshRenderer>();
+        RegisterKlass<MeshFilter>();
+        RegisterKlass<Mesh>();
         RegisterKlass<CameraComponent>();
         RegisterKlass<Capsule>();
         RegisterKlass<Box>();
@@ -14143,6 +14154,285 @@ namespace
               "LI18", "Light publishes the five Unity-spelled properties");
     }
 
+    /// 一个 XY 平面上的单位四边形（逆时针，法线朝 +Z），两条三角形。
+    std::vector<Vector3> QuadVertices()
+    {
+        return std::vector<Vector3> {Vector3(0.0f, 0.0f, 0.0f),
+                                     Vector3(1.0f, 0.0f, 0.0f),
+                                     Vector3(1.0f, 1.0f, 0.0f),
+                                     Vector3(0.0f, 1.0f, 0.0f)};
+    }
+
+    std::vector<int32_t> QuadTriangles() { return std::vector<int32_t> {0, 1, 2, 0, 2, 3}; }
+
+    /// 与顶点一一对应的 UV（左下 0,0 -> 右上 1,1）。
+    std::vector<Vector2> QuadUVs()
+    {
+        return std::vector<Vector2> {Vector2(0.0f, 0.0f),
+                                     Vector2(1.0f, 0.0f),
+                                     Vector2(1.0f, 1.0f),
+                                     Vector2(0.0f, 1.0f)};
+    }
+
+    //
+    // ME* —— 网格（`Mesh` / `MeshFilter`）
+    //
+    // 这一组的判据围绕两件事：
+    //   1. `Mesh` 的数据 API 是**真的**在算（法线 / 切线 / 包围盒都能被具体数值
+    //      钉住），而不是"调了不崩"；
+    //   2. `MeshFilter` 是**接进渲染器**的（sub-mesh 列表与包围盒都断言到
+    //      renderer 上），不是"存了个字段"。
+    //
+    // 第 2 条是"接线门"：一个只改自己字段的组件等于没实现，而且静默。
+    //
+    void TestMeshParity()
+    {
+        ObjectManager* om = GET_SYSTEM(ObjectManager);
+        Check(om != nullptr, "ME0", "ObjectManager is reachable");
+
+        // ---- 空网格的形状 --------------------------------------------------
+        Mesh* mesh = om->NewObject<Mesh>();
+        Check(mesh->GetVertexCount() == 0 && mesh->GetTriangleCount() == 0, "ME1",
+              "a fresh Mesh is empty");
+        // ⚠️ subMeshCount 对空网格是 **0** 而不是 1：报 1 会让 `GetTriangles(0)`
+        // 看起来该有东西。
+        Check(mesh->GetSubMeshCount() == 0, "ME2", "and claims no sub-mesh (not 'one empty one')");
+        Bounds empty_bounds = mesh->GetBounds();
+        Check(Near(empty_bounds.center.x, 0.0f) && Near(empty_bounds.extents.x, 0.0f), "ME3",
+              "an empty Mesh's bounds is the zero box (Unity's default(Bounds))");
+
+        // ---- 顶点 / 三角形 --------------------------------------------------
+        mesh->SetVertices(QuadVertices());
+        mesh->SetTriangles(QuadTriangles());
+        Check(mesh->GetVertexCount() == 4, "ME4", "vertexCount follows SetVertices");
+        Check(mesh->GetTriangleCount() == 2, "ME5", "triangleCount is indices / 3");
+        Check(mesh->GetSubMeshCount() == 1, "ME6", "and one sub-mesh once there are triangles");
+        Check(mesh->GetTriangles() == QuadTriangles(), "ME7", "triangles round-trip");
+
+        // 长度不是 3 的倍数：尾巴上多出来的索引被丢掉，而不是存成一个残缺三角形。
+        mesh->SetTriangles(std::vector<int32_t> {0, 1, 2, 0, 2});
+        Check(mesh->GetTriangles().size() == 3 && mesh->GetTriangleCount() == 1, "ME8",
+              "a trailing partial triangle is dropped at write time");
+        mesh->SetTriangles(QuadTriangles());
+
+        // ---- 包围盒 --------------------------------------------------------
+        Bounds quad_bounds = mesh->GetBounds();
+        Check(Near(quad_bounds.center.x, 0.5f) && Near(quad_bounds.center.y, 0.5f) &&
+                  Near(quad_bounds.GetSize().x, 1.0f) && Near(quad_bounds.GetSize().y, 1.0f) &&
+                  Near(quad_bounds.GetSize().z, 0.0f),
+              "ME9", "bounds is recomputed from the vertices (not stale, not a unit cube)");
+
+        // 换顶点之后**不**显式重算也拿到新值：bounds 是每帧都可能被读的量，让它
+        // 留着上一批顶点的结果比让它错更危险。
+        mesh->SetVertices(std::vector<Vector3> {Vector3(-2.0f, 0.0f, 0.0f), Vector3(2.0f, 0.0f, 0.0f),
+                                                Vector3(2.0f, 4.0f, 0.0f), Vector3(0.0f, 1.0f, 0.0f)});
+        Check(Near(mesh->GetBounds().GetSize().x, 4.0f) && Near(mesh->GetBounds().GetSize().y, 4.0f),
+              "ME10", "replacing the vertices invalidates the cached bounds");
+        mesh->SetVertices(QuadVertices());
+        mesh->RecalculateBounds();
+        Check(Near(mesh->GetBounds().GetSize().x, 1.0f), "ME11", "RecalculateBounds() is explicit and idempotent");
+
+        // ---- 法线 ----------------------------------------------------------
+        //
+        // ⚠️ 两面**共用**的那条边是判据的关键：只测一个三角形的话，"按面法线累加"
+        // 与"随便取一个面的法线"给出同一个答案，平滑那一半根本没被测到。四边形
+        // 的两个三角形法线都是 +Z，所以这里要的是"累加后归一化仍是 +Z" —— 换一个
+        // 90° 折角的网格才能区分平滑与平面，那种用例留给变异体。
+        mesh->RecalculateNormals();
+        std::vector<Vector3> normals = mesh->GetNormals();
+        Check(normals.size() == 4, "ME12", "RecalculateNormals fills one normal per vertex");
+        bool all_up = true;
+        for (const Vector3& normal : normals)
+        {
+            if (!Near(normal.x, 0.0f) || !Near(normal.y, 0.0f) || !Near(normal.z, 1.0f))
+            {
+                all_up = false;
+            }
+        }
+        Check(all_up, "ME13", "a CCW quad in the XY plane gets +Z normals");
+
+        // 反向绕序 -> 反向法线。"永远朝 +Z"是最容易写出来的错。
+        mesh->SetTriangles(std::vector<int32_t> {0, 2, 1, 0, 3, 2});
+        mesh->RecalculateNormals();
+        Check(Near(mesh->GetNormals()[0].z, -1.0f), "ME14", "reversing the winding flips the normal");
+        mesh->SetTriangles(QuadTriangles());
+        mesh->RecalculateNormals();
+
+        // 退化面（三点共线）必须跳过而不是产生 NaN —— NaN 一进累加就出不来了。
+        Mesh* degenerate = om->NewObject<Mesh>();
+        degenerate->SetVertices(std::vector<Vector3> {Vector3(0.0f, 0.0f, 0.0f),
+                                                      Vector3(1.0f, 0.0f, 0.0f),
+                                                      Vector3(2.0f, 0.0f, 0.0f)});
+        degenerate->SetTriangles(std::vector<int32_t> {0, 1, 2});
+        degenerate->RecalculateNormals();
+        const Vector3 degenerate_normal = degenerate->GetNormals()[0];
+        Check(!(degenerate_normal.x != degenerate_normal.x) && !(degenerate_normal.y != degenerate_normal.y) &&
+                  !(degenerate_normal.z != degenerate_normal.z) && Near(degenerate_normal.x, 0.0f),
+              "ME15", "a degenerate triangle yields a finite (zero) normal, not NaN");
+
+        // ---- 切线 ----------------------------------------------------------
+        //
+        // 缺法线或缺 UV 时直接返回、留原样：切线由"UV 的 u 方向在模型空间指哪"
+        // 定义，两样缺一样就没有定义。
+        Mesh* tangents = om->NewObject<Mesh>();
+        tangents->SetVertices(QuadVertices());
+        tangents->SetTriangles(QuadTriangles());
+        tangents->RecalculateTangents();
+        Check(tangents->GetTangents().empty(), "ME16",
+              "RecalculateTangents does nothing without normals and UVs");
+
+        // 法线用上面那个四边形算出来的（+Z，4 个），UV 给一一对应的那份。
+        tangents->SetNormals(mesh->GetNormals());
+        tangents->SetUV0(QuadUVs());
+        tangents->RecalculateTangents();
+        std::vector<Vector4> tangent4 = tangents->GetTangents();
+        Check(tangent4.size() == 4, "ME17", "RecalculateTangents fills one tangent per vertex");
+        // UV 的 u 沿 +X 增长、法线是 +Z => 切线是 +X。
+        //
+        // ⚠️ 四个顶点**都**判：只判 [0] 的话，"每个三角形只给第一个顶点累加"
+        // 这种错是不可能被发现的（它恰好把 [0] 算对了）。
+        bool all_tangents_x = true;
+        for (const Vector4& t4 : tangent4)
+        {
+            if (!Near(t4.x, 1.0f) || !Near(t4.y, 0.0f) || !Near(t4.z, 0.0f))
+            {
+                all_tangents_x = false;
+            }
+        }
+        Check(all_tangents_x, "ME18", "every tangent follows the UV's u direction (+X here)");
+        // w 是手性。这里必须是 **+1**（不是 |w| == 1）：UV 的 v 与法线满足右手系，
+        // 恒返回 +1 的实现在这里也对，只有翻转 v 才分得出来（下一条）。
+        Check(Near(tangent4[0].w, 1.0f), "ME19", "tangent.w is +1 for a right-handed UV layout");
+
+        // 把 v 翻过来（上下镜像）：切线还是 +X，但手性变号。这一条是"w 恒为 +1"
+        // 那个实现的对手 —— 少了它，w 这一位等于没测。
+        tangents->SetUV0(std::vector<Vector2> {Vector2(0.0f, 1.0f),
+                                               Vector2(1.0f, 1.0f),
+                                               Vector2(1.0f, 0.0f),
+                                               Vector2(0.0f, 0.0f)});
+        tangents->RecalculateTangents();
+        Check(Near(tangents->GetTangents()[0].x, 1.0f) && Near(tangents->GetTangents()[0].w, -1.0f),
+              "ME46", "and -1 when the v axis is flipped (the bitangent follows v)");
+
+        // ---- UV 通道 --------------------------------------------------------
+        Check(tangents->GetUVs(0).size() == 4, "ME20", "channel 0 holds the UVs");
+        Check(tangents->GetUVs(1).empty(), "ME21",
+              "channel 1 is empty rather than silently returning channel 0");
+        Check(!tangents->SetUVs(1, QuadUVs()), "ME22", "and SetUVs reports false for it");
+        Check(tangents->GetUV0() == tangents->GetUVs(0), "ME23", "uv is GetUVs(0)");
+
+        // ---- Clear ----------------------------------------------------------
+        mesh->Clear();
+        Check(mesh->GetVertexCount() == 0 && mesh->GetTriangleCount() == 0 &&
+                  mesh->GetNormals().empty() && mesh->GetSubMeshCount() == 0,
+              "ME24", "Clear() empties every attribute");
+        Check(Near(mesh->GetBounds().GetSize().x, 0.0f), "ME25", "and resets the bounds");
+
+        // ⚠️ 这条才是"空网格退回零盒"真正的门。前两条（ME3 / ME25）走的是
+        // **缓存** —— 新对象的 `m_BoundsDirty` 是 false、`Clear()` 又是直接给
+        // `m_Bounds` 赋值，两者都**不进** `ComputeBounds`。只有"从有顶点变成
+        // 没顶点"才会真的走到那条 return：
+        mesh->SetVertices(std::vector<Vector3>());
+        Check(Near(mesh->GetBounds().GetSize().x, 0.0f) && Near(mesh->GetBounds().center.x, 0.0f),
+              "ME47", "clearing the vertices yields the zero box, not a plausible unit cube");
+
+        // =====================================================================
+        // MeshFilter —— 接线
+        // =====================================================================
+
+        GameObject* go = new GameObject();
+        om->AllocateAndAssignInstanceID(go);
+        MeshRenderer* renderer = om->NewObject<MeshRenderer>();
+        go->addComponent(renderer);
+        renderer->PostLoadResource(go);
+
+        MeshFilter* filter = om->NewObject<MeshFilter>();
+        go->addComponent(filter);
+        filter->PostLoadResource(go);
+
+        Check(filter->HasRenderer(), "ME26", "a MeshFilter sees the sibling renderer");
+        Check(filter->GetMesh() == nullptr, "ME27", "and starts with no runtime mesh");
+
+        // 资产网格：写进 renderer 的 sub-mesh 列表。
+        filter->SetSharedMeshPath("content/meshes/rock.zasset");
+        Check(renderer->getSubMeshes().size() == 1, "ME28",
+              "setting the shared mesh path gives the renderer one sub-mesh");
+        Check(renderer->getSubMeshes()[0].m_MeshAsset == "content/meshes/rock.zasset", "ME29",
+              "with exactly that asset path");
+        Check(renderer->GetMaterialSlotCount() == 1, "ME30",
+              "and the material override slots follow (SetSubMeshes resizes them)");
+        Check(filter->GetSharedMeshPath() == "content/meshes/rock.zasset", "ME31",
+              "the filter reads its own path back");
+
+        // 空路径 = 不画东西（Unity 的 sharedMesh = null）。
+        filter->SetSharedMeshPath("");
+        Check(renderer->getSubMeshes().empty(), "ME32", "clearing the path clears the sub-meshes");
+
+        // ---- 运行时网格：只推包围盒 ----------------------------------------
+        Mesh* runtime_mesh = om->NewObject<Mesh>();
+        runtime_mesh->SetVertices(QuadVertices());
+        runtime_mesh->SetTriangles(QuadTriangles());
+        const Bounds runtime_bounds = runtime_mesh->GetBounds();
+
+        filter->SetMesh(runtime_mesh);
+        Check(filter->GetMesh() == runtime_mesh, "ME33", "the runtime mesh round-trips");
+        Check(Near(filter->GetLocalBounds().center.x, runtime_bounds.center.x) &&
+                  Near(filter->GetLocalBounds().GetSize().x, runtime_bounds.GetSize().x),
+              "ME34", "and the filter reports its bounds");
+        const Bounds renderer_bounds = renderer->GetLocalBounds();
+        Check(Near(renderer_bounds.center.x, runtime_bounds.center.x) &&
+                  Near(renderer_bounds.GetSize().x, runtime_bounds.GetSize().x),
+              "ME35", "the bounds reached the renderer (this is what culling reads)");
+
+        filter->SetMesh(nullptr);
+        Check(filter->GetMesh() == nullptr, "ME36", "clearing the runtime mesh clears the handle");
+        // 撤掉之后回到"由资产算"的那条路（headless 下资产读不到 => 零盒）。零盒与
+        // 四边形那个盒不同，所以这条能真的区分"撤掉了"和"没撤掉"。
+        Check(Near(renderer->GetLocalBounds().GetSize().x, 0.0f), "ME37",
+              "and the renderer's local-bounds override is lifted with it");
+
+        // ---- 组件顺序无关 ----------------------------------------------------
+        //
+        // `GameObject::AddComponent` 是"先 PostLoadResource 再挂进列表"，所以
+        // "先加 filter 后加 renderer"时 filter 那一次推送看不到 renderer。不记账
+        // 的话这份网格就永远丢在半路上了 —— 这条是那条记账逻辑的门。
+        GameObject* late_go = new GameObject();
+        om->AllocateAndAssignInstanceID(late_go);
+        MeshFilter* late_filter = om->NewObject<MeshFilter>();
+        late_go->addComponent(late_filter);
+        late_filter->PostLoadResource(late_go);
+
+        Check(!late_filter->HasRenderer(), "ME38", "a filter with no renderer yet reports so");
+        late_filter->SetSharedMeshPath("content/meshes/late.zasset");
+
+        MeshRenderer* late_renderer = om->NewObject<MeshRenderer>();
+        late_go->addComponent(late_renderer);
+        late_renderer->PostLoadResource(late_go);
+        Check(late_renderer->getSubMeshes().empty(), "ME39",
+              "the renderer added afterwards starts empty");
+
+        late_filter->Tick(0.0f);
+        Check(late_renderer->getSubMeshes().size() == 1 &&
+                  late_renderer->getSubMeshes()[0].m_MeshAsset == "content/meshes/late.zasset",
+              "ME40", "and the pending push lands on the first tick after it appears");
+
+        // ---- 发布面源码门 ----------------------------------------------------
+        const std::string mesh_source = ReadFile("Source/Runtime/Scripting/ScriptMesh/ScriptMesh.h");
+        Check(!mesh_source.empty(), "ME41", "ScriptMesh.h is readable");
+        Check(CountOccurrences(mesh_source, "ZFUNCTION()") >= 20, "ME42",
+              "the Mesh facade publishes Unity's data surface");
+        Check(CountOccurrences(mesh_source, "ZSCRIPTPROPERTY(") >= 5, "ME43",
+              "vertices / triangles / normals / uv / bounds are properties, not method pairs");
+
+        const std::string filter_source =
+            ReadFile("Source/Runtime/Function/Framework/Component/Mesh/MeshFilter.h");
+        Check(!filter_source.empty(), "ME44", "MeshFilter.h is readable");
+        // 带引号的模式：`mesh` 这个词在注释里到处都是，只 grep 名字会把注释算进去。
+        Check(CountOccurrences(filter_source, "Name = \"mesh\"") >= 1 &&
+                  CountOccurrences(filter_source, "Name = \"sharedMeshPath\"") >= 1,
+              "ME45", "MeshFilter publishes mesh and sharedMeshPath");
+    }
+
 }  // namespace
 
 int main()
@@ -14327,6 +14617,7 @@ int main()
     TestApplicationExtras();
     TestInputParity();
     TestMaterialLightParity();
+    TestMeshParity();
     TestGradient();
     TestGradientWiring();
     TestColliderBounds();
