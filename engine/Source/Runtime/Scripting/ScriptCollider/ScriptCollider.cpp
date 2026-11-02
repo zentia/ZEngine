@@ -364,3 +364,60 @@ Vector3 Collider::ClosestPoint(const Vector3& point) const
                    std::clamp(point.y, min_corner.y, max_corner.y),
                    std::clamp(point.z, min_corner.z, max_corner.z));
 }
+
+::Bounds Collider::GetBounds() const
+{
+    const AxisAlignedBox bounds = ComputeWorldBounds();
+    if (!bounds.IsValid())
+    {
+        return ::Bounds();
+    }
+    // `Bounds` 存的是 center + **extents（半尺寸）**。`AxisAlignedBox::getHalfExtent()`
+    // 正好就是这个量，不要再乘 2 —— 乘了之后所有"包围盒重叠"判断都会把盒子当成
+    // 两倍大。
+    return ::Bounds(bounds.getCenter(), bounds.getHalfExtent());
+}
+
+Vector3 Collider::ClosestPointOnBounds(const Vector3& point) const
+{
+    const AxisAlignedBox bounds = ComputeWorldBounds();
+    if (!bounds.IsValid())
+    {
+        return point;
+    }
+    const Vector3 min_corner = bounds.getMinCorner();
+    const Vector3 max_corner = bounds.getMaxCorner();
+    const Vector3 center = bounds.getCenter();
+
+    // 盒内点：推到**最近的那一个面**上，而不是停在原地。
+    //
+    // 做法是对每个轴算"到两个面的距离"，取最小的那个轴，把点夹到那一侧。只夹
+    // 一个轴 —— 三个轴都夹的话得到的是角点，不是"最近的面"。
+    const bool inside = point.x >= min_corner.x && point.x <= max_corner.x &&
+                        point.y >= min_corner.y && point.y <= max_corner.y &&
+                        point.z >= min_corner.z && point.z <= max_corner.z;
+    if (!inside)
+    {
+        // 盒外点与 `ClosestPoint` 同解（夹取）。
+        return Vector3(std::clamp(point.x, min_corner.x, max_corner.x),
+                       std::clamp(point.y, min_corner.y, max_corner.y),
+                       std::clamp(point.z, min_corner.z, max_corner.z));
+    }
+
+    const float to_min_x = point.x - min_corner.x;
+    const float to_max_x = max_corner.x - point.x;
+    const float to_min_y = point.y - min_corner.y;
+    const float to_max_y = max_corner.y - point.y;
+    const float to_min_z = point.z - min_corner.z;
+    const float to_max_z = max_corner.z - point.z;
+
+    float best = to_min_x;
+    Vector3 result = Vector3(min_corner.x, point.y, point.z);
+    if (to_max_x < best) { best = to_max_x; result = Vector3(max_corner.x, point.y, point.z); }
+    if (to_min_y < best) { best = to_min_y; result = Vector3(point.x, min_corner.y, point.z); }
+    if (to_max_y < best) { best = to_max_y; result = Vector3(point.x, max_corner.y, point.z); }
+    if (to_min_z < best) { best = to_min_z; result = Vector3(point.x, point.y, min_corner.z); }
+    if (to_max_z < best) { result = Vector3(point.x, point.y, max_corner.z); }
+    (void)center;
+    return result;
+}

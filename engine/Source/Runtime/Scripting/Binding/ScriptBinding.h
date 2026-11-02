@@ -39,6 +39,8 @@
 // {r,g,b,a} object. Core/Color/Color.h is header-only and pulls in nothing but
 // Vector3, so including it here costs every .gen.cpp nothing.
 #include "Runtime/Core/Color/Color.h"
+// Gradient / GradientColorKey / GradientAlphaKey: Unity's "colour over time". Plain PODs like Color, so they cross as plain objects.
+#include "Runtime/Core/Color/Gradient.h"
 // Bounds is the Unity-shaped AABB value type ({center, extents}); it is a POD
 // like Color, so it crosses as a plain object.
 #include "Runtime/Core/Math/AnimationCurve.h"
@@ -830,6 +832,116 @@ namespace ZScript
             out.a = (alpha != nullptr && apis->is_undefined(env, alpha) == 0)
                         ? static_cast<float>(apis->get_value_double(env, alpha))
                         : 1.0f;
+            return out;
+        }
+    };
+
+    // ColorParseResult: `ColorUtility.TryParseHtmlString` brings back
+    // `{valid, color}` because TypeScript has no out parameters and Unity's
+    // signature is `bool TryParseHtmlString(string, out Color)`.
+    //
+    // ⚠️ 必须排在 `Converter<Color>` **之后**：它要用 `Converter<Color>::ToJs`。
+    // 放到前面的话 MSVC 报的是 "'ToJs': is not a member of Converter<Color>"
+    // 外加一堆 "already instantiated" 的连锁错误，看不出真因是顺序。
+    // ColorParseResult: `ColorUtility.TryParseHtmlString` brings back
+    // `{valid, color}` because TypeScript has no out parameters and Unity's
+    // signature is `bool TryParseHtmlString(string, out Color)`.
+    // Same shape as RaycastHit's `valid`: a wrong-but-plausible parse result is
+    // worse than an obvious zero.
+    template <>
+    struct Converter<ColorParseResult>
+    {
+        static pesapi_value ToJs(pesapi_ffi* apis, pesapi_env env, const ColorParseResult& v)
+        {
+            pesapi_value o = apis->create_object(env);
+            apis->set_property(env, o, "valid", apis->create_boolean(env, v.valid));
+            apis->set_property(env, o, "color", Converter<Color>::ToJs(apis, env, v.color));
+            return o;
+        }
+        static ColorParseResult FromJs(pesapi_ffi* apis, pesapi_env env, pesapi_value v)
+        {
+            ColorParseResult out;
+            out.valid = apis->get_value_bool(env, apis->get_property(env, v, "valid"));
+            out.color = Converter<Color>::FromJs(apis, env, apis->get_property(env, v, "color"));
+            return out;
+        }
+    };
+
+    // GradientColorKey / GradientAlphaKey: Unity keeps colour and alpha on two
+    // SEPARATE key tracks precisely so their times do not have to line up
+    // ("go red at 0.3, fade out at 0.7"). Merging them would force them back
+    // into sync, which is an authoring limitation, not a simplification.
+    template <>
+    struct Converter<GradientColorKey>
+    {
+        static pesapi_value ToJs(pesapi_ffi* apis, pesapi_env env, const GradientColorKey& v)
+        {
+            pesapi_value o = apis->create_object(env);
+            apis->set_property(env, o, "color", Converter<Color>::ToJs(apis, env, v.color));
+            apis->set_property(env, o, "time", apis->create_double(env, v.time));
+            return o;
+        }
+        static GradientColorKey FromJs(pesapi_ffi* apis, pesapi_env env, pesapi_value v)
+        {
+            GradientColorKey out;
+            out.color = Converter<Color>::FromJs(apis, env, apis->get_property(env, v, "color"));
+            out.time =
+                static_cast<float>(apis->get_value_double(env, apis->get_property(env, v, "time")));
+            return out;
+        }
+    };
+
+    template <>
+    struct Converter<GradientAlphaKey>
+    {
+        static pesapi_value ToJs(pesapi_ffi* apis, pesapi_env env, const GradientAlphaKey& v)
+        {
+            pesapi_value o = apis->create_object(env);
+            apis->set_property(env, o, "alpha", apis->create_double(env, v.alpha));
+            apis->set_property(env, o, "time", apis->create_double(env, v.time));
+            return o;
+        }
+        static GradientAlphaKey FromJs(pesapi_ffi* apis, pesapi_env env, pesapi_value v)
+        {
+            GradientAlphaKey out;
+            out.alpha =
+                static_cast<float>(apis->get_value_double(env, apis->get_property(env, v, "alpha")));
+            out.time =
+                static_cast<float>(apis->get_value_double(env, apis->get_property(env, v, "time")));
+            return out;
+        }
+    };
+
+    // Gradient: `{colorKeys, alphaKeys, mode}`. The two key tracks cross as JS
+    // arrays (Converter<std::vector<T>> handles that), so a whole gradient is a
+    // plain object literal a script can write by hand.
+    template <>
+    struct Converter<Gradient>
+    {
+        static pesapi_value ToJs(pesapi_ffi* apis, pesapi_env env, const Gradient& v)
+        {
+            pesapi_value o = apis->create_object(env);
+            apis->set_property(env, o, "colorKeys",
+                               Converter<std::vector<GradientColorKey>>::ToJs(apis, env, v.color_keys));
+            apis->set_property(env, o, "alphaKeys",
+                               Converter<std::vector<GradientAlphaKey>>::ToJs(apis, env, v.alpha_keys));
+            apis->set_property(env, o, "mode",
+                               apis->create_double(env, static_cast<double>(v.mode)));
+            return o;
+        }
+        static Gradient FromJs(pesapi_ffi* apis, pesapi_env env, pesapi_value v)
+        {
+            Gradient out;
+            out.color_keys = Converter<std::vector<GradientColorKey>>::FromJs(
+                apis, env, apis->get_property(env, v, "colorKeys"));
+            out.alpha_keys = Converter<std::vector<GradientAlphaKey>>::FromJs(
+                apis, env, apis->get_property(env, v, "alphaKeys"));
+            pesapi_value mode = apis->get_property(env, v, "mode");
+            const int raw = (mode != nullptr && apis->is_undefined(env, mode) == 0)
+                                ? static_cast<int>(apis->get_value_double(env, mode))
+                                : 0;
+            out.mode = (raw == static_cast<int>(GradientMode::Fixed)) ? GradientMode::Fixed
+                                                                     : GradientMode::Blend;
             return out;
         }
     };

@@ -150,6 +150,18 @@ public:
     ZFUNCTION()
     const eastl::string& GetName() const { return name; }
 
+    // Unity 里 `go.name` / `go.transform` 是**属性**，不是方法。ZSCRIPTPROPERTY
+    // 把已有的 ZFUNCTION getter/setter 对发布成 pesapi 访问器属性，所以脚本两种
+    // 拼写法都能用（`go.name = "X"` 与 `go.SetName("X")`）。
+    //
+    // 与 `tag` / `layer` 同一批：Unity 搬过来的代码写的是属性，缺了它们每个调用
+    // 点都要改写 —— 而"方法不存在"在运行时是静默无事发生，只能靠源码门看得见。
+    ZSCRIPTPROPERTY(Name="name", Getter="GetName", Setter="SetName")
+
+    /// Unity 的 `go.transform`。**只读** —— Unity 的 `transform` 也是只读（每个
+    /// GameObject 有且只有一个 Transform，换掉它没有意义）。
+    ZSCRIPTPROPERTY(Name="transform", Getter="GetTransform")
+
     // ---- tag / layer -------------------------------------------------------
     //
     // Unity 的两个"给对象分类"的维度，用途不同、不可互换：

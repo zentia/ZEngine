@@ -2,6 +2,9 @@
 
 #include "Runtime/BaseClasses/Object.h"
 #include "Runtime/Core/Math/AxisAligned.h"
+// `Bounds` 是 Unity 的 AABB 值类型（center + **extents 半尺寸**）。`collider.bounds`
+// 在 Unity 里返回的就是它，所以这里是"补 Unity 那个属性"，不是新发明。
+#include "Runtime/Core/Math/Bounds.h"
 #include "Runtime/Core/Math/Vector3.h"
 #include "Runtime/Function/Framework/Component/Rigidbody/RigidbodyComponent.h"
 
@@ -150,6 +153,21 @@ public:
     ZSCRIPTPROPERTY(Name="boundsCenter", Getter="GetBoundsCenter")
     ZSCRIPTPROPERTY(Name="boundsSize", Getter="GetBoundsSize")
 
+    /// Unity 的 `collider.bounds` —— 一次拿到 `{center, extents}` 的 `Bounds`。
+    ///
+    /// `boundsCenter` / `boundsSize` 早就有了，缺的正是 Unity 脚本里最常用的这个
+    /// 拼写（`Camera` 那批视锥剔除、自己算包围盒重叠都直接拿 `bounds`）。有了它
+    /// 脚本不必为了一次 `bounds.Intersects(other)` 去手搓一个 Bounds。
+    ///
+    /// ⚠️ **`extents` 是半尺寸**，不是 size 的一半之外的东西 —— 与
+    /// `GetBoundsSize()` 的关系是 `size == extents * 2`。Unity 同。
+    ///
+    /// 只读：Unity 也不允许写（bounds 是碰撞体的派生量）。
+    ZFUNCTION()
+    ::Bounds GetBounds() const;
+
+    ZSCRIPTPROPERTY(Name="bounds", Getter="GetBounds")
+
     /// Unity 的 `collider.bounds.Contains(point)`。
     ZFUNCTION()
     bool Contains(const Vector3& point) const;
@@ -162,6 +180,21 @@ public:
     /// `Physics.Raycast` 从 point 往各个方向打。
     ZFUNCTION()
     Vector3 ClosestPoint(const Vector3& point) const;
+
+    /// 包围盒**表面上**离 `point` 最近的一点（Unity 的
+    /// `collider.ClosestPointOnBounds`）。
+    ///
+    /// 与 `ClosestPoint` 的区别是点在盒内时的行为：
+    ///   * `ClosestPoint`（本引擎的实现是 AABB 夹取）点在盒**内**时返回点自己；
+    ///   * 这一条返回点在**盒表面上**的投影 —— 盒内点会被推到最近的那个面上。
+    ///
+    /// 这不是 Unity 里那个"精确几何最近点"（那需要碰撞体形状求交，ZEngine 的
+    /// `ClosestPoint` 走的是 AABB），但"点到包围盒表面的最近点"这个语义是
+    /// Unity 的 `ClosestPointOnBounds` 本来的意思，且它是**可判**的。
+    ///
+    /// 没有碰撞体时返回点自己（与 `ClosestPoint` 一致的降级契约）。
+    ZFUNCTION()
+    Vector3 ClosestPointOnBounds(const Vector3& point) const;
 
 public:
     /// 只由缓存装配，脚本无需（也不应该）自己改绑的对象。刻意**不**标

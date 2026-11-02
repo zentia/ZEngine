@@ -334,6 +334,42 @@ namespace
         "    a: number;\n"
         "}\n"
         "\n"
+        // ColorParseResult：`ColorUtility.TryParseHtmlString` 的结果。Unity 的
+        // 签名是 `bool TryParseHtmlString(string, out Color)` —— TS 没有 out
+        // 参数，所以"成功与否"和"颜色"一起回来，与 `RaycastHit.valid` 同形。
+        //
+        // ⚠️ 解析失败时 `color` 是全 0（透明黑），**不是**保留调用方原值。不看
+        // `valid` 直接用的话，配置表里一个拼错的色值会变成"这个 UI 不见了"。
+        // Gradient：Unity 的 `UnityEngine.Gradient` —— 颜色随时间变化。
+        //
+        // ⚠️ **两条独立的键序列**（colorKeys / alphaKeys）不是冗余：Unity 允许
+        // "颜色在 0.3 处变红、透明度在 0.7 处淡出"，两个维度的时间点不需要对齐。
+        //
+        // ⚠️ 门面（`declare class Gradient`，ZHeaderTool 生成）上的"改"全部**返回
+        // 新值**：Gradient 跨边界是快照，原地改没有意义。所以这里刻意**没有**
+        // colorKeys / alphaKeys 的访问器属性 —— setter 的返回值会被丢掉，装上
+        // 就是个永久空操作。
+        "declare interface GradientColorKey {\n"
+        "    color: Color;\n"
+        "    time: number;\n"
+        "}\n"
+        "\n"
+        "declare interface GradientAlphaKey {\n"
+        "    alpha: number;\n"
+        "    time: number;\n"
+        "}\n"
+        "\n"
+        "declare interface Gradient {\n"
+        "    colorKeys: GradientColorKey[];\n"
+        "    alphaKeys: GradientAlphaKey[];\n"
+        "    mode: number;\n"
+        "}\n"
+        "\n"
+        "declare interface ColorParseResult {\n"
+        "    valid: boolean;\n"
+        "    color: Color;\n"
+        "}\n"
+        "\n"
         // Bounds：Unity 存的是 center + **extents（半尺寸）**，`size` / `min` /
         // `max` 都是派生量。键名与 `ZScript::Converter<Bounds>` 一致。
         // 与 `declare class Bounds`（ScriptBounds.h 那批静态方法）同名合并。
