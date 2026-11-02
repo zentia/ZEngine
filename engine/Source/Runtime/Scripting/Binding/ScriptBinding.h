@@ -44,6 +44,9 @@
 #include "Runtime/Core/Math/AnimationCurve.h"
 #include "Runtime/Core/Math/Bounds.h"
 #include "Runtime/Core/Math/Matrix4.h"
+// Plane is Unity's `UnityEngine.Plane`: {normal, distance} with the equation
+// dot(normal, p) + distance == 0. POD, crosses as a plain object.
+#include "Runtime/Core/Math/Plane.h"
 #include "Runtime/Core/Math/Quaternion.h"
 // RectT<float> == Unity's Rect, RectT<int> == RectInt. Both are four-field PODs
 // (x, y, width, height) so they cross as plain objects, no conversion needed.
@@ -638,6 +641,31 @@ namespace ZScript
             out.x = static_cast<int>(apis->get_value_double(env, apis->get_property(env, v, "x")));
             out.y = static_cast<int>(apis->get_value_double(env, apis->get_property(env, v, "y")));
             out.z = static_cast<int>(apis->get_value_double(env, apis->get_property(env, v, "z")));
+            return out;
+        }
+    };
+
+    // Plane: {normal, distance}. The normal crosses as a Vector3 (i.e. a nested
+    // `{x, y, z}`), so a script literal for a whole plane is
+    // `{ normal: {x:0, y:1, z:0}, distance: -3 }`. Nothing normalises `normal`
+    // on the way across -- a script that writes `{normal: {x:0,y:2,z:0}}` gets a
+    // plane whose `GetDistanceToPoint` is scaled by 2, exactly as Unity would.
+    template <>
+    struct Converter<Plane>
+    {
+        static pesapi_value ToJs(pesapi_ffi* apis, pesapi_env env, const Plane& v)
+        {
+            pesapi_value o = apis->create_object(env);
+            apis->set_property(env, o, "normal", Converter<Vector3>::ToJs(apis, env, v.normal));
+            apis->set_property(env, o, "distance", apis->create_double(env, v.distance));
+            return o;
+        }
+        static Plane FromJs(pesapi_ffi* apis, pesapi_env env, pesapi_value v)
+        {
+            Plane out;
+            out.normal = Converter<Vector3>::FromJs(apis, env, apis->get_property(env, v, "normal"));
+            out.distance =
+                static_cast<float>(apis->get_value_double(env, apis->get_property(env, v, "distance")));
             return out;
         }
     };

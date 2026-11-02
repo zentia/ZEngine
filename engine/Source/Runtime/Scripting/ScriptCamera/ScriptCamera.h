@@ -2,6 +2,9 @@
 
 #include "Runtime/BaseClasses/Object.h"
 #include "Runtime/Core/Math/Matrix4.h"
+// `pixelRect` 返回 Unity 的 `Rect`（`RectT<float>`）—— 之前退而用 Vector4 是
+// 因为那时没有能过脚本边界的 Rect 值类型。
+#include "Runtime/Core/Math/Rect.h"
 #include "Runtime/Core/Math/Vector2.h"
 #include "Runtime/Core/Math/Vector3.h"
 #include "Runtime/Core/Math/Vector4.h"
@@ -237,13 +240,14 @@ public:
     ZFUNCTION()
     void ResetAspect();
 
-    /// Unity 的 `pixelRect`：这台相机在渲染目标上占的那块像素区域。
+    /// Unity 的 `pixelRect`：这台相机在渲染目标上占的那块像素区域（左下原点，
+    /// 像素）。
     ///
-    /// ⚠️ Unity 返回 `Rect`，ZEngine 没有 `Rect` 值类型可以过脚本边界，所以按
-    /// `(x, y, width, height)` 塞进 `Vector4`（左下原点，像素）。这是与 Unity 的
-    /// 形状差异，不是语义差异。
+    /// 返回 `Rect` 而不是早先的 `Vector4`：那是为了绕开"ZEngine 没有 Rect 值类型
+    /// 能过脚本边界"，现在有了就该换回 Unity 的形状 —— 字段名从 `z`/`w` 变回
+    /// `width`/`height`，从 Unity 搬过来的代码不用改。
     ZFUNCTION()
-    Vector4 GetPixelRect() const;
+    ::Rect GetPixelRect() const;
 
     // ---- 朝向 ------------------------------------------------------------
     //

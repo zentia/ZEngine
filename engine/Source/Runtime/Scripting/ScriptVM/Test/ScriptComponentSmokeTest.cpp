@@ -1110,6 +1110,19 @@ int main(int argc, char** argv)
         CheckEq("X3", "矩形端到端：半开 Contains / 负 width / ClampToBounds / 严格 Overlaps",
                 mover_value("rectProbe"), "false|true|0|0.25,0.25|7|1.5,2.5|false");
 
+        // --- Unity 的 Plane / GeometryUtility（Y 段）-----------------------
+        //
+        // 与 X 段同一类理由：`Plane.h` / `Frustum.h` 在 C++ 里一直都在，但脚本
+        // 侧零命中。这里证明 `Plane` 既是 `{normal, distance}` 值、又挂着静态
+        // 方法（同名合并），`GeometryUtility` 在 tsc 下存在，且 `Plane[]` 能当
+        // 参数传进去。
+        CheckTrue("Y0", "ProbePlanes 送到了 JS 侧", comp2->InvokeMethod("ProbePlanes"));
+        // ⚠️ 三个判据各占一位：`distance = -3`（符号反了整个视锥内外反过来）、
+        // `4`（正面命中的 t）、`-1`（背面**不**命中）；末两位的 true/false 是
+        // "六个面都判了"。
+        CheckEq("Y1", "平面端到端：distance 符号 / Raycast 只打正面 / TestPlanesAABB",
+                mover_value("planeProbe"), "-3|2|4|-1|5|true|false");
+
         // --- Unity 的 OnBecameVisible / OnBecameInvisible（V 段）------------
         //
         // 与 T / U 段同一类理由：派发链是 `BaseRenderer` -> `GameObject` ->

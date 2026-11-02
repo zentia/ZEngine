@@ -469,6 +469,52 @@ class Mover extends Behaviour {
         ].join("|");
     }
 
+    // ---------------------------------------------------------------------
+    // Unity 的 Plane / GeometryUtility（Y 段）
+    // ---------------------------------------------------------------------
+    //
+    // 与 X 段同一类理由：C++ 的 `Plane.h` / `Frustum.h` 一直都在，但脚本侧
+    // **一个都没有** —— `Converter<Plane>`、`declare interface Plane`、门面全是
+    // 零命中。这里端到端走一遍，证明 `Plane` 既是 `{normal, distance}` 值又挂着
+    // 静态方法（同名合并），且 `GeometryUtility` 这个名字在 tsc 下存在。
+    //
+    // 判据挑的是"写错了也不报错"的那几个数：
+    //   * `distance` 必须是 **-3**（`dot(n,p) + d = 0`），写成 +3 的话整个视锥
+    //     内外反过来，而 `TestPlanesAABB` 照样返回一个看着合理的 bool；
+    //   * 从**背面**射的射线必须返回 **-1**（只打正面）；
+    //   * 六个面都要判，所以"只看第一个面"的实现在末位 false 上会露馅。
+    planeProbe: string = "";
+
+    ProbePlanes(): void {
+        const ground: Plane = Plane.FromNormalAndPosition({ x: 0, y: 0, z: 1 },
+                                                          { x: 0, y: 0, z: 3 });
+        const wall: Plane = Plane.Create({ x: 1, y: 0, z: 0 }, -5);   // x = 5，正面是 +x
+        const t: number = Plane.Raycast(wall, { x: 9, y: 0, z: 0 }, { x: -1, y: 0, z: 0 });
+        const fromBehind: number = Plane.Raycast(wall, { x: 0, y: 0, z: 0 }, { x: 1, y: 0, z: 0 });
+        // 六个面围成的盒子 [-10,10]^3，法线朝内（与视锥同一约定）。
+        const boxPlanes: Plane[] = [
+            Plane.Create({ x: 1, y: 0, z: 0 }, 10),
+            Plane.Create({ x: -1, y: 0, z: 0 }, 10),
+            Plane.Create({ x: 0, y: 1, z: 0 }, 10),
+            Plane.Create({ x: 0, y: -1, z: 0 }, 10),
+            Plane.Create({ x: 0, y: 0, z: 1 }, 10),
+            Plane.Create({ x: 0, y: 0, z: -1 }, 10)
+        ];
+        const inside: boolean = GeometryUtility.TestPlanesAABB(
+            boxPlanes, { center: { x: 0, y: 0, z: 0 }, extents: { x: 2, y: 2, z: 2 } });
+        const outside: boolean = GeometryUtility.TestPlanesAABB(
+            boxPlanes, { center: { x: 0, y: 50, z: 0 }, extents: { x: 2, y: 2, z: 2 } });
+        this.planeProbe = [
+            String(ground.distance),
+            String(Plane.GetDistanceToPoint(ground, { x: 0, y: 0, z: 5 })),
+            String(t),
+            String(fromBehind),
+            String(Plane.GetFlipped(wall).distance),
+            String(inside),
+            String(outside)
+        ].join("|");
+    }
+
     /// 走 **JS shim** 的那条停止路径（`g.Behaviour.prototype.StopAllCoroutines`）。
     /// C++ 直接调 comp.StopAllCoroutines() 是测不到 shim 的 —— 少一行转发
     /// 照样全绿（变异 SC16 就是这么漏的）。

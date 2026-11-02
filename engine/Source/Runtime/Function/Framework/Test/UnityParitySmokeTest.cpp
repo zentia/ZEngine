@@ -47,6 +47,9 @@
 // 写 `::` 前缀，避免与门面混淆。
 #include "Runtime/Scripting/ScriptIntVector/ScriptIntVector.h"
 #include "Runtime/Scripting/ScriptRect/ScriptRect.h"
+// `Runtime::Plane` / `Runtime::GeometryUtility` 是 Plane 与视锥的脚本门面
+// （值类型仍是全局的 `::Plane`）。
+#include "Runtime/Scripting/ScriptPlane/ScriptPlane.h"
 #include "Runtime/Scripting/ScriptBounds/ScriptBounds.h"
 #include "Runtime/Scripting/ScriptColor/ScriptColor.h"
 #include "Runtime/Function/AI/Navigation/NavMeshAgentComponent.h"
@@ -5397,7 +5400,10 @@ namespace
               "an unbound Camera reads an identity world-to-camera matrix (not garbage)");
         Check(Near(unbound.GetCameraToWorldMatrix(), Matrix4x4::IDENTITY), "AR1", "and an identity inverse");
         Check(Near(unbound.GetProjectionMatrix(), Matrix4x4::IDENTITY), "AR2", "and an identity projection");
-        Check(Near(unbound.GetPixelRect(), Vector4(0.f, 0.f, 0.f, 0.f)), "AR3", "and an empty pixel rect");
+        // `pixelRect` 现在是 **Rect**（不是早先那个把四个数塞进 Vector4 的
+        // 退路）：字段名与 Unity 一致，`Rect` 那套 `width` / `height` /
+        // `Contains` 都能直接用。
+        Check(unbound.GetPixelRect() == ::Rect(0.f, 0.f, 0.f, 0.f), "AR3", "and an empty pixel rect");
         // 屏幕 <-> 视口只依赖**屏幕尺寸**、不依赖相机，所以未绑定时照样是一次真
         // 换算。断言"返回 ZERO"是错的（那等于把一次坐标转换静默变成没做），
         // 这里要的是"有结果且不出现 NaN"。
@@ -5488,11 +5494,17 @@ namespace
               "ResetAspect goes back to the screen aspect ratio");
 
         // --- pixelRect ----------------------------------------------------
-        const Vector4 rect = cam.GetPixelRect();
-        Check(rect.z > 0.f && rect.w > 0.f, "AR22", "pixelRect has a positive size");
+        const ::Rect rect = cam.GetPixelRect();
+        // ⚠️ 这里读的是 `width` / `height`，不是 `z` / `w`：Rect 那四个字段是
+        // Unity 的拼写，把 z/w 的旧写法留着的话下面两条会静默地读到 0。
+        Check(rect.width > 0.f && rect.height > 0.f, "AR22", "pixelRect has a positive size");
         // 一台占满渲染目标的相机，矩形就该是整块屏。宽高用反了的话这条会红。
-        Check(Near(rect.z, width, 1.f) && Near(rect.w, height, 1.f), "AR23",
+        Check(Near(rect.width, width, 1.f) && Near(rect.height, height, 1.f), "AR23",
               "and for a full-target camera it is the whole screen");
+        // Unity 的 `pixelRect` 是"左下原点"的 Rect（与屏幕坐标同一套原点），
+        // 所以整块屏的那个矩形**包含**原点。
+        Check(Runtime::Rect::ContainsPoint(rect, Vector2(0.f, 0.f)), "AR23b",
+              "and it uses the same bottom-left origin as screen space (it contains (0,0))");
 
         // --- 朝向 ---------------------------------------------------------
         Check(Near(cam.GetForward().length(), 1.f, 1e-3f) && Near(cam.GetUp().length(), 1.f, 1e-3f) &&
@@ -10243,6 +10255,284 @@ namespace
         }
     }
 
+    // =========================================================================
+    // Plane / GeometryUtility
+    // =========================================================================
+    //
+    // 这两个类型在 C++ 里早就有了（`Runtime/Core/Math/Plane.h` 与 `Frustum.h`
+    // 都写得很完整），但脚本侧**一个都没有**：`Converter<Plane>`、
+    // `declare interface Plane`、门面全是零命中。于是脚本做不了"这个盒子在不在
+    // 画面里"—— 只能把 `Physics.Raycast` 当万能钥匙用。
+    //
+    // ⚠️ 三处判据各配一组**互补**夹具，否则全是静默错误：
+    //   1. `distance` 的符号（"点在正面"是哪一侧）。只测"点在平面上"（距离 0）
+    //      分不出 `+distance` 与 `-distance`。
+    //   2. `Flip` 必须同时翻转 normal **和** distance —— 只翻 normal 的话平面
+    //      变成另一个平面，而它仍然自洽（法线是单位向量、点仍在面上求 0）。
+    //   3. `Raycast` 只打正面。只测"从正面射过去"分不出"背面也算命中"。
+    void TestPlaneAndGeometryUtility()
+    {
+        using ::Bounds;
+        using ::Plane;
+
+        // --- 构造 ------------------------------------------------------------
+        const Plane ground_from_position = Runtime::Plane::FromNormalAndPosition(
+            Vector3(0.f, 0.f, 1.f), Vector3(0.f, 0.f, 3.f));
+        // ⚠️ 这一条就是 distance 符号的判据：平面在 z = 3，原点是"下面"，所以
+        // `distance` 是 **-3**（`dot(n, p) + d = 0` ⇒ `0 + d = -3`）。写成 +3 的
+        // 话 GetDistanceToPoint 会给 +3，方向整个反过来，而 `GetSide` 仍然返回
+        // 一个"看着合理"的 bool。
+        Check(Near(ground_from_position.distance, -3.f), "PL0",
+              "a plane through (0,0,3) with normal +Z has distance -3 (not +3)");
+        Check(Near(ground_from_position.GetDistanceToPoint(Vector3(0.f, 0.f, 3.f)), 0.f), "PL1",
+              "a point on the plane is at distance 0");
+        Check(Near(ground_from_position.GetDistanceToPoint(Vector3(0.f, 0.f, 5.f)), 2.f), "PL2",
+              "and a point above it is at +2 (the normal side is positive)");
+        Check(Near(ground_from_position.GetDistanceToPoint(Vector3(0.f, 0.f, 1.f)), -2.f), "PL3",
+              "and below it is -2");
+        // FromNormalAndPosition 归一化法线：给一个长度 2 的法线，距离仍然是真距离。
+        const Plane unnormalised = Runtime::Plane::FromNormalAndPosition(
+            Vector3(0.f, 0.f, 2.f), Vector3(0.f, 0.f, 3.f));
+        Check(Near(unnormalised.normal.z, 1.f), "PL4", "FromNormalAndPosition normalises the normal");
+        Check(Near(unnormalised.GetDistanceToPoint(Vector3(0.f, 0.f, 5.f)), 2.f), "PL5",
+              "so the distance is a real distance, not twice it");
+        // ⚠️ 互补的一半：`Create` **不**归一化（照 Unity 的构造函数）。
+        const Plane raw = Runtime::Plane::Create(Vector3(0.f, 0.f, 2.f), -6.f);
+        Check(Near(raw.normal.z, 2.f), "PL6", "Create does NOT normalise (same as Unity's ctor)");
+        Check(Near(raw.GetDistanceToPoint(Vector3(0.f, 0.f, 5.f)), 4.f), "PL7",
+              "so its 'distance' is scaled by the normal's length");
+        Check(Near(Runtime::Plane::Normalized(raw).GetDistanceToPoint(Vector3(0.f, 0.f, 5.f)), 2.f),
+              "PL8", "and Normalize brings it back to a real distance");
+
+        // 三点定面：绕序按右手定则给出法线。
+        const Plane from_points = Runtime::Plane::FromPoints(
+            Vector3(0.f, 0.f, 0.f), Vector3(1.f, 0.f, 0.f), Vector3(0.f, 1.f, 0.f));
+        Check(Near(from_points.normal.z, 1.f), "PL9", "three CCW points give the +Z normal");
+        // 反向绕序 ⇒ 法线朝 -Z。只测一个绕序分不出"叉乘的两边写反了"。
+        const Plane reversed = Runtime::Plane::FromPoints(
+            Vector3(0.f, 0.f, 0.f), Vector3(0.f, 1.f, 0.f), Vector3(1.f, 0.f, 0.f));
+        Check(Near(reversed.normal.z, -1.f), "PL10", "and the reversed winding gives -Z");
+        // 共线 ⇒ 退化成零平面（不产生 NaN）。
+        const Plane collinear = Runtime::Plane::FromPoints(
+            Vector3(0.f, 0.f, 0.f), Vector3(1.f, 0.f, 0.f), Vector3(2.f, 0.f, 0.f));
+        Check(collinear.normal == Vector3::ZERO && collinear.distance == 0.f, "PL11",
+              "three collinear points degenerate to the zero plane (no NaN)");
+        Check(Runtime::Plane::Normalized(collinear).normal == Vector3::ZERO, "PL12",
+              "and Normalize on a zero plane is a no-op (it would divide by zero)");
+
+        // --- 查询 ------------------------------------------------------------
+        const Plane vertical(Vector3(1.f, 0.f, 0.f), -5.f);   // x = 5，正面是 +x
+        Check(Runtime::Plane::GetSide(vertical, Vector3(6.f, 0.f, 0.f)), "PL13",
+              "GetSide is true on the normal side");
+        Check(!Runtime::Plane::GetSide(vertical, Vector3(4.f, 0.f, 0.f)), "PL14",
+              "and false behind");
+        // ⚠️ 边界算正面（`>= 0`），与 Unity 的 GetSide 一致。
+        Check(Runtime::Plane::GetSide(vertical, Vector3(5.f, 0.f, 0.f)), "PL15",
+              "and a point exactly ON the plane counts as the front side (>= 0)");
+        Check(Runtime::Plane::SameSide(vertical, Vector3(6.f, 0.f, 0.f), Vector3(9.f, 0.f, 0.f)),
+              "PL16", "SameSide is true for two points on one side");
+        Check(!Runtime::Plane::SameSide(vertical, Vector3(6.f, 0.f, 0.f), Vector3(1.f, 0.f, 0.f)),
+              "PL17", "and false for one on each side");
+        // ⚠️ 边界：与 `GetSide` 的 `>=` 一致，边界点算**正面**那一侧 —— 所以它与
+        // 正面上的点同侧，与背面上的点不同侧。Unity 的 SameSide 一样是"由
+        // GetDistanceToPoint 的符号两段拼出来"，两层规则必须同一套 `>=`。
+        Check(Runtime::Plane::SameSide(vertical, Vector3(5.f, 0.f, 0.f), Vector3(9.f, 0.f, 0.f)) &&
+                  !Runtime::Plane::SameSide(vertical, Vector3(5.f, 0.f, 0.f), Vector3(1.f, 0.f, 0.f)),
+              "PL18", "a point exactly ON the plane counts as the front side (SameSide follows GetSide's >=)");
+        Check(Runtime::Plane::GetClosestPointOnPlane(vertical, Vector3(9.f, 3.f, 4.f)) ==
+                  Vector3(5.f, 3.f, 4.f), "PL19", "ClosestPointOnPlane drops the normal component");
+
+        // --- Raycast：只打正面，t 是射线参数 ----------------------------------
+        // ⚠️ `vertical` 的正面是 **x > 5**（法线 +x）。所以"打正面"的射线是
+        // **从 x = 9 往 -x 方向**射：起点在正面、朝着法线的反方向走。
+        Check(Near(Runtime::Plane::Raycast(vertical, Vector3(9.f, 0.f, 0.f),
+                                           Vector3(-1.f, 0.f, 0.f)), 4.f), "PL20",
+              "a ray fired at the front face from x=9 towards -x hits at t = 4");
+        // ⚠️ 互补的一半：从**背面**（x = 0）朝 +x 射过去**不**命中（-1）。
+        // 只测"从正面射"分不出"背面也算命中"。
+        Check(Runtime::Plane::Raycast(vertical, Vector3(0.f, 0.f, 0.f),
+                                      Vector3(1.f, 0.f, 0.f)) == -1.f, "PL21",
+              "a ray fired from BEHIND the plane does NOT hit (it only hits the front face)");
+        Check(Runtime::Plane::Raycast(vertical, Vector3(9.f, 0.f, 0.f),
+                                      Vector3(1.f, 0.f, 0.f)) == -1.f, "PL22",
+              "and neither does one fired away from the front face");
+        Check(Runtime::Plane::Raycast(vertical, Vector3(0.f, 1.f, 0.f),
+                                      Vector3(0.f, 1.f, 0.f)) == -1.f, "PL23",
+              "a parallel ray misses (no NaN, and 'grazing' is not a hit)");
+        // ⚠️ t 不是世界距离：方向长 2 时 t 是原来的一半（4 → 2）。
+        Check(Near(Runtime::Plane::Raycast(vertical, Vector3(9.f, 0.f, 0.f),
+                                           Vector3(-2.f, 0.f, 0.f)), 2.f), "PL24",
+              "t is the ray parameter, not a world distance (a length-2 direction halves it)");
+        // 起点在平面上 ⇒ t = 0（不是"不命中"）。
+        Check(Runtime::Plane::Raycast(vertical, Vector3(5.f, 0.f, 0.f),
+                                      Vector3(-1.f, 0.f, 0.f)) == 0.f, "PL25",
+              "starting exactly on the plane gives t = 0, not a miss");
+
+        // --- 非破坏的"改" ------------------------------------------------------
+        // ⚠️ Flip 必须翻 normal **和** distance：只翻 normal 的话平面跑到 x = -5，
+        // 但 `GetDistanceToPoint(0)` 仍是一个看着合理的数。用原点到平面的距离判。
+        const Plane flipped = Runtime::Plane::Flipped(vertical);
+        Check(Near(flipped.normal.x, -1.f) && Near(flipped.distance, 5.f), "PL26",
+              "Flip negates the normal AND the distance (the plane itself is unchanged)");
+        Check(Near(flipped.GetDistanceToPoint(Vector3(5.f, 0.f, 0.f)), 0.f), "PL27",
+              "so the flipped plane still passes through the same points");
+        Check(Near(vertical.GetDistanceToPoint(Vector3(0.f, 0.f, 0.f)), -5.f), "PL28",
+              "and the original is untouched (value semantics)");
+        // ⚠️ Translate 的符号：`distance -= dot(normal, translation)`。
+        // 沿法线正方向推 2 ⇒ 平面从 x = 5 到 x = 7。
+        const Plane moved = Runtime::Plane::Translated(vertical, Vector3(2.f, 0.f, 0.f));
+        Check(Near(moved.distance, -7.f), "PL29",
+              "translating along +normal by 2 moves the plane to x = 7 (distance -= dot)");
+        Check(Near(moved.GetDistanceToPoint(Vector3(7.f, 0.f, 0.f)), 0.f), "PL30",
+              "and the moved plane really passes through x = 7");
+        // 沿法线方向平移不改变"点相对平面的有符号距离"？会改变 —— 这正是平移的定义。
+        Check(Near(moved.GetDistanceToPoint(Vector3(0.f, 0.f, 0.f)), -7.f), "PL31",
+              "so the origin is now 7 behind it");
+        // 沿**垂直**于法线的方向平移不改变平面。
+        Check(Near(Runtime::Plane::Translated(vertical, Vector3(0.f, 5.f, 5.f)).distance, -5.f),
+              "PL32", "translating perpendicular to the normal does not move the plane");
+
+        // --- GeometryUtility.TestPlanesAABB ------------------------------------
+        // 一个"半空间"：x >= 5 那一侧。
+        std::vector<Plane> half_space;
+        half_space.push_back(vertical);
+        const Bounds inside_bounds(Vector3(8.f, 0.f, 0.f), Vector3(1.f, 1.f, 1.f));
+        const Bounds outside_bounds(Vector3(0.f, 0.f, 0.f), Vector3(1.f, 1.f, 1.f));
+        Check(Runtime::GeometryUtility::TestPlanesAABB(half_space, inside_bounds), "PL33",
+              "a box on the front side survives the half-space");
+        Check(!Runtime::GeometryUtility::TestPlanesAABB(half_space, outside_bounds), "PL34",
+              "a box entirely behind it does not");
+        // 跨过平面的盒子**算**通过（正顶点在正面）—— 这是"保守、宁多画"的那一半。
+        const Bounds straddling(Vector3(5.f, 0.f, 0.f), Vector3(2.f, 1.f, 1.f));
+        Check(Runtime::GeometryUtility::TestPlanesAABB(half_space, straddling), "PL35",
+              "a box straddling the plane still passes (conservative: it may over-draw)");
+        // 空平面数组：没有任何平面能把它判到外面去 ⇒ true。
+        Check(Runtime::GeometryUtility::TestPlanesAABB(std::vector<Plane>(), inside_bounds), "PL36",
+              "an empty plane list rejects nothing (no plane can push it out)");
+
+        // 六个面围出来的"视锥"：用一个手搭的轴对齐盒子当锥（法线朝内）。
+        std::vector<Plane> box_planes;
+        box_planes.push_back(Plane(Vector3(1.f, 0.f, 0.f), 10.f));    // x >= -10
+        box_planes.push_back(Plane(Vector3(-1.f, 0.f, 0.f), 10.f));   // x <= 10
+        box_planes.push_back(Plane(Vector3(0.f, 1.f, 0.f), 10.f));    // y >= -10
+        box_planes.push_back(Plane(Vector3(0.f, -1.f, 0.f), 10.f));   // y <= 10
+        box_planes.push_back(Plane(Vector3(0.f, 0.f, 1.f), 10.f));    // z >= -10
+        box_planes.push_back(Plane(Vector3(0.f, 0.f, -1.f), 10.f));   // z <= 10
+        Check(Runtime::GeometryUtility::TestPlanesAABB(box_planes,
+                                                       Bounds(Vector3::ZERO, Vector3(2.f, 2.f, 2.f))),
+              "PL37", "a box at the centre of a 6-plane box frustum passes");
+        Check(!Runtime::GeometryUtility::TestPlanesAABB(box_planes,
+                                                        Bounds(Vector3(50.f, 0.f, 0.f),
+                                                               Vector3(2.f, 2.f, 2.f))),
+              "PL38", "one far outside on X fails");
+        // ⚠️ 六个面里**只要一个**判出去就 false —— 只测"整体在外面"的话，
+        // "只看第一个平面"的实现照样全绿。
+        Check(!Runtime::GeometryUtility::TestPlanesAABB(box_planes,
+                                                        Bounds(Vector3(0.f, 50.f, 0.f),
+                                                               Vector3(2.f, 2.f, 2.f))),
+              "PL39", "and so does one far outside on Y (every plane is checked, not just the first)");
+        Check(!Runtime::GeometryUtility::TestPlanesAABB(box_planes,
+                                                        Bounds(Vector3(0.f, 0.f, 50.f),
+                                                               Vector3(2.f, 2.f, 2.f))),
+              "PL40", "and on Z");
+
+        // --- GeometryUtility.CalculateFrustumPlanesVP -----------------------------
+        //
+        // 手搭一张**正交**投影矩阵：把 `[-10, 10]^3` 映射到裁剪空间
+        // `x, y ∈ [-1, 1]`、`z ∈ [0, 1]`。这样六个平面就是"盒子的六个面"，可以
+        // **逐条**对上手写的值 —— 用透视矩阵的话只能对上"符号"，对错都过。
+        //
+        // ⚠️ 约定是**列向量**（`clip = M * world`，与 `MakePerspectiveMatrix` /
+        // `Frustum::FromViewProjection` 同一套）：第 i 行点乘 world 给出 clip 的第
+        // i 个分量，平移项在 `m[i][3]`。所以 z 的平移是 `m[2][3]`，**不是** `m[3][2]`
+        // —— 后者会污染 w 行，六个平面就全都不是盒子的面了（`w + x` 里混进 z 项）。
+        Matrix4x4 ortho = Matrix4x4::IDENTITY;
+        ortho.m_Mat[0][0] = 0.1f;    // x: [-10,10] -> [-1,1]
+        ortho.m_Mat[1][1] = 0.1f;    // y
+        ortho.m_Mat[2][2] = 0.05f;   // z: [-10,10] -> [0,1]
+        ortho.m_Mat[2][3] = 0.5f;    // z 的平移项（z = 0 落在 near 上）
+        // w 行保持 (0,0,0,1)：正交投影的 w 恒为 1。
+
+        const std::vector<Plane> ortho_planes =
+            Runtime::GeometryUtility::CalculateFrustumPlanesVP(ortho);
+        Check(ortho_planes.size() == 6, "PL41",
+              "CalculateFrustumPlanesVP returns six planes (same as Unity)");
+        if (ortho_planes.size() == 6)
+        {
+            // ⚠️ 六个平面必须与上面**手搭**的那六个逐个相同（含顺序）：
+            // 左/右/下/上/近/远。这条同时钉住 `distance` 的符号与法线的朝向 ——
+            // 只比较 `TestPlanesAABB` 的 bool 的话，六个面全翻过来也全绿。
+            bool same = true;
+            for (int i = 0; i < 6; ++i)
+            {
+                if (!Near(ortho_planes[static_cast<std::size_t>(i)].normal.x,
+                          box_planes[static_cast<std::size_t>(i)].normal.x) ||
+                    !Near(ortho_planes[static_cast<std::size_t>(i)].normal.y,
+                          box_planes[static_cast<std::size_t>(i)].normal.y) ||
+                    !Near(ortho_planes[static_cast<std::size_t>(i)].normal.z,
+                          box_planes[static_cast<std::size_t>(i)].normal.z) ||
+                    !Near(ortho_planes[static_cast<std::size_t>(i)].distance,
+                          box_planes[static_cast<std::size_t>(i)].distance))
+                {
+                    same = false;
+                }
+            }
+            Check(same, "PL42",
+                  "and they are exactly the six faces of that box, in Unity's order");
+            // 与 `Frustum::Intersects` 同一套判据：门面不该自己另写一份。
+            const ::Bounds probe_a(Vector3::ZERO, Vector3(2.f, 2.f, 2.f));
+            const ::Bounds probe_b(Vector3(50.f, 0.f, 0.f), Vector3(2.f, 2.f, 2.f));
+            Check(Runtime::GeometryUtility::TestPlanesAABB(ortho_planes, probe_a) ==
+                      Frustum::FromViewProjection(ortho).Intersects(probe_a), "PL43",
+                  "TestPlanesAABB agrees with Frustum::Intersects (one implementation, two doors)");
+            Check(Runtime::GeometryUtility::TestPlanesAABB(ortho_planes, probe_b) ==
+                      Frustum::FromViewProjection(ortho).Intersects(probe_b), "PL44",
+                  "and it agrees on the outside case too (not just when both are true)");
+        }
+
+        // --- 拿不到相机 ⇒ 空数组，不是 6 个退化平面 -----------------------------
+        Check(Runtime::GeometryUtility::CalculateFrustumPlanes(nullptr).empty(), "PL45",
+              "a null camera gives an EMPTY list (six degenerate planes would make "
+              "TestPlanesAABB silently always true)");
+        Camera unbound_camera;
+        Check(Runtime::GeometryUtility::CalculateFrustumPlanes(&unbound_camera).empty(), "PL46",
+              "and so does an unbound Camera");
+    }
+
+    void TestPlaneWiring()
+    {
+        const std::string binding_header =
+            ReadFile("Source/Runtime/Scripting/Binding/ScriptBinding.h");
+        Check(!binding_header.empty(), "PLW0", "ScriptBinding.h is readable");
+        if (binding_header.empty()) { return; }
+        Check(CountOccurrences(binding_header, "struct Converter<Plane>") >= 1, "PLW1",
+              "Plane has a marshaller (without it the name never reaches scripts)");
+
+        const std::string binding_source =
+            ReadFile("Source/Runtime/Scripting/Binding/ScriptBinding.cpp");
+        Check(!binding_source.empty(), "PLW2", "ScriptBinding.cpp is readable");
+        if (!binding_source.empty())
+        {
+            Check(CountOccurrences(binding_source, "declare interface Plane {") >= 1, "PLW3",
+                  "Plane is declared in the .d.ts");
+        }
+
+        const std::string facade = ReadFile("Source/Runtime/Scripting/ScriptPlane/ScriptPlane.h");
+        Check(!facade.empty(), "PLW4", "ScriptPlane.h is readable");
+        if (facade.empty()) { return; }
+        // ⚠️ Plane 的 `distance` 符号是"整个视锥内外反不反"的唯一来源，但只有
+        // 源码门能看见"它还写着那行算术"。行为测试（PL0）看的是结果，这里看的是
+        // 它还挂在 `Plane.h` 里而不是被复制到门面里。
+        Check(CountOccurrences(facade, "GetDistanceToPoint(plane, point)") >= 1 ||
+                  CountOccurrences(facade, "GetDistanceToPoint") >= 1, "PLW5",
+              "the plane facade exposes GetDistanceToPoint");
+        // 三个 Unity 静态成员：视锥那两个 + Raycast。
+        Check(CountOccurrences(facade, "static std::vector<::Plane> CalculateFrustumPlanes(") >= 1,
+              "PLW6", "GeometryUtility.CalculateFrustumPlanes takes a Camera (Unity's shape)");
+        Check(CountOccurrences(facade, "static bool TestPlanesAABB(") >= 1, "PLW7",
+              "GeometryUtility.TestPlanesAABB exists");
+    }
+
     void TestMouseEvents()
     {
         ObjectManager* om = GET_SYSTEM(ObjectManager);
@@ -11519,6 +11809,8 @@ int main()
     TestIntVectors();
     TestRects();
     TestRectWiring();
+    TestPlaneAndGeometryUtility();
+    TestPlaneWiring();
     TestWiringGate();
 
     std::printf("\n=== %d checks, %d failures ===\n", g_Checks, g_Failures);

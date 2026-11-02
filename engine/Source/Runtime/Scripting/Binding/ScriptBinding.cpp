@@ -258,6 +258,20 @@ namespace
         "    z: number;\n"
         "}\n"
         "\n"
+        // Plane：Unity 的 `UnityEngine.Plane` —— `{normal, distance}`，平面方程
+        // `dot(normal, p) + distance == 0`。与 `declare class Plane`
+        // （ZHeaderTool 从 ScriptPlane.h 生成，带 `FromPoints` / `Raycast`
+        // 那些静态成员）同名合并 —— 与 `Vector3` / `Color` 一个套路。
+        //
+        // ⚠️ `normal` **不**在跨边界时归一化：脚本写 `{normal: {x:0,y:2,z:0}}`
+        // 得到的平面，`GetDistanceToPoint` 会整体放大 2 倍。Unity 同样不归一化
+        // （直接改 `plane.normal` 也不会归一化）。要"真正的距离"用
+        // `Plane.Normalize(plane)`。
+        "declare interface Plane {\n"
+        "    normal: Vector3;\n"
+        "    distance: number;\n"
+        "}\n"
+        "\n"
         // Rect / RectInt：Unity 的四个字段 `x`/`y`/`width`/`height`。
         // 与 `declare class Rect` / `RectInt`（ScriptRect.h 那批静态方法）
         // 同名合并。
