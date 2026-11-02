@@ -182,6 +182,27 @@ namespace Runtime
         return out;
     }
 
+    ::Vector3 Vector3::Slerp(const ::Vector3& a, const ::Vector3& b, float t)
+    {
+        return VectorMath::Slerp(a, b, t);
+    }
+
+    ::Vector3 Vector3::RotateTowards(const ::Vector3& current, const ::Vector3& target,
+                                     float max_radians_delta, float max_magnitude_delta)
+    {
+        return VectorMath::RotateTowards(current, target, max_radians_delta, max_magnitude_delta);
+    }
+
+    ::Vector3 Vector3::ProjectOnPlane(const ::Vector3& v, const ::Vector3& plane_normal)
+    {
+        return VectorMath::ProjectOnPlane(v, plane_normal);
+    }
+
+    float Vector3::SignedAngle(const ::Vector3& from, const ::Vector3& to, const ::Vector3& axis)
+    {
+        return VectorMath::SignedAngle(from, to, axis);
+    }
+
     ::Vector3 Vector3::Reflect(const ::Vector3& v, const ::Vector3& normal)
     {
         return VectorMath::Reflect(v, normal);

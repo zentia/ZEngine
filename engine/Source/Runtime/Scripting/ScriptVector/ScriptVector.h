@@ -213,6 +213,37 @@ namespace Runtime
                                                   float smooth_time, float max_speed,
                                                   float delta_time);
 
+        /// 沿**弧**插值（Unity 的 `Vector3.Slerp`）：方向走弧、长度单独插，
+        /// 与 `Lerp`（走直线、长度会塌）不是一回事。
+        ///
+        /// ⚠️ t 夹在 [0,1]（Unity 同）。退化时（零向量、近乎同向）退回 `Lerp`。
+        /// 实现在 `VectorMath.Slerp`，这里只补 Unity 的拼写。
+        ZFUNCTION()
+        static ::Vector3 Slerp(const ::Vector3& a, const ::Vector3& b, float t);
+
+        /// 朝 target 转，单步不超过 `max_radians_delta`（**弧度**，不是度），
+        /// 长度每步最多走 `max_magnitude_delta`。Unity 的 `Vector3.RotateTowards`。
+        ///
+        /// ⚠️ 角度参数与 `Vector3.Angle`（度）**不同单位** —— 这是 Unity 自己的
+        /// 不一致（那边参数名就叫 maxRadiansDelta），照搬比"统一成度"安全：
+        /// 搬过来的代码不会静默差 57 倍。
+        ZFUNCTION()
+        static ::Vector3 RotateTowards(const ::Vector3& current, const ::Vector3& target,
+                                       float max_radians_delta, float max_magnitude_delta);
+
+        /// 投影到**平面**上（Unity 的 `Vector3.ProjectOnPlane`）：
+        /// `v - Project(v, planeNormal)`。法线不必是单位向量。
+        ZFUNCTION()
+        static ::Vector3 ProjectOnPlane(const ::Vector3& v, const ::Vector3& plane_normal);
+
+        /// 带符号的夹角，**度**：绕 axis 看，from 转到 to 是正是负。
+        /// 符号取 `axis · (from × to)`。
+        ///
+        /// ⚠️ `Vector3.Angle` 永远给 0..180；"往左转还是往右转"必须有符号，
+        /// 少了它转向逻辑只能靠试。
+        ZFUNCTION()
+        static float SignedAngle(const ::Vector3& from, const ::Vector3& to, const ::Vector3& axis);
+
         /// 关于法线反射。Unity 的 `Vector3.Reflect`。
         ZFUNCTION()
         static ::Vector3 Reflect(const ::Vector3& v, const ::Vector3& normal);

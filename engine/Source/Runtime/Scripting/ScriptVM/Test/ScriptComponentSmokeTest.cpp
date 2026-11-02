@@ -1139,6 +1139,25 @@ int main(int argc, char** argv)
                 mover_value("smoothDampProbe"),
                 "0.002061|0.249485|0.001031|2.061|350.041|0.001031|0.001031|0");
 
+        // --- Unity 的 LayerMask（LM 段）-------------------------------------
+        //
+        // C++ 那侧 `TagLayerManager` 与 `Physics.LayerToName` 一直都在，缺的正是
+        // "tsc 认 `LayerMask` 这个名字" —— 而方法不存在在运行时是静默的。
+        CheckTrue("Z2", "ProbeLayerMask 送到了 JS 侧", comp2->InvokeMethod("ProbeLayerMask"));
+        // ⚠️ `-1`（不是 0）、`32`（未知层名跳过，不是 -1 = 所有层）是这一段真正的判据。
+        CheckEq("Z3", "LayerMask 端到端：NameToLayer / LayerToName / GetMask / MaskContainsLayer",
+                mover_value("layerMaskProbe"), "0|5|-1|UI|33|32|true|false");
+
+        // --- Unity 的 Vector3 静态面（VX 段）-------------------------------
+        //
+        // 四个算法本来就在 `VectorMath` 上，缺的是 Unity 的拼写。这里同时证明
+        // `Slerp` 与 `Lerp` **不是**同一个函数（长度 1.0000 vs 0.7071）。
+        CheckTrue("Z4", "ProbeVector3Statics 送到了 JS 侧",
+                  comp2->InvokeMethod("ProbeVector3Statics"));
+        CheckEq("Z5", "Vector3 静态面端到端：Slerp 长度 / 非单位法线 / SignedAngle 符号",
+                mover_value("vecStaticsProbe"),
+                "0.7071|1.0000|0.7071|0.7071|0.0000|90.000|-90.000|0.13477");
+
         // --- Unity 的 OnBecameVisible / OnBecameInvisible（V 段）------------
         //
         // 与 T / U 段同一类理由：派发链是 `BaseRenderer` -> `GameObject` ->

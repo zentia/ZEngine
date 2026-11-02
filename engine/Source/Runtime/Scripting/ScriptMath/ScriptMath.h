@@ -857,6 +857,38 @@ public:
         return 0.5f + 0.5f * Clamp(value * 1.41421356f, -1.f, 1.f);
     }
 
+    /// 1D Perlin 噪声（Unity 的 `Mathf.PerlinNoise1D`）。
+    ///
+    /// ⚠️ ZEngine 的 2D 噪声不是 Unity 的逐位实现（见 `PerlinNoise`），所以这里
+    /// **不做** `PerlinNoise(x, 0)` 那种"切片"：y = 0 落在格点上，fade(0) = 0，
+    /// 整条线会退化成一条更平、更少细节的曲线（格点上的噪声值恒为 0.5 附近）。
+    /// 这里用的是**真正的 1D** 梯度噪声：整数格点上取 ±1 的梯度，插值后归一。
+    ///
+    /// 与 2D 版同样只保证值域 [0,1]、确定性、连续性，不保证与 Unity 同一个数。
+    ZFUNCTION()
+    static float PerlinNoise1D(float x)
+    {
+        auto hash = [](int32_t ix) -> int32_t {
+            uint32_t h = static_cast<uint32_t>(ix * 374761393);
+            h = (h ^ (h >> 13)) * 1274126177u;
+            // 梯度取 ±1：1D 里方向只有两个。
+            return ((h ^ (h >> 16)) & 1u) ? 1 : -1;
+        };
+        auto fade = [](float t) { return t * t * t * (t * (t * 6.f - 15.f) + 10.f); };
+
+        const int32_t x0 = static_cast<int32_t>(std::floor(x));
+        const float   fx = x - static_cast<float>(x0);
+        const float   u = fade(fx);
+
+        // 格点处的噪声是 0（梯度噪声的定义），贡献来自到左右格点的距离 × 梯度。
+        const float n0 = static_cast<float>(hash(x0)) * fx;
+        const float n1 = static_cast<float>(hash(x0 + 1)) * (fx - 1.f);
+        const float value = n0 + u * (n1 - n0);
+
+        // 1D 梯度噪声的理论幅值约 ±0.5（|fx| 与 |fx-1| 的最大加权），乘 2 归一。
+        return 0.5f + 0.5f * Clamp(value * 2.f, -1.f, 1.f);
+    }
+
     // ---- 色彩空间 ------------------------------------------------------
     //
     // sRGB 的分段近似（低段是直线、高段是幂），不是纯 pow(x, 2.2)：

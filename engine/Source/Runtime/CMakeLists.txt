@@ -31,9 +31,9 @@ endif()
 # 与 GPUSpine 同款定位：核心只吃标准库，ZEngine 的 ParticlePass 与 Unity 侧共用
 # 同一份发射/曲线/拼包逻辑，所以它是独立仓库，不放在 Source/ 下。
 #
-# 注意：这里**还没有** target_link_libraries —— 核心暂时没有消费者，链接在第 5 步
-# （Tier-1 渲染路径落地、ParticlePass 瘦成适配器）时接上。add_subdirectory 先放进来
-# 是为了让"库缺失"跟 GPUSpine 一样在 configure 期就炸，而不是等到链接期报一堆
+# `target_link_libraries` 在下面的 `configure_runtime_library()` 里（核心已经有
+# 消费者：`Source/Runtime/Function/Render/Particle`）。add_subdirectory 放在这里是
+# 为了让"库缺失"跟 GPUSpine 一样在 configure 期就炸，而不是等到链接期报一堆
 # undefined symbol。
 set(GPUPARTICLE_PATH "${ENGINE_ROOT_DIR}/Libraries/GPUParticle")
 if(EXISTS "${GPUPARTICLE_PATH}/CMakeLists.txt")
@@ -1543,6 +1543,14 @@ function(configure_runtime_library target)
     # calls the GPUSpine API any more.
     if(NOT (target STREQUAL ${SHARED_TARGET_NAME} AND _ZENGINE_SHARED_SLIM))
         target_link_libraries(${target} PUBLIC GPUSpine::Core)
+    endif()
+    # GPUParticle: stateless GPU particle core (std-only), same shape as GPUSpine.
+    # `add_subdirectory` above only made the library *exist*; this is the link that
+    # Runtime/Function/Render/Particle needs once it calls into the core. The core
+    # exports `Runtime/` as a PUBLIC include dir, so this also supplies
+    # `#include "GPUParticle/ParticleGpuFormat.h"`.
+    if(TARGET GPUParticle)
+        target_link_libraries(${target} PUBLIC GPUParticle::Core)
     endif()
     # ZSlate: standalone UI framework (when available)
     if(TARGET ZSlate)

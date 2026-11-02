@@ -552,6 +552,62 @@ class Mover extends Behaviour {
         ].join("|");
     }
 
+    /// `LayerMask` 的端到端探针。
+    ///
+    /// ⚠️ 这一条必须走 **TS**：C++ 那边 `TagLayerManager` 一直都在，`Physics.LayerToName`
+    /// 也早就有了，缺的正是 **tsc 认 `LayerMask` 这个名字**。而"方法不存在"在
+    /// 运行时是静默无事发生（InvokeInstanceMethodNumber 对找不到的方法不报错）。
+    ///
+    /// 判据挑的是"写错了也不报错"的那几个：
+    ///   * `-1`（拼错的层名），不是 0 —— 0 是 Default，射线照样有结果；
+    ///   * `32`（未知层名**跳过**，不是 -1 = 所有层）；
+    ///   * `33` = (1<<0)|(1<<5)。
+    layerMaskProbe: string = "";
+
+    ProbeLayerMask(): void {
+        const mask: number = LayerMask.GetMask(["Default", "UI"]);
+        this.layerMaskProbe = [
+            String(LayerMask.NameToLayer("Default")),
+            String(LayerMask.NameToLayer("UI")),
+            String(LayerMask.NameToLayer("NoSuchLayer")),
+            LayerMask.LayerToName(5),
+            String(mask),
+            String(LayerMask.GetMask(["NoSuchLayer", "UI"])),
+            String(LayerMask.MaskContainsLayer(mask, 0)),
+            String(LayerMask.MaskContainsLayer(mask, 3))
+        ].join("|");
+    }
+
+    /// `Vector3` 静态面补齐（`Slerp` / `RotateTowards` / `ProjectOnPlane` /
+    /// `SignedAngle`）与 `Mathf.PerlinNoise1D` 的端到端探针。
+    ///
+    /// ⚠️ 与 LayerMask 同一类理由：这四个算法在 `VectorMath` 上早就有了，缺的是
+    /// Unity 的拼写。判据挑的是"替代实现也满足"之外的那几个：
+    ///   * `Slerp` 的**长度 1.0000** vs `Lerp` 的 **0.7071** —— 只看方向分不开；
+    ///   * `ProjectOnPlane` 用**非单位**法线 `(0,0,2)`；
+    ///   * `SignedAngle` 的 **-90**（换顺序必须换符号，只测 90 的话 `Angle` 也过）。
+    vecStaticsProbe: string = "";
+
+    ProbeVector3Statics(): void {
+        const ex: Vector3 = { x: 1, y: 0, z: 0 };
+        const ey: Vector3 = { x: 0, y: 1, z: 0 };
+        const slerp: Vector3 = Vector3.Slerp(ex, ey, 0.5);
+        const lerp: Vector3 = Vector3.Lerp(ex, ey, 0.5);
+        const rotated: Vector3 = Vector3.RotateTowards(ex, ey, 0.7853982, 0);
+        const flattened: Vector3 = Vector3.ProjectOnPlane({ x: 1, y: 2, z: 3 },
+                                                          { x: 0, y: 0, z: 2 });
+        this.vecStaticsProbe = [
+            slerp.x.toFixed(4),
+            Vector3.Magnitude(slerp).toFixed(4),
+            Vector3.Magnitude(lerp).toFixed(4),
+            rotated.x.toFixed(4),
+            flattened.z.toFixed(4),
+            Vector3.SignedAngle(ex, ey, { x: 0, y: 0, z: 1 }).toFixed(3),
+            Vector3.SignedAngle(ey, ex, { x: 0, y: 0, z: 1 }).toFixed(3),
+            Mathf.PerlinNoise1D(3.3).toFixed(5)
+        ].join("|");
+    }
+
     /// 走 **JS shim** 的那条停止路径（`g.Behaviour.prototype.StopAllCoroutines`）。
     /// C++ 直接调 comp.StopAllCoroutines() 是测不到 shim 的 —— 少一行转发
     /// 照样全绿（变异 SC16 就是这么漏的）。

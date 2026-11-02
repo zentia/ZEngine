@@ -48,6 +48,8 @@
 // 是脚本门面（值类型仍是全局的 `::Vector2Int` 等），所以本文件里凡指值类型一律
 // 写 `::` 前缀，避免与门面混淆。
 #include "Runtime/Scripting/ScriptIntVector/ScriptIntVector.h"
+// `Runtime::LayerMask` 是层的脚本门面（返回的是 number，不是 struct）。
+#include "Runtime/Scripting/ScriptLayerMask/ScriptLayerMask.h"
 #include "Runtime/Scripting/ScriptRect/ScriptRect.h"
 // `Runtime::Plane` / `Runtime::GeometryUtility` 是 Plane 与视锥的脚本门面
 // （值类型仍是全局的 `::Plane`）。
@@ -4283,8 +4285,8 @@ namespace
         const std::string math_header = ReadFile("Source/Runtime/Scripting/ScriptMath/ScriptMath.h");
         Check(!math_header.empty(), "AJ0", "ScriptMath.h is readable");
         // 48 是 VectorMath + QuaternionMath 原有的；Mathf 这一块是 49。
-        Check(CountOccurrences(math_header, "ZFUNCTION()") == 100, "AJ1",
-              "ScriptMath declares exactly 100 script methods (a dropped ZFUNCTION is a silent API loss)");
+        Check(CountOccurrences(math_header, "ZFUNCTION()") == 101, "AJ1",
+              "ScriptMath declares exactly 101 script methods (a dropped ZFUNCTION is a silent API loss)");
         // Unity 的拼写，一个都不能少。
         Check(CountOccurrences(math_header, "static float Abs(") >= 1 &&
                   CountOccurrences(math_header, "static float Ceil(") >= 1 &&
@@ -4454,8 +4456,8 @@ namespace
     {
         const std::string math_header = ReadFile("Source/Runtime/Scripting/ScriptMath/ScriptMath.h");
         Check(!math_header.empty(), "AL0", "ScriptMath.h is readable");
-        Check(CountOccurrences(math_header, "ZFUNCTION()") == 100, "AL1",
-              "ScriptMath declares exactly 100 script methods");
+        Check(CountOccurrences(math_header, "ZFUNCTION()") == 101, "AL1",
+              "ScriptMath declares exactly 101 script methods");
         Check(CountOccurrences(math_header, "static Vector3 Slerp(") >= 1 &&
                   CountOccurrences(math_header, "static Vector3 LerpUnclamped(") >= 1 &&
                   CountOccurrences(math_header, "static Vector3 RotateTowards(") >= 1 &&
@@ -11840,6 +11842,211 @@ namespace
     }
 
     // ---------------------------------------------------------------- B ----
+    void TestLayerMask()
+    {
+        // --- 名字 <-> 层号 -----------------------------------------------------
+        Check(Runtime::LayerMask::NameToLayer("Default") == 0, "LM0",
+              "LayerMask.NameToLayer(\"Default\") is 0");
+        Check(Runtime::LayerMask::NameToLayer("UI") == 5, "LM1",
+              "LayerMask.NameToLayer(\"UI\") is 5 (Unity's built-in slot)");
+        // ⚠️ 找不到给 **-1**，不是 0。给 0 的话"拼错的层名"会静默变成"打 Default
+        // 层" —— 而 Default 层上东西最多，射线照样有结果，完全看不出来。
+        Check(Runtime::LayerMask::NameToLayer("NoSuchLayer") == -1, "LM2",
+              "an unknown name is -1, NOT 0 (0 is Default -- the busiest layer)");
+        Check(Runtime::LayerMask::NameToLayer("") == -1, "LM3", "and so is the empty string");
+
+        // --- 层号 -> 名字 -------------------------------------------------------
+        Check(Runtime::LayerMask::LayerToName(0) == "Default", "LM4", "LayerToName(0) is Default");
+        // Unity 的第 3 层**没有名字**（退休的那层），6/7 保留 —— 空串是对的，
+        // 给它起名会招人来用。
+        Check(Runtime::LayerMask::LayerToName(3) == "", "LM5",
+              "layer 3 has no name in Unity either (empty is correct, not a bug)");
+        Check(Runtime::LayerMask::LayerToName(-1) == "" && Runtime::LayerMask::LayerToName(32) == "",
+              "LM6", "out-of-range layer numbers give an empty string instead of throwing");
+
+        // --- GetMask ------------------------------------------------------------
+        Check(Runtime::LayerMask::GetMask({}) == 0, "LM7", "GetMask of nothing is 0 (hit nothing)");
+        Check(Runtime::LayerMask::GetMask({"Default", "UI"}) == 33, "LM8",
+              "GetMask(['Default','UI']) is (1<<0)|(1<<5) = 33");
+        // ⚠️ 未知层名**跳过**，不是"整张掩码作废"（返回 -1 = 所有层）。返回 -1
+        // 的失败方向是"射线打到所有东西"，比"少打一层"难查得多。见 ScriptLayerMask.h。
+        Check(Runtime::LayerMask::GetMask({"NoSuchLayer", "UI"}) == 32, "LM9",
+              "an unknown name is SKIPPED (32, not -1 -- -1 would mean every layer)");
+
+        // --- 第 31 位是负数 ------------------------------------------------------
+        // `1 << 31` 在 JS 里是 -2147483648。掩码是"负数"这件事本身没错（位模式
+        // 对），但它会让人写出 `mask > 0` 这类判断 —— 所以判某层在不在要用
+        // MaskContainsLayer，不要自己 `&`。
+        const int32_t top = static_cast<int32_t>(1u << 31);
+        Check(top < 0, "LM10", "layer 31's mask is negative in a 32-bit signed int (that is fine)");
+        Check(Runtime::LayerMask::MaskContainsLayer(top, 31), "LM11",
+              "MaskContainsLayer sees layer 31 in it anyway");
+        Check(!Runtime::LayerMask::MaskContainsLayer(top, 30), "LM12", "and does not see layer 30");
+        Check(Runtime::LayerMask::MaskContainsLayer(33, 0) &&
+                  Runtime::LayerMask::MaskContainsLayer(33, 5) &&
+                  !Runtime::LayerMask::MaskContainsLayer(33, 3),
+              "LM13", "MaskContainsLayer reads the bits a GetMask call just wrote");
+        Check(!Runtime::LayerMask::MaskContainsLayer(33, -1) &&
+                  !Runtime::LayerMask::MaskContainsLayer(33, 32), "LM14",
+              "and an out-of-range layer is simply not in it");
+    }
+
+    void TestLayerMaskWiring()
+    {
+        const std::string header =
+            ReadFile("Source/Runtime/Scripting/ScriptLayerMask/ScriptLayerMask.h");
+        Check(!header.empty(), "LMW0", "ScriptLayerMask.h is readable");
+        if (header.empty()) { return; }
+        // ⚠️ 门面必须**转发** `TagLayerManager`，不能自己存一份层表：两份层表
+        // 迟早不一致，而不一致的表现是"射线打不到东西" —— 没有任何报错。
+        Check(CountOccurrences(header, "TagLayerManager") >= 1, "LMW1",
+              "the facade is documented against TagLayerManager (one owner of the table)");
+        Check(CountOccurrences(header, "ZFUNCTION()") == 4, "LMW2",
+              "LayerMask declares exactly 4 script methods (a dropped ZFUNCTION is a silent API loss)");
+
+        const std::string source =
+            ReadFile("Source/Runtime/Scripting/ScriptLayerMask/ScriptLayerMask.cpp");
+        Check(!source.empty(), "LMW3", "ScriptLayerMask.cpp is readable");
+        if (!source.empty())
+        {
+            // 三个查表的走 `GET_SYSTEM`；`MaskContainsLayer` 不需要 —— 它只做
+            // 一次位测试，用的是 `TagLayerManager` 的静态 helper（那份位运算才是
+            // 要和物理查询对齐的东西，它必须仍然在 TagLayerManager 里）。
+            Check(CountOccurrences(source, "GET_SYSTEM(TagLayerManager)") >= 3, "LMW4",
+                  "the three table lookups go through the shared TagLayerManager, not a local copy");
+        }
+    }
+
+    void TestVector3Statics()
+    {
+        const ::Vector3 ex(1.f, 0.f, 0.f);
+        const ::Vector3 ey(0.f, 1.f, 0.f);
+
+        // --- Slerp：走弧，长度不塌 ----------------------------------------------
+        const ::Vector3 sl = Runtime::Vector3::Slerp(ex, ey, 0.5f);
+        const ::Vector3 lerp = Runtime::Vector3::Lerp(ex, ey, 0.5f);
+        // ⚠️ 判据是**长度**：Slerp 全程 1，Lerp 在中点塌到 0.7071。只看方向的
+        // 话两者在同一条 45° 射线上，分不开。
+        Check(Near(sl.length(), 1.f, 1e-4f), "VX0",
+              "Vector3.Slerp keeps the magnitude at 1 through the middle of the arc");
+        Check(Near(lerp.length(), 0.70710678f, 1e-4f), "VX1",
+              "while Lerp dips to 0.7071 there -- that is what makes them different");
+        Check(Near(sl.x, 0.70710678f, 1e-4f) && Near(sl.y, 0.70710678f, 1e-4f), "VX2",
+              "and Slerp's direction is the 45 degree one");
+        // t 夹取：与 Unity 同（Vector3.Lerp 夹，LerpUnclamped 不夹）。
+        Check(Near(Runtime::Vector3::Slerp(ex, ey, 2.f).y, 1.f, 1e-4f) &&
+                  Near(Runtime::Vector3::Slerp(ex, ey, -1.f).x, 1.f, 1e-4f), "VX3",
+              "Slerp clamps t to [0,1] like Unity");
+
+        // --- RotateTowards -------------------------------------------------------
+        // ⚠️ 第一个角度参数是**弧度**，不是度（Unity 自己的不一致，参数名就叫
+        // maxRadiansDelta）。写成度的话单步会小 57 倍 —— 表现为"转得特别慢"，
+        // 而它确实在转，没有任何报错。
+        const float quarter = 0.7853982f;  // pi / 4
+        const ::Vector3 rot =
+            Runtime::Vector3::RotateTowards(ex, ey, quarter, 0.f);
+        Check(Near(rot.x, 0.70710678f, 1e-4f) && Near(rot.y, 0.70710678f, 1e-4f), "VX4",
+              "RotateTowards turns by at most maxRadiansDelta (RADIANS, not degrees)");
+        Check(Near(Runtime::Vector3::RotateTowards(ex, ey, 0.f, 0.f).x, 1.f, 1e-4f), "VX5",
+              "and a zero angular budget leaves the direction alone");
+        Check(Near(Runtime::Vector3::RotateTowards(ex, ey, 10.f, 0.f).y, 1.f, 1e-4f), "VX6",
+              "while a budget bigger than the angle reaches the target");
+        // ⚠️ 长度是**单独**按 maxMagnitudeDelta 走的：用 MoveTowards(current, target)
+        // 那种"方向和长度一起走"的实现，maxMagnitudeDelta 为 0 时等于一步没动。
+        const ::Vector3 both = Runtime::Vector3::RotateTowards(
+            ::Vector3(2.f, 0.f, 0.f), ::Vector3(0.f, 4.f, 0.f), 10.f, 1.f);
+        Check(Near(both.y, 3.f, 1e-4f) && Near(both.x, 0.f, 1e-4f), "VX7",
+              "the magnitude walks separately: 2 -> 3 while the direction reaches +Y");
+
+        // --- ProjectOnPlane -------------------------------------------------------
+        Check(Near(Runtime::Vector3::ProjectOnPlane(::Vector3(1.f, 2.f, 3.f),
+                                                   ::Vector3(0.f, 0.f, 1.f)).z,
+                   0.f, 1e-5f), "VX8",
+              "ProjectOnPlane removes the along-normal part");
+        // ⚠️ 法线**不**必是单位向量：忘了除 (n·n) 的话这一条就不成立，而单位
+        // 法线的那条照样对 —— 只测单位法线等于没测。
+        const ::Vector3 scaled = Runtime::Vector3::ProjectOnPlane(::Vector3(1.f, 2.f, 3.f),
+                                                                 ::Vector3(0.f, 0.f, 2.f));
+        Check(Near(scaled.x, 1.f, 1e-5f) && Near(scaled.y, 2.f, 1e-5f) &&
+                  Near(scaled.z, 0.f, 1e-5f), "VX9",
+              "and the normal does not have to be unit length");
+
+        // --- SignedAngle ----------------------------------------------------------
+        // ⚠️ 互补的一对：同一对向量换顺序必须换**符号**，而不只是换大小。
+        // 只测 "== 90" 的话，少了符号的实现（就是 Angle）照样过。
+        Check(Near(Runtime::Vector3::SignedAngle(ex, ey, ::Vector3(0.f, 0.f, 1.f)), 90.f, 1e-3f),
+              "VX10", "SignedAngle(+X -> +Y about +Z) is +90");
+        Check(Near(Runtime::Vector3::SignedAngle(ey, ex, ::Vector3(0.f, 0.f, 1.f)), -90.f, 1e-3f),
+              "VX11", "and the same pair the other way round is -90 (the sign is the point)");
+        // 绕 **-Z** 看符号反过来。
+        Check(Near(Runtime::Vector3::SignedAngle(ex, ey, ::Vector3(0.f, 0.f, -1.f)), -90.f,
+                   1e-3f), "VX12", "and flipping the axis flips the sign");
+    }
+
+    void TestVector3StaticsWiring()
+    {
+        const std::string header = ReadFile("Source/Runtime/Scripting/ScriptVector/ScriptVector.h");
+        Check(!header.empty(), "VXW0", "ScriptVector.h is readable");
+        if (header.empty()) { return; }
+        Check(CountOccurrences(header, "ZFUNCTION()") == 114, "VXW1",
+              "ScriptVector declares exactly 114 script methods (a dropped ZFUNCTION is a silent "
+              "API loss)");
+        // ⚠️ 这四个名字在 Unity 里是 `Vector3.xxx`，在 ZEngine 里原本只有
+        // `VectorMath.xxx`。搬过来的代码每个调用点都得改 —— 而"方法不存在"在
+        // 运行时是静默无事发生，只有源码门看得见。
+        Check(CountOccurrences(header, "static ::Vector3 Slerp(") >= 1 &&
+                  CountOccurrences(header, "static ::Vector3 RotateTowards(") >= 1 &&
+                  CountOccurrences(header, "static ::Vector3 ProjectOnPlane(") >= 1 &&
+                  CountOccurrences(header, "static float SignedAngle(") >= 1, "VXW2",
+              "Vector3 carries Unity's Slerp / RotateTowards / ProjectOnPlane / SignedAngle");
+
+        const std::string source = ReadFile("Source/Runtime/Scripting/ScriptVector/ScriptVector.cpp");
+        Check(!source.empty(), "VXW3", "ScriptVector.cpp is readable");
+        if (!source.empty())
+        {
+            // 四个都**转发** VectorMath，不在这里复制一份算法。
+            Check(CountOccurrences(source, "VectorMath::Slerp") >= 1 &&
+                      CountOccurrences(source, "VectorMath::RotateTowards") >= 1 &&
+                      CountOccurrences(source, "VectorMath::ProjectOnPlane") >= 1 &&
+                      CountOccurrences(source, "VectorMath::SignedAngle") >= 1, "VXW4",
+                  "and each one forwards to VectorMath (no second copy of the algorithm)");
+        }
+    }
+
+    void TestMathfTail()
+    {
+        // --- PerlinNoise1D ------------------------------------------------------
+        // ⚠️ 整数点上**恒为 0.5**：梯度噪声在格点处的定义值就是 0。这不是"随到
+        // 了中点"，而是结构性的 —— 用它当判据能抓住"插值写错"的一大类实现。
+        Check(Near(Mathf::PerlinNoise1D(0.f), 0.5f, 1e-6f) &&
+                  Near(Mathf::PerlinNoise1D(1.f), 0.5f, 1e-6f) &&
+                  Near(Mathf::PerlinNoise1D(7.f), 0.5f, 1e-6f), "MF0",
+              "PerlinNoise1D is exactly 0.5 at every integer (gradient noise is 0 on the lattice)");
+        // 黄金数（与本机实现逐位对齐；换掉哈希或 fade 就变）。
+        Check(Near(Mathf::PerlinNoise1D(3.3f), 0.134768f, 1e-5f), "MF1",
+              "PerlinNoise1D(3.3) is 0.134768");
+        Check(Near(Mathf::PerlinNoise1D(12.25f), 0.801758f, 1e-5f), "MF2",
+              "PerlinNoise1D(12.25) is 0.801758");
+        // 确定性：同一个 x 两次调用必须同一个值（否则每帧抖）。
+        Check(Mathf::PerlinNoise1D(3.3f) == Mathf::PerlinNoise1D(3.3f), "MF3",
+              "it is deterministic (the same x gives the same number twice)");
+        // 值域与连续性。
+        bool in_range = true;
+        bool continuous = true;
+        float previous = Mathf::PerlinNoise1D(0.f);
+        for (int i = 1; i < 2000; ++i)
+        {
+            const float x = static_cast<float>(i) * 0.01f;
+            const float v = Mathf::PerlinNoise1D(x);
+            if (!(v >= 0.f && v <= 1.f)) { in_range = false; }
+            // 0.01 的步长上不该有跳变（fade 是 C2 连续的）。
+            if (std::fabs(v - previous) > 0.1f) { continuous = false; }
+            previous = v;
+        }
+        Check(in_range, "MF4", "it stays inside [0,1] over 20 units");
+        Check(continuous, "MF5", "and it is continuous (no jumps bigger than 0.1 per 0.01 step)");
+    }
+
     void TestWiringGate()
     {
         const std::string go_header = ReadFile("Source/Runtime/BaseClasses/GameObject.h");
@@ -12039,6 +12246,11 @@ int main()
     TestPlaneWiring();
     TestSmoothDamp();
     TestSmoothDampWiring();
+    TestLayerMask();
+    TestLayerMaskWiring();
+    TestVector3Statics();
+    TestVector3StaticsWiring();
+    TestMathfTail();
     TestWiringGate();
 
     std::printf("\n=== %d checks, %d failures ===\n", g_Checks, g_Failures);
