@@ -1092,6 +1092,24 @@ int main(int argc, char** argv)
         CheckEq("W1", "曲线端到端：Linear / EaseInOut / AddKey / Loop / 枚举成员",
                 mover_value("curveProbe"), "5.000|0.15625|2|2.000|5.000|true");
 
+        // --- Unity 的 Vector2Int / Vector3Int / Rect / RectInt（X 段）-------
+        //
+        // 与 W 段同一类理由：C++ 的算术门（UnityParitySmokeTest 的 IV / RC 组）
+        // 证明不了 **tsc 认这四个名字**。它们都是"值类型 interface + 同名静态
+        // class"的合并 —— 少了 `declare interface`、少了 `Converter`、或者
+        // ZCLASS 的类名对不上，都只在真正的类型检查器下才报错。
+        CheckTrue("X0", "ProbeIntVectors 送到了 JS 侧",
+                  comp2->InvokeMethod("ProbeIntVectors"));
+        // ⚠️ `-1`（floor，不是截断的 0）与 `2`（平局取偶，不是 3）是这一段真正的
+        // 判据 —— 换成正数或换成 0.5 都测不出这两条。
+        CheckEq("X1", "整数向量端到端：floor / 平局取偶 / 常量 / Distance",
+                mover_value("intVecProbe"), "-1,1|2,4|0,1,1|1.73205|1|14");
+        CheckTrue("X2", "ProbeRects 送到了 JS 侧", comp2->InvokeMethod("ProbeRects"));
+        // ⚠️ 三处反直觉各占一位：半开区间（false|true）、负 width 归一化（0）、
+        // 贴边不算相交（末位 false）。
+        CheckEq("X3", "矩形端到端：半开 Contains / 负 width / ClampToBounds / 严格 Overlaps",
+                mover_value("rectProbe"), "false|true|0|0.25,0.25|7|1.5,2.5|false");
+
         // --- Unity 的 OnBecameVisible / OnBecameInvisible（V 段）------------
         //
         // 与 T / U 段同一类理由：派发链是 `BaseRenderer` -> `GameObject` ->

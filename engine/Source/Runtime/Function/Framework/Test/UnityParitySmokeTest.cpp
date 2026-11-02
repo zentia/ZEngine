@@ -42,6 +42,11 @@
 #include "Runtime/Function/Render/DebugDraw/DebugDrawManager.h"
 #include "Runtime/Scripting/ScriptGizmos/ScriptGizmos.h"
 #include "Runtime/Scripting/ScriptAnimationCurve/ScriptAnimationCurve.h"
+// `Runtime::Vector2Int` / `Runtime::Vector3Int` / `Runtime::Rect` / `Runtime::RectInt`
+// 是脚本门面（值类型仍是全局的 `::Vector2Int` 等），所以本文件里凡指值类型一律
+// 写 `::` 前缀，避免与门面混淆。
+#include "Runtime/Scripting/ScriptIntVector/ScriptIntVector.h"
+#include "Runtime/Scripting/ScriptRect/ScriptRect.h"
 #include "Runtime/Scripting/ScriptBounds/ScriptBounds.h"
 #include "Runtime/Scripting/ScriptColor/ScriptColor.h"
 #include "Runtime/Function/AI/Navigation/NavMeshAgentComponent.h"
@@ -9823,6 +9828,421 @@ namespace
         }
     }
 
+    // =========================================================================
+    // Vector2Int / Vector3Int
+    // =========================================================================
+    //
+    // ⚠️ 拿到"整数向量"最容易做错的两处，各配一组**互补**夹具：
+    //
+    //   1. `FloorToInt` 与"截断"在负数上不同。只用正数（1.7 → 1）测不出来，
+    //      必须有一条 `-0.5`：`floor` 给 -1，截断给 0。
+    //   2. `RoundToInt` 的平局规则。Unity 与 `Mathf.RoundToInt` 同为"平局取偶"
+    //      （banker's rounding），`std::round` / `lround` 是"平局远离零"。
+    //      只有 0.5 / 1.5 / 2.5 这类 `.5` 分得开。
+    void TestIntVectors()
+    {
+        using ::Vector2Int;
+        using ::Vector3Int;
+
+        // --- 值类型本身 ------------------------------------------------------
+        Vector2Int a(3, -4);
+        Check(a.GetSqrMagnitude() == 25, "IV0", "sqrMagnitude is an int (3^2 + 4^2 = 25)");
+        // ⚠️ magnitude 是 **float**：开方不可能是整数，Unity 的
+        // `Vector2Int.magnitude` 也是 float。返回 int 的实现在 3-4-5 这种整勾股
+        // 数上正好是绿的，必须用非整勾股数才能分出来。
+        Check(Near(a.GetMagnitude(), 5.f), "IV1", "magnitude is a float");
+        Vector2Int a2(1, 1);
+        Check(Near(a2.GetMagnitude(), 1.4142135f), "IV1b",
+              "and it is not truncated to an int (1,1) -> 1.41421, not 1");
+        Check(Vector2Int(3, -4) == a && Vector2Int(3, 4) != a, "IV2", "equality is per component");
+        Check((a + Vector2Int(1, 1)) == Vector2Int(4, -3), "IV3", "addition is per component");
+        Check((a - Vector2Int(1, 1)) == Vector2Int(2, -5), "IV4", "and so is subtraction");
+        Check((a * 2) == Vector2Int(6, -8), "IV5", "scalar multiply");
+        // ⚠️ 分量乘（`Scale`）与标量乘是两个不同的运算符，写成同一个实现的话下面
+        // 这条会拿到 (6*2, -8*2) 那种结果。
+        Check((Vector2Int(2, 3) * Vector2Int(4, 5)) == Vector2Int(8, 15), "IV6",
+              "component-wise multiply is not the scalar one");
+        Vector2Int scaled(2, 3);
+        scaled.Scale(Vector2Int(4, 5));
+        Check(scaled == Vector2Int(8, 15), "IV7", "Scale() is the same operator, in place");
+        Vector2Int settable;
+        settable.Set(7, 8);
+        Check(settable == Vector2Int(7, 8), "IV8", "Set() overwrites both components");
+
+        Vector3Int b(1, -2, 3);
+        Check(b.GetSqrMagnitude() == 14, "IV9", "3D sqrMagnitude");
+        Check((b + Vector3Int(1, 1, 1)) == Vector3Int(2, -1, 4), "IV10", "3D addition");
+        Check((b * 3) == Vector3Int(3, -6, 9), "IV11", "3D scalar multiply");
+        Check((Vector3Int(1, 2, 3) * Vector3Int(4, 5, 6)) == Vector3Int(4, 10, 18), "IV12",
+              "3D component-wise multiply");
+
+        // --- 门面：构造 / 转换 ------------------------------------------------
+        Check(Runtime::Vector2Int::Create(5, 6) == Vector2Int(5, 6), "IV13", "Create()");
+        Check(Runtime::Vector3Int::Create(5, 6, 7) == Vector3Int(5, 6, 7), "IV14", "3D Create()");
+
+        // ⚠️ **floor**，不是截断。正数上两者相同，负数上差 1。
+        Check(Runtime::Vector2Int::FloorToInt(Vector2(1.7f, 1.2f)) == Vector2Int(1, 1), "IV15",
+              "FloorToInt truncates toward -inf on positives (same as a cast here)");
+        Check(Runtime::Vector2Int::FloorToInt(Vector2(-0.5f, -1.2f)) == Vector2Int(-1, -2), "IV16",
+              "and it is really FLOOR on negatives: -0.5 -> -1, not 0");
+        Check(Runtime::Vector2Int::CeilToInt(Vector2(-0.5f, 1.2f)) == Vector2Int(0, 2), "IV17",
+              "CeilToInt rounds toward +inf");
+        // ⚠️ 平局取偶（`std::rint`），不是 `std::round` 的"远离零"。
+        // 0.5 -> 0（偶）、1.5 -> 2（偶）、2.5 -> 2（偶）；`std::round` 会给
+        // 1 / 2 / 3。三个值一起测：只测 0.5 的话"永远向下"的实现也过。
+        Check(Runtime::Vector2Int::RoundToInt(Vector2(0.5f, 1.5f)) == Vector2Int(0, 2), "IV18",
+              "RoundToInt breaks ties to even (0.5 -> 0, 1.5 -> 2)");
+        Check(Runtime::Vector2Int::RoundToInt(Vector2(2.5f, 3.5f)) == Vector2Int(2, 4), "IV18b",
+              "and it stays banker's at 2.5 -> 2 (round-away-from-zero would give 3)");
+        Check(Runtime::Vector2Int::ToVector2(Vector2Int(3, -4)) == Vector2(3.f, -4.f), "IV19",
+              "ToVector2 widens to float");
+        Check(Runtime::Vector3Int::ToVector3(Vector3Int(3, -4, 5)) == Vector3(3.f, -4.f, 5.f),
+              "IV20", "ToVector3 widens to float");
+
+        // --- 常量（Unity 的 Y-up 命名）----------------------------------------
+        Check(Runtime::Vector2Int::GetZero() == Vector2Int(0, 0), "IV21", "zero");
+        Check(Runtime::Vector2Int::GetOne() == Vector2Int(1, 1), "IV22", "one");
+        Check(Runtime::Vector2Int::GetUp() == Vector2Int(0, 1) &&
+                  Runtime::Vector2Int::GetDown() == Vector2Int(0, -1) &&
+                  Runtime::Vector2Int::GetLeft() == Vector2Int(-1, 0) &&
+                  Runtime::Vector2Int::GetRight() == Vector2Int(1, 0), "IV23",
+              "the four 2D directions are Unity's Y-up literals");
+        Check(Runtime::Vector3Int::GetZero() == Vector3Int(0, 0, 0) &&
+                  Runtime::Vector3Int::GetOne() == Vector3Int(1, 1, 1), "IV24", "3D zero / one");
+        Check(Runtime::Vector3Int::GetUp() == Vector3Int(0, 1, 0) &&
+                  Runtime::Vector3Int::GetDown() == Vector3Int(0, -1, 0) &&
+                  Runtime::Vector3Int::GetLeft() == Vector3Int(-1, 0, 0) &&
+                  Runtime::Vector3Int::GetRight() == Vector3Int(1, 0, 0) &&
+                  Runtime::Vector3Int::GetForward() == Vector3Int(0, 0, 1) &&
+                  Runtime::Vector3Int::GetBack() == Vector3Int(0, 0, -1), "IV25",
+              "the six 3D directions are Unity's, NOT ZEngine's Z-up/forward=-Y convention");
+        // ⚠️ `up` 与 `forward` 必须**不同**：把它们都填成 (0,1,0) 的实现在只查
+        // up 的夹具上是绿的。
+        Check(Runtime::Vector3Int::GetUp() != Runtime::Vector3Int::GetForward(), "IV25b",
+              "up and forward are distinct axes");
+
+        // --- 门面：算术 / 查询 ------------------------------------------------
+        Check(Runtime::Vector2Int::Add(Vector2Int(1, 2), Vector2Int(3, 4)) == Vector2Int(4, 6),
+              "IV26", "Add");
+        Check(Runtime::Vector2Int::Sub(Vector2Int(3, 4), Vector2Int(1, 2)) == Vector2Int(2, 2),
+              "IV27", "Sub");
+        Check(Runtime::Vector2Int::Scale(Vector2Int(2, 3), Vector2Int(4, 5)) == Vector2Int(8, 15),
+              "IV28", "Scale is component-wise");
+        Check(Runtime::Vector2Int::MulScalar(Vector2Int(2, -3), 3) == Vector2Int(6, -9), "IV29",
+              "MulScalar");
+        Check(Runtime::Vector2Int::Min(Vector2Int(5, -1), Vector2Int(2, 3)) == Vector2Int(2, -1),
+              "IV30", "Min is per component (it mixes both inputs)");
+        Check(Runtime::Vector2Int::Max(Vector2Int(5, -1), Vector2Int(2, 3)) == Vector2Int(5, 3),
+              "IV31", "Max is per component (it mixes both inputs)");
+        Check(Runtime::Vector2Int::Clamp(Vector2Int(9, -9), Vector2Int(0, 0), Vector2Int(5, 5)) ==
+                  Vector2Int(5, 0), "IV32",
+              "Clamp bounds both components independently");
+        // ⚠️ Distance 是 **float**（3-4-5 是整勾股数，返回 int 的实现在上面是绿
+        // 的）。用 (1,1)-(0,0) → √2。
+        Check(Near(Runtime::Vector2Int::Distance(Vector2Int(0, 0), Vector2Int(1, 1)), 1.4142135f),
+              "IV33", "Distance is a float");
+        Check(Near(Runtime::Vector2Int::Distance(Vector2Int(0, 0), Vector2Int(3, 4)), 5.f), "IV33b",
+              "and the 3-4-5 case agrees with it");
+        Check(Runtime::Vector2Int::GetSqrMagnitude(Vector2Int(3, 4)) == 25, "IV34",
+              "sqrMagnitude on the facade");
+        Check(Runtime::Vector2Int::Equals(Vector2Int(1, 2), Vector2Int(1, 2)) &&
+                  !Runtime::Vector2Int::Equals(Vector2Int(1, 2), Vector2Int(1, 3)), "IV35",
+              "Equals compares component-wise");
+        Check(Runtime::Vector2Int::ToString(Vector2Int(3, -4)) == "(-4, 3)" ||
+                  Runtime::Vector2Int::ToString(Vector2Int(3, -4)) == "(3, -4)", "IV36",
+              "ToString is defined (not empty)");
+        // 上面那条是 or，等于没断言。真正要的是"两个分量都出现"。
+        const std::string s2 = Runtime::Vector2Int::ToString(Vector2Int(3, -4)).c_str();
+        Check(s2.find("3") != std::string::npos && s2.find("-4") != std::string::npos, "IV36b",
+              "and it contains both components");
+
+        Check(Runtime::Vector3Int::Add(Vector3Int(1, 2, 3), Vector3Int(4, 5, 6)) ==
+                  Vector3Int(5, 7, 9), "IV37", "3D Add");
+        Check(Runtime::Vector3Int::Sub(Vector3Int(4, 5, 6), Vector3Int(1, 2, 3)) ==
+                  Vector3Int(3, 3, 3), "IV38", "3D Sub");
+        Check(Runtime::Vector3Int::Scale(Vector3Int(1, 2, 3), Vector3Int(4, 5, 6)) ==
+                  Vector3Int(4, 10, 18), "IV39", "3D Scale");
+        Check(Runtime::Vector3Int::MulScalar(Vector3Int(1, -2, 3), 2) == Vector3Int(2, -4, 6),
+              "IV40", "3D MulScalar");
+        Check(Runtime::Vector3Int::Min(Vector3Int(5, -1, 2), Vector3Int(2, 3, 0)) ==
+                  Vector3Int(2, -1, 0), "IV41", "3D Min mixes components");
+        Check(Runtime::Vector3Int::Max(Vector3Int(5, -1, 2), Vector3Int(2, 3, 0)) ==
+                  Vector3Int(5, 3, 2), "IV42", "3D Max mixes components");
+        Check(Runtime::Vector3Int::Clamp(Vector3Int(9, -9, 3), Vector3Int(0, 0, 0),
+                                         Vector3Int(5, 5, 5)) == Vector3Int(5, 0, 3), "IV43",
+              "3D Clamp leaves an in-range component alone");
+        Check(Near(Runtime::Vector3Int::Distance(Vector3Int(0, 0, 0), Vector3Int(1, 1, 1)),
+                  1.7320508f), "IV44", "3D Distance is a float too (sqrt 3)");
+        Check(Runtime::Vector3Int::GetSqrMagnitude(Vector3Int(1, 2, 3)) == 14, "IV45",
+              "3D sqrMagnitude");
+    }
+
+    // =========================================================================
+    // Rect / RectInt
+    // =========================================================================
+    //
+    // ⚠️ 这个类型的三处"反直觉"各配一组互补夹具，否则全是静默错误：
+    //
+    //   1. `Contains` 是**半开** `[min, max)`，与 `Bounds.Contains`（闭区间）相反。
+    //      只测内部点分不出来 —— 必须测**正好落在右/上边**的点。
+    //   2. 负 width / height 合法，且 `min`/`max` 归一化。只测正 width 的矩形，
+    //      把 `xMin` 实现成 `return x;` 也全绿。
+    //   3. `size`/`position` 是**原样**返回 width/height 与 x/y（可以为负），
+    //      而 `min`/`max`/`center` 才是几何量。把 size 写成"归一化后的正尺寸"
+    //      在正 width 上也是绿的。
+    void TestRects()
+    {
+        using ::Rect;
+        using ::RectInt;
+
+        // --- 值类型：边与归一化 ------------------------------------------------
+        const Rect normal(0.f, 0.f, 10.f, 20.f);
+        Check(normal.GetXMin() == 0.f && normal.GetXMax() == 10.f && normal.GetYMin() == 0.f &&
+                  normal.GetYMax() == 20.f, "RC0", "a positive rect's edges are x .. x+width");
+        // ⚠️ 负 width：两条边**交换**，`xMin` 不是 `x`。
+        const Rect flipped(10.f, 20.f, -10.f, -20.f);
+        Check(flipped.GetXMin() == 0.f && flipped.GetXMax() == 10.f, "RC1",
+              "a negative-width rect's xMin is NOT x (it is 0, not 10)");
+        Check(flipped.GetYMin() == 0.f && flipped.GetYMax() == 20.f, "RC2",
+              "and the same on Y");
+        Check(Runtime::Rect::GetMin(flipped) == Vector2(0.f, 0.f) &&
+                  Runtime::Rect::GetMax(flipped) == Vector2(10.f, 20.f), "RC3",
+              "min/max are the normalised corners");
+        // ⚠️ 互补的一半：`size` / `position` **不**归一化。
+        Check(Runtime::Rect::GetSize(flipped) == Vector2(-10.f, -20.f), "RC4",
+              "but size is literally {width, height} -- still negative");
+        Check(Runtime::Rect::GetPosition(flipped) == Vector2(10.f, 20.f), "RC5",
+              "and position is literally {x, y} -- not min");
+        Check(Runtime::Rect::GetCenter(flipped) == Vector2(5.f, 10.f), "RC6",
+              "while center is geometric (x + width/2)");
+
+        // --- Contains：半开区间 -------------------------------------------------
+        Check(Runtime::Rect::ContainsPoint(normal, Vector2(5.f, 5.f)), "RC7",
+              "an interior point is contained");
+        Check(Runtime::Rect::ContainsPoint(normal, Vector2(0.f, 0.f)), "RC8",
+              "the min corner is contained (>= on the low side)");
+        // ⚠️ 这一条就是"半开"的判据：`Bounds.Contains` 在同样位置返回 true。
+        Check(!Runtime::Rect::ContainsPoint(normal, Vector2(10.f, 20.f)), "RC9",
+              "but the max corner is NOT (the range is [min, max), unlike Bounds)");
+        Check(!Runtime::Rect::ContainsPoint(normal, Vector2(10.f, 5.f)) &&
+                  !Runtime::Rect::ContainsPoint(normal, Vector2(5.f, 20.f)), "RC10",
+              "and each edge on its own is out too");
+        Check(!Runtime::Rect::ContainsPoint(normal, Vector2(-0.001f, 5.f)), "RC11",
+              "a hair outside the low edge is out");
+        Check(Runtime::Rect::ContainsXY(normal, 5.f, 5.f) &&
+                  !Runtime::Rect::ContainsXY(normal, 10.f, 5.f), "RC12",
+              "ContainsXY agrees with Contains");
+        // 负 width 的矩形照样能 Contains（用的是归一化的两条边）。
+        Check(Runtime::Rect::ContainsPoint(flipped, Vector2(5.f, 5.f)), "RC13",
+              "a negative-width rect contains points too (it uses the normalised edges)");
+
+        // --- Overlaps：严格不等 -------------------------------------------------
+        Check(Runtime::Rect::Overlaps(Rect(0.f, 0.f, 10.f, 10.f), Rect(5.f, 5.f, 10.f, 10.f)),
+              "RC14", "overlapping rects overlap");
+        // ⚠️ 只共享一条边**不算**相交（与 `Bounds.Intersects` 相反）。
+        Check(!Runtime::Rect::Overlaps(Rect(0.f, 0.f, 10.f, 10.f), Rect(10.f, 0.f, 10.f, 10.f)),
+              "RC15", "but rects sharing only an edge do NOT (strict, unlike Bounds.Intersects)");
+        Check(!Runtime::Rect::Overlaps(Rect(0.f, 0.f, 10.f, 10.f), Rect(20.f, 0.f, 5.f, 5.f)),
+              "RC16", "and disjoint rects do not");
+        Check(Runtime::Rect::Overlaps(Rect(0.f, 0.f, 10.f, 10.f), Rect(-5.f, -5.f, 100.f, 100.f)),
+              "RC17", "a containing rect overlaps");
+        // 负 width 的矩形也要能相交：Overlaps 内部用 min/max，不是 x/width。
+        Check(Runtime::Rect::Overlaps(Rect(10.f, 0.f, -10.f, 10.f), Rect(5.f, 5.f, 10.f, 10.f)),
+              "RC18", "and a negative-width rect overlaps through its normalised edges");
+
+        // --- 非破坏 setter ------------------------------------------------------
+        const Rect moved = Runtime::Rect::WithXMin(normal, 2.f);
+        Check(moved.x == 2.f && moved.width == 8.f, "RC19",
+              "setting xMin moves the left edge and shrinks width (right edge stays)");
+        const Rect grown = Runtime::Rect::WithXMax(normal, 20.f);
+        Check(grown.x == 0.f && grown.width == 20.f, "RC20",
+              "setting xMax keeps the left edge and grows width");
+        Check(normal.width == 10.f, "RC21", "and the original is untouched (value semantics)");
+        const Rect recentered = Runtime::Rect::WithCenter(normal, Vector2(0.f, 0.f));
+        Check(recentered.x == -5.f && recentered.y == -10.f && recentered.width == 10.f, "RC22",
+              "setting center translates without resizing");
+        const Rect resized = Runtime::Rect::WithSize(normal, Vector2(1.f, 2.f));
+        Check(resized.x == 0.f && resized.width == 1.f && resized.height == 2.f, "RC23",
+              "setting size keeps x/y");
+        const Rect repositioned = Runtime::Rect::WithPosition(normal, Vector2(3.f, 4.f));
+        Check(repositioned.x == 3.f && repositioned.width == 10.f, "RC24",
+              "setting position moves without resizing");
+        const Rect relaid = Runtime::Rect::WithLayout(normal, 1.f, 2.f, 3.f, 4.f);
+        Check(relaid.x == 1.f && relaid.y == 2.f && relaid.width == 3.f && relaid.height == 4.f,
+              "RC25", "Set() replaces all four fields");
+        // min/max setter：挪一个角，对角不动。
+        const Rect re_min = Runtime::Rect::WithMin(normal, Vector2(2.f, 3.f));
+        Check(re_min.GetXMin() == 2.f && re_min.GetXMax() == 10.f && re_min.GetYMin() == 3.f &&
+                  re_min.GetYMax() == 20.f, "RC26", "setting min moves only the low corner");
+        const Rect re_max = Runtime::Rect::WithMax(normal, Vector2(30.f, 40.f));
+        Check(re_max.GetXMin() == 0.f && re_max.GetXMax() == 30.f && re_max.GetYMin() == 0.f &&
+                  re_max.GetYMax() == 40.f, "RC27", "setting max moves only the high corner");
+
+        // --- OrderMinMax / 归一化坐标 --------------------------------------------
+        const Rect ordered = Runtime::Rect::OrderMinMax(flipped);
+        Check(ordered.x == 0.f && ordered.width == 10.f && ordered.y == 0.f &&
+                  ordered.height == 20.f, "RC28",
+              "OrderMinMax flips negative extents (x becomes min)");
+        Check(Runtime::Rect::OrderMinMax(normal) == normal, "RC29",
+              "and leaves an already-ordered rect alone");
+        const Vector2 uv = Runtime::Rect::PointToNormalized(normal, Vector2(2.5f, 5.f));
+        Check(Near(uv.x, 0.25f) && Near(uv.y, 0.25f), "RC30",
+              "PointToNormalized maps to 0..1 (a quarter in, a quarter out)");
+        // ⚠️ 不能只测中点：缩放写反（乘而不是除）在中点 (0.5,0.5) 上也是 0.5。
+        const Vector2 uv2 = Runtime::Rect::PointToNormalized(normal, Vector2(7.5f, 15.f));
+        Check(Near(uv2.x, 0.75f) && Near(uv2.y, 0.75f), "RC30b",
+              "and three quarters in is 0.75 (a mirrored implementation would give 0.25)");
+        Check(Runtime::Rect::NormalizedToPoint(normal, Vector2(0.25f, 0.5f)) ==
+                  Vector2(2.5f, 10.f), "RC31", "NormalizedToPoint is its inverse");
+        Check(Runtime::Rect::MinMaxRect(1.f, 2.f, 3.f, 4.f).width == 2.f &&
+                  Runtime::Rect::MinMaxRect(1.f, 2.f, 3.f, 4.f).x == 1.f, "RC32",
+              "MinMaxRect takes two opposite corners");
+        // 顺序反过来也要对（内部做 Min/Max）——“两条边”与"x + 尺寸"的分界线。
+        const Rect reversed = Runtime::Rect::MinMaxRect(3.f, 4.f, 1.f, 2.f);
+        Check(reversed.GetXMin() == 1.f && reversed.GetXMax() == 3.f && reversed.GetYMin() == 2.f &&
+                  reversed.GetYMax() == 4.f, "RC33",
+              "and it normalises when the corners are given in reverse");
+
+        // --- RectInt ------------------------------------------------------------
+        const RectInt cell(2, 3, 4, 5);
+        Check(Runtime::RectInt::GetXMin(cell) == 2 && Runtime::RectInt::GetXMax(cell) == 6, "RC34",
+              "RectInt edges");
+        Check(Runtime::RectInt::GetMin(cell) == ::Vector2Int(2, 3) &&
+                  Runtime::RectInt::GetMax(cell) == ::Vector2Int(6, 8), "RC35",
+              "RectInt min/max are Vector2Int (not Vector2)");
+        Check(Runtime::RectInt::GetSize(cell) == ::Vector2Int(4, 5), "RC36",
+              "RectInt size is Vector2Int");
+        Check(Runtime::RectInt::GetPosition(cell) == ::Vector2Int(2, 3), "RC37",
+              "RectInt position is Vector2Int");
+        // ⚠️ `center` 是 **Vector2（float）**，与 `size`（Vector2Int）不同 —— 奇数
+        // 尺寸的矩形中心落在半格上。
+        Check(Runtime::RectInt::GetCenter(RectInt(0, 0, 3, 5)) == Vector2(1.5f, 2.5f), "RC38",
+              "RectInt center is a float Vector2 (an odd size lands on a half cell)");
+        Check(Runtime::RectInt::ContainsPoint(cell, ::Vector2Int(3, 4)), "RC39",
+              "RectInt contains an interior cell");
+        Check(!Runtime::RectInt::ContainsPoint(cell, ::Vector2Int(6, 4)), "RC40",
+              "and excludes the max edge ([min, max) here too)");
+        Check(Runtime::RectInt::ContainsXY(cell, 2, 3) && !Runtime::RectInt::ContainsXY(cell, 6, 8),
+              "RC41", "RectInt.ContainsXY agrees");
+        Check(Runtime::RectInt::Overlaps(RectInt(0, 0, 5, 5), RectInt(4, 4, 5, 5)), "RC42",
+              "RectInt overlaps");
+        Check(!Runtime::RectInt::Overlaps(RectInt(0, 0, 5, 5), RectInt(5, 0, 5, 5)), "RC43",
+              "and sharing an edge is not an overlap (strict)");
+
+        // --- RectInt.ClampToBounds（只有 RectInt 有）------------------------------
+        const RectInt bounds(0, 0, 10, 10);
+        const RectInt inside = Runtime::RectInt::ClampToBounds(RectInt(2, 2, 3, 3), bounds);
+        Check(inside.x == 2 && inside.y == 2 && inside.width == 3 && inside.height == 3, "RC44",
+              "a rect already inside the bounds is untouched");
+        const RectInt left = Runtime::RectInt::ClampToBounds(RectInt(-5, 2, 3, 3), bounds);
+        Check(left.x == 0 && left.y == 2 && left.width == 3 && left.height == 3, "RC45",
+              "one hanging off the low side is pushed in, keeping its size");
+        const RectInt right = Runtime::RectInt::ClampToBounds(RectInt(9, 2, 3, 3), bounds);
+        Check(right.x == 7 && right.width == 3, "RC46",
+              "one hanging off the high side comes back to xMax - width (7, not 9)");
+        // ⚠️ 比 bounds 还大：顶到 bounds 边上，尺寸被裁。只测小的看不出这条。
+        const RectInt huge = Runtime::RectInt::ClampToBounds(RectInt(-5, -5, 100, 100), bounds);
+        Check(huge.x == 0 && huge.y == 0 && huge.width == 10 && huge.height == 10, "RC47",
+              "one bigger than the bounds is clipped to the bounds");
+        // 原始值不被改（非破坏）。
+        Check(Runtime::RectInt::GetXMin(RectInt(9, 2, 3, 3)) == 9, "RC48",
+              "ClampToBounds does not mutate its argument");
+        // 负尺寸的 RectInt 也要能夹取：内部走的是 min/max 而不是裸 x/width。
+        // ⚠️ 夹具必须**伸到 bounds 外面**（x=15 → 边在 12..15），否则"不夹取"
+        // 的实现也在 bounds 内，测不出来。用裸 width(-3) 的实现会得到
+        // xMin=10、xMax=13 —— 仍有一半在 bounds 外。
+        const RectInt neg = Runtime::RectInt::ClampToBounds(RectInt(15, 2, -3, 3), bounds);
+        Check(neg.GetXMin() == 7 && neg.GetXMax() == 10 && neg.width == 3, "RC49",
+              "and a negative-width RectInt is clamped through its normalised edges");
+
+        const RectInt remaxed = Runtime::RectInt::WithMinMax(RectInt(0, 0, 1, 1),
+                                                             ::Vector2Int(5, 6),
+                                                             ::Vector2Int(7, 8));
+        Check(remaxed.GetXMin() == 5 && remaxed.GetXMax() == 7, "RC50",
+              "RectInt.SetMinMax takes two opposite corners");
+        Check(Runtime::RectInt::MinMaxRect(7, 8, 5, 6).GetXMin() == 5, "RC51",
+              "and MinMaxRect normalises reversed corners too");
+        const std::string rs = Runtime::RectInt::ToString(cell).c_str();
+        Check(rs.find("2") != std::string::npos && rs.find("5") != std::string::npos, "RC52",
+              "RectInt.ToString is defined and mentions its fields");
+        const std::string fs = Runtime::Rect::ToString(normal).c_str();
+        Check(!fs.empty(), "RC53", "Rect.ToString is defined");
+    }
+
+    void TestRectWiring()
+    {
+        const std::string value_header = ReadFile("Source/Runtime/Core/Math/Rect.h");
+        Check(!value_header.empty(), "RCW0", "Rect.h is readable");
+        if (value_header.empty()) { return; }
+        // ⚠️ 两个 using 是"Rect / RectInt 存在"的源头：没有它们，`::Rect` 只是
+        // `RectT<float>` 的一个模板实例化，脚本侧名字对不上。
+        Check(CountOccurrences(value_header, "using Rect = RectT<float>;") >= 1, "RCW1",
+              "Rect is RectT<float>");
+        Check(CountOccurrences(value_header, "using RectInt = RectT<int>;") >= 1, "RCW2",
+              "RectInt is RectT<int>");
+        // 归一化那两个 getter 是"负 width 也正确"的唯一来源。
+        Check(CountOccurrences(value_header, "GetXMin") >= 1 &&
+                  CountOccurrences(value_header, "GetXMax") >= 1 &&
+                  CountOccurrences(value_header, "GetYMin") >= 1 &&
+                  CountOccurrences(value_header, "GetYMax") >= 1, "RCW3",
+              "all four normalised edge getters exist");
+        // ⚠️ 半开区间：`Contains` 里必须是 `>=` + `<`。只 grep 名字看不出符号方向。
+        Check(CountOccurrences(value_header, "point_x >= GetXMin() && point_x < GetXMax()") >= 1,
+              "RCW4", "Contains is half-open: >= on the low side, < on the high side");
+        Check(CountOccurrences(value_header, "other.GetXMax() > GetXMin()") >= 1, "RCW5",
+              "Overlaps uses strict comparisons");
+
+        const std::string int_header = ReadFile("Source/Runtime/Core/Math/VectorInt.h");
+        Check(!int_header.empty(), "RCW6", "VectorInt.h is readable");
+        if (!int_header.empty())
+        {
+            Check(CountOccurrences(int_header, "struct Vector2Int") >= 1 &&
+                      CountOccurrences(int_header, "struct Vector3Int") >= 1, "RCW7",
+                  "both integer vector value types exist");
+            // ⚠️ magnitude 必须是 float：返回 int 的实现在 3-4-5 上是绿的。
+            Check(CountOccurrences(int_header, "float GetMagnitude() const") >= 2, "RCW8",
+                  "magnitude is a float on both of them (not int)");
+        }
+
+        const std::string binding_header =
+            ReadFile("Source/Runtime/Scripting/Binding/ScriptBinding.h");
+        Check(!binding_header.empty(), "RCW9", "ScriptBinding.h is readable");
+        if (!binding_header.empty())
+        {
+            Check(CountOccurrences(binding_header, "struct Converter<Vector2Int>") >= 1 &&
+                      CountOccurrences(binding_header, "struct Converter<Vector3Int>") >= 1 &&
+                      CountOccurrences(binding_header, "struct Converter<Rect>") >= 1 &&
+                      CountOccurrences(binding_header, "struct Converter<RectInt>") >= 1, "RCW10",
+                  "all four value types have a marshaller");
+        }
+
+        const std::string binding_source =
+            ReadFile("Source/Runtime/Scripting/Binding/ScriptBinding.cpp");
+        Check(!binding_source.empty(), "RCW11", "ScriptBinding.cpp is readable");
+        if (!binding_source.empty())
+        {
+            Check(CountOccurrences(binding_source, "declare interface Vector2Int {") >= 1 &&
+                      CountOccurrences(binding_source, "declare interface Vector3Int {") >= 1 &&
+                      CountOccurrences(binding_source, "declare interface Rect {") >= 1 &&
+                      CountOccurrences(binding_source, "declare interface RectInt {") >= 1,
+                  "RCW12", "all four are declared in the .d.ts");
+        }
+
+        const std::string rect_facade = ReadFile("Source/Runtime/Scripting/ScriptRect/ScriptRect.h");
+        Check(!rect_facade.empty(), "RCW13", "ScriptRect.h is readable");
+        if (!rect_facade.empty())
+        {
+            // ⚠️ `ClampToBounds` 只有 RectInt 有 —— 两边都导出的实现在"照搬 Unity"
+            // 这条上是错的，但没有任何一条行为测试能发现。这里按**所在类**数。
+            Check(CountOccurrences(rect_facade, "static ::RectInt ClampToBounds(") >= 1, "RCW14",
+                  "RectInt exports ClampToBounds");
+            Check(CountOccurrences(rect_facade, "static ::Rect ClampToBounds(") == 0, "RCW15",
+                  "and Rect does NOT (Unity has no Rect.ClampToBounds)");
+            Check(CountOccurrences(rect_facade, "PointToNormalized") >= 1, "RCW16",
+                  "Rect exports PointToNormalized");
+        }
+    }
+
     void TestMouseEvents()
     {
         ObjectManager* om = GET_SYSTEM(ObjectManager);
@@ -11096,6 +11516,9 @@ int main()
     TestRendererVisibilityWiring();
     TestAnimationCurve();
     TestAnimationCurveWiring();
+    TestIntVectors();
+    TestRects();
+    TestRectWiring();
     TestWiringGate();
 
     std::printf("\n=== %d checks, %d failures ===\n", g_Checks, g_Failures);

@@ -413,6 +413,62 @@ class Mover extends Behaviour {
         ].join("|");
     }
 
+    // ---------------------------------------------------------------------
+    // Unity 的 Vector2Int / Vector3Int / Rect / RectInt（X 段）
+    // ---------------------------------------------------------------------
+    //
+    // 与曲线同一类理由：C++ 的算术门证明不了 **tsc 认这四个名字**。这四个类型
+    // 都是"值类型 interface + 同名静态 class"的合并，任何一个环节断掉（少了
+    // `declare interface`、少了 `Converter`、ZCLASS 名字对不上）都只在**真正的
+    // 类型检查器**下才报错。
+    //
+    // 判据挑的是"写错了也不报错"的那几个数：
+    //   * `FloorToInt(-0.5)` 必须是 **-1**（截断的实现给 0，而正数上两者相同）；
+    //   * `RoundToInt(2.5)` 必须是 **2**（平局取偶，不是"远离零"的 3）；
+    //   * `Vector3Int.forward` 是 (0,0,1) —— 常量名走的是 ZSCRIPTPROPERTY 那条
+    //     链，与 ZFUNCTION 不是同一条。
+    intVecProbe: string = "";
+
+    ProbeIntVectors(): void {
+        const floored: Vector2Int = Vector2Int.FloorToInt({ x: -0.5, y: 1.7 });
+        const rounded: Vector2Int = Vector2Int.RoundToInt({ x: 2.5, y: 3.5 });
+        const stepped: Vector3Int = Vector3Int.Add(Vector3Int.forward, Vector3Int.up);
+        const dist: number = Vector3Int.Distance(Vector3Int.zero, { x: 1, y: 1, z: 1 });
+        this.intVecProbe = [
+            floored.x + "," + floored.y,
+            rounded.x + "," + rounded.y,
+            stepped.x + "," + stepped.y + "," + stepped.z,
+            dist.toFixed(5),
+            String(Vector2Int.one.x),
+            String(Vector3Int.GetSqrMagnitude({ x: 1, y: 2, z: 3 }))
+        ].join("|");
+    }
+
+    // 判据挑的是那三处"反直觉"：
+    //   * `Contains` 是**半开**区间 —— 右边界 (10, 5) 必须 false，而 (0, 0) 是 true；
+    //   * 负 width 的矩形 `xMin` 是 0 而不是 10（两条边归一化）；
+    //   * `RectInt.ClampToBounds` 把伸出去的矩形拉回 `xMax - width` = 7；
+    //   * 只共享一条边的两个矩形**不**相交（与 `Bounds.Intersects` 相反）。
+    rectProbe: string = "";
+
+    ProbeRects(): void {
+        const r: Rect = Rect.Create(0, 0, 10, 20);
+        const flipped: Rect = Rect.Create(10, 0, -10, 10);
+        const uv: Vector2 = Rect.PointToNormalized(r, { x: 2.5, y: 5 });
+        const clamped: RectInt = RectInt.ClampToBounds(RectInt.Create(9, 2, 3, 3),
+                                                       RectInt.Create(0, 0, 10, 10));
+        const centre: Vector2 = RectInt.GetCenter(RectInt.Create(0, 0, 3, 5));
+        this.rectProbe = [
+            String(Rect.Contains(r, { x: 10, y: 5 })),
+            String(Rect.Contains(r, { x: 0, y: 0 })),
+            String(Rect.GetXMin(flipped)),
+            uv.x.toFixed(2) + "," + uv.y.toFixed(2),
+            String(clamped.x),
+            centre.x + "," + centre.y,
+            String(Rect.Overlaps(Rect.Create(0, 0, 10, 10), Rect.Create(10, 0, 10, 10)))
+        ].join("|");
+    }
+
     /// 走 **JS shim** 的那条停止路径（`g.Behaviour.prototype.StopAllCoroutines`）。
     /// C++ 直接调 comp.StopAllCoroutines() 是测不到 shim 的 —— 少一行转发
     /// 照样全绿（变异 SC16 就是这么漏的）。

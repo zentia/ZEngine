@@ -45,9 +45,15 @@
 #include "Runtime/Core/Math/Bounds.h"
 #include "Runtime/Core/Math/Matrix4.h"
 #include "Runtime/Core/Math/Quaternion.h"
+// RectT<float> == Unity's Rect, RectT<int> == RectInt. Both are four-field PODs
+// (x, y, width, height) so they cross as plain objects, no conversion needed.
+#include "Runtime/Core/Math/Rect.h"
 #include "Runtime/Core/Math/Vector2.h"
 #include "Runtime/Core/Math/Vector3.h"
 #include "Runtime/Core/Math/Vector4.h"
+// Vector2Int / Vector3Int: the integer grid-coordinate counterparts of Vector2 /
+// Vector3. PODs, same treatment.
+#include "Runtime/Core/Math/VectorInt.h"
 // AIMoveIntent / AIActionRequest: deliberately the lightweight header that
 // MotorComponent also includes -- it pulls in math + object ids and nothing
 // else, so binding the two AI value structs does not drag behaviour trees or
@@ -586,6 +592,103 @@ namespace ZScript
             Vector2 out;
             out.x = static_cast<float>(apis->get_value_double(env, apis->get_property(env, v, "x")));
             out.y = static_cast<float>(apis->get_value_double(env, apis->get_property(env, v, "y")));
+            return out;
+        }
+    };
+
+    // Vector2Int / Vector3Int: the same {x, y} / {x, y, z} shape as their float
+    // counterparts, except the components round-trip through `int`. A script
+    // literal like `{ x: 3.7, y: -2.1 }` therefore comes back as (3, -2) --
+    // truncation, because that is what an integer field means. Code that wants
+    // Unity's `FloorToInt` semantics (which differ on negatives) must call the
+    // facade explicitly.
+    template <>
+    struct Converter<Vector2Int>
+    {
+        static pesapi_value ToJs(pesapi_ffi* apis, pesapi_env env, const Vector2Int& v)
+        {
+            pesapi_value o = apis->create_object(env);
+            apis->set_property(env, o, "x", apis->create_double(env, v.x));
+            apis->set_property(env, o, "y", apis->create_double(env, v.y));
+            return o;
+        }
+        static Vector2Int FromJs(pesapi_ffi* apis, pesapi_env env, pesapi_value v)
+        {
+            Vector2Int out;
+            out.x = static_cast<int>(apis->get_value_double(env, apis->get_property(env, v, "x")));
+            out.y = static_cast<int>(apis->get_value_double(env, apis->get_property(env, v, "y")));
+            return out;
+        }
+    };
+
+    template <>
+    struct Converter<Vector3Int>
+    {
+        static pesapi_value ToJs(pesapi_ffi* apis, pesapi_env env, const Vector3Int& v)
+        {
+            pesapi_value o = apis->create_object(env);
+            apis->set_property(env, o, "x", apis->create_double(env, v.x));
+            apis->set_property(env, o, "y", apis->create_double(env, v.y));
+            apis->set_property(env, o, "z", apis->create_double(env, v.z));
+            return o;
+        }
+        static Vector3Int FromJs(pesapi_ffi* apis, pesapi_env env, pesapi_value v)
+        {
+            Vector3Int out;
+            out.x = static_cast<int>(apis->get_value_double(env, apis->get_property(env, v, "x")));
+            out.y = static_cast<int>(apis->get_value_double(env, apis->get_property(env, v, "y")));
+            out.z = static_cast<int>(apis->get_value_double(env, apis->get_property(env, v, "z")));
+            return out;
+        }
+    };
+
+    // Rect / RectInt: {x, y, width, height} -- Unity's field names and Unity's
+    // field *meanings* (width/height may legitimately be negative; the derived
+    // xMin/xMax normalise). Nothing is normalised on the way across, so a
+    // negative-width rect survives a round trip and still evaluates correctly
+    // inside `Contains` / `Overlaps`.
+    template <>
+    struct Converter<Rect>
+    {
+        static pesapi_value ToJs(pesapi_ffi* apis, pesapi_env env, const Rect& v)
+        {
+            pesapi_value o = apis->create_object(env);
+            apis->set_property(env, o, "x", apis->create_double(env, v.x));
+            apis->set_property(env, o, "y", apis->create_double(env, v.y));
+            apis->set_property(env, o, "width", apis->create_double(env, v.width));
+            apis->set_property(env, o, "height", apis->create_double(env, v.height));
+            return o;
+        }
+        static Rect FromJs(pesapi_ffi* apis, pesapi_env env, pesapi_value v)
+        {
+            Rect out;
+            out.x = static_cast<float>(apis->get_value_double(env, apis->get_property(env, v, "x")));
+            out.y = static_cast<float>(apis->get_value_double(env, apis->get_property(env, v, "y")));
+            out.width = static_cast<float>(apis->get_value_double(env, apis->get_property(env, v, "width")));
+            out.height = static_cast<float>(apis->get_value_double(env, apis->get_property(env, v, "height")));
+            return out;
+        }
+    };
+
+    template <>
+    struct Converter<RectInt>
+    {
+        static pesapi_value ToJs(pesapi_ffi* apis, pesapi_env env, const RectInt& v)
+        {
+            pesapi_value o = apis->create_object(env);
+            apis->set_property(env, o, "x", apis->create_double(env, v.x));
+            apis->set_property(env, o, "y", apis->create_double(env, v.y));
+            apis->set_property(env, o, "width", apis->create_double(env, v.width));
+            apis->set_property(env, o, "height", apis->create_double(env, v.height));
+            return o;
+        }
+        static RectInt FromJs(pesapi_ffi* apis, pesapi_env env, pesapi_value v)
+        {
+            RectInt out;
+            out.x = static_cast<int>(apis->get_value_double(env, apis->get_property(env, v, "x")));
+            out.y = static_cast<int>(apis->get_value_double(env, apis->get_property(env, v, "y")));
+            out.width = static_cast<int>(apis->get_value_double(env, apis->get_property(env, v, "width")));
+            out.height = static_cast<int>(apis->get_value_double(env, apis->get_property(env, v, "height")));
             return out;
         }
     };

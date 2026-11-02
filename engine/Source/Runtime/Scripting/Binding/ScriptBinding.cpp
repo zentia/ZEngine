@@ -238,6 +238,47 @@ namespace
         "    y: number;\n"
         "}\n"
         "\n"
+        // Vector2Int / Vector3Int：与 Vector2 / Vector3 同名的整数版，键名一致
+        // （`{x, y}` / `{x, y, z}`），但分量是整数。与
+        // `declare class Vector2Int` / `Vector3Int`（ZHeaderTool 从
+        // ScriptIntVector.h 生成，带 `zero` / `Distance` / `FloorToInt`
+        // 那些静态成员）同名合并 —— 与 `Vector3` / `Color` 一个套路。
+        //
+        // ⚠️ 脚本字面量 `{x: 3.7, y: -2.1}` 传进来是**截断**成 (3, -2)，
+        // 不是 floor。要 Unity 的 `FloorToInt` 语义（负数上不同）必须显式调
+        // `Vector2Int.FloorToInt(v)`。
+        "declare interface Vector2Int {\n"
+        "    x: number;\n"
+        "    y: number;\n"
+        "}\n"
+        "\n"
+        "declare interface Vector3Int {\n"
+        "    x: number;\n"
+        "    y: number;\n"
+        "    z: number;\n"
+        "}\n"
+        "\n"
+        // Rect / RectInt：Unity 的四个字段 `x`/`y`/`width`/`height`。
+        // 与 `declare class Rect` / `RectInt`（ScriptRect.h 那批静态方法）
+        // 同名合并。
+        //
+        // ⚠️ `width` / `height` **可以为负**（从右下往左上拖出来的矩形就是这个
+        // 形状），`Rect.xMin` 那些派生 getter 才做归一化。直接读 `x` / `width`
+        // 得不到"两条边"。
+        "declare interface Rect {\n"
+        "    x: number;\n"
+        "    y: number;\n"
+        "    width: number;\n"
+        "    height: number;\n"
+        "}\n"
+        "\n"
+        "declare interface RectInt {\n"
+        "    x: number;\n"
+        "    y: number;\n"
+        "    width: number;\n"
+        "    height: number;\n"
+        "}\n"
+        "\n"
         // Color：与 Vector3 同族的值类型（r/g/b/a 四个 0..1 的 float），键名与
         // ZScript::Converter<Color> 一致。它同时也是一个**绑定类**：`Color.Lerp`
         // / `Color.red` 那些静态成员由 ZHeaderTool 从 ScriptColor.h 生成
