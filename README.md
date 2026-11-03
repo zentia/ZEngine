@@ -169,6 +169,48 @@ Or you can execute the **build_macos.sh** to build the binaries.
 ### Build on Ubuntu 20.04
 You can execute the **build_linux.sh** to build the binaries.
 
+#### ARM64 / no window layer (headless)
+
+On a machine without a usable X11 window layer, or without `dxc` (Jolt's
+Vulkan compute shaders need it and there is no Linux/arm64 build), use the
+headless preset:
+
+```bash
+python zbuild.py configure --preset linux_make_headless
+python zbuild.py build --target ZRuntime
+python zbuild.py build --target ZEditor
+```
+
+It is `linux_make_debug` plus two knobs:
+
+| Knob | Effect |
+|---|---|
+| `ZENGINE_LINUX_WINDOW_STUB=ON` | Compiles the Linux X11 window layer to no-ops. The current implementation calls Xlib entry points that do not exist (`XGetModifier`, `XCreateXCursor`, `XWarpTo`, `XRandRGetScreenResources`, ...), so it does not build against real X11. |
+| `JPH_USE_VK=OFF` | Turns off Jolt's GPU compute shaders (soft body / hair); the engine itself does not use them. |
+
+This produces `bin/Debug/ZRuntime` and `bin/Debug/ZEditor`, but the editor
+cannot open its UI - window creation throws
+`failed to create platform window Initialize`. Asset import (TGA -> BC7 and
+friends) still runs headlessly.
+
+#### Running the editor
+
+```bash
+./bin/Debug/ZEditor -p <path-to-.zproject>
+```
+
+`-p` accepts both absolute and relative paths. A relative path is resolved
+against the directory the process was **launched** from: `CommandSystem`
+canonicalises it to an absolute path before switching directories (Main.cpp
+has already chdir'd into the project directory by the time systems come up, so
+the cwd at that moment is not a usable base).
+
+From the repository root:
+
+```bash
+./bin/Debug/ZEditor -p engine/ZGameSmoke.zproject
+```
+
 ### zbuild.py
 
 `zbuild.py` is a unified driver wrapping the steps above, and the only way to

@@ -143,6 +143,39 @@ cmake --build build --config Release
 ### Ubuntu 构建
 执行 **build_linux.sh** 即可自动编译。
 
+#### ARM64 / 无窗口环境（headless）
+
+在没有可用 X11 窗口层、或没有 `dxc`（Jolt 的 Vulkan 计算着色器需要它，Linux/arm64 没有官方构建）的机器上，用 headless preset：
+
+```bash
+python zbuild.py configure --preset linux_make_headless
+python zbuild.py build --target ZRuntime
+python zbuild.py build --target ZEditor
+```
+
+它等价于 `linux_make_debug` 再加两个开关：
+
+| 开关 | 作用 |
+|---|---|
+| `ZENGINE_LINUX_WINDOW_STUB=ON` | Linux X11 窗口层编译成空实现。现有实现调用了 `XGetModifier` / `XCreateXCursor` / `XWarpTo` / `XRandRGetScreenResources` 等并不存在的 Xlib 接口，在真实 X11 上编译不过 |
+| `JPH_USE_VK=OFF` | 关掉 Jolt 的 GPU 计算着色器（软体 / 毛发），引擎自身不使用这部分 |
+
+这样可以编出 `bin/Debug/ZRuntime` 和 `bin/Debug/ZEditor`，但**打不开编辑器界面**——建窗口那一步会抛 `failed to create platform window Initialize`。资产导入（TGA → BC7 等）在 headless 下仍然会正常跑。
+
+#### 运行编辑器
+
+```bash
+./bin/Debug/ZEditor -p <path-to-.zproject>
+```
+
+`-p` 可以给绝对路径，也可以给相对路径。相对路径按**启动时的工作目录**解析：`CommandSystem` 会先把它规范化成绝对路径，再切换工作目录（`Main.cpp` 在系统初始化之前就已经 chdir 到工程目录了，所以这里不能再按当时的 cwd 解析）。例如在仓库根目录：
+
+```bash
+./bin/Debug/ZEditor -p engine/ZGameSmoke.zproject
+```
+
+工程目录里需要有 `ZEditor.ini` 描述的资产结构（`asset/`、`resource/` 等）；首次打开会重建 `Assets/_Generated/` 下的导入产物。
+
 ### zbuild.py
 
 `zbuild.py` 是上述步骤的统一入口，也是构建独立工具的唯一方式：
