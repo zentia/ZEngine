@@ -154,8 +154,8 @@ def force_relink():
 def regen_dts():
     """刷 d.ts：只跑一遍 `--dump-dts` 再 copy 两份（原先是起三遍 QuickJS）。"""
     first = DTS_PATHS[0]
-    r = subprocess.run([os.path.join(ROOT, DTS_EXE), "--dump-dts", os.path.join(ROOT, first)],
-                       cwd=ROOT, env=ENV, capture_output=True, text=True, timeout=300)
+    r = _capture([os.path.join(ROOT, DTS_EXE), "--dump-dts", os.path.join(ROOT, first)],
+                 ROOT, 180)
     if r.returncode != 0:
         print("  DTS REGEN FAILED rc=%d %s" % (r.returncode, (r.stdout or "")[:120]))
         return False
@@ -215,6 +215,36 @@ def mutate_in(path, func_sig, old, new, end_marker=None):
         text[:i] + region.replace(old, new, 1) + text[j:])
 
 
+class _Result(object):
+    """`subprocess.CompletedProcess` 的最小替身（只用 returncode/stdout/stderr）。"""
+    __slots__ = ("returncode", "stdout", "stderr")
+
+    def __init__(self, rc, out):
+        self.returncode = rc
+        self.stdout = out
+        self.stderr = ""
+
+
+def _capture(argv, cwd, timeout):
+    """带超时的命令执行，返回 _Result。
+
+    ⚠️ **不能用** `subprocess.run(..., capture_output=True, timeout=N)`：Windows 上
+    超时后它先 `kill()` 直接子进程，然后再调一次 `communicate()`；只要孙进程
+    继承了 stdout 句柄，这第二次 communicate 会**永久挂住**（本轮 ECM20 被一个
+    并发全量重建拖住后卡了 19 分钟，最后只能手工停）。这里超时后 `kill()` +
+    `wait()`，不再碰管道；stderr 合并进 stdout，供 _classify / _out 使用。
+    """
+    p = subprocess.Popen(argv, cwd=cwd, env=ENV, stdout=subprocess.PIPE,
+                         stderr=subprocess.STDOUT, text=True, errors="replace")
+    try:
+        out, _ = p.communicate(timeout=timeout)
+        return _Result(p.returncode, out or "")
+    except subprocess.TimeoutExpired:
+        p.kill()
+        p.wait()
+        return _Result(-999, "TIMEOUT after %ds: %s\n" % (timeout, " ".join(argv[:4])))
+
+
 def run(exe, baseline=None):
     """跑一次 exe，返回 (rc, fail_ids, has_summary, new_ids)。
 
@@ -223,8 +253,7 @@ def run(exe, baseline=None):
     `baseline` 为 None 时是基线采集，会把所有 FAIL id 都打出来；否则只打印
     **新增**的那些 —— 25 个变异体跑下来，输出里只该看到该变异体真正触发的门。
     """
-    r = subprocess.run([os.path.join(ROOT, exe)], cwd=ROOT, env=ENV,
-                       capture_output=True, text=True, errors="replace", timeout=300)
+    r = _capture([os.path.join(ROOT, exe)], ROOT, 180)
     lines = (r.stdout or "").splitlines()
     ids = frozenset(m.group(1) for l in lines for m in (FAIL_RE.search(l),) if m)
     tail = [l for l in lines if ("checks," in l or "项检查" in l)]
@@ -252,8 +281,7 @@ def _cmake_build(targets, parallel):
         # 用 CMake 自己的开关，不要手写 `-- /m`：Git Bash 会把 `/m` 转成路径，
         # MSBuild 直接 MSB1008。
         argv.append("--parallel")
-    return subprocess.run(argv, cwd=os.path.join(ROOT, "build"),
-                          env=ENV, capture_output=True, text=True, timeout=1800)
+    return _capture(argv, os.path.join(ROOT, "build"), 900)
 
 
 # ⚠️ 构建失败分两类，混在一起重试就是白烧时间：
@@ -296,6 +324,11 @@ def build(refresh_dts=True, targets=None):
             if refresh_dts and not regen_dts():
                 return last
             return last
+        if p.returncode == -999:
+            # 挂住不是"编不过"，重试只是再等一个 15 分钟。直接放弃这一轮，
+            # 由调用方判成 harness error（绝不能算 caught）。
+            print("  (build HUNG -- not retrying)")
+            return last
         if "LNK1236" in _out(p):
             _cmake_build(("ZRuntime",), parallel=True)
         kind = _classify(p)
@@ -322,13 +355,18 @@ def build_and_run():
     # ZRuntime，而后端/组件的变异体用 UnityParitySmokeTest 一个就能判。
     targets = TARGETS if NEED_SCRIPT else BASE_TARGETS
     p = build(refresh_dts=NEED_DTS, targets=targets)
+    if p is not None and p.returncode == -999:
+        print("  BUILD HUNG -- skipping (not a verdict)")
+        return "harness error (build hung)"
     if p is None or p.returncode != 0:
         print("  BUILD FAILED rc=%d" % (p.returncode if p is not None else -1))
         return "BUILD FAILED"
-    _, ids_parity, ok_parity, new_parity = run(PARITY_EXE, BASELINE["parity"])
-    ok_comp, new_comp = True, []
+    rc_parity, ids_parity, ok_parity, new_parity = run(PARITY_EXE, BASELINE["parity"])
+    rc_comp, ok_comp, new_comp = 0, True, []
     if NEED_SCRIPT:
-        _, _, ok_comp, new_comp = run(COMP_EXE, BASELINE["comp"])
+        rc_comp, _, ok_comp, new_comp = run(COMP_EXE, BASELINE["comp"])
+    if rc_parity == -999 or rc_comp == -999:
+        return "harness error (test hung)"
     if not ok_parity or not ok_comp:
         # 崩溃 / 没打汇总行：与基线不同，算 caught，但要单独标出来，别混进
         # "被某条门抓住"里 —— 崩溃也可能是 harness 自己把 exe 弄坏了。
