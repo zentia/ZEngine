@@ -84,6 +84,11 @@ DTS_PATHS = (
 )
 
 NEED_RELINK = False
+# 这一轮变异体有没有可能改到 d.ts 的**内容**。d.ts 只跟发布面有关：prelude 里的
+# 手写字符串（`ScriptBinding.cpp`）和 ZHeaderTool 从头文件扫出来的反射信息。
+# 改 `PhysicsScene.cpp` / `CharacterJointComponent.cpp` / `PhysicsSceneNull.cpp`
+# 根本不会影响它，25 个变异体里只有 2 个碰 `ScriptBinding.cpp`。
+NEED_DTS = True
 
 
 def force_relink():
@@ -114,12 +119,22 @@ def force_relink():
 
 
 def regen_dts():
-    for rel in DTS_PATHS:
-        r = subprocess.run([os.path.join(ROOT, DTS_EXE), "--dump-dts", os.path.join(ROOT, rel)],
-                           cwd=ROOT, env=ENV, capture_output=True, text=True, timeout=300)
-        if r.returncode != 0:
-            print("  DTS REGEN FAILED rc=%d %s" % (r.returncode, (r.stdout or "")[:120]))
-            return False
+    """刷 d.ts。
+
+    两处提速：
+    * 以前对三个路径各跑一次 `--dump-dts`（= 启动三遍 QuickJS），现在只跑一遍
+      再 copy 两份。
+    * 由调用方决定要不要刷（见 `build()`）：d.ts 的内容只跟发布面有关，改
+      `PhysicsScene.cpp` / `CharacterJointComponent.cpp` 根本不会影响它。
+    """
+    first = DTS_PATHS[0]
+    r = subprocess.run([os.path.join(ROOT, DTS_EXE), "--dump-dts", os.path.join(ROOT, first)],
+                       cwd=ROOT, env=ENV, capture_output=True, text=True, timeout=300)
+    if r.returncode != 0:
+        print("  DTS REGEN FAILED rc=%d %s" % (r.returncode, (r.stdout or "")[:120]))
+        return False
+    for rel in DTS_PATHS[1:]:
+        shutil.copy2(os.path.join(ROOT, first), os.path.join(ROOT, rel))
     return True
 
 
@@ -165,39 +180,62 @@ def run(exe):
     return r.returncode
 
 
-def build():
+def _cmake_build(targets, parallel):
+    argv = ["cmake", "--build", ".", "--target"] + list(targets) + ["--config", "Debug"]
+    if parallel:
+        # 用 CMake 自己的 `--parallel`，不要手写 `-- /m`：Git Bash 会把 `/m`
+        # 当成一个路径转成盘符下的绝对路径，MSBuild 直接 MSB1008。
+        argv.append("--parallel")
+    return subprocess.run(argv, cwd=os.path.join(ROOT, "build"),
+                          env=ENV, capture_output=True, text=True, timeout=1800)
+
+
+def build(refresh_dts=True):
+    """一次 `cmake --build` 编完四个 target。
+
+    三处提速（相对最早的写法）：
+    * 四个 target 合成一次调用 —— 以前四次 MSBuild 启动，每次都重扫一遍 solution
+      的依赖关系。
+    * `--parallel`（等价于 MSBuild `/m`）。用户明确允许吃满 CPU。
+    * d.ts 只在**有可能影响它内容**的那一轮刷（`refresh_dts`）。以前 round-trip
+      一次要起 3 遍 QuickJS，现在最多 1 遍、多数变异体 0 遍。
+
+    合并 + `/m` 理论上可能撞文件锁（四个 target 都依赖 ZRuntime），所以前两轮
+    失败后退化成逐 target 串行再来一遍，作为兜底。
+    """
     last = None
     if NEED_RELINK:
         force_relink()
-    for _ in range(3):
-        ok = True
-        for target in TARGETS:
-            p = subprocess.run(["cmake", "--build", ".", "--target", target,
-                                "--config", "Debug"], cwd=os.path.join(ROOT, "build"),
-                               env=ENV, capture_output=True, text=True, timeout=1800)
-            last = p
+    for attempt in range(3):
+        p = _cmake_build(TARGETS, parallel=True)
+        last = p
+        if p.returncode != 0:
+            if "LNK1236" in (p.stdout or ""):
+                _cmake_build(("ZRuntime",), parallel=True)
+            if attempt == 0:
+                continue                      # 先再给「合并 + 并行」一次机会
+            print("  (merged/parallel build keeps failing -- falling back to sequential)")
+            for target in TARGETS:
+                p = _cmake_build((target,), parallel=False)
+                last = p
+                if p.returncode != 0:
+                    break
             if p.returncode != 0:
-                ok = False
-                if "LNK1236" in (p.stdout or ""):
-                    subprocess.run(["cmake", "--build", ".", "--target", "ZRuntime",
-                                    "--config", "Debug"], cwd=os.path.join(ROOT, "build"),
-                                   env=ENV, capture_output=True, text=True, timeout=1800)
-                break
-        if ok:
-            if not regen_dts():
-                return last
+                continue
+        if refresh_dts and not regen_dts():
             return last
+        return last
     return last
 
 
 def build_and_run():
-    p = build()
-    if p.returncode != 0:
-        print("  BUILD FAILED rc=%d" % p.returncode)
+    p = build(refresh_dts=NEED_DTS)
+    if p is None or p.returncode != 0:
+        print("  BUILD FAILED rc=%d" % (p.returncode if p is not None else -1))
         return "BUILD FAILED"
-    if not regen_dts():
-        return "BUILD FAILED"
-    if run(PARITY_EXE) | run(COMP_EXE) == 0:
+    rc_parity = run(PARITY_EXE)
+    rc_comp = run(COMP_EXE)
+    if rc_parity == 0 and rc_comp == 0:
         print("  >>> NOT CAUGHT <<<")
         return "NOT CAUGHT"
     return "caught"
@@ -262,9 +300,12 @@ MUTATIONS = [
      "            out_angular_impulse = std::max(0.f,"),
 
     # =========================================================================
-    # 退化扭转区间（0..0）= 锁死，与 slice 56 铰链那条是同一条规律。
-    # 守卫写成 `< 0 / > 0` 的话 0..0 会被当成"没配"丢掉 ⇒ Jolt 走 TwistXFree，
-    # Unity 里"CharacterJoint 不许扭"就悄悄变成"随便扭"。
+    # 守卫为什么必须写成 `<= 0 / >= 0`：Jolt 的 `SwingTwistConstraintSettings`
+    # 默认扭转区间是 **0 .. 0**（不是 ±π！），所以 `0 .. 0` 这一对走"守卫放行"和
+    # "守卫拦下"结果完全一样 —— 夹具只测 0..0 是**测不出这个变异体的**（CJM23 就
+    # 这么活了一整轮）。真正会分叉的是**只贴 0 一侧**的区间：`-0.4 .. 0` 与
+    # `0 .. 0.4`，守卫写成 `<` / `>` 就被当成"没配"丢掉，落回默认的 0..0 = 锁死。
+    # CJ17j/k/m/n 读回来对照，CJ17o/p 再从行为上钉一次。
     # =========================================================================
     ("CJM23 the cone drops the degenerate twist range (0..0 stops locking the twist)",
      SCENE_CPP, "        case PhysicsJointType::swing_twist:",
@@ -410,6 +451,16 @@ def main():
     signal.signal(signal.SIGINT, _restore_and_die)
 
     try:
+        # 基线：先把源码按**未变异**的状态编一遍并刷一次 d.ts。既然绝大多数变异
+        # 体现在都不再刷 d.ts 了，这一遍就是整个 run 里唯一保证 d.ts 与当前源码
+        # 一致的机会 —— 不然后面 23 个变异体读的都是上一轮（可能是别人留下的）
+        # 那份，绿了也说明不了问题。
+        print("=== baseline (clean sources) ===")
+        b = build(refresh_dts=True)
+        if b is None or b.returncode != 0:
+            print("! baseline build FAILED -- results below are not trustworthy")
+        print()
+
         for entry in MUTATIONS:
             end_marker = None
             if len(entry) == 6:
@@ -422,8 +473,9 @@ def main():
             if only and name.split()[0] not in only:
                 continue
             print("=== %s ===" % name)
-            global NEED_RELINK
+            global NEED_RELINK, NEED_DTS
             NEED_RELINK = path in (BINDING_CPP, BINDING_H)
+            NEED_DTS = path in (BINDING_CPP, BINDING_H)
             bak = os.path.join(BAK, os.path.basename(path) + ".cjointbak")
             shutil.copy2(path, bak)
             RESTORE[path] = bak
@@ -455,8 +507,7 @@ def main():
             print()
         for path in touched:
             os.utime(path, None)
-        build()
-        regen_dts()
+        build(refresh_dts=True)      # 收尾：源码已还原，重建 + 刷回正确的 d.ts
         print("---- summary ----")
         for n, r in results:
             print("%-70s %s" % (n, r))
