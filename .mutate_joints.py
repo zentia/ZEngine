@@ -53,8 +53,13 @@ Run:  py .mutate_joints.py            (all)
 import io
 import os
 import shutil
+import signal
 import subprocess
 import sys
+import time
+
+# path -> backup，供信号处理器在中途被杀时还原（见 main 里的注释）。
+RESTORE = {}
 
 ROOT = r"E:\Engine\ZEngine"
 
@@ -161,10 +166,16 @@ def run(exe):
 
 
 def force_relink():
-    """⚠️ Debug 用的是 /INCREMENTAL（.ilk）。改一个大只读字符串（`kZEngineDtsTemplate`
-    那种）时，增量链接**不重新搬数据**：新的 .obj 里有那一行，链接出来的 exe 里
-    没有，于是"把 d.ts 里的别名删掉"这种变异体看起来活着、其实根本没进二进制。
-    每次 build 前把测试 exe 的 .ilk 删掉，强制整链。"""
+    """兜底：清掉这三个 exe 的增量链接状态文件（.ilk）。
+
+    Debug 默认开 /INCREMENTAL，而增量链接不搬改过的**大只读字符串**
+    （`kZEngineDtsTemplate`）：新的 .obj 里有那一行，链接出来的 exe 里没有，
+    于是"把 d.ts 里的别名删掉"这种变异体看起来活着、其实根本没进二进制。
+
+    现在这三个 target 在 CMake 里已经挂了 `$<$<CONFIG:Debug>:/INCREMENTAL:NO>`，
+    新构建不产生 .ilk，这里是 no-op；留着只是清旧 build 目录里残留的 .ilk。
+    只删这一个文件，os.remove 直接删，不进回收站、不动构建产物。
+    """
     for rel in (
         r"build\engine\Source\Runtime\Scripting\ScriptVM\Test\Debug\ScriptTsChainSmokeTest.ilk",
         r"build\engine\Source\Runtime\Scripting\ScriptVM\Test\Debug\ScriptComponentSmokeTest.ilk",
@@ -463,14 +474,59 @@ MUTATIONS = [
 LOCK = os.path.join(BAK, "zengine_mutate_joints.lock")
 
 
+def lock_is_stale():
+    """锁文件存在**不代表真有人在跑** —— 被打断的那次会把锁留下，于是下一次运行
+    直接被自己的残留挡在门外。判据两条：PID 还在不在，以及锁的年龄（PID 可能被
+    复用，所以还要有时间兜底）。"""
+    try:
+        with io.open(LOCK, "r", encoding="utf-8") as f:
+            pid = int((f.read().strip() or "0"))
+    except (OSError, ValueError):
+        return True
+    if pid <= 0:
+        return True
+    try:
+        os.kill(pid, 0)          # 存在性探测，不真的发信号
+    except OSError:
+        return True              # 进程已经没了
+    return (time.time() - os.path.getmtime(LOCK)) > 6 * 3600
+
+
 def main():
     if os.path.exists(LOCK):
-        raise SystemExit("another .mutate_joints.py is already running (%s)" % LOCK)
+        if lock_is_stale():
+            print("! removing a stale lock (%s) -- a previous run was killed" % LOCK)
+            os.remove(LOCK)
+        else:
+            raise SystemExit("another .mutate_joints.py is already running (%s)" % LOCK)
     io.open(LOCK, "w", encoding="utf-8").write("%d\n" % os.getpid())
 
     only = set(sys.argv[1:])
     results = []
     touched = set()
+
+    # ⚠️ 内层的 `finally` 挡不住 SIGTERM / Ctrl-C：信号直接终止进程，不抛异常，
+    # 于是**变异体就留在源码里了**。`.mutate_cjoint.py` 上吃过一次这个亏 ——
+    # `out_angular_impulse = std::max(0.f, ...)` 在仓库里躺了好几轮，之后所有
+    # "角冲量恒为 0"的观察全是那个残留造成的假象，白白改了四轮夹具和文档。
+    # 所以这里显式接管信号，死之前一定把源码还原回去。
+    def _restore_and_die(signum, _frame):
+        sys.stderr.write("\n!! signal %d -- restoring sources before exit\n" % signum)
+        for path, bak in RESTORE.items():
+            try:
+                shutil.copy2(bak, path)
+                os.utime(path, None)
+            except OSError:
+                pass
+        try:
+            os.remove(LOCK)
+        except OSError:
+            pass
+        sys.exit(1)
+
+    signal.signal(signal.SIGTERM, _restore_and_die)
+    signal.signal(signal.SIGINT, _restore_and_die)
+
     try:
         for entry in MUTATIONS:
             end_marker = None
@@ -490,6 +546,7 @@ def main():
             NEED_RELINK = path in (BINDING_CPP, BINDING_H)
             bak = os.path.join(BAK, os.path.basename(path) + ".jointbak")
             shutil.copy2(path, bak)
+            RESTORE[path] = bak
             try:
                 try:
                     if func_sig is not None:

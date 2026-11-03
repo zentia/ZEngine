@@ -919,6 +919,22 @@ class Mover extends Behaviour {
         let typedSlider = null;
         const jointAliases = (typedHinge === null) && (typedFixed === null) &&
             (typedSpring === null) && (typedSlider === null);
+        // ---- CharacterJoint（slice 57）--------------------------------------
+        const characterFacade = (typeof CharacterJointComponent.prototype.GetSwing1Limit === "function") &&
+            (typeof CharacterJointComponent.prototype.SetSwing1Limit === "function") &&
+            (typeof CharacterJointComponent.prototype.GetSwing2Limit === "function") &&
+            (typeof CharacterJointComponent.prototype.GetLowTwistLimit === "function") &&
+            (typeof CharacterJointComponent.prototype.GetHighTwistLimit === "function") &&
+            (typeof CharacterJointComponent.prototype.SetTwistSwingLimits === "function") &&
+            (typeof CharacterJointComponent.prototype.GetSwingAxis === "function") &&
+            (typeof CharacterJointComponent.prototype.GetTwistLimitSpring === "function") &&
+            (typeof CharacterJointComponent.prototype.SetSwingLimitSpring === "function");
+        // 编译期门禁：`SoftJointLimitSpring` 只有 spring / damper 两个字段 —— 多写
+        // 一个 `targetPosition` tsc 就红，少写一个也是。
+        const softSpring = { spring: 3, damper: 0.5 };
+        const characterValueTypes = (softSpring.spring === 3) && (softSpring.damper === 0.5);
+        let typedCharacter = null;
+        const characterAliases = (typedCharacter === null);
         this.jointProbe = [
             String(jointClassesPublished),
             String(jointBaseFacade),
@@ -927,7 +943,10 @@ class Mover extends Behaviour {
             String(springFacade),
             String(sliderFixedFacade),
             String(jointValueTypes),
-            String(jointAliases)
+            String(jointAliases),
+            String(characterFacade),
+            String(characterValueTypes),
+            String(characterAliases)
         ].join("|");
         // ---- Unity 的 Input 那一层（slice 51）----
         // 这个进程没有 InputSystem，所以下面断言的是**安全默认值**与**可写的

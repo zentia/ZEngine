@@ -37,8 +37,8 @@ console.log(hinge.angle, hinge.velocity);
 | `FixedJoint` | `FixedJointComponent` |
 | `SpringJoint` | `SpringJointComponent` |
 | —（Unity 用 `ConfigurableJoint` 表达） | `SliderJointComponent` |
-| `CharacterJoint` | **未实现**（见第 7 节） |
-| `ConfigurableJoint` | **未实现** |
+| `CharacterJoint` | `CharacterJointComponent`（锥形球窝） |
+| `ConfigurableJoint` | **未实现**（见第 8 节） |
 
 ## 2. PhysicsScene 的运行时控制
 
@@ -128,12 +128,13 @@ min != max || mLimitsSpringSettings.mFrequency > 0   // "Better use a fixed cons
 看起来生效了却什么也没做）。滑块用同一套规则 —— 它的守卫从 `<`/`>` 放宽到
 `<=`/`>=` 就是为这个。
 
-## 4. 三个值类型（比 Unity 少字段，是故意的）
+## 4. 四个值类型（比 Unity 少字段，是故意的）
 
 ```typescript
 declare interface JointLimits { min: number; max: number; }
 declare interface JointMotor  { targetVelocity: number; force: number; }
 declare interface JointSpring { spring: number; damper: number; targetPosition: number; }
+declare interface SoftJointLimitSpring { spring: number; damper: number; }
 ```
 
 Unity 那边还多了：`JointLimits.bounciness` / `.bounceMinVelocity` /
@@ -147,14 +148,73 @@ Unity 那边还多了：`JointLimits.bounciness` / `.bounceMinVelocity` /
 于是脚本写 `limits.bounciness = 1` 会**编译不过**。编译不过比"能跑、改了个没人读
 的字段"好诊断得多。
 
-## 5. SliderJointComponent（Unity 没有这个类型）
+## 5. CharacterJointComponent（锥形球窝）
+
+Unity 的 `CharacterJoint` 是"球窝 + 一个摆动锥 + 一段扭转区间"：布娃娃的脖子、
+腰、肩。与球窝（`PhysicsJointType::point`）的差别是它**限制摆动的锥角**和**绕
+自身轴的扭转区间**；与铰链的差别是它不限一根轴、而是给一个锥。
+
+```typescript
+declare interface SoftJointLimitSpring { spring: number; damper: number; }
+```
+
+⚠️ `SoftJointLimitSpring` 与 `JointSpring` 是**两个**类型：这个**没有**
+`targetPosition` —— 限位弹簧拉回的是"限位面上"，目标位置由约束自己算，脚本给
+不了。复用 `JointSpring` 会让那个字段变成"能写、没人读"。
+
+### ⚠️ 与铰链相反：锥的限位**可以**运行时改
+
+`HingeJointComponent` 的 `useLimits` 背后是一次 `RebuildJoint()`（Jolt 的
+`HingeConstraint` 关不掉限位），而 `SwingTwistConstraint` 有
+`SetNormalHalfConeAngle` / `SetPlaneHalfConeAngle` / `SetTwistMinAngle` /
+`SetTwistMaxAngle` 四个 setter —— 所以配锥的限位**不重建**关节。
+
+只有 `axis`（扭转轴）和 `swingAxis`（摆动参考轴）是烘进约束参考系的，改它们才
+要重建。写脚本时这是两条相反的规则，别照抄铰链那条。
+
+### ⚠️ 摆动轴与扭转轴平行 = NaN
+
+`SwingTwistConstraintSettings` 的 `mPlaneAxis` 只被正交化**一次**：
+`cross(parallel, parallel)` 是零向量，后面 `.Normalized()` 就是 NaN，一步之后
+整个场景的位置都是 NaN —— 而 `CreateJoint` 照样返回一个合法的 id。所以
+`PhysicsScene::PlaneAxisFor` 自己先把"沿扭转轴的那一份"减掉，减完太短就换一条
+垂直轴。判据是 `CJ0f`：步进之后位置还是有限值。
+
+### 拒绝而不是夹紧
+
+`swing1Limit` / `swing2Limit` 是**半锥角**（>= 0），`lowTwistLimit` /
+`highTwistLimit` 必须**跨 0**（与铰链同一条规则）。越界的值一律**拒掉**（返回
+`false`），且**先判后存** —— 存一半再判会让 getter 读到"脚本从来没成功设过"的
+值，而脚本那头看不到任何报错。
+
+两层校验都要有：组件层挡住脚本，`PhysicsScene` 层挡住"直接投 Jolt"的调用者
+（程序化布娃娃只走后者）。
+
+### 角冲量：必须让重力真的拧出绕扭转轴的力矩
+
+`GetJointImpulse` 在锥上取 `max(|twist|, |swingY|, |swingZ|)` 三股 lambda。这三股
+**全是"限位型" part**，只在真的撞上锥面／扭到头的那一步才激活（`Fixed` 和 `Hinge`
+读得到角冲量是因为它们另有一股恒激活的 `RotationConstraintPart`）。所以夹具必须
+满足两个条件，否则读出来就是 0：
+
+1. 关节点**偏离** B 的质心 —— 落在质心上时重力对枢轴的力矩是 0，B 压根不转，
+   自然撞不上限位；
+2. 力矩要绕**扭转轴** —— 力臂与重力不能平行。
+
+另外别指望 `SetAngularVelocity` 当载荷：它不唤醒 body，且求解一结束角速度就被清
+零，读到的 lambda 永远是"已经解完"的 0。让重力去拧才是持续载荷。
+
+门禁：`CJ17g`（行为：角冲量非 0）+ `CJ17l`（源头：三股都被读进来了 —— 少读任何
+一股，剩下两股照样能把它喂成非 0，行为上看不出来）。
+
+## 6. SliderJointComponent（Unity 没有这个类型）
 
 Unity 里"沿一根轴滑动"要用 `ConfigurableJoint` 把 5 个自由度锁掉来表达
 （`xMotion = Locked` 那一套）。本引擎单独做一个组件：后端本来就有 slider 约束，
 而"活塞 / 抽屉 / 电梯"这种需求用它比用 `ConfigurableJoint` 少写十行、也少十个能
 写错的地方。等 `ConfigurableJoint` 补上之后它会保留（它是那份 API 的一个预设）。
 
-## 6. 序列化
+## 7. 序列化
 
 所有作者态参数装在一个 `JointComponentRes` 里（`ZPROPERTY()`，基类持有，四个子类
 共用）。
@@ -169,18 +229,19 @@ setter**（改了要重建约束）。两条同名属性会让 ZHeaderTool 直�
 字段是四个子类的**并集**：`SliderJoint` 用不到 `m_Spring`，`SpringJoint` 用不到
 `m_UseLimits`。一份 res 比四份省事，代价是每个关节多序列化几个用不到的数。
 
-## 7. 已知缺口
+## 8. 已知缺口
 
 | Unity | 状态 | 原因 |
 | --- | --- | --- |
 | `Joint.enableCollision` | 未实现 | Jolt 的约束不影响接触生成；要"两个刚体互不碰撞"得走 `GroupFilterTable` + 每个 body 一个 sub-group id，会动现有 body 的创建语义 |
 | `Joint.massScale` / `connectedMassScale` | 未实现 | Jolt 没有 per-constraint 质量缩放 |
 | `Joint.currentForce` / `currentTorque`（Vector3） | 未实现 | 只给了**模长**（`GetJointImpulse`）。每个约束的 lambda 活在自己的坐标系里，拼成 Vector3 会给出一个看着像世界矢量、其实不是的东西 |
-| `CharacterJoint` | 未实现 | 需要后端补 Jolt 的 `SwingTwistConstraint` |
 | `ConfigurableJoint` | 未实现 | 需要后端补 `SixDOFConstraint` |
+| `CharacterJoint.enableProjection` / `projectionDistance` / `projectionAngle` | 未实现 | Jolt 没有"投影纠错"；布娃娃拉伸要靠缩短步长 / 加求解步数 |
+| `SoftJointLimit.bounciness` / `contactDistance` | 未实现 | 与 `JointLimits` 同一条取舍（第 4 节）：只给了裸的 `limit` |
 | `JointLimits.bounciness` 等 | 见第 4 节 | — |
 
-## 8. 测试
+## 9. 测试
 
 `UnityParitySmokeTest::TestJointComponents()`（`JN*` 段）三段：
 

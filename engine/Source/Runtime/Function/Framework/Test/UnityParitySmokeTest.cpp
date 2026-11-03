@@ -96,6 +96,7 @@
 #include "Runtime/Function/Framework/Component/Joint/FixedJointComponent.h"
 #include "Runtime/Function/Framework/Component/Joint/SpringJointComponent.h"
 #include "Runtime/Function/Framework/Component/Joint/SliderJointComponent.h"
+#include "Runtime/Function/Framework/Component/Joint/CharacterJointComponent.h"
 #include "Runtime/Function/Framework/Component/Motor/MotorComponent.h"
 #include "Runtime/Function/Controller/CharacterController.h"
 #include "Runtime/Function/Physics/PhysicsScene.h"
@@ -167,6 +168,7 @@ template<> void RegisterKlass<HingeJointComponent>();
 template<> void RegisterKlass<FixedJointComponent>();
 template<> void RegisterKlass<SpringJointComponent>();
 template<> void RegisterKlass<SliderJointComponent>();
+template<> void RegisterKlass<CharacterJointComponent>();
 template<> void RegisterKlass<Collider>();
 template<> void RegisterKlass<PlayerPrefs>();
 
@@ -2237,6 +2239,7 @@ namespace
         RegisterKlass<FixedJointComponent>();
         RegisterKlass<SpringJointComponent>();
         RegisterKlass<SliderJointComponent>();
+        RegisterKlass<CharacterJointComponent>();
         RegisterKlass<Collider>();
         RegisterKlass<PlayerPrefs>();
         type_manager.InitializeAllTypes();
@@ -4162,6 +4165,242 @@ namespace
               "with autoConfigure off, connectedAnchor really moves the attachment point");
 
         // =====================================================================
+        // 2b. CharacterJoint（锥形球窝）
+        // =====================================================================
+
+        PhysicsJointDesc cone_desc = hinge_desc;
+        cone_desc.m_Type = PhysicsJointType::swing_twist;
+        cone_desc.m_Swing1HalfAngle = 0.5f;
+        cone_desc.m_Swing2HalfAngle = 0.4f;
+        cone_desc.m_TwistMinAngle = -0.3f;
+        cone_desc.m_TwistMaxAngle = 0.6f;
+        const uint32_t cone_id = scene->CreateJoint(cone_desc);
+        Check(cone_id != s_InvalidJointId &&
+                  scene->GetJointType(cone_id, read_type) && read_type == PhysicsJointType::swing_twist,
+              "CJ0", "a swing-twist (cone) joint can be created and reports its own type");
+        float cone_swing1 = -1.f;
+        float cone_swing2 = -1.f;
+        float cone_twist_min = -1.f;
+        float cone_twist_max = -1.f;
+        Check(scene->GetJointSwingTwistLimits(cone_id, cone_swing1, cone_swing2, cone_twist_min,
+                                              cone_twist_max) &&
+                  Near(cone_swing1, 0.5f) && Near(cone_swing2, 0.4f) && Near(cone_twist_min, -0.3f) &&
+                  Near(cone_twist_max, 0.6f),
+              "CJ0a", "and all four cone limits come back out of the backend");
+        // 对照组：按类型拒绝。少了这条，"永远返回 true" 也是绿的。
+        // ⚠️ 对照组必须挑一个**还活着**的关节：`hinge_id` 在上面 JN27 已经被
+        // RemoveJoint 拆掉了，`JointAt` 直接返回 nullptr —— 那样这条断言会因为
+        // "关节不存在"而不是"类型不对"通过，什么也没挡住。
+        Check(scene->GetJointType(fixed_id, read_type) && read_type == PhysicsJointType::fixed, "CJ0b",
+              "the control joint for the type refusal is a LIVE fixed joint (a removed one proves nothing)");
+        Check(!scene->GetJointSwingTwistLimits(fixed_id, cone_swing1, cone_swing2, cone_twist_min,
+                                               cone_twist_max),
+              "CJ0c", "a fixed joint has no cone limits to read");
+        Check(!scene->SetJointSwingTwistLimits(fixed_id, 0.1f, 0.1f, -0.1f, 0.1f), "CJ0d",
+              "and refuses to have them written");
+        // 摆动轴与扭转轴平行：Jolt 只正交化一次，cross(parallel, parallel) 是零
+        // 向量，后面 .Normalized() 就是 NaN —— 一个 NaN 约束会拖垮整个 broadphase。
+        PhysicsJointDesc parallel_desc = cone_desc;
+        parallel_desc.m_PlaneAxisA = Vector3(0.f, 0.f, 1.f);   // 与扭转轴（+Z）平行
+        parallel_desc.m_PlaneAxisB = Vector3(0.f, 0.f, 1.f);
+        const uint32_t parallel_id = scene->CreateJoint(parallel_desc);
+        Check(parallel_id != s_InvalidJointId, "CJ0e",
+              "a swing axis parallel to the twist axis does NOT poison the constraint");
+        // 后端自己也要拒：组件层的拒绝是**另一层**，两层不能互相顶替 —— 直接投
+        // Jolt 的调用者（程序化布娃娃）只走后端这一层。
+        Check(!scene->SetJointSwingTwistLimits(cone_id, -0.5f, 0.4f, -0.3f, 0.6f) &&
+                  !scene->SetJointSwingTwistLimits(cone_id, 0.5f, 0.4f, 0.3f, 0.6f) &&
+                  !scene->SetJointSwingTwistLimits(cone_id, 0.5f, 0.4f, -0.3f, -0.6f),
+              "CJ0f", "the backend refuses a negative half cone angle and a twist range that misses zero");
+        // NaN 判据：正交化失败会把 NaN 带进约束，一步之后整个场景的位置都是
+        // NaN。光"创建成功"看不出来，必须步进之后查位置还是不是有限值。
+        StepScene(*scene, 3);
+        Vector3 cone_body_position = Vector3::ZERO;
+        Check(scene->GetRigidBodyPosition(hinge_b, cone_body_position) &&
+                  std::isfinite(cone_body_position.x) && std::isfinite(cone_body_position.y) &&
+                  std::isfinite(cone_body_position.z),
+              "CJ0g", "and a few steps later the bodies are still finite (a NaN constraint poisons everything)");
+
+        CharacterJointComponent* char_joint = new CharacterJointComponent();
+        om->AllocateAndAssignInstanceID(char_joint);
+        actor_a.object->addComponent(char_joint);
+        char_joint->PostLoadResource(actor_a.object);
+        char_joint->SetConnectedBody(actor_b.body);
+        Check(char_joint->HasJoint() && scene->GetJointType(char_joint->GetJointId(), read_type) &&
+                  read_type == PhysicsJointType::swing_twist,
+              "CJ1", "a CharacterJointComponent builds a swing-twist constraint (a cone, not a ball socket)");
+        const uint32_t cone_component_id = char_joint->GetJointId();
+        Check(Near(char_joint->GetSwing1Limit(), 0.f) && Near(char_joint->GetSwing2Limit(), 0.f) &&
+                  Near(char_joint->GetLowTwistLimit(), 0.f) && Near(char_joint->GetHighTwistLimit(), 0.f),
+              "CJ2", "the four limits default to 0 (Unity's fresh CharacterJoint)");
+        Check(Near(char_joint->GetSwingAxis().y, 1.f), "CJ3", "swingAxis defaults to +Y (Unity's default)");
+
+        // ⚠️ 与铰链相反：这里的限位**可以运行时改**，改了不该重建。
+        Check(char_joint->SetSwing1Limit(0.5f) && Near(char_joint->GetSwing1Limit(), 0.5f), "CJ4",
+              "swing1Limit round-trips");
+        Check(scene->GetJointSwingTwistLimits(char_joint->GetJointId(), cone_swing1, cone_swing2,
+                                              cone_twist_min, cone_twist_max) &&
+                  Near(cone_swing1, 0.5f),
+              "CJ5", "and it reached the backend");
+        Check(char_joint->GetJointId() == cone_component_id, "CJ6",
+              "changing a cone limit did NOT rebuild the joint (unlike a hinge's limits)");
+        Check(char_joint->SetTwistSwingLimits(0.5f, 0.4f, -0.3f, 0.6f) &&
+                  scene->GetJointSwingTwistLimits(char_joint->GetJointId(), cone_swing1, cone_swing2,
+                                                  cone_twist_min, cone_twist_max) &&
+                  Near(cone_swing1, 0.5f) && Near(cone_swing2, 0.4f) && Near(cone_twist_min, -0.3f) &&
+                  Near(cone_twist_max, 0.6f),
+              "CJ7", "all four at once round-trip and reach the backend");
+
+        // 拒而不夹：夹出来的值和脚本写的不是一回事，"我明明写了 -0.5 却被当成 0"
+        // 是最难查的一类。
+        Check(!char_joint->SetSwing1Limit(-0.5f) && Near(char_joint->GetSwing1Limit(), 0.5f), "CJ8",
+              "a negative swing half cone angle is refused, and the old value is untouched");
+        Check(!char_joint->SetLowTwistLimit(0.2f) && Near(char_joint->GetLowTwistLimit(), -0.3f), "CJ9",
+              "a twist range that does not straddle zero is refused (not clamped)");
+        Check(!char_joint->SetHighTwistLimit(-0.2f) && Near(char_joint->GetHighTwistLimit(), 0.6f), "CJ10",
+              "and so is the other side");
+
+        // 摆动轴烘在约束的参考系里 ⇒ 改它**要**重建（与铰链那条规则一致）。
+        char_joint->SetSwingAxis(Vector3(1.f, 0.f, 0.f));
+        Check(Near(char_joint->GetSwingAxis().x, 1.f), "CJ11", "swingAxis round-trips");
+        Check(char_joint->GetJointId() != cone_component_id && char_joint->HasJoint(), "CJ12",
+              "and changing it rebuilt the joint (the axis is baked into the constraint frame)");
+
+        // 限位弹簧
+        SoftJointLimitSpring twist_spring;
+        twist_spring.spring = 3.f;
+        twist_spring.damper = 0.5f;
+        Check(char_joint->SetTwistLimitSpring(twist_spring) &&
+                  Near(char_joint->GetTwistLimitSpring().spring, 3.f) &&
+                  Near(char_joint->GetTwistLimitSpring().damper, 0.5f),
+              "CJ13", "twistLimitSpring round-trips");
+        float spring_hz = -1.f;
+        float spring_damping = -1.f;
+        float twist_hz = -1.f;
+        float twist_damping = -1.f;
+        Check(scene->GetJointSwingTwistSpring(char_joint->GetJointId(), spring_hz, spring_damping, twist_hz,
+                                              twist_damping) &&
+                  Near(twist_hz, 3.f) && Near(twist_damping, 0.5f),
+              "CJ14", "and it reached the backend");
+        SoftJointLimitSpring swing_spring;
+        swing_spring.spring = 2.f;
+        swing_spring.damper = 0.25f;
+        Check(char_joint->SetSwingLimitSpring(swing_spring) &&
+                  scene->GetJointSwingTwistSpring(char_joint->GetJointId(), spring_hz, spring_damping,
+                                                  twist_hz, twist_damping) &&
+                  Near(spring_hz, 2.f) && Near(spring_damping, 0.25f),
+              "CJ15", "swingLimitSpring round-trips and reaches the backend");
+        SoftJointLimitSpring bad_spring;
+        bad_spring.spring = -1.f;
+        bad_spring.damper = 0.f;
+        Check(!char_joint->SetSwingLimitSpring(bad_spring) &&
+                  Near(char_joint->GetSwingLimitSpring().spring, 2.f),
+              "CJ16", "a negative spring is refused, and the old value is untouched");
+
+        // 真的在吃力 ⇒ breakForce 那条路在这个类型上也通。
+        StepScene(*scene, 4);
+        float cone_linear = 0.f;
+        float cone_angular = 0.f;
+        Check(scene->GetJointImpulse(char_joint->GetJointId(), cone_linear, cone_angular) &&
+                  cone_linear > 0.f,
+              "CJ17", "a swing-twist holding a body up reports a NON-ZERO impulse (breakForce needs it)");
+        // ⚠️ 上面那条只证明了**线性**冲量。角冲量走的是另一条分支（twist / swingY /
+        // swingZ 三个 lambda 取最大），而锥上的角冲量**默认就是 0** —— 两端轴对齐、
+        // 关节点又落在质心上，重力对枢轴零力矩，压根没人在拧它。所以夹具必须
+        // **让重力拧出一个绕扭转轴的力矩**，否则"角冲量永远返回 0"是绿的。
+        // 而且要换一对**全新**的刚体：`actor_a` / `actor_b` 身上已经挂了
+        // fixed / spring / slider，它们会把 actor_b 焊死，根本拧不动。
+        const uint32_t twist_a = SpawnBox(*scene, Vector3(0.f, 80.f, 0.f), 0, false);
+        // ⚠️ B 的质心必须**偏离关节点**（这里偏 +Y 两米）。关节点落在质心上的话
+        // 重力对枢轴的力矩是 0，扭转根本没得可顶 —— 那就只能靠 SetAngularVelocity
+        // 硬塞一个角速度，而它不唤醒 body、且求解一结束角速度就被清零，读到的
+        // lambda 永远是"已经解完"的 0。让重力去拧才是持续载荷。
+        const uint32_t twist_b = SpawnBox(*scene, Vector3(0.f, 82.f, 0.f), 0, true);
+        Check(twist_a != kInvalidPhysicsBodyId && twist_b != kInvalidPhysicsBodyId, "CJ17b",
+              "a clean pair of bodies for the twist load (the shared actors are welded by the other joints)");
+        // 力矩臂 = B 质心 - 关节点 = (0, +2, 0)，重力 -Z ⇒ 绕 **-X** 的力矩，
+        // 而扭转轴正是 +X ⇒ 扭转限位每步都在顶着。
+        Vector3 twist_b_pos = Vector3::ZERO;
+        Check(scene->GetRigidBodyPosition(twist_b, twist_b_pos) &&
+                  std::fabs(twist_b_pos.y - 82.f) < 0.01f,
+              "CJ17c", "the hanging body's centre of mass really is offset from the pivot (that offset IS the torque)");
+        PhysicsJointDesc twist_desc;
+        twist_desc.m_Type = PhysicsJointType::swing_twist;
+        twist_desc.m_BodyA = twist_a;
+        twist_desc.m_BodyB = twist_b;
+        // Jolt 的 mPosition1 / mPosition2 是**世界**点，两端写同一个世界点。
+        twist_desc.m_PivotA = Vector3(0.f, 80.f, 0.f);
+        twist_desc.m_PivotB = Vector3(0.f, 80.f, 0.f);
+        twist_desc.m_AxisA = Vector3(1.f, 0.f, 0.f);   // 扭转轴 = +X
+        twist_desc.m_AxisB = Vector3(1.f, 0.f, 0.f);
+        twist_desc.m_PlaneAxisA = Vector3(0.f, 1.f, 0.f);
+        twist_desc.m_PlaneAxisB = Vector3(0.f, 1.f, 0.f);
+        // ⚠️ 用**有限**的扭转限位，不要写成锁死（0 .. 0）。
+        // 锁死走 TwistXLocked 分支 —— 那条分支确实把 B 焊住了（实测角速度被压到
+        // 0.02 rad/s），但它的 total lambda 读出来**恒为 0**，于是"角冲量永远
+        // 返回 0"这条变异体反而活下来。有限限位会先转过去**撞上**再被顶住，
+        // 撞的那一步 lambda 是真的。
+        twist_desc.m_TwistMinAngle = -0.05f;
+        twist_desc.m_TwistMaxAngle = 0.05f;
+        twist_desc.m_AutoDetectPoint = false;
+        const uint32_t twist_id = scene->CreateJoint(twist_desc);
+        Check(twist_id != s_InvalidJointId, "CJ17d", "a cone with a finite twist range can be created");
+        // 每步逐步读：total lambda 每步清零，攒到最后再读只会读到 0。
+        float twist_linear = 0.f;
+        float twist_angular = 0.f;
+        bool twist_impulse_ok = false;
+        for (int twist_step = 0; twist_step < 12; ++twist_step)
+        {
+            StepScene(*scene, 1);
+            float step_linear = 0.f;
+            float step_angular = 0.f;
+            if (scene->GetJointImpulse(twist_id, step_linear, step_angular))
+            {
+                twist_impulse_ok = true;
+                twist_linear = std::max(twist_linear, step_linear);
+                twist_angular = std::max(twist_angular, step_angular);
+            }
+        }
+        Check(twist_impulse_ok, "CJ17e", "GetJointImpulse answers for a swing-twist constraint");
+        Check(twist_linear > 0.f, "CJ17f", "the hanging cone carries a linear load");
+        Check(twist_angular > 0.f, "CJ17g",
+              "and the twist limit pushes back: a NON-ZERO ANGULAR impulse (breakForce needs it)");
+        // 光有"非 0"还不够：`max(|twist|, |swingY|, |swingZ|)` 里少读任何一股，
+        // 剩下两股照样能把它喂成非 0 ⇒ 行为上看不出来。所以再钉一次源头。
+        const std::string scene_cpp = ReadFile("Source/Runtime/Function/Physics/PhysicsScene.cpp");
+        Check(!scene_cpp.empty() && CountOccurrences(scene_cpp, "joint->GetTotalLambdaTwist()") >= 1 &&
+                  CountOccurrences(scene_cpp, "joint->GetTotalLambdaSwingY()") >= 1 &&
+                  CountOccurrences(scene_cpp, "joint->GetTotalLambdaSwingZ()") >= 1,
+              "CJ17l", "the cone's angular impulse really reads all three lambda terms (twist + swingY + swingZ)");
+        // 退化区间（0 .. 0）＝ 锁死。这一条**不能**靠冲量：锁死分支的 lambda 读
+        // 出来是 0（见上面 CJ17d 的注释），只能看行为 —— B 还转不转。
+        Check(scene->SetJointSwingTwistLimits(twist_id, 0.f, 0.f, 0.f, 0.f), "CJ17h",
+              "the degenerate 0..0 twist range is accepted (it means locked, not unconfigured)");
+        StepScene(*scene, 8);
+        Vector3 locked_av = Vector3::ZERO;
+        Check(scene->GetAngularVelocity(twist_b, locked_av) && std::fabs(locked_av.x) < 0.5f,
+              "CJ17i", "and it really locks the twist: the body stops turning (a free cone spins up fast)");
+        // ⚠️ 上面走的是 **setter**。`CreateJoint` 那条路上也有一个同样的守卫
+        // （`min <= 0 && max >= 0`），它得单独钉：改成 `<` / `>` 的话 desc 里的
+        // 0 .. 0 会被当成"没配"丢掉，Jolt 落到默认自由区间 ⇒ 建出来的关节
+        // "CharacterJoint 不许扭"变成"随便扭"。所以这里从 desc 建一个。
+        const uint32_t born_a = SpawnBox(*scene, Vector3(0.f, 90.f, 0.f), 0, false);
+        const uint32_t born_b = SpawnBox(*scene, Vector3(0.f, 92.f, 0.f), 0, true);
+        PhysicsJointDesc born_desc = twist_desc;
+        born_desc.m_BodyA = born_a;
+        born_desc.m_BodyB = born_b;
+        born_desc.m_PivotA = Vector3(0.f, 90.f, 0.f);
+        born_desc.m_PivotB = Vector3(0.f, 90.f, 0.f);
+        born_desc.m_TwistMinAngle = 0.f;
+        born_desc.m_TwistMaxAngle = 0.f;
+        const uint32_t born_id = scene->CreateJoint(born_desc);
+        Check(born_id != s_InvalidJointId, "CJ17j", "a cone built from a desc whose twist range is 0..0 can be created");
+        StepScene(*scene, 8);
+        Vector3 born_av = Vector3::ZERO;
+        Check(scene->GetAngularVelocity(born_b, born_av) && std::fabs(born_av.x) < 0.5f,
+              "CJ17k", "and it is locked from birth: the body never spins up (a free twist range would)");
+
+        // =====================================================================
         // 3. 接线门（源码级）：证明脚本面真的被发布了、flush 真的被调了
         // =====================================================================
 
@@ -4225,6 +4464,30 @@ namespace
                                    "float)") >= 1 &&
                   CountOccurrences(null_scene, "PhysicsScene::GetJointImpulse(uint32_t, float&") >= 1,
               "JNA2", "the no-physics build defines the new symbols too (a missing one is EXC_BAD_ACCESS)");
+
+        // --- CharacterJoint ---------------------------------------------------
+        Check(CountOccurrences(dts, "declare class CharacterJointComponent extends JointComponent") >= 1,
+              "CJW0", "CharacterJointComponent is published to scripts");
+        Check(CountOccurrences(dts, "declare type CharacterJoint = CharacterJointComponent;") >= 1, "CJW1",
+              "Unity's spelling (CharacterJoint) is a type alias");
+        Check(CountOccurrences(dts, "declare interface SoftJointLimitSpring {") >= 1, "CJW2",
+              "and Unity's SoftJointLimitSpring is declared (it has NO targetPosition)");
+        Check(CountOccurrences(prelude, "declare type CharacterJoint = CharacterJointComponent;") >= 1 &&
+                  CountOccurrences(prelude, "declare interface SoftJointLimitSpring {") >= 1,
+              "CJW3", "both come out of the prelude itself (the d.ts on disk is a generated artifact)");
+        Check(CountOccurrences(binding, "struct Converter<SoftJointLimitSpring>") >= 1, "CJW4",
+              "and the value type has a marshaller (without one the accessors vanish from the .d.ts)");
+        // ⚠️ 带参数表：`PhysicsScene::SetJointSwingTwistLimits` 会被
+        // `...LimitsRenamed` 前缀命中 ⇒ "把符号改名"这种改动照样绿。
+        Check(CountOccurrences(null_scene, "PhysicsScene::SetJointSwingTwistLimits(uint32_t, float, float, "
+                                           "float, float)") >= 1 &&
+                  CountOccurrences(null_scene, "PhysicsScene::GetJointSwingTwistLimits(uint32_t, float&, "
+                                               "float&, float&, float&)") >= 1 &&
+                  CountOccurrences(null_scene, "PhysicsScene::SetJointSwingTwistSpring(uint32_t, float, "
+                                               "float, float, float)") >= 1 &&
+                  CountOccurrences(null_scene, "PhysicsScene::GetJointSwingTwistSpring(uint32_t, float&, "
+                                               "float&, float&, float&)") >= 1,
+              "CJW5", "the no-physics build defines the cone symbols too");
     }
 
     // ---------------------------------------------------------------- O ----

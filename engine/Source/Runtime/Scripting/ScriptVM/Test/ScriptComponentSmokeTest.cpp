@@ -1224,9 +1224,9 @@ int main(int argc, char** argv)
         CheckEq("ZA7", "Unity 的 Rigidbody 其余面：constraints / 质心 / CCD / 点速度都进了绑定表",
                 mover_value("rigidbodyProbe"),
                 "true|true|true|true|true|true|true|true|true|true|true");
-        CheckEq("ZA8", "Unity 的 Joint 一族：四个子类 + 基类门面 + 三个值类型都进了绑定表",
+        CheckEq("ZA8", "Unity 的 Joint 一族：五个子类 + 基类门面 + 四个值类型都进了绑定表",
                 mover_value("jointProbe"),
-                "true|true|true|true|true|true|true|true");
+                "true|true|true|true|true|true|true|true|true|true|true");
 
         // --- Unity 的 Transform 补齐面（TE 段）------------------------------
         //

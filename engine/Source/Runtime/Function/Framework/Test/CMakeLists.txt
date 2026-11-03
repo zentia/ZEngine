@@ -40,6 +40,13 @@ endif()
 
 if(MSVC)
     target_compile_options(UnityParitySmokeTest PRIVATE /W4)
+    # ⚠️ Debug 默认开 /INCREMENTAL（.ilk）。增量链接有个要命的行为：改了
+    # `kZEngineDtsTemplate` 那种**大只读字符串**之后，.obj 和 .lib 里是新内容、
+    # exe 里还是旧的 —— 于是 d.ts 的接线门读到的是上一次的字符串，编译零警告、
+    # 测试零失败，变异体假活。以前只能靠手动删 .ilk 绕过，代价是"每次都要清
+    # 东西"。这里直接对这一个 exe 关掉增量链接：它只链 ZRuntime + 一个 .cpp，
+    # 全链比删 .ilk 再整链还快一点。
+    target_link_options(UnityParitySmokeTest PRIVATE $<$<CONFIG:Debug>:/INCREMENTAL:NO>)
 endif()
 
 if(APPLE)

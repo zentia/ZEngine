@@ -204,6 +204,10 @@ if(PAPI_TYPE STREQUAL "quickjs")
 
         if(MSVC)
             target_compile_options(ScriptTsChainSmokeTest PRIVATE /W4)
+            # 同 Framework/Test/CMakeLists.txt 里 UnityParitySmokeTest 的注释：
+            # 这个 exe 持有 d.ts 模板（kZEngineDtsTemplate），增量链接不搬改过的
+            # 大只读字符串，只能整链。
+            target_link_options(ScriptTsChainSmokeTest PRIVATE $<$<CONFIG:Debug>:/INCREMENTAL:NO>)
         endif()
 
         add_test(NAME ScriptTsChainSmokeTest COMMAND ScriptTsChainSmokeTest)
@@ -260,6 +264,8 @@ if(PAPI_TYPE STREQUAL "quickjs")
 
         if(MSVC)
             target_compile_options(ScriptComponentSmokeTest PRIVATE /W4)
+            # 同上：这个 exe 也链了 ScriptBinding（d.ts 模板）那一坨只读数据。
+            target_link_options(ScriptComponentSmokeTest PRIVATE $<$<CONFIG:Debug>:/INCREMENTAL:NO>)
         endif()
 
         add_test(NAME ScriptComponentSmokeTest COMMAND ScriptComponentSmokeTest)
