@@ -4981,6 +4981,33 @@ namespace
         Check(ec_pool_ok, "EC6",
               "toggling enableCollision 140 times still succeeds (a sub-group that is never returned exhausts the 64-slot pool)");
 
+        // --- 互补：拆关节也要还回槽位 -----------------------------------------
+        // EC6 只 covers 开关这一条路。少了 `RemoveJoint` 里的归还，80 个"建了就拆"的
+        // 关节就足够把 64 槽的池子漏光 —— 而脚本只看到后 16 个
+        // `enableCollision = false` 静默无效，没有任何错误。
+        const uint32_t leak_a = SpawnBox(*scene, Vector3(0.f, 260.f, 0.f), 0, false);
+        const uint32_t leak_b = SpawnBox(*scene, Vector3(0.f, 262.f, 0.f), 0, true);
+        PhysicsJointDesc leak_desc;
+        leak_desc.m_Type = PhysicsJointType::fixed;
+        leak_desc.m_BodyA = leak_a;
+        leak_desc.m_BodyB = leak_b;
+        leak_desc.m_PivotA = Vector3(0.f, 260.f, 0.f);
+        leak_desc.m_PivotB = Vector3(0.f, 260.f, 0.f);
+        leak_desc.m_AutoDetectPoint = false;
+        bool ec_leak_ok = true;
+        for (int i = 0; i < 80 && ec_leak_ok; ++i)
+        {
+            const uint32_t leak_id = scene->CreateJoint(leak_desc);
+            if (leak_id == s_InvalidJointId || !scene->SetJointEnableCollision(leak_id, false))
+            {
+                ec_leak_ok = false;
+                break;
+            }
+            scene->RemoveJoint(leak_id);
+        }
+        Check(ec_leak_ok, "EC7",
+              "80 joints that each turn enableCollision off and are then destroyed do NOT exhaust the pool (RemoveJoint must give the sub-group back)");
+
         // --- currentForce：已知输入 -------------------------------------------
         // 静态 + 动态焊在一起：盒子 1 m³ × 密度 1000 = 1000 kg，重力 -Z ⇒ 约束要
         // 顶住 9810 N。这是"读回来型"API 的标准夹具 —— 靠积分攒出来的量会被
@@ -5037,6 +5064,66 @@ namespace
         Check(scene->GetJointForce(fixed_id, weld_force) && scene->GetJointForce(cfg_id, weld_force),
               "EC13", "the fixed and the six-DOF joint both answer GetJointForce");
 
+        // --- 互补夹具：SixDOF **非全约束** ⇒ 必走"约束空间"那条路 -------------
+        // ⚠️ EC11 只能抓"一律换算"，抓不住"一律**不**换算"：全约束的关节本来就
+        // 该走世界空间。要两组互补的夹具才分得开（与 slice 58 的变异约定同理）。
+        //
+        // 参考系刻意非单位：axis = +Y ⇒ 约束 X = 世界 +Y、约束 Y = 世界 +Z
+        // （secondary = +Z）、约束 Z = Y×Z = 世界 +X。于是 -Z 的重力载荷落在
+        // **约束 Y** 上 —— 少换算一次，这个数就会报到世界 Y 上去，z 变 0。
+        const uint32_t cf7_a = SpawnBox(*scene, Vector3(0.f, 270.f, 0.f), 0, false);
+        const uint32_t cf7_b = SpawnBox(*scene, Vector3(0.f, 272.f, 0.f), 0, true);
+        PhysicsJointDesc cf7_desc;
+        cf7_desc.m_Type = PhysicsJointType::configurable;
+        cf7_desc.m_BodyA = cf7_a;
+        cf7_desc.m_BodyB = cf7_b;
+        cf7_desc.m_PivotA = Vector3(0.f, 270.f, 0.f);
+        cf7_desc.m_PivotB = Vector3(0.f, 270.f, 0.f);
+        cf7_desc.m_AxisA = Vector3(0.f, 1.f, 0.f);
+        cf7_desc.m_AxisB = Vector3(0.f, 1.f, 0.f);
+        cf7_desc.m_SecondaryAxisA = Vector3(0.f, 0.f, 1.f);
+        cf7_desc.m_SecondaryAxisB = Vector3(0.f, 0.f, 1.f);
+        cf7_desc.m_AutoDetectPoint = false;
+        for (int axis_index = 0; axis_index < kConfigurableAxisCount; ++axis_index)
+        {
+            cf7_desc.m_Motion[axis_index] = ConfigurableJointMotion::Locked;
+        }
+        // 留一条平移自由 ⇒ `IsTranslationFullyConstrained()` 为假 ⇒ 走三个逐轴
+        // 部件（约束空间）。自由轴取约束 X（世界 +Y）：那边没有重力分量，
+        // 不会因为"掉下去"把载荷挪到别的轴上。
+        cf7_desc.m_Motion[static_cast<int>(ConfigurableJointAxis::TranslationX)] =
+            ConfigurableJointMotion::Free;
+        const uint32_t cf7_id = scene->CreateJoint(cf7_desc);
+        Check(cf7_id != s_InvalidJointId, "EC14",
+              "a six-DOF joint whose translation is NOT fully constrained, with a non-identity frame");
+        StepScene(*scene, 10);
+        Vector3 six_force_free = Vector3::ZERO;
+        Check(scene->GetJointForce(cf7_id, six_force_free) && std::isfinite(six_force_free.z) &&
+                  six_force_free.z < -9000.f && six_force_free.z > -10600.f,
+              "EC14a", "and it STILL reports WORLD space (the constraint-space lambda has to be rotated by the frame)");
+
+        // --- distance 那一路：只有一个标量，方向要自己取 -----------------------
+        // 少取方向 = "大小对、方向是猜的"。夹具把两个锚点的连线摆成世界 -Z
+        // （与重力同向），于是期望值和 EC10a 是同一个数：可以照抄区间。
+        const uint32_t cf_d_a = SpawnBox(*scene, Vector3(0.f, 280.f, 0.f), 0, false);
+        const uint32_t cf_d_b = SpawnBox(*scene, Vector3(0.f, 280.f, -2.f), 0, true);
+        PhysicsJointDesc cf_d_desc;
+        cf_d_desc.m_Type = PhysicsJointType::distance;
+        cf_d_desc.m_BodyA = cf_d_a;
+        cf_d_desc.m_BodyB = cf_d_b;
+        cf_d_desc.m_PivotA = Vector3(0.f, 280.f, 0.f);
+        cf_d_desc.m_PivotB = Vector3(0.f, 280.f, -2.f);
+        cf_d_desc.m_AutoDetectPoint = false;
+        const uint32_t cf_d_id = scene->CreateJoint(cf_d_desc);
+        Check(cf_d_id != s_InvalidJointId, "EC15",
+              "a distance joint holding a 1000 kg body straight down (the two anchors are on the gravity axis)");
+        StepScene(*scene, 10);
+        Vector3 dist_force = Vector3::ZERO;
+        Check(scene->GetJointForce(cf_d_id, dist_force) && std::isfinite(dist_force.z) &&
+                  dist_force.z < -9000.f && dist_force.z > -10600.f &&
+                  std::fabs(dist_force.x) < 200.f && std::fabs(dist_force.y) < 200.f,
+              "EC15a", "and its scalar lambda becomes a WORLD-space vector along the anchor line (~9810 N)");
+
         // --- 组件层 -----------------------------------------------------------
         Check(!cfg_joint->GetEnableCollision(), "EC20",
               "enableCollision defaults to false (Unity's default -- a fresh joint's two bodies do NOT collide)");
@@ -5057,10 +5144,14 @@ namespace
         // 后端那条已知载荷的门是 EC10a，两级串起来才覆盖得住。
         Vector3 comp_force = cfg_joint->GetCurrentForce();
         Vector3 backend_force = Vector3::ZERO;
+        // ⚠️ 光比"两边相等"抓不住"两边都是 0"：夹具要真的在承重，否则"恒返回零"
+        // 的 getter 是绿的。actor_b 是动态的、actor_a 是静态的，重力载荷必然
+        // 经过这个关节。
         Check(scene->GetJointForce(cfg_joint->GetJointId(), backend_force) &&
+                  std::fabs(backend_force.z) > 1.f &&
                   Near(comp_force.x, backend_force.x) && Near(comp_force.y, backend_force.y) &&
                   Near(comp_force.z, backend_force.z) && std::isfinite(comp_force.z),
-              "EC22", "currentForce through the component agrees with the backend (the component is not making a number up)");
+              "EC22", "currentForce through the component agrees with the backend on a joint that really carries load");
 
         // =====================================================================
         // 3. 接线门（源码级）：证明脚本面真的被发布了、flush 真的被调了

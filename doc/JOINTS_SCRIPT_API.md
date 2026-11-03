@@ -328,9 +328,9 @@ setter**（改了要重建约束）。两条同名属性会让 ZHeaderTool 直�
 
 | Unity | 状态 | 原因 |
 | --- | --- | --- |
-| `Joint.enableCollision` | 待做（第 10.1 节） | Jolt 的约束不影响接触生成；要"两个刚体互不碰撞"得走 `GroupFilterTable` + sub-group id |
+| `Joint.enableCollision` | **已实现**（第 10.4 节） | `GroupFilterTable` + 64 槽 sub-group 池。已知限制：一个 body 只有一个 sub-group，被第二个关节管时会顶掉第一个 |
 | `Joint.massScale` / `connectedMassScale` | 未实现 | Jolt 没有 per-constraint 质量缩放 |
-| `Joint.currentForce`（Vector3） | 待做（第 10.2 节） | 线性 lambda 各类型都能可靠拼成世界矢量 |
+| `Joint.currentForce`（Vector3） | **已实现**（第 10.4 节） | 线性 lambda 各类型都能可靠拼成世界矢量；`dt` 取**固定步长**不是 `Tick` 形参 |
 | `Joint.currentTorque`（Vector3） | 不发布 | 旋转 lambda 的 `Vector<2>` 分量用的垂直基是 Jolt 内部临时算的，公开 API 拿不到 ⇒ 方向只能猜（第 10.2 节） |
 | `ConfigurableJoint` | **已实现**（第 6b 节） | — |
 | `CharacterJoint.enableProjection` / `projectionDistance` / `projectionAngle` | 未实现 | Jolt 没有"投影纠错"；布娃娃拉伸要靠缩短步长 / 加求解步数 |
@@ -546,3 +546,39 @@ return IsCollisionEnabled(sg1, sg2);
 这四条的共同点是"给了也只能静默无效"，而静默无效正是这个引擎一贯避免的一类坑
 （对比第 8 节 `angularXLimitSpring`：同样是"Jolt 只有平移限位支持软限位"，同样
 不发布）。
+
+### 10.4 已实现：门与变异体（`.mutate_ec.py`）
+
+门都在 `UnityParitySmokeTest` 一个 exe 里，**2d 段 `EC0`~`EC22`** + 接线门
+**`EC40`~`EC46`**。设计要点：
+
+| 门 | 夹具 | 挡的是 |
+| --- | --- | --- |
+| `EC3a` | A 静态、B 动态，沿 X **重叠** 0.1 m（中心距 0.9）；六轴全 Locked 但 `TranslationX` 留 Free | "setter 返回了 true"这种白测。留自由轴是必须的 —— 否则约束自己就把它们按住了，碰不碰看不出来 |
+| `EC4a` | 同上但碰撞**开着** | 对照组：证明 0.9 → ~1.0 的变化**就是** `enableCollision` 关掉的那件事 |
+| `EC5` | 第三个**无关** body 与被过滤的那个重叠 | 挡"filter 扩散"。这条分支是反直觉的：`CanCollide` 里 **filter 指针不同 ⇒ 不碰**，所以"只给一端设 filter"不是没生效，是把那个 body 与同组所有 body 的碰撞全关了 |
+| `EC6` | 开关 140 次 | 开启路径忘了还回 sub-group（池子 64 槽，140 次 = 70 次租用） |
+| `EC7` | 80 个"建了就拆"的关节 | `RemoveJoint` 忘了还回 —— **与 EC6 互补**，两条泄漏路径各要一条门 |
+| `EC10a` | 静态 + 动态焊一起，1000 kg，重力 -Z | 已知载荷 ≈ -9810 N。挡不除步长 / 符号取反 |
+| `EC11a` | SixDOF 全约束 + **非单位**参考系 | 全约束走世界空间 ⇒ **不该**再旋转一次 |
+| `EC14a` | SixDOF **非全约束**（`TranslationX` = Free）+ 非单位参考系 | ⚠️ 与 `EC11a` 互补：只有一组夹具时，"一律换算"和"一律不换算"必有一个活着 |
+| `EC15a` | distance 关节，两锚点连线与重力同向 | 标量 lambda 自己取方向；少归一化会给出 2 倍的力 |
+| `EC22` | 组件层与后端**比一致，且后端非 0** | "恒返回零"的 getter 能过"两边相等"，所以必须额外断言夹具真的在承重 |
+| `EC46` | d.ts 里 `currentTorque:` 出现 **0** 次 | 否定门。它的变异体是一次**添加**（`ECM17`） |
+
+**关于 `EC14a` 的那组坐标**：参考系取 `axis = +Y`、`secondaryAxis = +Z` ⇒ 约束
+X = 世界 +Y、约束 Y = 世界 +Z、约束 Z = X×Y = 世界 +X。于是 -Z 的重力载荷落在
+**约束 Y** 上 —— 少换算一次，那个数会报到世界 Y 上去，`z` 变 0。（若载荷恰好落在
+约束 Z 上，"不换算"反而给出正确的 `z`，门就形同虚设 —— 所以自由轴/参考系必须
+一起挑。）
+
+**没有行为门的一条**：sub-group 池**满**时 `SetJointEnableCollision` 返回 false
+并打一条 `LOG_WARNING`。这条路只有"池子够大"和"池子太小"两种写法，而 64 在任何
+现有夹具下都不会被同时占满，所以"池子改成 8"这类变异体是等价变异体。留着警告
+是为了让真出问题时有痕迹（静默退化成"不管"是要避免的那类坑）。
+
+**`currentForce` 的符号**（改过一次，写在实现注释里）：`PointConstraintPart::
+ApplyVelocityStep` 给 body1 **减** lambda、给 body2 **加** lambda，而 `m_BodyA`
+是**宿主自己**。Unity 的 `Joint.currentForce` 是"关节施加到它自己刚体上的力"，
+所以最终要取负。`AxisConstraintPart`（distance / SixDOF 的逐轴部件）是同一个约定。
+拿错方向会得到一对"大小全对、方向全反"的力 —— 这种错在"能跑"上看不出来。
