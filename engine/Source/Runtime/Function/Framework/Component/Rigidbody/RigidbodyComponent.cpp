@@ -4,6 +4,7 @@
 #include "Runtime/Core/Base/Macro.h"
 #include "Runtime/Function/Framework/Component/Transform/Transform.h"
 #include "Runtime/Function/Framework/World/WorldManager.h"
+#include "Runtime/Function/Physics/Physics.h"
 #include "Runtime/Function/Physics/PhysicsManager.h"
 #include "Runtime/Function/Physics/PhysicsScene.h"
 
@@ -14,15 +15,16 @@ namespace
     /// 运动学物体每帧走得或快或慢（Jolt 按这个速度积分一整步）。
     constexpr float kMoveStepSeconds = 1.0f / 60.0f;
 
-    /// The active physics scene, or null when there is none OR no WorldManager at all.
-    /// Every caller already handles "no scene yet" (deferred body, level teardown); a
-    /// process without a WorldManager -- an editor tool or headless test instantiating a
-    /// prefab that holds a body -- is the same situation and must take the same path
-    /// instead of dereferencing GET_SYSTEM(WorldManager).
+    /// The active physics scene, or null when there is none.
+    ///
+    /// ⚠️ 走 `Physics::CurrentScene()` 而不是自己查 WorldManager：那份实现是
+    /// 全引擎**唯一**的"当前场景"定义（先活动关卡、再 PhysicsManager 的主场
+    /// 景）。各查各的会得到"射线打得到、刚体建不出"这种只在无头环境里出现的
+    /// 怪事 —— `Physics` 门面早就靠那条兜底在无头测试里工作了，刚体没有理由
+    /// 是唯一一个用不了的场景使用者。
     std::shared_ptr<PhysicsScene> CurrentPhysicsScene()
     {
-        WorldManager* world = GET_SYSTEM(WorldManager);
-        return world != nullptr ? world->GetCurrentActivePhysicsScene().lock() : nullptr;
+        return Physics::CurrentScene();
     }
 }  // namespace
 

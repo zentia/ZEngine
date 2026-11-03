@@ -9,6 +9,7 @@
 #include "Runtime/Function/Render/RenderSystem.h"
 #include "Runtime/Function/Render/Spine/SpineGpuRenderer.h"
 #include "Runtime/Function/Framework/Component/Camera/CameraComponent.h"
+#include "Runtime/Function/Framework/Component/Joint/JointComponent.h"
 #include "Runtime/Function/Framework/Component/Rigidbody/RigidbodyComponent.h"
 #include "Runtime/Function/Framework/Component/Spine/SpineRenderer.h"
 #include "Runtime/Function/Framework/Component/Transform/Transform.h"
@@ -365,6 +366,11 @@ bool WorldManager::LoadLevelAdditive(const eastl::string& level_url)
     // build before this would see an empty physics scene.
     FlushPendingRigidBodies(new_level);
 
+    // 关节在刚体**之后**：一个关节要两个 body，而这两个 body 很可能就是上面
+    // 那一趟刚补建出来的。顺序反了的话，关卡里所有关节都建不出来，而且因为
+    // 它们只是回到 pending、没人再 flush，症状是"关节静默不存在"。
+    FlushPendingJoints(new_level);
+
     if (auto* navigation_system = GET_SYSTEM(NavigationSystem); navigation_system != nullptr)
     {
         navigation_system->FlushDeferredBuild();
@@ -408,6 +414,44 @@ void WorldManager::FlushPendingRigidBodies(Level* level)
     if (created > 0 || still_pending > 0)
     {
         LOG_INFO(ZWorld, "created {} deferred rigid body(ies), {} still pending", created, still_pending);
+    }
+}
+
+void WorldManager::FlushPendingJoints(Level* level)
+{
+    if (level == nullptr)
+    {
+        return;
+    }
+
+    int created = 0;
+    int still_pending = 0;
+    for (const auto& id_object_pair : level->getAllGObjects())
+    {
+        const std::shared_ptr<GameObject>& game_object = id_object_pair.second;
+        if (game_object == nullptr)
+        {
+            continue;
+        }
+
+        for (ImmediatePtr<Component>& component_ptr : game_object->getComponents())
+        {
+            JointComponent* joint = Cast<JointComponent>(static_cast<Component*>(component_ptr));
+            if (joint == nullptr)
+            {
+                continue;
+            }
+
+            if (joint->HasPendingJoint())
+            {
+                joint->FlushPendingJoint() ? ++created : ++still_pending;
+            }
+        }
+    }
+
+    if (created > 0 || still_pending > 0)
+    {
+        LOG_INFO(ZWorld, "created {} deferred joint(s), {} still pending", created, still_pending);
     }
 }
 

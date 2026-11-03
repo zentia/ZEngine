@@ -140,6 +140,11 @@ private:
     /// an empty physics scene and produce zero walkable cells.
     void FlushPendingRigidBodies(Level* level);
 
+    /// Create the joints that PostLoadResource had to defer. Runs **after**
+    /// FlushPendingRigidBodies: a joint needs both of its bodies, and either of
+    /// them may be one that only got created by that pass.
+    void FlushPendingJoints(Level* level);
+
     void TickLoadedLevels(float delta_time);
     void LateTickLoadedLevels(float delta_time);
     void UpdateWorldPartitionStreaming();
