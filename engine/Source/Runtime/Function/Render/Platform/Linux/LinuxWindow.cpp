@@ -22,6 +22,9 @@
 #include <X11/Xatom.h>
 #include <X11/Xutil.h>
 #include <X11/extensions/Xrandr.h>   // 多显示器枚举（顺带覆盖 C7 的多屏子项）
+#include <X11/XKBlib.h>              // XkbKeycodeToKeysym：修饰键 / keysym 查询
+
+#include <unistd.h>
 
 #include <algorithm>
 #include <string>
@@ -94,32 +97,78 @@ static int MapKeySymToKeyCode(Display* display, KeySym keysym)
 }
 
 // 当前修饰键状态 -> KeyCodes::MOD_* 位（GLFW 布局：SHIFT=1, CONTROL=2, ALT=4,
-// SUPER=8, CAPS_LOCK=16, NUM_LOCK=32）。XGetModifier 返回 CoreModifier 掩码。
+// SUPER=8, CAPS_LOCK=16, NUM_LOCK=32）。
+//
+// Xlib 没有"查询当前修饰键"的单一调用：XQueryKeymap 给的是整张键盘的位图
+// （32 字节，每 bit 一个 keycode），需要把 keycode 反查成 keysym 才知道按下的是
+// 哪个键。CapsLock / NumLock 属于 lock 修饰键，按下状态 != 打开状态，所以另外用
+// XkbGetState 取锁存位。
+static bool KeySymIsDown(const char keymap[32], Display* display, KeySym ks)
+{
+    const KeyCode kc = XKeysymToKeycode(display, ks);
+    if (kc == 0)
+    {
+        return false;
+    }
+    return (keymap[kc / 8] & (1 << (kc % 8))) != 0;
+}
+
 static int CurrentModifierBits(Display* display)
 {
-    unsigned int state = 0;
-    XGetModifier(display, &state);
+    char keymap[32] = {};
+    XQueryKeymap(display, keymap);
+
     int mods = 0;
-    if (state & ModifierLockMask)   // 由 XGetModifier 的低 3 位给出 shift/ctrl/alt
+    if (KeySymIsDown(keymap, display, XK_Shift_L) || KeySymIsDown(keymap, display, XK_Shift_R))
     {
-        // ModifierLockMask 只覆盖 LockShift/LockCtrl/LockAlt 三个可锁定修饰键。
-        // 用 XQueryKeymap 拿完整状态更可靠（含 CapsLock/NumLock 与 Super）。
+        mods |= KeyCodes::MOD_SHIFT_VAL;
+    }
+    if (KeySymIsDown(keymap, display, XK_Control_L) || KeySymIsDown(keymap, display, XK_Control_R))
+    {
+        mods |= KeyCodes::MOD_CONTROL_VAL;
+    }
+    if (KeySymIsDown(keymap, display, XK_Alt_L) || KeySymIsDown(keymap, display, XK_Alt_R))
+    {
+        mods |= KeyCodes::MOD_ALT_VAL;
+    }
+    if (KeySymIsDown(keymap, display, XK_Super_L) || KeySymIsDown(keymap, display, XK_Super_R))
+    {
+        mods |= KeyCodes::MOD_SUPER_VAL;
     }
 
-    // 用 keymap 判断更完整：直接查各修饰键是否按下。
-    KeyMapState keymap;
-    XGetKeyboard(display, &keymap);
-    auto down = [&](KeySym ks) {
-        return XLookupKeysym(&keymap, ks) != 0;
-    };
-    if (down(XK_Shift_L) || down(XK_Shift_R))   mods |= KeyCodes::MOD_SHIFT_VAL;
-    if (down(XK_Control_L) || down(XK_Control_R)) mods |= KeyCodes::MOD_CONTROL_VAL;
-    if (down(XK_Alt_L) || down(XK_Alt_R))        mods |= KeyCodes::MOD_ALT_VAL;
-    if (down(XK_Super_L) || down(XK_Super_R))    mods |= KeyCodes::MOD_SUPER_VAL;
-    if (down(XK_Caps_Lock))                      mods |= KeyCodes::MOD_CAPS_LOCK_VAL;
-    if (down(XK_Num_Lock))                       mods |= KeyCodes::MOD_NUM_LOCK_VAL;
-    (void)state;
+    XkbStateRec state{};
+    if (XkbGetState(display, XkbUseCoreKbd, &state) == Success)
+    {
+        // CapsLock 固定是 Lock 修饰键；NumLock 在绝大多数键盘布局上是 Mod2。
+        if (state.locked_mods & LockMask)
+        {
+            mods |= KeyCodes::MOD_CAPS_LOCK_VAL;
+        }
+        if (state.locked_mods & Mod2Mask)
+        {
+            mods |= KeyCodes::MOD_NUM_LOCK_VAL;
+        }
+    }
     return mods;
+}
+
+
+// XMapWindow 是异步的：紧接着 XSetInputFocus 常常打到还没 viewable 的窗口上，
+// 服务端会回 BadMatch 并让整个进程退出（Xlib 默认错误处理器直接 abort）。这里
+// 先等窗口真的映射出来再要焦点，最多等 250ms。
+static void FocusWindowWhenViewable(Display* display, Window window)
+{
+    for (int i = 0; i < 50; ++i)
+    {
+        XSync(display, False);
+        XWindowAttributes attr{};
+        if (XGetWindowAttributes(display, window, &attr) && attr.map_state == IsViewable)
+        {
+            XSetInputFocus(display, window, RevertToParent, CurrentTime);
+            return;
+        }
+        usleep(5000);
+    }
 }
 
 // UTF-8 -> UTF-16 不需要；X11 的 WM_DELETE_WINDOW 用 ClientMessage，标题用 XChangeProperty
@@ -132,7 +181,7 @@ bool LinuxWindow::Initialize(const char* title, int width, int height,
     m_Height = height;
 
     auto* app = reinterpret_cast<LinuxApplication*>(m_Application);
-    Display* display = app ? app->GetDisplay() : XOpenDisplay(nullptr);
+    Display* display = app ? static_cast<Display*>(app->GetDisplay()) : XOpenDisplay(nullptr);
     if (!display)
     {
         return false; // 无 X server（无头环境）——调用方应回落到无窗口路径
@@ -159,7 +208,7 @@ bool LinuxWindow::Initialize(const char* title, int width, int height,
     Window window = XCreateSimpleWindow(
         display, RootWindow(display, screen),
         0, 0, frame_w, frame_h, 0,
-        BlackPixel(display, screen), white_pixel, nullptr);
+        BlackPixel(display, screen), WhitePixel(display, screen));
     if (window == None)
     {
         return false;
@@ -181,8 +230,11 @@ bool LinuxWindow::Initialize(const char* title, int width, int height,
     // 标题（UTF-8 直接写入 X 字符串属性）。
     SetTitle(title);
 
-    // 请求键盘焦点，否则收不到 KeyPress。
-    XSetInputFocus(display, window, RevertToParent, 0);
+    // 请求键盘焦点，否则收不到 KeyPress（必须等窗口 viewable，见上面的 helper）。
+    if (m_Mapped)
+    {
+        FocusWindowWhenViewable(display, window);
+    }
 
     return true;
 }
@@ -201,9 +253,9 @@ void LinuxWindow::Show()
     auto* display = static_cast<Display*>(m_Display);
     XMapWindow(display, m_Window);
     XRaiseWindow(display, m_Window);
-    XSetInputFocus(display, m_Window, RevertToParent, 0);
-    XFlush(display);
     m_Mapped = true;
+    FocusWindowWhenViewable(display, m_Window);
+    XFlush(display);
 }
 
 void LinuxWindow::Hide()
@@ -234,7 +286,7 @@ bool LinuxWindow::IsVisible() const
     auto* display = static_cast<Display*>(m_Display);
     Window root_return, parent_return;
     Window* children = nullptr;
-    int n_children = 0;
+    unsigned int n_children = 0;
     Window focus_return, revert_return, return_to = None;
     int focus_type = 0;
     // 通过窗口在树中的可见性判断（无直接 IsWindowVisible，用 XQueryTree 的 map 状态近似）。
@@ -310,15 +362,14 @@ std::array<int, 2> LinuxWindow::GetFramebufferSize() const
 
 float LinuxWindow::GetDpiScale() const
 {
-    // X11 传统上无逐窗口 DPI；用 XRandR 的 mm 尺寸估一个（96 dpi 基准）。
-    // 无显示器/无 XRandR 时回落 1.0。
+    // X11 没有逐窗口 DPI；用屏幕的毫米宽度估一个（96 dpi 为 1.0 基准）。
     if (!m_Window || !m_Display) return 1.0f;
     auto* display = static_cast<Display*>(m_Display);
-    unsigned int mm_width = 0, mm_height = 0;
-    if (XRandRGetScreenResources(display, RootWindow(display, DefaultScreen(display)),
-                                 &mm_width, &mm_height) == 0 && mm_width > 0)
+    const int screen = DefaultScreen(display);
+    const unsigned int mm_width = static_cast<unsigned int>(DisplayWidthMM(display, screen));
+    if (mm_width > 0)
     {
-        const float dpi_x = static_cast<float>(GetSize()[0]) / (mm_width / 25.4f);
+        const float dpi_x = static_cast<float>(GetSize()[0]) / (static_cast<float>(mm_width) / 25.4f);
         return std::max(1.0f, dpi_x / 96.0f);
     }
     return 1.0f;
@@ -332,8 +383,9 @@ void LinuxWindow::GetCursorPos(double& x, double& y) const
     auto* display = static_cast<Display*>(m_Display);
     Window root_return, child_return;
     int root_x = 0, root_y = 0, child_x = 0, child_y = 0;
+    unsigned int mask = 0;
     if (XQueryPointer(display, RootWindow(display, DefaultScreen(display)),
-                      &root_return, &child_return, &root_x, &root_y, &child_x, &child_y, &child_return))
+                      &root_return, &child_return, &root_x, &root_y, &child_x, &child_y, &mask))
     {
         // 转成窗口客户区坐标
         Window root_ret, child_ret;
@@ -347,8 +399,9 @@ void LinuxWindow::GetCursorPos(double& x, double& y) const
 // ---------------------------------------------------------------------------
 // 事件分发：由 LinuxApplication::PollEvents() 调用（X11 拉模型，集中抽取后按
 // Window 句柄路由）。返回 true = 本窗口处理了该事件。
-bool LinuxWindow::ProcessEvent(XEvent* event)
+bool LinuxWindow::ProcessEvent(void* raw_event)
 {
+    auto* event = static_cast<XEvent*>(raw_event);
     if (!event || !m_Window) return false;
     auto* display = static_cast<Display*>(m_Display);
 
@@ -363,7 +416,7 @@ bool LinuxWindow::ProcessEvent(XEvent* event)
         // X11 KeyPress 无法直接区分 repeat；用 XGetModifier 的 repeat 位近似（多数
         // 合成器不发独立 repeat 事件，这里按一次 press 处理，repeat 语义由消费方
         // 的自动重复容忍）。action: 1 = PRESS。
-        for (auto& cb : OnKey) cb(keycode, event->xkey.xkeycode, 1, mods);
+        for (auto& cb : OnKey) cb(keycode, event->xkey.keycode, 1, mods);
         break;
     }
     case KeyRelease:
@@ -372,7 +425,7 @@ bool LinuxWindow::ProcessEvent(XEvent* event)
         int keycode = MapKeySymToKeyCode(display, keysym);
         if (keycode < 0) break;
         const int mods = CurrentModifierBits(display);
-        for (auto& cb : OnKey) cb(keycode, event->xkey.xkeycode, 0, mods);
+        for (auto& cb : OnKey) cb(keycode, event->xkey.keycode, 0, mods);
         break;
     }
     case ButtonPress:
@@ -408,8 +461,9 @@ bool LinuxWindow::ProcessEvent(XEvent* event)
         // MotionNotify 是相对窗口根坐标；转成客户区坐标（与 Windows WM_MOUSEMOVE 一致）。
         Window root_return, child_return;
         int root_x = 0, root_y = 0, child_x = 0, child_y = 0;
+        unsigned int mask = 0;
         XQueryPointer(display, event->xmotion.window,
-                      &root_return, &child_return, &root_x, &root_y, &child_x, &child_y, &child_return);
+                      &root_return, &child_return, &root_x, &root_y, &child_x, &child_y, &mask);
         Window root_ret, child_ret;
         int cx = 0, cy = 0;
         XTranslateCoordinates(display, child_return, m_Window, 0, 0, &cx, &cy, &child_ret);
@@ -453,7 +507,7 @@ bool LinuxWindow::ProcessEvent(XEvent* event)
     case ClientMessage:
     {
         Atom wm_delete = XInternAtom(display, "WM_DELETE_WINDOW", False);
-        if (event->xclient.data.l == static_cast<long>(wm_delete))
+        if (event->xclient.data.l[0] == static_cast<long>(wm_delete))
         {
             m_ShouldClose = true;
             for (auto& cb : OnWindowClose) cb();

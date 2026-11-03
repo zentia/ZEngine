@@ -49,6 +49,10 @@ public:
     unsigned long GetXWindow() const { return m_Window; }
     void SetParentApplication(class LinuxApplication* app) { m_Application = app; }
 
+    // 事件分发：由 LinuxApplication::PollEvents() 调用，参数实际是 XEvent*
+    // （头文件不引 <X11/Xlib.h>，所以用 void* 传递）。返回 true = 已处理。
+    bool ProcessEvent(void* event);
+
 private:
     // X11 句柄（不透明）。真实类型在 .cpp 里。
     void*          m_Display {nullptr};   // Display*
