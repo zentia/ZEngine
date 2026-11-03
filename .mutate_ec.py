@@ -34,12 +34,23 @@ Why these particular mutants
   mutant is an *addition* -- ECM17 publishes it. A gate that can only ever pass
   is not a gate either.
 
+Verdict (IMPORTANT)
+-------------------
+The baseline is NOT clean on this machine: UnityParitySmokeTest has 4
+pre-existing audio-probe failures (AX14/AX15/AX16/AW1), so its exit code is
+always 1. Judging "killed" by `rc == 0` therefore reports every mutant as
+caught, including no-ops. The verdict is instead: **did the run introduce a
+FAIL id that is absent from the baseline FAIL-id set**. The harness collects
+that set at startup, re-runs the baseline to prove it is stable, and prints
+only the newly-appeared failures for each mutant.
+
 Run:  py .mutate_ec.py            (all)
       py .mutate_ec.py ECM01      (subset)
       py .mutate_ec.py --resume   (skip mutants that already have a verdict)
 """
 import io
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -48,6 +59,14 @@ import time
 
 # path -> backup，供信号处理器在中途被杀时还原（见 main 里的注释）。
 RESTORE = {}
+
+# ⚠️ 基线（未变异）时两个 exe 各自**本来就会红**的 FAIL id 集合。
+# 本机 UnityParitySmokeTest 基线是 3517 checks / 4 failures，4 条全是
+# AX14/AX15/AX16/AW1（音频 probe asset，与 Joint 切片无关）⇒ rc 恒为 1。
+# 早期版本拿 `rc == 0` 判 killed，结果 25 个变异体（哪怕 no-op）全被误报
+# caught。正确判据是「有没有冒出基线里没有的 FAIL id」，见 run()。
+BASELINE = {"parity": None, "comp": None}
+FAIL_RE = re.compile(r"\[FAIL\]\s+(\S+)")
 
 ROOT = r"E:\Engine\ZEngine"
 
@@ -162,17 +181,35 @@ def mutate_in(path, func_sig, old, new, end_marker=None):
         text[:i] + region.replace(old, new, 1) + text[j:])
 
 
-def run(exe):
+def run(exe, baseline=None):
+    """跑一次 exe，返回 (rc, fail_ids, has_summary, new_ids)。
+
+    ⚠️ **调用方绝不能只看 rc**：基线本身就有 4 条 AX* 失败，rc 恒为 1。
+    只判 rc 的话，任何变异体（包括等价于 no-op 的）都会变成 "caught"。
+    `baseline` 为 None 时是基线采集，会把所有 FAIL id 都打出来；否则只打印
+    **新增**的那些 —— 25 个变异体跑下来，输出里只该看到该变异体真正触发的门。
+    """
     r = subprocess.run([os.path.join(ROOT, exe)], cwd=ROOT, env=ENV,
                        capture_output=True, text=True, errors="replace", timeout=300)
-    out = r.stdout or ""
-    fails = [l for l in out.splitlines() if "FAIL" in l]
-    tail = [l for l in out.splitlines() if ("checks," in l or "项检查" in l)]
+    lines = (r.stdout or "").splitlines()
+    ids = frozenset(m.group(1) for l in lines for m in (FAIL_RE.search(l),) if m)
+    tail = [l for l in lines if ("checks," in l or "项检查" in l)]
+    has_summary = bool(tail)
+    base = baseline if baseline is not None else frozenset()
+    new = sorted(ids - base)
     print("  %-30s rc=%d  %s" % (os.path.basename(exe), r.returncode,
                                  tail[-1].strip() if tail else "(crashed -- no summary)"))
-    for l in fails[:4]:
-        print("      " + l.strip())
-    return r.returncode
+    if baseline is not None and not new:
+        print("      (no NEW failures -- only the %d known baseline ones)" % len(base))
+    shown = 0
+    for l in lines:
+        m = FAIL_RE.search(l)
+        if m and m.group(1) in new:
+            print("      " + l.strip())
+            shown += 1
+            if shown >= 6:
+                break
+    return r.returncode, ids, has_summary, new
 
 
 def _cmake_build(targets, parallel):
@@ -254,9 +291,17 @@ def build_and_run():
     if p is None or p.returncode != 0:
         print("  BUILD FAILED rc=%d" % (p.returncode if p is not None else -1))
         return "BUILD FAILED"
-    rc_parity = run(PARITY_EXE)
-    rc_comp = run(COMP_EXE) if NEED_SCRIPT else 0
-    if rc_parity == 0 and rc_comp == 0:
+    _, ids_parity, ok_parity, new_parity = run(PARITY_EXE, BASELINE["parity"])
+    ok_comp, new_comp = True, []
+    if NEED_SCRIPT:
+        _, _, ok_comp, new_comp = run(COMP_EXE, BASELINE["comp"])
+    if not ok_parity or not ok_comp:
+        # 崩溃 / 没打汇总行：与基线不同，算 caught，但要单独标出来，别混进
+        # "被某条门抓住"里 —— 崩溃也可能是 harness 自己把 exe 弄坏了。
+        print("  >>> CAUGHT (no summary) <<<")
+        return "caught (no summary)"
+    if not new_parity and not new_comp:
+        # ⚠️ 这里**不能**改成看 rc：基线 rc=1，任何变异体都会走 else 分支。
         print("  >>> NOT CAUGHT <<<")
         return "NOT CAUGHT"
     return "caught"
@@ -520,7 +565,22 @@ def main():
         print("=== baseline (clean sources) ===")
         b = build(refresh_dts=True)
         if b is None or b.returncode != 0:
-            print("! baseline build FAILED -- results below are not trustworthy")
+            raise SystemExit("! baseline build FAILED -- aborting (results would be meaningless)")
+        _, ids_p, ok_p, _ = run(PARITY_EXE)
+        _, ids_c, ok_c, _ = run(COMP_EXE)
+        if not ok_p or not ok_c:
+            raise SystemExit("! baseline exe did not print a summary -- aborting")
+        BASELINE["parity"] = ids_p
+        BASELINE["comp"] = ids_c
+        print("  baseline FAIL ids: parity=%s comp=%s" %
+              (sorted(ids_p), sorted(ids_c)))
+        # 稳定性自检：同一份源码连跑两次，FAIL 集合必须**完全一致**。只要有一条
+        # 门是抖的，后面"新增了 FAIL id"就可能是抖动而非变异体 ⇒ 全部结论作废。
+        _, ids_p2, _, _ = run(PARITY_EXE, ids_p)
+        if ids_p2 != ids_p:
+            raise SystemExit("! baseline FAIL set is flaky (%s vs %s) -- aborting" %
+                             (sorted(ids_p), sorted(ids_p2)))
+        print("  (a mutant is killed ONLY if it introduces a FAIL id absent from those sets)")
         print()
 
         for entry in MUTATIONS:
@@ -575,12 +635,14 @@ def main():
         print("---- summary ----")
         for n, r in results:
             print("%-70s %s" % (n, r))
-        killed = [n for n, r in results if r in ("caught", "invalid (does not build)")]
+        killed = [n for n, r in results
+                  if r == "invalid (does not build)" or r.startswith("caught")]
         bad = [n for n, r in results if n not in killed]
-        print("\n%d/%d killed (%d caught by a test, %d do not build)" %
+        print("\n%d/%d killed (%d caught by a test, %d do not build, %d crashed)" %
               (len(killed), len(results),
                len([n for n, r in results if r == "caught"]),
-               len([n for n, r in results if r == "invalid (does not build)"])))
+               len([n for n, r in results if r == "invalid (does not build)"]),
+               len([n for n, r in results if r == "caught (no summary)"])))
         for n in bad:
             print("  SURVIVED: " + n)
     finally:
