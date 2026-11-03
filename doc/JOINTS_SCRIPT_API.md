@@ -582,3 +582,17 @@ ApplyVelocityStep` 给 body1 **减** lambda、给 body2 **加** lambda，而 `m_
 是**宿主自己**。Unity 的 `Joint.currentForce` 是"关节施加到它自己刚体上的力"，
 所以最终要取负。`AxisConstraintPart`（distance / SixDOF 的逐轴部件）是同一个约定。
 拿错方向会得到一对"大小全对、方向全反"的力 —— 这种错在"能跑"上看不出来。
+
+**`EC22` 为什么另起一对 body**（第一版复用 `cfg_joint`，实测就红了）：那一对上还
+挂着 hinge / fixed / spring / slider / character 五个关节，9810 N 是**分摊**的，
+分摊比取决于夹具里一共几个关节 —— 于是这条门会随别人的夹具漂移。'known input'
+这条原则同样适用于"载荷已知"：要么载荷独占，要么别写死区间。
+
+### 10.5 两条配套的工具改动
+
+| 改动 | 为什么 |
+| --- | --- |
+| `ScriptTsChainSmokeTest --dump-dts-all` | `zengine.d.ts` 是生成物、不入 git，仓库里有**三份**副本。只刷一份时接线门读到的是上周的发布面，症状是 EC41 / EC42 一起红 —— 看着像"属性没发布"，正确动作其实只是把另外两份也覆盖掉。手工 copy 的第二步漏掉过不止一次，做成一条命令 |
+| `UnityParitySmokeTest --verbose`（或 `ZENGINE_SMOKE_VERBOSE=1`） | 3500 条断言全量打印时，找 4 条红行是体力活。默认只打印**失败**；要看全部就加这个开关。跑 `ctest` 时不受影响（汇总行始终打印） |
+| `Checkf(ok, id, what, fmt, ...)` | 行为门的阈值多半是估出来的。失败时只说"不在区间里"，看的人还得猜"差一点"还是"整个方向错了" —— 要改的东西完全不同。所以失败时把数一起打出来 |
+| `EC40a`：三份 `zengine.d.ts` 内容**逐字节相同** | 把"d.ts 只刷了一份"变成一条说得清的失败。判据刻意**不用 mtime**：变异 harness 每跑完一个变异体都要还原源码并把 mtime 拨到现在（否则 MSVC 不重建），任何"d.ts 必须比 .h 新"的门都会被它搅成恒红 —— 那会把后面每个变异体都误报成 caught |

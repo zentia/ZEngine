@@ -184,7 +184,8 @@ if(PAPI_TYPE STREQUAL "quickjs")
         # js root 的默认位置：签进仓库的 tsc 产物目录。测试也接受 --js-root 覆盖
         # （scripts/check_ts_chain.py 用它指向刚编译出来的临时目录）。
         target_compile_definitions(ScriptTsChainSmokeTest PRIVATE
-            ZENGINE_TS_CHAIN_TSCOUT_DIR="${CMAKE_CURRENT_SOURCE_DIR}/TscOutput")
+            ZENGINE_TS_CHAIN_TSCOUT_DIR="${CMAKE_CURRENT_SOURCE_DIR}/TscOutput"
+            ZENGINE_ENGINE_ROOT_DIR="${ENGINE_ROOT_DIR}")
 
         target_compile_definitions(ScriptTsChainSmokeTest PRIVATE PAPI_QUICKJS=1)
 

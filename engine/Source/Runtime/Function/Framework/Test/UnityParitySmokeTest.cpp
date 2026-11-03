@@ -178,7 +178,9 @@ template<> void RegisterKlass<PlayerPrefs>();
 #include <cctype>
 #include <chrono>
 #include <cmath>
+#include <cstdarg>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -203,18 +205,53 @@ namespace
     int g_Checks = 0;
     int g_Failures = 0;
 
+    /// 3500 条里找 4 条红是体力活，所以**默认只打印失败**。成功要全量看就加
+    /// `--verbose`，或者设环境变量 `ZENGINE_SMOKE_VERBOSE=1`。
+    bool g_Verbose = false;
+
     void Check(bool ok, const char* id, const char* what)
     {
         ++g_Checks;
         if (ok)
         {
-            std::printf("[ ok ] %-4s %s\n", id, what);
+            if (g_Verbose)
+            {
+                std::printf("[ ok ] %-4s %s\n", id, what);
+            }
+            return;
         }
-        else
+        ++g_Failures;
+        std::printf("[FAIL] %-4s %s\n", id, what);
+    }
+
+    /// 带数值细节的 `Check`。
+    ///
+    /// ⚠️ 行为门的阈值常常是**估**出来的（"1000 kg × 9.81 ⇒ 9810 N"）。失败时
+    /// 只说"不在区间里"，看的人还得猜是"差一点"还是"整个方向错了" —— 这两种
+    /// 要改的东西完全不同。所以失败时把数一起打出来。
+    void Checkf(bool ok, const char* id, const char* what, const char* fmt, ...)
+    {
+        ++g_Checks;
+        if (ok)
         {
-            ++g_Failures;
-            std::printf("[FAIL] %-4s %s\n", id, what);
+            if (g_Verbose)
+            {
+                char buf[256];
+                va_list args;
+                va_start(args, fmt);
+                std::vsnprintf(buf, sizeof(buf), fmt, args);
+                va_end(args);
+                std::printf("[ ok ] %-4s %s  [%s]\n", id, what, buf);
+            }
+            return;
         }
+        ++g_Failures;
+        char buf[256];
+        va_list args;
+        va_start(args, fmt);
+        std::vsnprintf(buf, sizeof(buf), fmt, args);
+        va_end(args);
+        std::printf("[FAIL] %-4s %s  [%s]\n", id, what, buf);
     }
 
     /// 把 `\r\n` / 裸 `\r` 统一成 `\n`。
@@ -4935,9 +4972,10 @@ namespace
               "an overlapping pair can be told not to collide");
         StepScene(*scene, 30);
         Vector3 off_position = Vector3::ZERO;
-        Check(scene->GetRigidBodyPosition(off_b, off_position) && std::isfinite(off_position.x) &&
-                  std::fabs(off_position.x - 0.9f) < 0.03f,
-              "EC3a", "and it really does NOT push them apart: the 0.1 m overlap survives 30 steps (contact would have separated them)");
+        Checkf(scene->GetRigidBodyPosition(off_b, off_position) && std::isfinite(off_position.x) &&
+                   std::fabs(off_position.x - 0.9f) < 0.03f,
+               "EC3a", "and it really does NOT push them apart: the 0.1 m overlap survives 30 steps",
+               "x = %.4f (want |x - 0.9| < 0.03)", off_position.x);
 
         // --- 对照组：同样的夹具，碰撞**开着** ⇒ 被接触推开 ---------------------
         const uint32_t on_a = SpawnBox(*scene, Vector3(0.f, 230.f, 0.f), 0, false);
@@ -4951,9 +4989,10 @@ namespace
         Check(on_id != s_InvalidJointId, "EC4", "the control pair is created with collision left ON");
         StepScene(*scene, 30);
         Vector3 on_position = Vector3::ZERO;
-        Check(scene->GetRigidBodyPosition(on_b, on_position) && std::isfinite(on_position.x) &&
-                  on_position.x > 0.97f,
-              "EC4a", "and contact really separates them: 0.9 -> ~1.0 (that is exactly what enableCollision = false turns off)");
+        Checkf(scene->GetRigidBodyPosition(on_b, on_position) && std::isfinite(on_position.x) &&
+                   on_position.x > 0.97f,
+               "EC4a", "and contact really separates them: 0.9 -> ~1.0",
+               "x = %.4f (want > 0.97)", on_position.x);
 
         // --- 对照组：没被任何关节连的 body 必须**照旧**碰撞 --------------------
         // ⚠️ 这一条挡的是那条反直觉的分支：同一 group 但 filter 指针不同 ⇒
@@ -4963,9 +5002,10 @@ namespace
         const uint32_t ec_c = SpawnBox(*scene, Vector3(1.4f, 220.f, 0.6f), 0, true);
         StepScene(*scene, 20);
         Vector3 c_position = Vector3::ZERO;
-        Check(scene->GetRigidBodyPosition(ec_c, c_position) && std::isfinite(c_position.z) &&
-                  c_position.z > 0.8f,
-              "EC5", "a body that is NOT in the joint still collides with the filtered one (the filter must not spread)");
+        Checkf(scene->GetRigidBodyPosition(ec_c, c_position) && std::isfinite(c_position.z) &&
+                   c_position.z > 0.8f,
+               "EC5", "a body that is NOT in the joint still collides with the filtered one",
+               "z = %.4f (want > 0.8)", c_position.z);
 
         // --- sub-group 池：反复开关不能把池子漏光 -----------------------------
         // 池子只有 64 个，所以开关次数要**超过**它才分叉：140 次 = 70 次租用。
@@ -5025,10 +5065,12 @@ namespace
         Check(cf_weld_id != s_InvalidJointId, "EC10", "a welded pair for the currentForce gate");
         StepScene(*scene, 10);
         Vector3 weld_force = Vector3::ZERO;
-        Check(scene->GetJointForce(cf_weld_id, weld_force) && std::isfinite(weld_force.z) &&
-                  weld_force.z < -9000.f && weld_force.z > -10600.f &&
-                  std::fabs(weld_force.x) < 200.f && std::fabs(weld_force.y) < 200.f,
-              "EC10a", "currentForce is the known gravity load: ~9810 N (1000 kg), and it is the force the joint applies to body A");
+        Checkf(scene->GetJointForce(cf_weld_id, weld_force) && std::isfinite(weld_force.z) &&
+                   weld_force.z < -9000.f && weld_force.z > -10600.f &&
+                   std::fabs(weld_force.x) < 200.f && std::fabs(weld_force.y) < 200.f,
+               "EC10a", "currentForce is the known gravity load (~9810 N, force on body A)",
+               "(%.1f, %.1f, %.1f) -- want z in (-10600, -9000)",
+               weld_force.x, weld_force.y, weld_force.z);
 
         // --- SixDOF 那条"世界空间 / 约束空间"二选一 ---------------------------
         // 参考系刻意取**非单位**（axis = +Z ⇒ 约束空间 X 指向世界 +Z）。忘了那个
@@ -5054,9 +5096,11 @@ namespace
         Check(cf6_id != s_InvalidJointId, "EC11", "a fully-constrained six-DOF joint with a non-identity frame");
         StepScene(*scene, 10);
         Vector3 six_force = Vector3::ZERO;
-        Check(scene->GetJointForce(cf6_id, six_force) && std::isfinite(six_force.z) &&
-                  six_force.z < -9000.f && six_force.z > -10600.f,
-              "EC11a", "and it reports the load in WORLD space (a fully-constrained SixDOF takes the point-constraint path)");
+        Checkf(scene->GetJointForce(cf6_id, six_force) && std::isfinite(six_force.z) &&
+                   six_force.z < -9000.f && six_force.z > -10600.f,
+               "EC11a", "and it reports the load in WORLD space (a fully-constrained SixDOF must NOT be rotated again)",
+               "(%.1f, %.1f, %.1f) -- want z in (-10600, -9000)",
+               six_force.x, six_force.y, six_force.z);
 
         Check(!scene->GetJointForce(s_InvalidJointId, weld_force) &&
                   !scene->GetJointForce(9999u, weld_force),
@@ -5098,9 +5142,11 @@ namespace
               "a six-DOF joint whose translation is NOT fully constrained, with a non-identity frame");
         StepScene(*scene, 10);
         Vector3 six_force_free = Vector3::ZERO;
-        Check(scene->GetJointForce(cf7_id, six_force_free) && std::isfinite(six_force_free.z) &&
-                  six_force_free.z < -9000.f && six_force_free.z > -10600.f,
-              "EC14a", "and it STILL reports WORLD space (the constraint-space lambda has to be rotated by the frame)");
+        Checkf(scene->GetJointForce(cf7_id, six_force_free) && std::isfinite(six_force_free.z) &&
+                   six_force_free.z < -9000.f && six_force_free.z > -10600.f,
+               "EC14a", "and it STILL reports WORLD space (the constraint-space lambda has to be rotated by the frame)",
+               "(%.1f, %.1f, %.1f) -- want z in (-10600, -9000)",
+               six_force_free.x, six_force_free.y, six_force_free.z);
 
         // --- distance 那一路：只有一个标量，方向要自己取 -----------------------
         // 少取方向 = "大小对、方向是猜的"。夹具把两个锚点的连线摆成世界 -Z
@@ -5119,10 +5165,12 @@ namespace
               "a distance joint holding a 1000 kg body straight down (the two anchors are on the gravity axis)");
         StepScene(*scene, 10);
         Vector3 dist_force = Vector3::ZERO;
-        Check(scene->GetJointForce(cf_d_id, dist_force) && std::isfinite(dist_force.z) &&
-                  dist_force.z < -9000.f && dist_force.z > -10600.f &&
-                  std::fabs(dist_force.x) < 200.f && std::fabs(dist_force.y) < 200.f,
-              "EC15a", "and its scalar lambda becomes a WORLD-space vector along the anchor line (~9810 N)");
+        Checkf(scene->GetJointForce(cf_d_id, dist_force) && std::isfinite(dist_force.z) &&
+                   dist_force.z < -9000.f && dist_force.z > -10600.f &&
+                   std::fabs(dist_force.x) < 200.f && std::fabs(dist_force.y) < 200.f,
+               "EC15a", "and its scalar lambda becomes a WORLD-space vector along the anchor line (~9810 N)",
+               "(%.1f, %.1f, %.1f) -- want z in (-10600, -9000)",
+               dist_force.x, dist_force.y, dist_force.z);
 
         // --- 组件层 -----------------------------------------------------------
         Check(!cfg_joint->GetEnableCollision(), "EC20",
@@ -5140,18 +5188,35 @@ namespace
         Check(cfg_joint->GetJointId() == ec_before && !cfg_joint->GetEnableCollision(), "EC21a",
               "and switching it does NOT rebuild the joint (unlike the frame axes)");
 
-        // ⚠️ "恒返回零"的 getter 能过"有限"这条断言，所以这里判的是**与后端一致**：
-        // 后端那条已知载荷的门是 EC10a，两级串起来才覆盖得住。
-        Vector3 comp_force = cfg_joint->GetCurrentForce();
+        // --- 组件层的 currentForce：也用**已知**载荷 ---------------------------
+        // ⚠️ "恒返回零"的 getter 能过"两边相等"这条断言，所以还要钉载荷本身。
+        // ⚠️ 不复用 `cfg_joint`：那一对 body 上还挂着 hinge / fixed / spring /
+        // slider / character 五个关节，9810 N 是**分摊**的 —— 分摊比取决于夹具里
+        // 一共有几个关节，于是这条门会随别人的夹具漂移（实测就是这么红的）。
+        // 这里另起一对，只挂这一个关节 ⇒ 载荷确定是 9810 N。
+        const JointActor ec_cf_a = SpawnJointActor(*om, Vector3(0.f, 290.f, 0.f));
+        const JointActor ec_cf_b = SpawnJointActor(*om, Vector3(0.f, 292.f, 0.f));
+        ec_cf_a.body->SetActorType(RigidBodyActorType::static_body);
+        FixedJointComponent* ec_cf_joint = new FixedJointComponent();
+        om->AllocateAndAssignInstanceID(ec_cf_joint);
+        ec_cf_a.object->addComponent(ec_cf_joint);
+        ec_cf_joint->PostLoadResource(ec_cf_a.object);
+        ec_cf_joint->SetConnectedBody(ec_cf_b.body);
+        Check(ec_cf_joint->HasJoint(), "EC23",
+              "a component joint on a pair that carries nothing else (so the load is the whole 9810 N)");
+        StepScene(*scene, 10);
+        Vector3 comp_force = ec_cf_joint->GetCurrentForce();
         Vector3 backend_force = Vector3::ZERO;
-        // ⚠️ 光比"两边相等"抓不住"两边都是 0"：夹具要真的在承重，否则"恒返回零"
-        // 的 getter 是绿的。actor_b 是动态的、actor_a 是静态的，重力载荷必然
-        // 经过这个关节。
-        Check(scene->GetJointForce(cfg_joint->GetJointId(), backend_force) &&
-                  std::fabs(backend_force.z) > 1.f &&
-                  Near(comp_force.x, backend_force.x) && Near(comp_force.y, backend_force.y) &&
-                  Near(comp_force.z, backend_force.z) && std::isfinite(comp_force.z),
-              "EC22", "currentForce through the component agrees with the backend on a joint that really carries load");
+        // ⚠️ 光比"两边相等"抓不住"两边都是 0"，所以右边还钉了**已知载荷**本身 ——
+        // "恒返回零"的 getter 才活不下来。
+        Checkf(scene->GetJointForce(ec_cf_joint->GetJointId(), backend_force) &&
+                   Near(comp_force.x, backend_force.x) && Near(comp_force.y, backend_force.y) &&
+                   Near(comp_force.z, backend_force.z) && std::isfinite(comp_force.z) &&
+                   comp_force.z < -9000.f && comp_force.z > -10600.f,
+               "EC22", "currentForce through the component is the known 9810 N load and agrees with the backend",
+               "component (%.1f, %.1f, %.1f) vs backend (%.1f, %.1f, %.1f)",
+               comp_force.x, comp_force.y, comp_force.z,
+               backend_force.x, backend_force.y, backend_force.z);
 
         // =====================================================================
         // 3. 接线门（源码级）：证明脚本面真的被发布了、flush 真的被调了
@@ -5272,6 +5337,21 @@ namespace
         const std::string joint_component_h =
             ReadFile("Source/Runtime/Function/Framework/Component/Joint/JointComponent.h");
         Check(!joint_component_h.empty(), "EC40", "JointComponent.h is readable");
+        // ⚠️ d.ts 是**生成物、不入 git**，仓库里有**三份**副本。实际踩到的是：
+        // dump 了 EditorScripts 那份、忘了 copy 另外两份 —— 于是门读到的是旧的
+        // 发布面，症状长得像"新属性没发布"（EC41 / EC42 一起红），而正确的动作
+        // 只是把另外两份也覆盖掉。
+        //
+        // 判据取"三份内容逐字节相同"而不是 mtime：变异 harness 每跑完一个变异体
+        // 都要**还原源码并把 mtime 拨到现在**（否则 MSVC 不重建），任何
+        // "d.ts 必须比 .h 新"的门都会被它搅成恒红 —— 那会把后面每个变异体都
+        // 报成 caught。内容比对不受 mtime 影响。
+        const std::string dts_copy_editor = ReadFile("EditorScripts/typings/zengine.d.ts");
+        const std::string dts_copy_mid = ReadFile("Intermediate/Typings/zengine.d.ts");
+        Check(!dts_copy_editor.empty() && !dts_copy_mid.empty() &&
+                  dts_copy_editor == dts_copy_mid && dts_copy_editor == dts,
+              "EC40a", "all three zengine.d.ts copies are identical "
+                       "(dumping only one of them looks exactly like 'the property was never published')");
         Check(CountOccurrences(dts, "enableCollision: boolean;") >= 1, "EC41",
               "enableCollision is published to scripts");
         Check(CountOccurrences(dts, "currentForce: Vector3;") >= 1, "EC42",
@@ -16741,14 +16821,30 @@ namespace
 
 }  // namespace
 
-int main()
+int main(int argc, char** argv)
 {
     // ctest redirects stdout, which makes it fully buffered: a crash or a hang
     // would then swallow every line printed before it. Unbuffered keeps the log
     // honest.
     std::setvbuf(stdout, nullptr, _IONBF, 0);
 
-    std::printf("=== Unity parity smoke test ===\n\n");
+    // 默认只打印失败（3500 条全量输出里找红行太费劲）。`--verbose` 或者
+    // `ZENGINE_SMOKE_VERBOSE=1` 打开全量。
+    for (int i = 1; i < argc; ++i)
+    {
+        if (std::strcmp(argv[i], "--verbose") == 0 || std::strcmp(argv[i], "-v") == 0)
+        {
+            g_Verbose = true;
+        }
+    }
+    const char* verbose_env = std::getenv("ZENGINE_SMOKE_VERBOSE");
+    if (verbose_env != nullptr && verbose_env[0] != '\0' && std::strcmp(verbose_env, "0") != 0)
+    {
+        g_Verbose = true;
+    }
+
+    std::printf("=== Unity parity smoke test ===\n");
+    std::printf("（默认只打印失败；`--verbose` 看全部）\n\n");
 
     TagLayerManager manager;
     Check(manager.Initialize(), "A0", "TagLayerManager initializes");

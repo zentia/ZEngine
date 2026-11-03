@@ -31,10 +31,24 @@
 //   ScriptTsChainSmokeTest                      跑断言（js root 用编译期定义）
 //   ScriptTsChainSmokeTest --js-root <dir>      指定 js root（脚本用）
 //   ScriptTsChainSmokeTest --dump-dts <file>    只写出 zengine.d.ts 然后退出
+//   ScriptTsChainSmokeTest --dump-dts-all       写出**全部三份**副本然后退出
+//
+// ⚠️ 为什么要有 `--dump-dts-all`
+// ------------------------------
+// `zengine.d.ts` 是生成物、**不入 git**，而仓库里它有三份副本（EditorScripts /
+// Intermediate / 本测试的 Typings）。只刷一份的后果是：接线门读到的那份是上周的
+// 发布面，症状长得像"新属性没发布"（若干条门一起红），而正确的动作其实只是把
+// 另外两份也覆盖掉。手工 copy 第二步漏掉过不止一次，所以把它做成一条命令。
 // ==========================================================================
 
 #if !PAPI_QUICKJS
 #error "ScriptTsChainSmokeTest 需要 QuickJS 后端（PAPI_QUICKJS）。"
+#endif
+
+// `--dump-dts-all` 要知道另外两份副本在哪。CMake 里给了；没有时退化成空串，
+// 那三个路径就成了相对路径 —— 至少还能编能跑，不会变成编译错误。
+#if !defined(ZENGINE_ENGINE_ROOT_DIR)
+    #define ZENGINE_ENGINE_ROOT_DIR ""
 #endif
 
 #include "Runtime/Scripting/Backends/QuickJS/BackendQuickJS.h"
@@ -135,6 +149,44 @@ int main(int argc, char** argv)
     // 模式 1：把 zengine.d.ts 写出来。scripts/check_ts_chain.py 用它拿到"当前"
     // 这份声明文件，再交给 tsc —— 编辑器之外唯一能复现同一份内容的入口。
     // -----------------------------------------------------------------------
+    // 三份副本的相对位置。改这里之前先看文件头"为什么要有 --dump-dts-all"。
+    const std::filesystem::path kDtsCopies[] = {
+        std::filesystem::path(ZENGINE_ENGINE_ROOT_DIR) / "EditorScripts/typings/zengine.d.ts",
+        std::filesystem::path(ZENGINE_ENGINE_ROOT_DIR) / "Intermediate/Typings/zengine.d.ts",
+        std::filesystem::path(ZENGINE_ENGINE_ROOT_DIR) /
+            "Source/Runtime/Scripting/ScriptVM/Test/Typings/zengine.d.ts",
+    };
+
+    for (int i = 1; i < argc; ++i)
+    {
+        if (std::string(argv[i]) == "--dump-dts-all")
+        {
+            const std::string dts = ScriptBindingRegistry::BuildTypeScriptDeclarationFile();
+            bool all_ok = true;
+            for (const std::filesystem::path& out : kDtsCopies)
+            {
+                std::error_code ec;
+                std::filesystem::create_directories(out.parent_path(), ec);
+                std::ofstream f(out, std::ios::binary | std::ios::trunc);
+                if (!f)
+                {
+                    std::printf("[dump-dts-all] 打不开 %s\n", out.string().c_str());
+                    all_ok = false;
+                    continue;
+                }
+                f.write(dts.data(), static_cast<std::streamsize>(dts.size()));
+                if (!f.good())
+                {
+                    std::printf("[dump-dts-all] 写失败 %s\n", out.string().c_str());
+                    all_ok = false;
+                    continue;
+                }
+                std::printf("[dump-dts-all] %s (%zu 字节)\n", out.string().c_str(), dts.size());
+            }
+            return all_ok ? 0 : 2;
+        }
+    }
+
     for (int i = 1; i + 1 < argc; ++i)
     {
         if (std::string(argv[i]) == "--dump-dts")
