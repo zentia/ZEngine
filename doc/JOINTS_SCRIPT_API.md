@@ -38,7 +38,7 @@ console.log(hinge.angle, hinge.velocity);
 | `SpringJoint` | `SpringJointComponent` |
 | —（Unity 用 `ConfigurableJoint` 表达） | `SliderJointComponent` |
 | `CharacterJoint` | `CharacterJointComponent`（锥形球窝） |
-| `ConfigurableJoint` | **未实现**（见第 8 节） |
+| `ConfigurableJoint` | `ConfigurableJointComponent`（六自由度，第 6b 节） |
 
 ## 2. PhysicsScene 的运行时控制
 
@@ -349,6 +349,27 @@ setter**（改了要重建约束）。两条同名属性会让 ZHeaderTool 直�
    Converter；`WorldManager.cpp` 里 `FlushPendingJoints` 在
    `FlushPendingRigidBodies` **之后**。
 
+后两个切片在同一个 exe 里加了两段，编号沿用 `JN*` 的三段结构：
+
+- **`CJ*` 段**（CharacterJoint，slice 57）：锥形摆动的**两个**半角各自独立、
+  扭转区间的读写、摆动/扭转两根弹簧、断裂阈值在锥上也通。
+- **`CF*` 段**（ConfigurableJoint，slice 58）：六轴模式/限位/驱动、四个目标量、
+  线性限位弹簧；其中三条是**行为门**（见下）。
+
+三条最值得留下的夹具设计（别的切片要照抄这三条思路）：
+
+| 门 | 夹具为什么这么搭 |
+| --- | --- |
+| `CF7c` targetRotation 往返 | 参考系**刻意取非单位阵**（axis=+Z、secondaryAxis=+Y）。两端都是单位四元数时 `CS = B1⁻¹qB2` 退化成 `CS = q`，反解公式写错也读回原值 ⇒ 断言恒真 |
+| `CF10a` Limited 轴真拦住 body | 区间取**只贴一侧**的 `-0.5 .. 0`，且三个旋转轴也锁掉（否则 body 绕枢轴摆，COM 位置就不只是平移了） |
+| `CF11a` drive 真在驱动 | 看 body 动没动，而不是读弹簧参数 —— 参数不管电机开不开都会写下去（刻意的，见后端注释） |
+
+### ⚠️ "0 failures" 也可能来自旧 exe
+
+读测试输出先看**总数**：源码里 `grep -c "Check("` 应该≈运行时打印的总数。加了一
+段新门而总数没变 ⇒ 那段没进 exe（跑的是旧产物）。二次确认用
+`grep -a "<新门编号>" <exe>`（和查增量链接丢字符串同一套办法）。
+
 `ScriptComponentSmokeTest` 的 `ZA8` + `Mover.ts` 的 `jointProbe` 从 TS 侧再查一遍
 （值类型的字段名只有 `tsc` 抓得到）。
 
@@ -371,3 +392,125 @@ setter**（改了要重建约束）。两条同名属性会让 ZHeaderTool 直�
 2. **动到 `ScriptBinding.cpp` 的模板必须整链**。Debug 用 `/INCREMENTAL`（`.ilk`），
    改 `kZEngineDtsTemplate` 那种 89KB 的只读字符串时增量链接**不搬数据**：
    .obj / .lib 里有那一行，exe 里没有。`.mutate_joints.py` 为此有 `force_relink()`。
+
+## 10. 收尾方案（slice 59）
+
+第 8 节那张表里有 6 项缺口。逐个查过 Jolt 之后，**只有 2 项真能做**，另外 4 项
+属于"发布了也只能静默无效"，按引擎一贯的取舍（宁可不发布）维持不发布 —— 但要把
+理由写在这里，免得下一个人再查一遍。
+
+### 10.1 `Joint.enableCollision`（可做）
+
+Unity 的默认值是 `false`：被同一个关节连起来的两个刚体**互不碰撞**（不然布娃娃
+的相邻两段会互相弹开）。Jolt 的约束完全不参与接触生成，所以只能走过滤：
+
+- `body.SetCollisionGroup(CollisionGroup(filter, groupID, subGroupID))`，改的时候
+  要持 `BodyLockWrite`。body 的 `CollisionGroup` 现在只装 layer，所以建关节时
+  **事后**改，而不是改 `CreateBody` 的路径 —— 后者会动到**所有**刚体的创建语义，
+  风险面大得多。
+- sub-group id 从一个固定大小的池里取（比如 64 个），关节拆掉时还回去。
+- filter 是**裸指针**，Jolt 不持有 ⇒ `GroupFilterTable` 由 `PhysicsScene` 拥有，
+  生命周期必须长过所有 body。
+
+⚠️ `GroupFilterTable::CanCollide` 的实际判定顺序（`Jolt/Physics/Collision/
+GroupFilterTable.h`，照抄下来免得下次再猜）：
+
+```cpp
+if (inGroup1.GetGroupID() == cInvalidGroup)   return true;    // 没入组 ⇒ 正常碰
+if (inGroup1.GetGroupID() != inGroup2.GetGroupID()) return true;
+if (inGroup1.GetGroupFilter() != inGroup2.GetGroupFilter()) return false;  // ← 反直觉
+if (inGroup1.GetSubGroupID() == inGroup2.GetSubGroupID()) return false;    // ← 不查表
+return IsCollisionEnabled(sg1, sg2);
+```
+
+三条推论，每条都会改设计：
+
+1. **"filter 指针不同 ⇒ 不碰撞"**。所以"只给 A 设 filter"不是"没生效"，而是
+   **A 与该 group 内所有 body 全都不碰撞** —— 一个比没生效更坏的静默错误。
+2. **同一个 sub-group 直接返回 false，根本不查表** ⇒ `DisableCollision(sg, sg)`
+   是**冗余**的。由此：**「忘了调 DisableCollision」是等价变异体**，不能拿它当
+   变异体（会假活）。要变异就变异"两侧的 sub-group 取了不同的 id"。
+3. 没被任何关节连的 body 保持默认 `cInvalidGroup` ⇒ 第一个分支就返回 true，
+   行为完全不变。
+- ⚠️ **已知限制**：一条链（A—B—C 两个关节串起来）里，B 同时属于两个关节，而
+  Jolt 的 sub-group 一个 body 只能有一个 ⇒ 本方案只保证"直接相连的两个 body"
+  互不碰撞。要做到 Unity 那种 island 级别，得在关节增删时维护并查集合并
+  island，代价大得多 ⇒ 单开一片，这里先做直接相连这一层，并在文档与
+  `LOG_WARNING` 里说清（池满 / 成链时**报出来**，不静默）。
+
+**门（行为门，必须看 body 动没动）**：两个动态 body **重叠**放在一起（同位置），
+用一个 fixed joint 连起来并 `enableCollision = false` ⇒ 步进之后它们**仍然重叠**；
+改成 `true` ⇒ 被接触推开、距离变大。只读"设置成功"是白测：setter 永远返回 true。
+
+**变异体**：① 从不设 filter（两 body 保持默认 `cInvalidGroup` ⇒ 永远碰撞）；
+② 两侧取**不同**的 sub-group id（命中"查表"分支，默认全碰 ⇒ 不生效）；
+③ 只给 A 设不给 B 设（那条反直觉分支 ⇒ 静默地把 A 与该 group 内所有 body 都
+关掉碰撞 —— 门要能分辨"没生效"和"过头了"：拿第三个无关的 body 作对照，它必须
+**仍然**和 A 碰）；④ 拆关节时不还回 sub-group id（池泄漏 ⇒ 反复建拆 N 次之后
+拿不到 id —— 要有一条门在建拆 N > 池容量之后仍能成功）。
+
+⚠️ 不要用"忘了 `DisableCollision(sg, sg)`"当变异体（见上面第 2 条推论：等价变异体）。
+
+### 10.2 `Joint.currentForce` / `currentTorque`（可做，Vector3）
+
+现在 `GetJointImpulse` 只给**模长**。要做成 Unity 的 Vector3 是可能的，两个关键：
+
+1. `totalLambda` 是**冲量**（N·s），不是力 ⇒ 要除以步长。⚠️ 除的是**物理步长**
+   `1 / m_Config.m_UpdateFrequency`，**不是** `Tick(float delta_time)` 的形参 ——
+   引擎是固定步长，那个 `delta_time` 在 `Tick` 里压根没被用（就是 `PhysicsScene.cpp`
+   那条 C4100 warning 的来源）。拿 `delta_time` 去除会在变帧率下给出错的数，
+   而它还在"看起来合理"的量级上。
+2. **每个约束类型给出来的东西都不一样**，必须逐个类型拼（这就是"只给模长"那个
+   取舍的来源）。照 Jolt 头文件抄下来的返回类型：
+
+| 约束 | 线性 lambda | 角 lambda |
+| --- | --- | --- |
+| Fixed | `Vec3` | `Vec3` |
+| Point | `Vec3` | — |
+| Hinge | `Vec3` | **`Vector<2>`** + `GetTotalLambdaRotationLimits()`（标量，沿铰链轴） |
+| Slider | **`Vector<2>`** + `GetTotalLambdaPositionLimits()`（标量） | `Vec3` |
+| Distance | **标量**（沿两点的轴） | — |
+| SwingTwist | `Vec3` | `GetTotalLambdaTwist/SwingY/SwingZ()` 三个标量 |
+| SixDOF | `Vec3`（**约束空间**） | `Vec3`（**约束空间**） |
+
+   注意 hinge / slider 的第三个分量来自**另一个约束部件**（限位那条），不是从
+   `Vector<2>` 里补的 —— 顺手补个 0 就会给出一个"看着像世界矢量、其实少了一维"
+   的数。distance 只有一个标量，方向要自己取 `(p2 - p1).Normalized()`。
+   SixDOF 的两个 Vec3 活在**约束空间**，要乘 `GetConstraintToBody1Matrix()` 的旋转
+   换出去（与 `CF7c` 那条 `targetRotation` 的 BS/CS 换算是同一类坑）。
+3. **空间：只有 SixDOF 需要换算，而且它是"看情况"的。**
+   `PointConstraintPart` 的有效质量矩阵是用世界空间的 `mR1/mR2` 和世界空间逆惯量
+   张量建的，`lambda` 直接以 `invM * lambda` 加到线速度上 ⇒ Fixed / Point /
+   SwingTwist / Hinge 的线性项**就是世界空间冲量**，不要换算。
+   但 `SixDOFConstraint::GetTotalLambdaPosition()` 是**二选一**：
+
+   ```cpp
+   IsTranslationFullyConstrained() ? mPointConstraintPart.GetTotalLambda()   // 世界空间
+                                   : Vec3(mTranslationConstraintPart[0..2])  // 约束空间
+   ```
+
+   ⇒ "忘了判 `IsTranslationFullyConstrained`" 这条变异体**只在两种夹具下才分叉**：
+   三个平移轴全约束（走世界空间那条）与只有一两个轴约束（走约束空间那条）。
+   两条夹具都要有，否则它是等价变异体。
+
+**门（已知输入，不要靠电机攒）**：静态 + 动态焊在一起，动态盒子 1 m³ / 密度 1000
+⇒ m = 1000 kg，重力 -Z ⇒ `currentForce` 应该≈ `(0, 0, -9810)`，模长≈ 9810 N。
+这是"读回来型"API 的标准夹具（见 `CF*` 那节的教训：靠积分攒出来的量会被
+"数太小"打掉，诊断跟着跑偏）。
+
+**变异体**：不除 `dt`（差 60 倍，但方向对 ⇒ 只比模长会漏）；不换坐标空间（约束
+空间恰好是单位阵时恒真 ⇒ 夹具的参考系必须**非单位**，与 `CF7c` 同理）；符号取反
+（拉 vs 推）。
+
+### 10.3 判定为"不发布"的 4 项
+
+| Unity | 结论 | 查证 |
+| --- | --- | --- |
+| `massScale` / `connectedMassScale` | 不发布 | Jolt 没有 per-constraint 质量缩放。只能在每个约束求解前后临时改 body 的 inverse mass，而 Jolt 没有 per-constraint 的 step 钩子；且同一 body 被两个约束共享时会互相打架 |
+| `CharacterJoint.enableProjection` / `projectionDistance` / `projectionAngle` | 不发布 | Jolt 没有"投影纠错"。布娃娃拉伸要靠缩短步长 / 加求解迭代数，不是这三个数 |
+| `SoftJointLimit.bounciness` / `contactDistance` | 不发布 | 限位弹簧只有 frequency / damping，没有 restitution；`contactDistance`（距限位多远开始生效）在 Jolt 里没有对应物 |
+| `ConfigurableJoint.slerpDrive` | 不发布 | Jolt 的旋转驱动是**逐轴**三个电机，没有球形插值驱动。用欧拉角拆目标姿态去喂三个电机与 slerp **不等价**（有奇异、有万向锁），给了会静默不同 |
+
+这四条的共同点是"给了也只能静默无效"，而静默无效正是这个引擎一贯避免的一类坑
+（对比第 8 节 `angularXLimitSpring`：同样是"Jolt 只有平移限位支持软限位"，同样
+不发布）。
