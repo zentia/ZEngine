@@ -328,9 +328,10 @@ setter**（改了要重建约束）。两条同名属性会让 ZHeaderTool 直�
 
 | Unity | 状态 | 原因 |
 | --- | --- | --- |
-| `Joint.enableCollision` | 未实现 | Jolt 的约束不影响接触生成；要"两个刚体互不碰撞"得走 `GroupFilterTable` + 每个 body 一个 sub-group id，会动现有 body 的创建语义 |
+| `Joint.enableCollision` | 待做（第 10.1 节） | Jolt 的约束不影响接触生成；要"两个刚体互不碰撞"得走 `GroupFilterTable` + sub-group id |
 | `Joint.massScale` / `connectedMassScale` | 未实现 | Jolt 没有 per-constraint 质量缩放 |
-| `Joint.currentForce` / `currentTorque`（Vector3） | 未实现 | 只给了**模长**（`GetJointImpulse`）。每个约束的 lambda 活在自己的坐标系里，拼成 Vector3 会给出一个看着像世界矢量、其实不是的东西 |
+| `Joint.currentForce`（Vector3） | 待做（第 10.2 节） | 线性 lambda 各类型都能可靠拼成世界矢量 |
+| `Joint.currentTorque`（Vector3） | 不发布 | 旋转 lambda 的 `Vector<2>` 分量用的垂直基是 Jolt 内部临时算的，公开 API 拿不到 ⇒ 方向只能猜（第 10.2 节） |
 | `ConfigurableJoint` | **已实现**（第 6b 节） | — |
 | `CharacterJoint.enableProjection` / `projectionDistance` / `projectionAngle` | 未实现 | Jolt 没有"投影纠错"；布娃娃拉伸要靠缩短步长 / 加求解步数 |
 | `SoftJointLimit.bounciness` / `contactDistance` | 未实现 | 与 `JointLimits` 同一条取舍（第 4 节）：只给了裸的 `limit` |
@@ -466,9 +467,25 @@ return IsCollisionEnabled(sg1, sg2);
 
 ⚠️ 不要用"忘了 `DisableCollision(sg, sg)`"当变异体（见上面第 2 条推论：等价变异体）。
 
-### 10.2 `Joint.currentForce` / `currentTorque`（可做，Vector3）
+### 10.2 `Joint.currentForce`（可做，Vector3）—— 但 `currentTorque` **改判不发布**
 
-现在 `GetJointImpulse` 只给**模长**。要做成 Unity 的 Vector3 是可能的，两个关键：
+⚠️ 上一版这里写的是"两个都能做"。查到 `RotationEulerConstraintPart` 那一层之后
+改判：**`currentTorque` 拿不到可靠的方向**。
+
+- Hinge / Slider / SwingTwist 的旋转（或平移）lambda 里有 `Vector<2>` 这种"两条
+  垂直轴上的两个分量"。那两条轴是 Jolt **内部临时**由主轴推出来的
+  （`RotationEulerConstraintPart` 拿到世界铰链轴之后自己算的基），公开 API 里没有。
+- 拿 `GetConstraintToBody1Matrix()` 的 Y / Z 列去凑**是错的**：Hinge 的约束空间是
+  `col0 = 铰链轴、col1 = normal、col2 = 铰链轴 × normal`，而 Jolt 内部那组基一般不
+  等于这两列。凑出来的 Vector3 大小碰巧对、**方向是猜的** —— 正是第 8 节
+  "看着像世界矢量、其实不是的东西"那句话。
+- 只有 Fixed（Vec3）和 SixDOF（Vec3，约束空间）能给出方向，其余类型不行 ⇒
+  与其"部分类型有方向、部分没有"，维持只给模长（`GetJointImpulse` 的角冲量）。
+
+线性那一路**照做**（各类型的拼法见下面第 1~3 点，都是可靠的）。角的那一路维持
+`GetJointImpulse` 的模长。
+
+要把线性 lambda 变成 Unity 的 `currentForce`（世界空间 Vector3），三个关键：
 
 1. `totalLambda` 是**冲量**（N·s），不是力 ⇒ 要除以步长。⚠️ 除的是**物理步长**
    `1 / m_Config.m_UpdateFrequency`，**不是** `Tick(float delta_time)` 的形参 ——
