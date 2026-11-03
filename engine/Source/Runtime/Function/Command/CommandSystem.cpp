@@ -19,6 +19,29 @@ extern "C"
 
 namespace
 {
+    // Working directory captured during static initialisation, i.e. before main()
+    // gets a chance to chdir. Main.cpp's runEditorUnix() switches to the project
+    // directory BEFORE START_SYSTEM(), so by the time CommandSystem parses argv a
+    // relative `-p engine/ZGameSmoke.zproject` no longer means what the user meant
+    // by it: parent_path() is then resolved against the project directory, the
+    // chdir becomes `<project>/engine` (missing), and ProjectInfo::LoadFromFile()
+    // gets a path that does not exist - the only visible symptom being an
+    // unexplained "[F] Failed to initialize system 'ProjectInfo', rolling back".
+    const std::filesystem::path& LaunchWorkingDirectory()
+    {
+        static const std::filesystem::path captured = [] {
+            std::error_code ec;
+            std::filesystem::path p = std::filesystem::current_path(ec);
+            return ec ? std::filesystem::path{} : p;
+        }();
+        // Function-local statics initialise on first call. Force that call during
+        // static init of this TU so the value is the launch directory, not
+        // whatever the cwd happens to be when a system first asks.
+        return captured;
+    }
+
+    const std::filesystem::path kLaunchWorkingDirectory = LaunchWorkingDirectory();
+
 #if !defined(_WIN32) && !defined(__APPLE__)
     // Linux / other POSIX: there is no _NSGetArgc() equivalent, so read the
     // real command line out of /proc instead of inventing one.
@@ -289,7 +312,18 @@ bool CommandSystem::Initialize()
     // 语义：命令行 > 宿主预设 > 空。
     if (!project_path_str.empty())
     {
-        project_path = project_path_str;
+        // Resolve a relative -p against the directory the process was launched
+        // from, not against the cwd of the moment: Main.cpp already chdir'd into
+        // the project directory before systems come up (see LaunchWorkingDirectory).
+        std::filesystem::path parsed(project_path_str);
+        if (parsed.is_relative() && !kLaunchWorkingDirectory.empty())
+        {
+            parsed = kLaunchWorkingDirectory / parsed;
+        }
+
+        std::error_code canon_ec;
+        const std::filesystem::path canon = std::filesystem::weakly_canonical(parsed, canon_ec);
+        project_path = (canon_ec || canon.empty()) ? parsed.lexically_normal() : canon;
     }
     if (!project_path.empty())
     {
