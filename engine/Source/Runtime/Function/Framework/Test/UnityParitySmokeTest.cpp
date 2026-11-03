@@ -5000,10 +5000,14 @@ namespace
         // 所有 body 的碰撞全关掉 —— 一个比没生效更坏的静默错误。C 与 B 重叠，
         // 且 C 与 A 在 X 上不重叠（免得 A 也来推它）。
         const uint32_t ec_c = SpawnBox(*scene, Vector3(1.4f, 220.f, 0.6f), 0, true);
+        Checkf(ec_c != kInvalidPhysicsBodyId, "EC5b", "the unrelated third body was created",
+               "id = %u (invalid = %u)", ec_c, kInvalidPhysicsBodyId);
         StepScene(*scene, 20);
         Vector3 c_position = Vector3::ZERO;
-        Checkf(scene->GetRigidBodyPosition(ec_c, c_position) && std::isfinite(c_position.z) &&
-                   c_position.z > 0.8f,
+        const bool ec_c_readable = scene->GetRigidBodyPosition(ec_c, c_position);
+        Checkf(ec_c_readable, "EC5c", "and it is still readable after 20 steps",
+               "id = %u", ec_c);
+        Checkf(ec_c_readable && std::isfinite(c_position.z) && c_position.z > 0.8f,
                "EC5", "a body that is NOT in the joint still collides with the filtered one",
                "z = %.4f (want > 0.8)", c_position.z);
 
@@ -5101,6 +5105,63 @@ namespace
                "EC11a", "and it reports the load in WORLD space (a fully-constrained SixDOF must NOT be rotated again)",
                "(%.1f, %.1f, %.1f) -- want z in (-10600, -9000)",
                six_force.x, six_force.y, six_force.z);
+
+        // --- 临时诊断（定位 EC10a/EC11a/EC14a 之后删除）------------------------
+        // 三条门同时给出 0，而 EC15a（distance）用的是同一条路径却是对的。这里把
+        // "关节有没有在使劲"和"body 有没有在掉"分开打出来：冲量用**既有**的
+        // `GetJointImpulse`（JN25 那条门证明它对同样的夹具是能给出非零值的），
+        // 于是"夹具没加载"和"GetJointForce 写错了"这两件事能分开。
+        {
+            Vector3 diag_a = Vector3::ZERO;
+            Vector3 diag_b = Vector3::ZERO;
+            Vector3 diag_c = Vector3::ZERO;
+            const bool ok_a = scene->GetRigidBodyPosition(cf_a, diag_a);
+            const bool ok_b = scene->GetRigidBodyPosition(cf_b, diag_b);
+            const bool ok_c = scene->GetRigidBodyPosition(ec_c, diag_c);
+            float d_lin = 0.f;
+            float d_ang = 0.f;
+            float d6_lin = 0.f;
+            float d6_ang = 0.f;
+            const bool ok_imp = scene->GetJointImpulse(cf_weld_id, d_lin, d_ang);
+            const bool ok_imp6 = scene->GetJointImpulse(cf6_id, d6_lin, d6_ang);
+            Vector3 d_f = Vector3::ZERO;
+            Vector3 d_f6 = Vector3::ZERO;
+            const bool ok_f = scene->GetJointForce(cf_weld_id, d_f);
+            const bool ok_f6 = scene->GetJointForce(cf6_id, d_f6);
+            std::printf("[diag] ec_c id=%u ok=%d (%.2f,%.2f,%.2f)\n",
+                        ec_c, static_cast<int>(ok_c), diag_c.x, diag_c.y, diag_c.z);
+            std::printf("[diag] weld id=%u A ok=%d (%.2f,%.2f,%.2f) B ok=%d (%.2f,%.2f,%.2f)\n",
+                        cf_weld_id, static_cast<int>(ok_a), diag_a.x, diag_a.y, diag_a.z,
+                        static_cast<int>(ok_b), diag_b.x, diag_b.y, diag_b.z);
+            std::printf("[diag] weld impulse ok=%d lin=%.4f ang=%.4f | force ok=%d (%.1f,%.1f,%.1f)\n",
+                        static_cast<int>(ok_imp), d_lin, d_ang,
+                        static_cast<int>(ok_f), d_f.x, d_f.y, d_f.z);
+            std::printf("[diag] cf6 impulse ok=%d lin=%.4f ang=%.4f | force ok=%d (%.1f,%.1f,%.1f)\n",
+                        static_cast<int>(ok_imp6), d6_lin, d6_ang,
+                        static_cast<int>(ok_f6), d_f6.x, d_f6.y, d_f6.z);
+            // 对照组：**早期**建的 raw 关节（EC13 那条门证明它能答）。同样走
+            // `GetJointForce`，它要是给出非零而 cf_weld 给零，问题就在"什么时候
+            // 建的 / body 后来怎么样了"，不在换算本身。
+            Vector3 d_early_fixed = Vector3::ZERO;
+            Vector3 d_early_cfg = Vector3::ZERO;
+            const bool ok_early_fixed = scene->GetJointForce(fixed_id, d_early_fixed);
+            const bool ok_early_cfg = scene->GetJointForce(cfg_id, d_early_cfg);
+            std::printf("[diag] early fixed id=%u ok=%d (%.1f,%.1f,%.1f) | early cfg id=%u ok=%d (%.1f,%.1f,%.1f)\n",
+                        fixed_id, static_cast<int>(ok_early_fixed),
+                        d_early_fixed.x, d_early_fixed.y, d_early_fixed.z,
+                        cfg_id, static_cast<int>(ok_early_cfg),
+                        d_early_cfg.x, d_early_cfg.y, d_early_cfg.z);
+        }
+
+        // --- 隔离门：夹具到底有没有在承重（用既有的冲量 API 判）----------------
+        // ⚠️ 与 EC10a 分开是必须的：EC10a 红只能说明"最终那个数不对"，分不出
+        // "夹具根本没使劲"和"使劲了但我换算错了"。
+        float weld_impulse_linear = 0.f;
+        float weld_impulse_angular = 0.f;
+        Checkf(scene->GetJointImpulse(cf_weld_id, weld_impulse_linear, weld_impulse_angular) &&
+                   weld_impulse_linear > 0.f,
+               "EC10b", "the weld really is carrying load (pre-existing impulse API, independent of GetJointForce)",
+               "linear=%.4f angular=%.4f", weld_impulse_linear, weld_impulse_angular);
 
         Check(!scene->GetJointForce(s_InvalidJointId, weld_force) &&
                   !scene->GetJointForce(9999u, weld_force),
@@ -5207,6 +5268,13 @@ namespace
         StepScene(*scene, 10);
         Vector3 comp_force = ec_cf_joint->GetCurrentForce();
         Vector3 backend_force = Vector3::ZERO;
+        // ⚠️ 单独一条：EC22 红时分不出"组件在编数"和"后端被拒了"（第一版实测
+        // component = -8541.6 而 backend = (0,0,0)，同一个函数同一个 id）。
+        Checkf(scene->GetJointForce(ec_cf_joint->GetJointId(), backend_force), "EC22b",
+               "the backend answers GetJointForce for the component's own joint id",
+               "id = %u", ec_cf_joint->GetJointId());
+        // 上面那次调用的结果直接留给 EC22 用：同一条路径只走一次，免得"第一次
+        // 有值、第二次没有"这种事被两次调用掩盖掉。
         // ⚠️ 光比"两边相等"抓不住"两边都是 0"，所以右边还钉了**已知载荷**本身 ——
         // "恒返回零"的 getter 才活不下来。
         Checkf(scene->GetJointForce(ec_cf_joint->GetJointId(), backend_force) &&
