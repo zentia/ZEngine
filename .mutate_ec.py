@@ -44,6 +44,12 @@ FAIL id that is absent from the baseline FAIL-id set**. The harness collects
 that set at startup, re-runs the baseline to prove it is stable, and prints
 only the newly-appeared failures for each mutant.
 
+The generated `zengine.d.ts` is a second piece of mutable state: the three
+DTS_MUTANTS leave a *mutated* published surface on disk, and later mutants do
+not refresh it, so EC40a/EC42/EC46 stay red and would disguise any surviving
+mutant as caught. The harness snapshots the clean d.ts bytes at baseline and
+writes them back after every mutant (including on SIGTERM/SIGINT).
+
 Run:  py .mutate_ec.py            (all)
       py .mutate_ec.py ECM01      (subset)
       py .mutate_ec.py --resume   (skip mutants that already have a verdict)
@@ -67,6 +73,12 @@ RESTORE = {}
 # caught。正确判据是「有没有冒出基线里没有的 FAIL id」，见 run()。
 BASELINE = {"parity": None, "comp": None}
 FAIL_RE = re.compile(r"\[FAIL\]\s+(\S+)")
+
+# 基线（干净源码）生成出来的三份 d.ts 内容。每跑完一个变异体都要写回去 ——
+# ECM14/ECM15/ECM17 会改脚本发布面，`regen_dts()` 把*变异后*的 d.ts 留在盘上，
+# 而后续变异体 NEED_DTS=False 不刷新 ⇒ EC40a/EC42/EC46 从 ECM16 起恒红。
+# 那会把任何**存活**的变异体伪装成 caught（又一种假绿）。
+DTS_CLEAN = {}
 
 ROOT = r"E:\Engine\ZEngine"
 
@@ -150,6 +162,28 @@ def regen_dts():
     for rel in DTS_PATHS[1:]:
         shutil.copy2(os.path.join(ROOT, first), os.path.join(ROOT, rel))
     return True
+
+
+def snapshot_dts_clean():
+    """基线编完、d.ts 刷好之后，把三份内容记下来，供每个变异体收尾时写回。"""
+    DTS_CLEAN.clear()
+    for rel in DTS_PATHS:
+        with io.open(os.path.join(ROOT, rel), "rb") as f:
+            DTS_CLEAN[rel] = f.read()
+
+
+def restore_dts_clean():
+    """把三份 d.ts 逐字节写回基线内容。
+
+    ⚠️ 不能用"重新跑一遍生成器"来还原：DTS 变异体之后 `ScriptTsChainSmokeTest.exe`
+    是用**变异后**的头文件编出来的，后续 NEED_DTS=False 的变异体不会重建它，
+    生成器自己就是脏的 ⇒ 越刷越脏。直接写回内容才与生成器状态解耦。
+    """
+    for rel, data in DTS_CLEAN.items():
+        p = os.path.join(ROOT, rel)
+        with io.open(p, "wb") as f:
+            f.write(data)
+        os.utime(p, None)
 
 
 def mutate(path, old, new):
@@ -551,6 +585,10 @@ def main():
             except OSError:
                 pass
         try:
+            restore_dts_clean()
+        except OSError:
+            pass
+        try:
             os.remove(LOCK)
         except OSError:
             pass
@@ -570,6 +608,7 @@ def main():
         _, ids_c, ok_c, _ = run(COMP_EXE)
         if not ok_p or not ok_c:
             raise SystemExit("! baseline exe did not print a summary -- aborting")
+        snapshot_dts_clean()
         BASELINE["parity"] = ids_p
         BASELINE["comp"] = ids_c
         print("  baseline FAIL ids: parity=%s comp=%s" %
@@ -628,6 +667,10 @@ def main():
                 shutil.copy2(bak, path)
                 os.utime(path, None)
                 touched.add(path)
+                # 源码还原了，d.ts 也要还原：DTS 变异体把*变异后*的发布面留在
+                # 盘上，后面每个 NEED_DTS=False 的变异体都会读到它 ⇒ EC40a /
+                # EC42 / EC46 恒红 ⇒ 存活的变异体被伪装成 caught。
+                restore_dts_clean()
             print()
         for path in touched:
             os.utime(path, None)
