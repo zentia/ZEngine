@@ -383,6 +383,21 @@ setter**（改了要重建约束）。两条同名属性会让 ZHeaderTool 直�
 | `SetConnectedAnchor` 只改字段不重建 | 基线是 autoConfigure **还开着**时读的，两种实现结果一样 | 基线在状态切换**之后**取 |
 | `FixedTick` 每步都判断裂 | 两个阈值都是 Infinity 时有一条提前 return，比较根本没执行 | 补一条"有限但极大的阈值"，并让铰链真吃上力（A 转静态） |
 
+### 变异（`.mutate_config.py`，slice 58，28 个变异体，28/28 killed）
+
+26 个被测试抓住，2 个编不过（`CFM02` 把 `SixDOFConstraintSettings` 换成
+`PointConstraintSettings`、`CFM32` 删掉 `Converter<JointDrive>` —— 两者都是
+"少了它根本编译不出来"）。
+
+**两条只被源码级门抓住的变异体，以及为什么没有补行为门**：
+
+| 变异体 | 抓它的 | 为什么没有行为门 |
+| --- | --- | --- |
+| `CFM12` 摆动型退回 Cone | `CF48a`（grep `ESwingType::Pyramid`） | Jolt 的 Cone 是在**每步 `Setup()` 里**才把 Y/Z 强行改成对称的；只改 settings 再读回来仍是不对称的值 ⇒ `CF27b` 那条"Y=0.3 / Z=0.15 各自独立"读不出差别。要补就得让 body 斜着摆出去撞 Y/Z 限位，而**限位型约束只在撞上那一步才激活**（与 slice 56 铰链同一条不稳），夹具很脆 ⇒ 维持源码级门 |
+| `CFM08` 建关节时不清零 MotorSettings | `CF48b`（grep 清零那一行） | 没被驱动的轴根本不会开电机，"幽灵 2 Hz 弹簧"在行为上没有可观察后果 —— 它只会在**有人给这个轴加驱动**时变成默认值，而那正好是 `GetJointAxisDrive` 读得出来的。这条本质上只能查源头 |
+
+（这是明确的选择，不是遗漏：两条都有对应的源码级门，且判据是唯一的。）
+
 ### ⚠️ 跑这一族变异体的两个前置条件
 
 1. **d.ts 必须重新生成**（`ScriptTsChainSmokeTest --dump-dts`）。d.ts 是生成物、
