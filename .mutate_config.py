@@ -80,6 +80,10 @@ def marker_for(path):
 
 TARGETS = ("ZRuntime", "ScriptTsChainSmokeTest", "UnityParitySmokeTest", "ScriptComponentSmokeTest")
 
+# 判一个**后端 / 组件**变异体只需要这两个。另外两个（各要再 link 一遍 ZRuntime）
+# 只在变异体碰得到脚本发布面时才编 —— 见 build_and_run 里的 NEED_SCRIPT。
+BASE_TARGETS = ("ZRuntime", "UnityParitySmokeTest")
+
 DTS_EXE = r"build\engine\Source\Runtime\Scripting\ScriptVM\Test\Debug\ScriptTsChainSmokeTest.exe"
 DTS_PATHS = (
     r"engine\EditorScripts\typings\zengine.d.ts",
@@ -91,6 +95,9 @@ NEED_RELINK = False
 # 这一轮变异体有没有可能改到 d.ts 的内容。只有碰 `ScriptBinding.cpp` / 枚举声明
 # 的那几个才会，其余（后端实现、组件实现）根本不影响发布面。
 NEED_DTS = True
+# 同上，但是管"要不要编那两个脚本 exe"。与 NEED_DTS 同条件（能改 d.ts 的变异体
+# 才可能改变 ScriptComponentSmokeTest 的结果）。
+NEED_SCRIPT = True
 
 
 def force_relink():
@@ -180,40 +187,82 @@ def _cmake_build(targets, parallel):
                           env=ENV, capture_output=True, text=True, timeout=1800)
 
 
-def build(refresh_dts=True):
-    """一次 `cmake --build` 编完四个 target，并行；失败两次后退化成串行兜底。"""
+# ⚠️ 构建失败分两类，混在一起重试就是白烧时间：
+#   * 真编译/链接错误 —— 确定的，重试多少次都一样。CFM02 一个编不过的变异体
+#     按老逻辑烧了 12 次 cmake --build（并行重试 + 逐个 target 串行兜底 ×3 轮）。
+#   * 文件锁 / 拷贝竞态 —— 重试能过，这才是串行兜底该出手的地方。
+FLAKY = ("LNK1168", "LNK1104", "LNK1201",          # 文件被占 / 打不开
+         "MSB3021", "MSB3026", "MSB3027",           # copy 失败
+         "MSB3491", "MSB3721",
+         "The process cannot access the file")
+HARD_ERROR = (": error C", ": error LNK", ": error MSB", "fatal error C")
+
+
+def _out(p):
+    return (p.stdout or "") + (p.stderr or "")
+
+
+def _classify(p):
+    """'flaky' = 重试有意义；'hard' = 编译/链接错，再试也是同一个错。"""
+    out = _out(p)
+    if any(s in out for s in FLAKY):
+        return "flaky"
+    if any(s in out for s in HARD_ERROR):
+        return "hard"
+    return "unknown"
+
+
+def build(refresh_dts=True, targets=None):
+    """一次 `cmake --build` 编完 target，并行。
+
+    只在**值得**的时候重试：编译错直接放弃，文件锁/拷贝竞态才走串行兜底。
+    """
+    targets = tuple(targets) if targets else TARGETS
     last = None
     if NEED_RELINK:
         force_relink()
-    for attempt in range(3):
-        p = _cmake_build(TARGETS, parallel=True)
+    for attempt in range(2):
+        p = _cmake_build(targets, parallel=True)
         last = p
-        if p.returncode != 0:
-            if "LNK1236" in (p.stdout or ""):
-                _cmake_build(("ZRuntime",), parallel=True)
-            if attempt == 0:
-                continue
-            print("  (merged/parallel build keeps failing -- falling back to sequential)")
-            for target in TARGETS:
-                p = _cmake_build((target,), parallel=False)
-                last = p
-                if p.returncode != 0:
-                    break
-            if p.returncode != 0:
-                continue
-        if refresh_dts and not regen_dts():
+        if p.returncode == 0:
+            if refresh_dts and not regen_dts():
+                return last
             return last
+        if "LNK1236" in _out(p):
+            _cmake_build(("ZRuntime",), parallel=True)
+        kind = _classify(p)
+        if kind == "hard":
+            # 编不过就是编不过 —— 这个变异体判 "invalid (does not build)"。
+            return last
+        if attempt == 0:
+            continue
+        if kind == "unknown":
+            # 认不出来的失败也可能是偶发，保留一次串行兜底。
+            pass
+        print("  (build flaked -- falling back to sequential)")
+        for target in targets:
+            p = _cmake_build((target,), parallel=False)
+            last = p
+            if p.returncode != 0:
+                break
+        else:
+            if refresh_dts and not regen_dts():
+                return last
         return last
     return last
 
 
 def build_and_run():
-    p = build(refresh_dts=NEED_DTS)
+    # 只有可能改动脚本发布面（prelude / Converter / ZENUM）的变异体才需要那两个
+    # 脚本 exe —— 它们要 link 一遍 ZRuntime，而后端/组件的变异体用
+    # UnityParitySmokeTest 一个就能判。
+    targets = TARGETS if NEED_SCRIPT else BASE_TARGETS
+    p = build(refresh_dts=NEED_DTS, targets=targets)
     if p is None or p.returncode != 0:
         print("  BUILD FAILED rc=%d" % (p.returncode if p is not None else -1))
         return "BUILD FAILED"
     rc_parity = run(PARITY_EXE)
-    rc_comp = run(COMP_EXE)
+    rc_comp = run(COMP_EXE) if NEED_SCRIPT else 0
     if rc_parity == 0 and rc_comp == 0:
         print("  >>> NOT CAUGHT <<<")
         return "NOT CAUGHT"
@@ -422,7 +471,20 @@ def main():
             raise SystemExit("another .mutate_config.py is already running (%s)" % LOCK)
     io.open(LOCK, "w", encoding="utf-8").write("%d\n" % os.getpid())
 
-    only = set(sys.argv[1:])
+    args = sys.argv[1:]
+    # `--resume`：日志里已经有结论的变异体跳过。中途被打断（或者只想重跑存活的
+    # 那几个）时不用从头再来 —— 一轮 28 个变异体，重跑一遍很贵。
+    resume = "--resume" in args
+    only = set(a for a in args if not a.startswith("--"))
+    done = set()
+    if resume:
+        log = os.path.join(ROOT, ".mutate_config.log")
+        if os.path.exists(log):
+            for line in io.open(log, "r", encoding="utf-8"):
+                parts = line.split()
+                if parts:
+                    done.add(parts[0])
+            print("! --resume: %d mutants already have a verdict, skipping them" % len(done))
     results = []
     touched = set()
 
@@ -466,10 +528,13 @@ def main():
                 func_sig = None
             if only and name.split()[0] not in only:
                 continue
+            if name.split()[0] in done:
+                continue
             print("=== %s ===" % name)
-            global NEED_RELINK, NEED_DTS
+            global NEED_RELINK, NEED_DTS, NEED_SCRIPT
             NEED_RELINK = path in (BINDING_CPP, BINDING_H)
             NEED_DTS = path in (BINDING_CPP, BINDING_H, JOINT_H)
+            NEED_SCRIPT = NEED_DTS
             bak = os.path.join(BAK, os.path.basename(path) + ".cfgbak")
             shutil.copy2(path, bak)
             RESTORE[path] = bak
