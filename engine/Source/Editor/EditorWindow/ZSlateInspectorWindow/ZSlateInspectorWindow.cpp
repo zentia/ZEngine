@@ -61,7 +61,7 @@
 #include "Runtime/Function/Framework/Component/Component.h"
 #include "Runtime/Function/Framework/Component/Mesh/BaseRenderer.h"
 #include "Runtime/Function/Framework/Component/Spine/SpineRenderer.h"
-#include "Runtime/Function/Render/Spine/SpineGpuAssetFile.h"
+#include "GPUSpine/SpineGpuAssetFile.h"
 #include "Runtime/Function/Framework/Component/Transform/Transform.h"
 #include "Runtime/Resource/Asset/AssetManager.h"
 #include "Runtime/Resource/ResType/Components/Mesh.h"  // SubMeshRes

@@ -1,8 +1,8 @@
 #include "Editor/ToolSuite/SpineCook/SpineCookSuite.h"
 
-#include "Runtime/Function/Render/Spine/SpineGpuAssetFile.h"
-#include "Runtime/Function/Render/Spine/SpineGpuFormat.h"
-#include "Runtime/Function/Render/Spine/SpineGpuImporter.h"
+#include "GPUSpine/SpineGpuAssetFile.h"
+#include "GPUSpine/SpineGpuFormat.h"
+#include "GPUSpine/SpineGpuImporter.h"
 
 #include <cstdio>
 #include <cstring>
