@@ -80,6 +80,12 @@ bool JointComponent::BuildJointDesc(PhysicsJointDesc& out_desc, uint32_t& out_ot
 
     const Vector3 world_anchor = self_position + self_rotation * m_JointRes.m_Anchor;
 
+    // CharacterJoint 的"摆动轴"：与扭转轴垂直、定出摆动的两个方向。零向量只在
+    // 脚本笔误时出现，这里退化成"任取一条垂直轴"而不是拒掉整个关节 —— 它不决定
+    // 关节存不存在，只决定摆动的两个方向怎么摆。（退化本身由
+    // `PhysicsScene::PlaneAxisFor` 兜底。）
+    const Vector3 world_plane_axis = (self_rotation * m_JointRes.m_SwingAxis).normalisedCopy();
+
     RigidBodyComponent* connected_body = m_JointRes.m_ConnectedBody;
     if (connected_body != nullptr)
     {
@@ -112,6 +118,8 @@ bool JointComponent::BuildJointDesc(PhysicsJointDesc& out_desc, uint32_t& out_ot
     // 两个刚体共用一个世界轴：Unity 的 `Joint.axis` 只有一个，Jolt 的第二个轴
     // 存在是为了两端姿态不同的情况，本引擎的脚本面不给那种用法。
     out_desc.m_AxisB = world_axis;
+    out_desc.m_PlaneAxisA = world_plane_axis;
+    out_desc.m_PlaneAxisB = world_plane_axis;
     out_desc.m_AutoDetectPoint = false;
 
     FillJointLimits(out_desc);

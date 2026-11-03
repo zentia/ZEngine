@@ -110,11 +110,12 @@ struct PhysicsCollisionEvent
 /// later without changing the API shape.
 enum class PhysicsJointType : unsigned char
 {
-    fixed,     ///< Welds two bodies together (Unity FixedJoint).
-    hinge,     ///< Rotation about one axis, with optional limits (HingeJoint).
-    point,     ///< Keeps two points coincident (ball socket).
-    slider,    ///< Translation along one axis, with optional limits.
-    distance   ///< Keeps two points within a distance range (SpringJoint).
+    fixed,       ///< Welds two bodies together (Unity FixedJoint).
+    hinge,       ///< Rotation about one axis, with optional limits (HingeJoint).
+    point,       ///< Keeps two points coincident (ball socket).
+    slider,      ///< Translation along one axis, with optional limits.
+    distance,    ///< Keeps two points within a distance range (SpringJoint).
+    swing_twist  ///< Cone-limited ball socket (Unity CharacterJoint).
 };
 
 /// Description of a joint. All pivots/axes are in world space: they are
@@ -139,6 +140,32 @@ struct PhysicsJointDesc
     /// distance: [min, max] distance. Negative means "derive from the pivots".
     float m_MinLimit {-1.f};
     float m_MaxLimit {-1.f};
+
+    // ---- swing_twist（Unity 的 CharacterJoint）----------------------------
+    //
+    // `m_AxisA` / `m_AxisB` 是**扭转轴**；摆动还要一条与它垂直的"平面轴"来定
+    // 出摆动的两个方向（Jolt 的 mTwistAxis / mPlaneAxis 就是这样一对）。
+
+    /// 与扭转轴垂直的那条轴（世界空间）。会被投影成垂直分量，不必严格正交。
+    Vector3 m_PlaneAxisA {0.f, 1.f, 0.f};
+    Vector3 m_PlaneAxisB {0.f, 1.f, 0.f};
+
+    /// 摆动半锥角（弧度，>= 0）。Unity 的 `swing1Limit.limit` / `swing2Limit.limit`：
+    /// swing1 绕平面轴，swing2 绕另一条。
+    float m_Swing1HalfAngle {0.f};
+    float m_Swing2HalfAngle {0.f};
+
+    /// 扭转区间（弧度，[-pi, pi]）。Unity 的 `lowTwistLimit` / `highTwistLimit`
+    /// 同样是"相对建立姿态"，与 Jolt 的 `mTwistMinAngle` / `mTwistMaxAngle` 同义。
+    float m_TwistMinAngle {0.f};
+    float m_TwistMaxAngle {0.f};
+
+    /// 限位弹簧（频率 Hz / 阻尼比）。0 表示"硬限位"（Jolt 的默认，也是 Unity
+    /// 里 `spring = 0` 的意思 —— 但**不是**"没有弹簧"）。
+    float m_SwingSpringFrequency {0.f};
+    float m_SwingSpringDamping {0.f};
+    float m_TwistSpringFrequency {0.f};
+    float m_TwistSpringDamping {0.f};
 
     /// Let Jolt compute the attachment points from the current body poses.
     bool m_AutoDetectPoint {true};
@@ -521,6 +548,35 @@ public:
     /// 弹簧的软硬。`frequency_hz` 为 0 时 Jolt 走"硬限位"（多硬取决于时间步与
     /// 求解步数），这正是 Unity 里 `spring = 0` 的意思 —— 但**不是**"没有弹簧"。
     bool SetJointSpring(uint32_t joint_id, float frequency_hz, float damping);
+
+    /// swing-twist 的四个限位（Unity 的 `CharacterJoint.swing1Limit` /
+    /// `swing2Limit` / `lowTwistLimit` / `highTwistLimit`）。**弧度**。
+    ///
+    /// 半锥角为负没有意义（锥是对称的），扭转轴要求 `min <= max` —— 两个都拒掉而
+    /// 不夹：夹出来的区间和脚本写的不是一回事，而"我明明写了 0.2 却被当成 0"最难查。
+    bool SetJointSwingTwistLimits(uint32_t joint_id,
+                                  float swing1_half_angle,
+                                  float swing2_half_angle,
+                                  float twist_min_angle,
+                                  float twist_max_angle);
+    bool GetJointSwingTwistLimits(uint32_t joint_id,
+                                  float& out_swing1_half_angle,
+                                  float& out_swing2_half_angle,
+                                  float& out_twist_min_angle,
+                                  float& out_twist_max_angle) const;
+
+    /// swing-twist 的限位弹簧（频率 Hz / 阻尼比）。摆动与扭转各一份。
+    /// 传 0 = 硬限位。
+    bool SetJointSwingTwistSpring(uint32_t joint_id,
+                                  float swing_frequency_hz,
+                                  float swing_damping,
+                                  float twist_frequency_hz,
+                                  float twist_damping);
+    bool GetJointSwingTwistSpring(uint32_t joint_id,
+                                  float& out_swing_frequency_hz,
+                                  float& out_swing_damping,
+                                  float& out_twist_frequency_hz,
+                                  float& out_twist_damping) const;
 
     /// 上一步这个约束实际施加的冲量**模长**（N·s / N·m·s），除以步长就是力与
     /// 力矩。Unity 的 `Joint.breakForce` / `breakTorque` 判的就是它。

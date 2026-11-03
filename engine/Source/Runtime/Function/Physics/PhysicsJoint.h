@@ -52,3 +52,17 @@ struct JointSpring
     /// 弹簧要拉到的角度（铰链，弧度）。
     float targetPosition {0.f};
 };
+
+/// Unity 的 `SoftJointLimitSpring`（`CharacterJoint.twistLimitSpring` /
+/// `.swingLimitSpring`）。
+///
+/// ⚠️ 与 `JointSpring` 是**两个**类型：这个没有 `targetPosition` —— 限位弹簧拉回
+/// 的是"限位面上"，目标位置由约束自己算，脚本给不了。复用 `JointSpring` 的话那
+/// 个字段就成了"能写、没人读"，正是这文件开头说的那种最难的坑。
+struct SoftJointLimitSpring
+{
+    /// 刚度。Jolt 里是限位弹簧的**频率**（Hz）。0 = 硬限位。
+    float spring {0.f};
+    /// 阻尼。
+    float damper {0.f};
+};

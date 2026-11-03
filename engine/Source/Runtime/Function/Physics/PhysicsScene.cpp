@@ -33,6 +33,7 @@
 #include "Jolt/Physics/Constraints/HingeConstraint.h"
 #include "Jolt/Physics/Constraints/PointConstraint.h"
 #include "Jolt/Physics/Constraints/SliderConstraint.h"
+#include "Jolt/Physics/Constraints/SwingTwistConstraint.h"
 #include "Runtime/Resource/ResType/Components/RigidBody.h"
 #include "core/base/Macro.h"
 
@@ -51,6 +52,25 @@ namespace
         return reference.Cross(in_axis).Normalized();
     }
 
+    /// swing-twist 的平面轴：要的是"与扭转轴垂直的那条"，脚本给的可能只是"大致
+    /// 垂直"甚至平行。
+    ///
+    /// ⚠️ 平行的情况不能交给 Jolt：它只做一次正交化，`cross(parallel, parallel)`
+    /// 是零向量，后面 `.Normalized()` 就是 NaN —— 一个 NaN 约束会把整个
+    /// broadphase 拖垮，而报错的位置离这里很远。所以这里先自己把"沿扭转轴的那
+    /// 一份"减掉，减完太短就换 `MakePerpendicularAxis` 造一条。
+    JPH::Vec3 PlaneAxisFor(const JPH::Vec3& in_twist_axis, const Vector3& in_requested)
+    {
+        JPH::Vec3 requested = toVec3(in_requested);
+        const float along = requested.Dot(in_twist_axis);
+        JPH::Vec3 orthogonal = requested - in_twist_axis * along;
+        if (orthogonal.LengthSq() < 1.0e-6f)
+        {
+            return MakePerpendicularAxis(in_twist_axis);
+        }
+        return orthogonal.Normalized();
+    }
+
     /// 最小质量（千克）。0 / 负质量会让倒数质量变成 inf，一步积分之后就是 NaN
     /// 位置，而一个 NaN 物体会把整个 broadphase 拖垮。
     constexpr float kMinMass = 0.0001f;
@@ -67,6 +87,10 @@ namespace
     /// 退化区间配一个真实的弹簧：频率不算高（不会抖），但足够硬。
     constexpr float kDegenerateLimitFrequency = 2.0f;
     constexpr float kDegenerateLimitDamping = 1.0f;
+
+    /// Jolt 的 pi。写成自己的常量而不是 `JPH_PI`：那个宏住在 Jolt 的 Core.h 里，
+    /// 而本文件只 include 了约束那几个头文件（Jolt-free 的那一半要靠它保持干净）。
+    constexpr float kJoltPi = 3.14159265358979323846f;
 
     /// MoveKinematic 用位移 / delta_time 反推速度，delta_time 为 0 会得到 inf。
     constexpr float kMinDeltaTime = 0.0001f;
@@ -1839,6 +1863,34 @@ uint32_t PhysicsScene::CreateJoint(const PhysicsJointDesc& in_desc)
             jph_constraint = settings.Create(*jph_body_a, *jph_body_b);
             break;
         }
+        case PhysicsJointType::swing_twist:
+        {
+            JPH::SwingTwistConstraintSettings settings;
+            settings.mPosition1 = JPH::RVec3(toVec3(in_desc.m_PivotA));
+            settings.mPosition2 = JPH::RVec3(toVec3(in_desc.m_PivotB));
+            settings.mTwistAxis1 = toVec3(in_desc.m_AxisA.normalisedCopy());
+            settings.mTwistAxis2 = toVec3(in_desc.m_AxisB.normalisedCopy());
+            // 平面轴只用来定出摆动的两个方向，Jolt 会自己正交化，但**平行的两条
+            // 轴**正交化出来是零向量 —— 那是 NaN 的来源，所以这里自己处理：
+            // 拿不到垂直分量就退回 MakePerpendicularAxis 那条路。
+            settings.mPlaneAxis1 = PlaneAxisFor(settings.mTwistAxis1, in_desc.m_PlaneAxisA);
+            settings.mPlaneAxis2 = PlaneAxisFor(settings.mTwistAxis2, in_desc.m_PlaneAxisB);
+            settings.mNormalHalfConeAngle = std::max(in_desc.m_Swing1HalfAngle, 0.f);
+            settings.mPlaneHalfConeAngle = std::max(in_desc.m_Swing2HalfAngle, 0.f);
+            // Jolt 的 twist 区间也要跨 0（`mTwistMinAngle <= 0 <= mTwistMaxAngle`），
+            // 与铰链同一条规则。写反了就拒掉而不是夹 —— 见 SetJointSwingTwistLimits。
+            if (in_desc.m_TwistMinAngle <= 0.f && in_desc.m_TwistMaxAngle >= 0.f)
+            {
+                settings.mTwistMinAngle = in_desc.m_TwistMinAngle;
+                settings.mTwistMaxAngle = in_desc.m_TwistMaxAngle;
+            }
+            settings.mSwingMotorSettings.mSpringSettings.mFrequency = in_desc.m_SwingSpringFrequency;
+            settings.mSwingMotorSettings.mSpringSettings.mDamping = in_desc.m_SwingSpringDamping;
+            settings.mTwistMotorSettings.mSpringSettings.mFrequency = in_desc.m_TwistSpringFrequency;
+            settings.mTwistMotorSettings.mSpringSettings.mDamping = in_desc.m_TwistSpringDamping;
+            jph_constraint = settings.Create(*jph_body_a, *jph_body_b);
+            break;
+        }
         default:
             break;
     }
@@ -1915,6 +1967,9 @@ bool PhysicsScene::GetJointType(uint32_t joint_id, PhysicsJointType& out_type) c
             return true;
         case JPH::EConstraintSubType::Distance:
             out_type = PhysicsJointType::distance;
+            return true;
+        case JPH::EConstraintSubType::SwingTwist:
+            out_type = PhysicsJointType::swing_twist;
             return true;
         default:
             // 引擎目前只建这五种；剩下的（齿轮 / 路径 / 六自由度）今天没有
@@ -2203,6 +2258,106 @@ bool PhysicsScene::SetJointSpring(uint32_t joint_id, float frequency_hz, float d
     }
 }
 
+bool PhysicsScene::SetJointSwingTwistLimits(uint32_t joint_id,
+                                           float swing1_half_angle,
+                                           float swing2_half_angle,
+                                           float twist_min_angle,
+                                           float twist_max_angle)
+{
+    JPH::Constraint* jph_constraint = JointAt(joint_id);
+    if (jph_constraint == nullptr || jph_constraint->GetSubType() != JPH::EConstraintSubType::SwingTwist)
+    {
+        return false;
+    }
+
+    // 半锥角是对称的（Jolt 存的是一个"半角"），负值只能是笔误。
+    if (swing1_half_angle < 0.f || swing2_half_angle < 0.f)
+    {
+        return false;
+    }
+    // 扭转轴与铰链同一条规则：区间必须跨 0（"相对建立姿态左右各多少"）。
+    if (twist_min_angle > 0.f || twist_max_angle < 0.f)
+    {
+        return false;
+    }
+    if (twist_min_angle < -kJoltPi || twist_max_angle > kJoltPi)
+    {
+        return false;
+    }
+
+    JPH::SwingTwistConstraint* joint = static_cast<JPH::SwingTwistConstraint*>(jph_constraint);
+    joint->SetNormalHalfConeAngle(swing1_half_angle);
+    joint->SetPlaneHalfConeAngle(swing2_half_angle);
+    joint->SetTwistMinAngle(twist_min_angle);
+    joint->SetTwistMaxAngle(twist_max_angle);
+    return true;
+}
+
+bool PhysicsScene::GetJointSwingTwistLimits(uint32_t joint_id,
+                                           float& out_swing1_half_angle,
+                                           float& out_swing2_half_angle,
+                                           float& out_twist_min_angle,
+                                           float& out_twist_max_angle) const
+{
+    const JPH::Constraint* jph_constraint = JointAt(joint_id);
+    if (jph_constraint == nullptr || jph_constraint->GetSubType() != JPH::EConstraintSubType::SwingTwist)
+    {
+        return false;
+    }
+
+    const JPH::SwingTwistConstraint* joint = static_cast<const JPH::SwingTwistConstraint*>(jph_constraint);
+    out_swing1_half_angle = joint->GetNormalHalfConeAngle();
+    out_swing2_half_angle = joint->GetPlaneHalfConeAngle();
+    out_twist_min_angle = joint->GetTwistMinAngle();
+    out_twist_max_angle = joint->GetTwistMaxAngle();
+    return true;
+}
+
+bool PhysicsScene::SetJointSwingTwistSpring(uint32_t joint_id,
+                                           float swing_frequency_hz,
+                                           float swing_damping,
+                                           float twist_frequency_hz,
+                                           float twist_damping)
+{
+    JPH::Constraint* jph_constraint = JointAt(joint_id);
+    if (jph_constraint == nullptr || jph_constraint->GetSubType() != JPH::EConstraintSubType::SwingTwist)
+    {
+        return false;
+    }
+
+    if (swing_frequency_hz < 0.f || swing_damping < 0.f || twist_frequency_hz < 0.f || twist_damping < 0.f)
+    {
+        return false;
+    }
+
+    JPH::SwingTwistConstraint* joint = static_cast<JPH::SwingTwistConstraint*>(jph_constraint);
+    joint->GetSwingMotorSettings().mSpringSettings = JPH::SpringSettings(
+        JPH::ESpringMode::FrequencyAndDamping, swing_frequency_hz, swing_damping);
+    joint->GetTwistMotorSettings().mSpringSettings = JPH::SpringSettings(
+        JPH::ESpringMode::FrequencyAndDamping, twist_frequency_hz, twist_damping);
+    return true;
+}
+
+bool PhysicsScene::GetJointSwingTwistSpring(uint32_t joint_id,
+                                           float& out_swing_frequency_hz,
+                                           float& out_swing_damping,
+                                           float& out_twist_frequency_hz,
+                                           float& out_twist_damping) const
+{
+    const JPH::Constraint* jph_constraint = JointAt(joint_id);
+    if (jph_constraint == nullptr || jph_constraint->GetSubType() != JPH::EConstraintSubType::SwingTwist)
+    {
+        return false;
+    }
+
+    const JPH::SwingTwistConstraint* joint = static_cast<const JPH::SwingTwistConstraint*>(jph_constraint);
+    out_swing_frequency_hz = joint->GetSwingMotorSettings().mSpringSettings.mFrequency;
+    out_swing_damping = joint->GetSwingMotorSettings().mSpringSettings.mDamping;
+    out_twist_frequency_hz = joint->GetTwistMotorSettings().mSpringSettings.mFrequency;
+    out_twist_damping = joint->GetTwistMotorSettings().mSpringSettings.mDamping;
+    return true;
+}
+
 bool PhysicsScene::GetJointImpulse(uint32_t joint_id, float& out_linear_impulse, float& out_angular_impulse) const
 {
     const JPH::Constraint* jph_constraint = JointAt(joint_id);
@@ -2253,6 +2408,18 @@ bool PhysicsScene::GetJointImpulse(uint32_t joint_id, float& out_linear_impulse,
         {
             out_linear_impulse = std::abs(
                 static_cast<const JPH::DistanceConstraint*>(jph_constraint)->GetTotalLambdaPosition());
+            return true;
+        }
+        case JPH::EConstraintSubType::SwingTwist:
+        {
+            const JPH::SwingTwistConstraint* joint =
+                static_cast<const JPH::SwingTwistConstraint*>(jph_constraint);
+            out_linear_impulse = joint->GetTotalLambdaPosition().Length();
+            // 三股力矩各活在自己的方向上（扭转 / 摆动两维），取最大的那一股：
+            // 相加会把"同时撞上锥面和扭到头"算成三倍，于是布娃娃一着地就断。
+            out_angular_impulse = std::max(std::abs(joint->GetTotalLambdaTwist()),
+                                           std::max(std::abs(joint->GetTotalLambdaSwingY()),
+                                                    std::abs(joint->GetTotalLambdaSwingZ())));
             return true;
         }
         default:

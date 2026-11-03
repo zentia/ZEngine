@@ -419,6 +419,14 @@ namespace
         // 字符串，与这里的类型名无关）。
         "declare type Rigidbody = RigidBodyComponent;\n"
         "\n"
+        // 第四例：蒙皮网格渲染器。Unity 叫 `SkinnedMeshRenderer`（两个 n），引擎
+        // 里叫 `SkinMeshRenderer`（与 `SkinMeshRenderer.cpp` / 资产侧的命名一致）。
+        // 别名让脚本能照 Unity 的拼写写标注。
+        //
+        // ⚠️ 同样只是类型别名：`GetComponent("SkinnedMeshRenderer")` 查不到 ——
+        // 反射名仍是 `SkinMeshRenderer`。
+        "declare type SkinnedMeshRenderer = SkinMeshRenderer;\n"
+        "\n"
         // Bounds：Unity 存的是 center + **extents（半尺寸）**，`size` / `min` /
         // `max` 都是派生量。键名与 `ZScript::Converter<Bounds>` 一致。
         // 与 `declare class Bounds`（ScriptBounds.h 那批静态方法）同名合并。
@@ -518,6 +526,17 @@ namespace
         "    targetPosition: number;\n"
         "}\n"
         "\n"
+        // Unity 的 `SoftJointLimitSpring`（`CharacterJoint.twistLimitSpring` /
+        // `.swingLimitSpring`）。与上面的 `JointSpring` 差一个 `targetPosition`：
+        // 限位弹簧拉回的是限位面，目标位置由约束自己算，脚本给不了 —— 复用
+        // `JointSpring` 会让那个字段变成"能写、没人读"。
+        "declare interface SoftJointLimitSpring {\n"
+        "    /** 刚度。Jolt 里是限位弹簧的频率（Hz），0 = 硬限位。 */\n"
+        "    spring: number;\n"
+        "    /** 阻尼。 */\n"
+        "    damper: number;\n"
+        "}\n"
+        "\n"
         // 关节族：引擎里的类叫 `HingeJointComponent` 等（与 RigidBodyComponent
         // / CameraComponent 一族对齐），Unity 叫 `HingeJoint` / `FixedJoint` /
         // `SpringJoint`。与 `Rigidbody` 同一条例子的第二、三、四、五例。
@@ -531,6 +550,8 @@ namespace
         "declare type SpringJoint = SpringJointComponent;\n"
         "\n"
         "declare type SliderJoint = SliderJointComponent;\n"
+        "\n"
+        "declare type CharacterJoint = CharacterJointComponent;\n"
         "\n"
         "declare interface RaycastHit {\n"
         "    valid: boolean;\n"

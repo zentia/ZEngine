@@ -1414,6 +1414,27 @@ namespace ZScript
         }
     };
 
+    // Unity 的 `SoftJointLimitSpring`：`spring` / `damper` 两个字段，**没有**
+    // `targetPosition`（那一个是 `JointSpring` 的）。
+    template<>
+    struct Converter<SoftJointLimitSpring>
+    {
+        static pesapi_value ToJs(pesapi_ffi* apis, pesapi_env env, const SoftJointLimitSpring& v)
+        {
+            pesapi_value o = apis->create_object(env);
+            apis->set_property(env, o, "spring", Converter<float>::ToJs(apis, env, v.spring));
+            apis->set_property(env, o, "damper", Converter<float>::ToJs(apis, env, v.damper));
+            return o;
+        }
+        static SoftJointLimitSpring FromJs(pesapi_ffi* apis, pesapi_env env, pesapi_value v)
+        {
+            SoftJointLimitSpring out;
+            out.spring = Converter<float>::FromJs(apis, env, apis->get_property(env, v, "spring"));
+            out.damper = Converter<float>::FromJs(apis, env, apis->get_property(env, v, "damper"));
+            return out;
+        }
+    };
+
     // --- trampolines ------------------------------------------------------
 
     template <typename R>

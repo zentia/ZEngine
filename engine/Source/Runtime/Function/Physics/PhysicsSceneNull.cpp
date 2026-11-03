@@ -403,4 +403,24 @@ bool PhysicsScene::GetJointImpulse(uint32_t, float& out_linear_impulse, float& o
     return false;
 }
 
+bool PhysicsScene::SetJointSwingTwistLimits(uint32_t, float, float, float, float)
+{
+    return false;
+}
+
+bool PhysicsScene::GetJointSwingTwistLimits(uint32_t, float&, float&, float&, float&) const
+{
+    return false;
+}
+
+bool PhysicsScene::SetJointSwingTwistSpring(uint32_t, float, float, float, float)
+{
+    return false;
+}
+
+bool PhysicsScene::GetJointSwingTwistSpring(uint32_t, float&, float&, float&, float&) const
+{
+    return false;
+}
+
 #endif  // ZENGINE_SHARED_NO_PHYSICS

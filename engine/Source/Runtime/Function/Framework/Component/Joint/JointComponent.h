@@ -85,6 +85,26 @@ public:
     // --- 弹簧关节的距离区间（米）-------------------------------------------
     float m_MinDistance {-1.f};
     float m_MaxDistance {-1.f};
+
+    // --- CharacterJoint 的摆动 / 扭转（弧度）-------------------------------
+    //
+    // Unity 的 `swing1Limit.limit` / `swing2Limit.limit` 是半锥角（>= 0），
+    // `lowTwistLimit.limit` / `highTwistLimit.limit` 是跨 0 的区间。这里存的是
+    // 那一层 `SoftJointLimit.limit` 的**裸值**（bounciness / contactDistance 在
+    // Jolt 里没有对应物，见 `PhysicsJoint.h` 的取舍）。
+    float m_Swing1Limit {0.f};
+    float m_Swing2Limit {0.f};
+    float m_LowTwistLimit {0.f};
+    float m_HighTwistLimit {0.f};
+
+    /// 与扭转轴垂直、定出摆动两个方向的那条轴（宿主局部空间）。
+    Vector3 m_SwingAxis {Vector3::UNIT_Y};
+
+    /// 限位弹簧（频率 Hz / 阻尼比）。0 = 硬限位。
+    float m_SwingSpring {0.f};
+    float m_SwingDamper {0.f};
+    float m_TwistSpring {0.f};
+    float m_TwistDamper {0.f};
 };
 
 template<typename TransferFunction>
@@ -110,6 +130,15 @@ void JointComponentRes::Transfer(TransferFunction& transfer)
     transfer.Transfer(m_SpringTargetPosition, "spring_target_position");
     transfer.Transfer(m_MinDistance, "min_distance");
     transfer.Transfer(m_MaxDistance, "max_distance");
+    transfer.Transfer(m_Swing1Limit, "swing1_limit");
+    transfer.Transfer(m_Swing2Limit, "swing2_limit");
+    transfer.Transfer(m_LowTwistLimit, "low_twist_limit");
+    transfer.Transfer(m_HighTwistLimit, "high_twist_limit");
+    transfer.Transfer(m_SwingAxis, "swing_axis");
+    transfer.Transfer(m_SwingSpring, "swing_spring");
+    transfer.Transfer(m_SwingDamper, "swing_damper");
+    transfer.Transfer(m_TwistSpring, "twist_spring");
+    transfer.Transfer(m_TwistDamper, "twist_damper");
 }
 
 INSTANTIATE_TEMPLATE_TRANSFER_WITH_DECL(JointComponentRes, , Transfer, void)
