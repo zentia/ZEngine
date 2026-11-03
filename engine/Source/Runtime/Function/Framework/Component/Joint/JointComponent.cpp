@@ -178,6 +178,9 @@ bool JointComponent::BuildJoint()
     }
 
     m_JointId = joint_id;
+    // `enableCollision` 在 `ApplyJointSettings()` **之外**推 —— 那个是虚函数，
+    // 子类覆写后不回调基类（见头文件里的注释）。
+    PushEnableCollision();
     ApplyJointSettings();
 
     // 组件在关节建出来**之前**被停用过（`m_Enabled` 是序列化的，关卡加载时就
@@ -262,6 +265,36 @@ void JointComponent::SetAutoConfigureConnectedAnchor(bool auto_configure)
 {
     m_JointRes.m_AutoConfigureConnectedAnchor = auto_configure;
     RebuildJoint();
+}
+
+void JointComponent::PushEnableCollision()
+{
+    std::shared_ptr<PhysicsScene> physics_scene = GetActivePhysicsScene();
+    if (!physics_scene || m_JointId == kInvalidJointId)
+    {
+        // 还没建出来：值已经存在 res 里，`BuildJoint` 成功时会再推一次。
+        return;
+    }
+    physics_scene->SetJointEnableCollision(m_JointId, m_JointRes.m_EnableCollision);
+}
+
+void JointComponent::SetEnableCollision(bool enable)
+{
+    m_JointRes.m_EnableCollision = enable;
+    // 不重建：后端是事后改两个 body 的碰撞组。
+    PushEnableCollision();
+}
+
+Vector3 JointComponent::GetCurrentForce() const
+{
+    std::shared_ptr<PhysicsScene> physics_scene = GetActivePhysicsScene();
+    if (!physics_scene || m_JointId == kInvalidJointId)
+    {
+        return Vector3::ZERO;
+    }
+    Vector3 force = Vector3::ZERO;
+    physics_scene->GetJointForce(m_JointId, force);
+    return force;
 }
 
 bool JointComponent::RepairJoint()

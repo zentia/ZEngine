@@ -403,6 +403,23 @@ bool PhysicsScene::GetJointImpulse(uint32_t, float& out_linear_impulse, float& o
     return false;
 }
 
+bool PhysicsScene::SetJointEnableCollision(uint32_t, bool)
+{
+    return false;
+}
+
+bool PhysicsScene::GetJointEnableCollision(uint32_t, bool& out_enable) const
+{
+    out_enable = true;
+    return false;
+}
+
+bool PhysicsScene::GetJointForce(uint32_t, Vector3& out_force) const
+{
+    out_force = Vector3::ZERO;
+    return false;
+}
+
 bool PhysicsScene::SetJointAxisMotion(uint32_t, ConfigurableJointAxis, ConfigurableJointMotion, float, float)
 {
     return false;

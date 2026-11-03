@@ -7,6 +7,7 @@
 // exactly as before to preserve ABI/initialisation order.
 #include <memory>
 #include <mutex>
+#include <unordered_map>
 #include <vector>
 
 // ZENGINE_SHARED_NO_PHYSICS: the slim iOS shared runtime drops the Jolt-backed
@@ -20,6 +21,9 @@ class ObjectVsBroadPhaseLayerFilterImpl;
 class ObjectLayerPairFilterImpl;
 #else
     #include "jolt/utils.h"
+    // `enableCollision` 要用 Jolt 的 sub-group 表。`jolt/utils.h` 不保证把它带进来，
+    // 显式引一次 —— 少引一个头文件在别的机器上就是"换台机器编不过"。
+    #include "Jolt/Physics/Collision/GroupFilterTable.h"
 #endif
 #include "Runtime/Core/Math/AxisAligned.h"
 #include "Runtime/Core/Math/Quaternion.h"
@@ -636,6 +640,34 @@ public:
     /// 这也是本引擎没有 Unity 的 `Joint.currentForce`（Vector3）的原因。
     bool GetJointImpulse(uint32_t joint_id, float& out_linear_impulse, float& out_angular_impulse) const;
 
+    /// Unity 的 `Joint.enableCollision`：这个关节连起来的两个刚体**互不碰撞**。
+    ///
+    /// 默认值是 `false`（与 Unity 一致：布娃娃相邻两段不该互相弹开）。
+    ///
+    /// ⚠️ Jolt 的约束完全不参与接触生成，只能走 `GroupFilterTable`：两个 body 挂
+    /// 同一个 filter、同一个 group id、同一个 sub-group ⇒ 不碰撞（那条判定甚至
+    /// 不查表，见 `GroupFilterTable::CanCollide`）。没被任何关节连的 body 保持默认
+    /// `cInvalidGroup`，第一个分支就返回"碰"，行为完全不变。
+    ///
+    /// ⚠️ **已知限制**：一个 body 只能有一个 sub-group，所以 A—B—C 这样的链里
+    /// B 会拿最后一个关节的 sub-group，A—B 的过滤随之失效。做成 Unity 那种
+    /// island 级别要在关节增删时维护并查集 —— 不在这一片。关节被拆掉时
+    /// sub-group 一定还回池子，池满会 `LOG_WARNING` 并拒绝（不静默退化）。
+    bool SetJointEnableCollision(uint32_t joint_id, bool in_enable);
+    bool GetJointEnableCollision(uint32_t joint_id, bool& out_enable) const;
+
+    /// Unity 的 `Joint.currentForce`：约束这一帧施加的**力**（牛，世界空间）。
+    ///
+    /// `totalLambda` 是冲量（N·s），这里除以**物理步长**
+    /// `1 / m_Config.m_UpdateFrequency` —— 不是 `Tick(delta_time)` 的形参，引擎是
+    /// 固定步长，那个形参在 `Tick` 里压根没被用。
+    ///
+    /// ⚠️ 只给**线性**那一路。角的那一路（`currentTorque`）方向不可靠：
+    /// hinge / slider / swing-twist 的旋转 lambda 里 `Vector<2>` 那两个分量用的
+    /// 垂直基是 Jolt 内部临时算的，公开 API 拿不到（见 doc/JOINTS_SCRIPT_API.md
+    /// 第 10.2 节）。想要角的大小用 `GetJointImpulse` 的角冲量模长。
+    bool GetJointForce(uint32_t joint_id, Vector3& out_force) const;
+
     // --- configurable（Unity 的 ConfigurableJoint）---------------------------
 
     /// 单个轴的**运动模式**与限位。
@@ -812,4 +844,26 @@ protected:
 
     /// 关节 id -> 约束，越界 / 已拆除返回 nullptr。上面那一组运行时控制共用。
     JPH::Constraint* JointAt(uint32_t joint_id) const;
+
+#if !defined(__EMSCRIPTEN__) && !defined(ZENGINE_SHARED_NO_PHYSICS)
+    /// `enableCollision = false` 的关节：关节 id -> 租到的 sub-group id。
+    /// 表里没有这个关节 = 它没关碰撞（默认）。
+    std::unordered_map<uint32_t, uint32_t> m_JointSubGroups;
+
+    /// sub-group 池。Jolt 的 sub-group id 是 uint32，但我们只发一小池：池满要
+    /// **报出来**而不是"顺手不处理"（静默退化正是这个引擎避免的一类坑）。
+    static constexpr uint32_t kMaxJointSubGroups = 64;
+    std::vector<bool> m_SubGroupUsed;
+
+    /// 两个 body 都挂它时才轮到 sub-group 判定。`CollisionGroup` 只存**裸指针**，
+    /// Jolt 不持有 ⇒ 由 scene 拥有，生命周期必须长过所有 body。
+    JPH::Ref<JPH::GroupFilterTable> m_JointGroupFilter;
+
+    /// 给关节租一个 sub-group 并把两个 body 都挂上；`in_enable` 为 true 时还回
+    /// 池子并把 body 恢复成默认（若还有别的关节在管这个 body，就换成那个的）。
+    bool ApplyJointCollisionFilter(uint32_t joint_id, bool in_enable);
+    /// 重新挑一个 sub-group 贴到这个 body 身上（还有关节管它）或恢复默认。
+    void RefreshBodyCollisionGroup(uint32_t body_index);
+    void EnsureGroupFilter();
+#endif
 };

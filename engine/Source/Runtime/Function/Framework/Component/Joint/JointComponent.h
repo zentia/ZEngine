@@ -171,6 +171,9 @@ public:
     Vector3 m_TargetVelocity {Vector3::ZERO};
     Vector3 m_TargetAngularVelocity {Vector3::ZERO};
     Quaternion m_TargetRotation {Quaternion::IDENTITY};
+
+    /// Unity 的 `Joint.enableCollision`。默认 **false**（两个刚体互不碰撞）。
+    bool m_EnableCollision {false};
 };
 
 template<typename TransferFunction>
@@ -238,6 +241,7 @@ void JointComponentRes::Transfer(TransferFunction& transfer)
     transfer.Transfer(m_TargetPosition, "target_position");
     transfer.Transfer(m_TargetVelocity, "target_velocity");
     transfer.Transfer(m_TargetAngularVelocity, "target_angular_velocity");
+    transfer.Transfer(m_EnableCollision, "enable_collision");
     transfer.Transfer(m_TargetRotation, "target_rotation");
 }
 
@@ -324,6 +328,27 @@ public:
     ZFUNCTION()
     void SetAutoConfigureConnectedAnchor(bool auto_configure);
 
+    /// Unity 的 `Joint.enableCollision`（默认 **false**）：这个关节连起来的两个
+    /// 刚体**互不碰撞**。
+    ///
+    /// 默认值是 `false` 而不是"不管" —— 与 Unity 一致：布娃娃的相邻两段不该
+    /// 互相弹开。改它**不重建**关节（后端是事后改两个 body 的碰撞组）。
+    ///
+    /// ⚠️ 两条已知限制见 `PhysicsScene::SetJointEnableCollision`：sub-group 池
+    /// 满会 `LOG_WARNING` 并拒绝；A—B—C 这样的链里 B 只能持一个 sub-group。
+    ZFUNCTION()
+    bool GetEnableCollision() const { return m_JointRes.m_EnableCollision; }
+    ZFUNCTION()
+    void SetEnableCollision(bool enable);
+
+    /// Unity 的 `Joint.currentForce`：约束这一帧施加的力（牛，**世界空间**）。
+    ///
+    /// 只读 —— 它是求解结果，不是参数。角的那一路（`currentTorque`）不发布：
+    /// 方向在 hinge / slider / swing-twist 上不可靠（见 doc/JOINTS_SCRIPT_API.md
+    /// 第 10.2 节）；想要角的大小用 `GetJointImpulse` 的角冲量模长。
+    ZFUNCTION()
+    Vector3 GetCurrentForce() const;
+
     /// 拆掉现有关节并按当前参数重建。
     ///
     /// 连 `axis` 都要走这里：Jolt 的约束在建好之后**没有**"改轴"这条路（轴在
@@ -373,6 +398,8 @@ public:
     ZSCRIPTPROPERTY(Name="autoConfigureConnectedAnchor",
                     Getter="GetAutoConfigureConnectedAnchor",
                     Setter="SetAutoConfigureConnectedAnchor")
+    ZSCRIPTPROPERTY(Name="enableCollision", Getter="GetEnableCollision", Setter="SetEnableCollision")
+    ZSCRIPTPROPERTY(Name="currentForce", Getter="GetCurrentForce")
     ZSCRIPTPROPERTY(Name="breakForce", Getter="GetBreakForce", Setter="SetBreakForce")
     ZSCRIPTPROPERTY(Name="breakTorque", Getter="GetBreakTorque", Setter="SetBreakTorque")
     ZSCRIPTPROPERTY(Name="hasBroken", Getter="HasBroken")
@@ -389,6 +416,13 @@ protected:
     /// 不推的话"脚本在 Awake 里设了 limits"会丢：设的时候 body / 关节都还没
     /// 建，等建出来时 Jolt 那侧是默认区间。
     virtual void ApplyJointSettings() {}
+
+    /// 把 `enableCollision` 推到后端。
+    ///
+    /// ⚠️ 刻意**不放进** `ApplyJointSettings()`：那个是虚函数，四个子类都覆写了
+    /// 而且不回调基类，写在那儿会被子类的版本整个盖掉 —— 而"只有 HingeJoint
+    /// 才关碰撞"这种只在特定子类上生效的 bug 是最难查的一类。
+    void PushEnableCollision();
 
     /// 按当前组件字段填一份 `PhysicsJointDesc`。返回 false 表示信息不全
     ///（宿主没刚体、连接体没有 body 等）。

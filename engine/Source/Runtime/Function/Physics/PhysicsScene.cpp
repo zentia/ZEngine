@@ -35,6 +35,9 @@
 #include "Jolt/Physics/Constraints/SixDOFConstraint.h"
 #include "Jolt/Physics/Constraints/SliderConstraint.h"
 #include "Jolt/Physics/Constraints/SwingTwistConstraint.h"
+// `enableCollision` / `currentForce` 要拿约束两端的 body（`GetBody1/2` 与
+// `GetConstraintToBody*Matrix` 都在这一层）。别指望被上面那些头文件顺带引进来。
+#include "Jolt/Physics/Constraints/TwoBodyConstraint.h"
 #include "Runtime/Resource/ResType/Components/RigidBody.h"
 #include "core/base/Macro.h"
 
@@ -2088,6 +2091,14 @@ bool PhysicsScene::RemoveJoint(uint32_t joint_id)
         return false;
     }
 
+    // 拆关节要把 sub-group 还回池子，并把两个 body 恢复成默认（或换成还在管它们
+    // 的另一个关节的 sub-group）。少了这一步池子会漏光，而且 body 会一直
+    // "不跟别人碰" —— 一个在别处才看得出来的静默错误。
+    if (m_JointSubGroups.find(joint_id) != m_JointSubGroups.end())
+    {
+        ApplyJointCollisionFilter(joint_id, true);
+    }
+
     m_Physics.m_JoltPhysicsSystem->RemoveConstraint(jph_constraint);
     jph_constraint->Release();
     m_Joints[joint_id - 1] = nullptr;
@@ -2606,6 +2617,297 @@ bool PhysicsScene::GetJointImpulse(uint32_t joint_id, float& out_linear_impulse,
         default:
             return false;
     }
+}
+
+// -----------------------------------------------------------------------------
+// enableCollision / currentForce（Unity 的 Joint.enableCollision / currentForce）
+// -----------------------------------------------------------------------------
+
+namespace
+{
+    /// 所有"关了碰撞"的 body 共用一个 group id。
+    ///
+    /// Jolt 的判定里 group id 不同就直接返回"碰"，所以这个值只要**不等于**
+    /// `cInvalidGroup` 就行；没入组的 body 保持默认，第一个分支就放行。
+    constexpr JPH::CollisionGroup::GroupID kJointCollisionGroup = 1;
+
+    /// 约束矩阵某一列在**世界**空间的方向。Jolt 存的是 body 局部空间那一份
+    /// （`Mat44(Vec4(mLocalSpaceHingeAxis1, 0), ...)`），要乘 body 的旋转。
+    JPH::Vec3 WorldAxis(const JPH::Body& in_body, const JPH::Mat44& in_c_to_b, int in_column)
+    {
+        return JPH::Mat44::sRotation(in_body.GetRotation()).Multiply3x3(in_c_to_b.GetColumn3(in_column));
+    }
+
+    /// 约束作用在 body 上的那个锚点（世界空间）。与 `TwoBodyConstraint::Draw` 里
+    /// `GetCenterOfMassTransform() * GetConstraintToBody1Matrix()` 同一条路。
+    JPH::RVec3 WorldAnchor(const JPH::Body& in_body, const JPH::Mat44& in_c_to_b)
+    {
+        // `RMat44 * Mat44` 出来还是**矩阵**，取平移列才是那个点。
+        return (in_body.GetCenterOfMassTransform() * in_c_to_b).GetTranslation();
+    }
+}  // namespace
+
+bool PhysicsScene::SetJointEnableCollision(uint32_t joint_id, bool in_enable)
+{
+    JPH::Constraint* jph_constraint = JointAt(joint_id);
+    if (jph_constraint == nullptr)
+    {
+        return false;
+    }
+    // 只有两体约束有"两个 body"可关。
+    if (jph_constraint->GetType() != JPH::EConstraintType::TwoBodyConstraint)
+    {
+        return false;
+    }
+    return ApplyJointCollisionFilter(joint_id, in_enable);
+}
+
+bool PhysicsScene::GetJointEnableCollision(uint32_t joint_id, bool& out_enable) const
+{
+    const JPH::Constraint* jph_constraint = JointAt(joint_id);
+    if (jph_constraint == nullptr)
+    {
+        return false;
+    }
+    if (jph_constraint->GetType() != JPH::EConstraintType::TwoBodyConstraint)
+    {
+        return false;
+    }
+    // 表里没有 = 没关碰撞（默认）。
+    out_enable = (m_JointSubGroups.find(joint_id) == m_JointSubGroups.end());
+    return true;
+}
+
+void PhysicsScene::EnsureGroupFilter()
+{
+    if (m_JointGroupFilter == nullptr)
+    {
+        // `new` 出来的 RefTarget 引用计数是 0，交给 `JPH::Ref` 时会 AddRef。
+        m_JointGroupFilter = new JPH::GroupFilterTable(kMaxJointSubGroups);
+        m_SubGroupUsed.assign(kMaxJointSubGroups, false);
+    }
+}
+
+bool PhysicsScene::ApplyJointCollisionFilter(uint32_t joint_id, bool in_enable)
+{
+    JPH::Constraint* jph_constraint = m_Joints[joint_id - 1];
+    JPH::TwoBodyConstraint* two_body = static_cast<JPH::TwoBodyConstraint*>(jph_constraint);
+    const uint32_t body_a = two_body->GetBody1()->GetID().GetIndexAndSequenceNumber();
+    const uint32_t body_b = two_body->GetBody2()->GetID().GetIndexAndSequenceNumber();
+
+    JPH::BodyInterface& body_interface = m_Physics.m_JoltPhysicsSystem->GetBodyInterface();
+
+    if (in_enable)
+    {
+        const auto it = m_JointSubGroups.find(joint_id);
+        if (it == m_JointSubGroups.end())
+        {
+            return true;   // 本来就没关
+        }
+        m_SubGroupUsed[it->second] = false;
+        m_JointSubGroups.erase(it);
+        RefreshBodyCollisionGroup(body_a);
+        RefreshBodyCollisionGroup(body_b);
+        return true;
+    }
+
+    // 已经关着就别再租一个 —— 重复调用会把池子漏光。
+    if (m_JointSubGroups.find(joint_id) != m_JointSubGroups.end())
+    {
+        return true;
+    }
+
+    EnsureGroupFilter();
+    uint32_t slot = kMaxJointSubGroups;
+    for (uint32_t i = 0; i < kMaxJointSubGroups; ++i)
+    {
+        if (!m_SubGroupUsed[i])
+        {
+            slot = i;
+            break;
+        }
+    }
+    if (slot == kMaxJointSubGroups)
+    {
+        // ⚠️ 池满要**报出来**。静默退化成"不管"正是这个引擎避免的一类坑：脚本
+        // 以为关掉了，body 照样互相弹。
+        LOG_WARNING(ZPhysics,
+                    "SetJointEnableCollision: sub-group pool exhausted (%u joints) -- this pair keeps colliding",
+                    kMaxJointSubGroups);
+        return false;
+    }
+
+    m_SubGroupUsed[slot] = true;
+    m_JointSubGroups[joint_id] = slot;
+    const JPH::CollisionGroup group(m_JointGroupFilter.GetPtr(), kJointCollisionGroup, slot);
+    body_interface.SetCollisionGroup(JPH::BodyID(body_a), group);
+    body_interface.SetCollisionGroup(JPH::BodyID(body_b), group);
+    return true;
+}
+
+void PhysicsScene::RefreshBodyCollisionGroup(uint32_t body_index)
+{
+    // 还有别的关节在管这个 body 吗？有就换成那个的 sub-group（一个 body 只能有
+    // 一个 sub-group，所以后一个关节会顶掉前一个 —— 这是写进文档的已知限制）。
+    bool managed = false;
+    uint32_t sub_group = 0;
+    for (const auto& entry : m_JointSubGroups)
+    {
+        JPH::Constraint* jph_constraint = JointAt(entry.first);
+        if (jph_constraint == nullptr ||
+            jph_constraint->GetType() != JPH::EConstraintType::TwoBodyConstraint)
+        {
+            continue;
+        }
+        JPH::TwoBodyConstraint* two_body = static_cast<JPH::TwoBodyConstraint*>(jph_constraint);
+        if (two_body->GetBody1()->GetID().GetIndexAndSequenceNumber() == body_index ||
+            two_body->GetBody2()->GetID().GetIndexAndSequenceNumber() == body_index)
+        {
+            managed = true;
+            sub_group = entry.second;
+            break;
+        }
+    }
+
+    JPH::BodyInterface& body_interface = m_Physics.m_JoltPhysicsSystem->GetBodyInterface();
+    if (!managed)
+    {
+        // 恢复默认：`cInvalidGroup` 那条分支让这个 body 与所有东西正常碰撞。
+        body_interface.SetCollisionGroup(JPH::BodyID(body_index), JPH::CollisionGroup());
+        return;
+    }
+    body_interface.SetCollisionGroup(
+        JPH::BodyID(body_index),
+        JPH::CollisionGroup(m_JointGroupFilter.GetPtr(), kJointCollisionGroup, sub_group));
+}
+
+bool PhysicsScene::GetJointForce(uint32_t joint_id, Vector3& out_force) const
+{
+    const JPH::Constraint* jph_constraint = JointAt(joint_id);
+    if (jph_constraint == nullptr)
+    {
+        return false;
+    }
+
+    // ⚠️ 除的是**物理步长**，不是 `Tick(delta_time)` 的形参：引擎是固定步长，那个
+    // 形参在 `Tick` 里压根没被用。拿它去除会在变帧率下给出错的数，而它还停留在
+    // "看起来合理"的量级上。
+    const float step = 1.f / m_Config.m_UpdateFrequency;
+    if (!(step > 0.f))
+    {
+        return false;
+    }
+
+    JPH::Vec3 world_impulse = JPH::Vec3::sZero();
+
+    switch (jph_constraint->GetSubType())
+    {
+        // --- 线性 lambda 直接就是世界空间冲量 --------------------------------
+        // `PointConstraintPart` 的有效质量矩阵用世界空间的 mR1/mR2 与世界空间逆
+        // 惯量张量建的，lambda 以 `invM * lambda` 直接加到线速度上。
+        case JPH::EConstraintSubType::Fixed:
+            world_impulse =
+                static_cast<const JPH::FixedConstraint*>(jph_constraint)->GetTotalLambdaPosition();
+            break;
+        case JPH::EConstraintSubType::Point:
+            world_impulse =
+                static_cast<const JPH::PointConstraint*>(jph_constraint)->GetTotalLambdaPosition();
+            break;
+        case JPH::EConstraintSubType::Hinge:
+            world_impulse =
+                static_cast<const JPH::HingeConstraint*>(jph_constraint)->GetTotalLambdaPosition();
+            break;
+        case JPH::EConstraintSubType::SwingTwist:
+            world_impulse =
+                static_cast<const JPH::SwingTwistConstraint*>(jph_constraint)->GetTotalLambdaPosition();
+            break;
+
+        case JPH::EConstraintSubType::Slider:
+        {
+            // 三个分量各来自**不同的约束部件**，别顺手补 0：
+            //   Vector<2>  = 两条 normal 上的（约束矩阵 col1 / col2）
+            //   limits 标量 = 沿滑块轴（约束矩阵 col0）
+            const JPH::SliderConstraint* slider =
+                static_cast<const JPH::SliderConstraint*>(jph_constraint);
+            // `Vector<2>` 到 `Vec3` 没有隐式转换，也别去猜它的类型名 —— 用 auto
+            // 拿下标就行。
+            const auto lambda2 = slider->GetTotalLambdaPosition();
+            const JPH::Mat44 c_to_b1 = slider->GetConstraintToBody1Matrix();
+            world_impulse = WorldAxis(*slider->GetBody1(), c_to_b1, 1) * lambda2[0] +
+                            WorldAxis(*slider->GetBody1(), c_to_b1, 2) * lambda2[1] +
+                            WorldAxis(*slider->GetBody1(), c_to_b1, 0) *
+                                slider->GetTotalLambdaPositionLimits();
+            break;
+        }
+
+        case JPH::EConstraintSubType::Distance:
+        {
+            // 只有一个标量，方向是两点连线（自己取 —— 少这一步就是"大小对、方向
+            // 是猜的"）。
+            const JPH::DistanceConstraint* distance =
+                static_cast<const JPH::DistanceConstraint*>(jph_constraint);
+            const JPH::RVec3 anchor1 = WorldAnchor(*distance->GetBody1(),
+                                                   distance->GetConstraintToBody1Matrix());
+            const JPH::RVec3 anchor2 = WorldAnchor(*distance->GetBody2(),
+                                                   distance->GetConstraintToBody2Matrix());
+            const JPH::RVec3 delta = anchor2 - anchor1;
+            const JPH::Vec3 axis(static_cast<float>(delta.GetX()),
+                                 static_cast<float>(delta.GetY()),
+                                 static_cast<float>(delta.GetZ()));
+            if (axis.IsNearZero())
+            {
+                // 两点重合 ⇒ 方向未定义。给一个零向量比给一个随机方向好。
+                world_impulse = JPH::Vec3::sZero();
+            }
+            else
+            {
+                world_impulse = axis.Normalized() * distance->GetTotalLambdaPosition();
+            }
+            break;
+        }
+
+        case JPH::EConstraintSubType::SixDOF:
+        {
+            const JPH::SixDOFConstraint* six_dof =
+                static_cast<const JPH::SixDOFConstraint*>(jph_constraint);
+            world_impulse = six_dof->GetTotalLambdaPosition();
+            // ⚠️ `GetTotalLambdaPosition()` 是**二选一**：平移全约束时走
+            // `PointConstraintPart`（世界空间），否则走三个逐轴部件（**约束空间**）。
+            // 少判这一个分支，只有一两个轴被约束的关节会拿到一个转错了方向的力。
+            //
+            // `IsTranslationFullyConstrained()` 是 private，按它的定义还原：
+            //   (mFixedAxis & 0b111) == 0b111 && !mHasSpringLimits
+            // `IsFixedAxis(axis)` 就是 `(mFixedAxis & (1 << axis)) != 0`，三个平移
+            // 轴正好是 bit 0/1/2 ⇒ 三项与运算与 `& 0b111 == 0b111` 等价。
+            // `mHasSpringLimits` 是"任一平移轴的限位弹簧频率 > 0" —— 注意它读的是
+            // `mFrequency`，而它与 `mStiffness` 是同一个 union，所以我们写进去的
+            // stiffness 在那儿读出来是同一个数（Jolt 自己就是这么判的）。
+            const bool has_spring_limits =
+                six_dof->GetLimitsSpringSettings(JPH::SixDOFConstraintSettings::TranslationX).mFrequency >
+                    0.f ||
+                six_dof->GetLimitsSpringSettings(JPH::SixDOFConstraintSettings::TranslationY).mFrequency >
+                    0.f ||
+                six_dof->GetLimitsSpringSettings(JPH::SixDOFConstraintSettings::TranslationZ).mFrequency >
+                    0.f;
+            const bool fully_constrained =
+                six_dof->IsFixedAxis(JPH::SixDOFConstraintSettings::TranslationX) &&
+                six_dof->IsFixedAxis(JPH::SixDOFConstraintSettings::TranslationY) &&
+                six_dof->IsFixedAxis(JPH::SixDOFConstraintSettings::TranslationZ) && !has_spring_limits;
+            if (!fully_constrained)
+            {
+                const JPH::Quat c_to_b1 = six_dof->GetConstraintToBody1Matrix().GetQuaternion();
+                const JPH::Quat to_world = six_dof->GetBody1()->GetRotation() * c_to_b1;
+                world_impulse = to_world * world_impulse;
+            }
+            break;
+        }
+
+        default:
+            return false;
+    }
+
+    out_force = toVec3(world_impulse) / step;
+    return true;
 }
 
 // -----------------------------------------------------------------------------
