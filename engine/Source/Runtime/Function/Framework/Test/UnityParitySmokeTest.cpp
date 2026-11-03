@@ -4381,9 +4381,15 @@ namespace
         Check(scene->GetAngularVelocity(twist_b, locked_av) && std::fabs(locked_av.x) < 0.5f,
               "CJ17i", "and it really locks the twist: the body stops turning (a free cone spins up fast)");
         // ⚠️ 上面走的是 **setter**。`CreateJoint` 那条路上也有一个同样的守卫
-        // （`min <= 0 && max >= 0`），它得单独钉：改成 `<` / `>` 的话 desc 里的
-        // 0 .. 0 会被当成"没配"丢掉，Jolt 落到默认自由区间 ⇒ 建出来的关节
-        // "CharacterJoint 不许扭"变成"随便扭"。所以这里从 desc 建一个。
+        // （`min <= 0 && max >= 0`），它得单独钉：改成 `<` / `>` 的话 desc 里
+        // **贴着 0 的那一侧**会被当成"没配"丢掉，Jolt 落回 settings 的默认值 ⇒
+        // 建出来的关节区间和脚本写的不是一回事。
+        //
+        // ⚠️⚠️ 夹具**绝不能**用 `0 .. 0` 这一对。`SwingTwistConstraintSettings`
+        // 的 `mTwistMinAngle` / `mTwistMaxAngle` 默认就是 **0 / 0**（不是 ±π），
+        // 所以 `0 .. 0` 走"守卫放行"和"守卫拦下"两条路结果完全一样 —— 守卫整个
+        // 删掉也看不出来（CJM23 就是这么活了一整轮）。真正能区分两种守卫的是
+        // **只贴 0 一侧**的区间：`-0.4 .. 0` 与 `0 .. 0.4`。
         const uint32_t born_a = SpawnBox(*scene, Vector3(0.f, 90.f, 0.f), 0, false);
         const uint32_t born_b = SpawnBox(*scene, Vector3(0.f, 92.f, 0.f), 0, true);
         PhysicsJointDesc born_desc = twist_desc;
@@ -4391,14 +4397,63 @@ namespace
         born_desc.m_BodyB = born_b;
         born_desc.m_PivotA = Vector3(0.f, 90.f, 0.f);
         born_desc.m_PivotB = Vector3(0.f, 90.f, 0.f);
-        born_desc.m_TwistMinAngle = 0.f;
+        born_desc.m_TwistMinAngle = -0.4f;
         born_desc.m_TwistMaxAngle = 0.f;
         const uint32_t born_id = scene->CreateJoint(born_desc);
-        Check(born_id != s_InvalidJointId, "CJ17j", "a cone built from a desc whose twist range is 0..0 can be created");
-        StepScene(*scene, 8);
-        Vector3 born_av = Vector3::ZERO;
-        Check(scene->GetAngularVelocity(born_b, born_av) && std::fabs(born_av.x) < 0.5f,
-              "CJ17k", "and it is locked from birth: the body never spins up (a free twist range would)");
+        Check(born_id != s_InvalidJointId, "CJ17j",
+              "a cone built from a desc whose twist range touches zero on one side (-0.4 .. 0) can be created");
+        // 最直接的一刀：把区间读回来。守卫用 `<=` / `>=` 时是 -0.4 .. 0；写成
+        // `<` / `>` 就掉回 Jolt 默认的 0 .. 0。
+        float born_swing1 = 0.f;
+        float born_swing2 = 0.f;
+        float born_tmin = 0.f;
+        float born_tmax = 0.f;
+        Check(scene->GetJointSwingTwistLimits(born_id, born_swing1, born_swing2, born_tmin, born_tmax) &&
+                  std::fabs(born_tmin - (-0.4f)) < 0.001f && std::fabs(born_tmax) < 0.001f,
+              "CJ17k", "and the range really survives creation: reading it back gives -0.4 .. 0 (not the 0 .. 0 default)");
+        // 另一侧的 `0 .. 0.4`，顺手把行为也钉上：重力绕扭转轴（±X，符号不必猜）
+        // 拧，两条区间里**正好一条**放行、一条拦住。
+        const uint32_t born2_a = SpawnBox(*scene, Vector3(0.f, 100.f, 0.f), 0, false);
+        const uint32_t born2_b = SpawnBox(*scene, Vector3(0.f, 102.f, 0.f), 0, true);
+        PhysicsJointDesc born2_desc = twist_desc;
+        born2_desc.m_BodyA = born2_a;
+        born2_desc.m_BodyB = born2_b;
+        born2_desc.m_PivotA = Vector3(0.f, 100.f, 0.f);
+        born2_desc.m_PivotB = Vector3(0.f, 100.f, 0.f);
+        born2_desc.m_TwistMinAngle = 0.f;
+        born2_desc.m_TwistMaxAngle = 0.4f;
+        const uint32_t born2_id = scene->CreateJoint(born2_desc);
+        Check(born2_id != s_InvalidJointId, "CJ17m", "and the mirror range (0 .. 0.4) can be created too");
+        float born2_swing1 = 0.f;
+        float born2_swing2 = 0.f;
+        float born2_tmin = 0.f;
+        float born2_tmax = 0.f;
+        Check(scene->GetJointSwingTwistLimits(born2_id, born2_swing1, born2_swing2, born2_tmin, born2_tmax) &&
+                  std::fabs(born2_tmin) < 0.001f && std::fabs(born2_tmax - 0.4f) < 0.001f,
+              "CJ17n", "the mirror range survives creation as well (0 .. 0.4, not the 0 .. 0 default)");
+        // 逐步取 max：撞上限位之后角速度会被压回去，只看最后一步可能读到 0。
+        float spin_neg = 0.f;
+        float spin_pos = 0.f;
+        for (int spin_step = 0; spin_step < 12; ++spin_step)
+        {
+            StepScene(*scene, 1);
+            Vector3 av_neg = Vector3::ZERO;
+            Vector3 av_pos = Vector3::ZERO;
+            if (scene->GetAngularVelocity(born_b, av_neg))
+            {
+                spin_neg = std::max(spin_neg, std::fabs(av_neg.x));
+            }
+            if (scene->GetAngularVelocity(born2_b, av_pos))
+            {
+                spin_pos = std::max(spin_pos, std::fabs(av_pos.x));
+            }
+        }
+        Check(std::max(spin_neg, spin_pos) > 0.5f, "CJ17o",
+              "behaviourally: one of the two one-sided ranges lets the body turn (the desc's range is honoured)");
+        // 用**比值**而不是绝对值：被拦住那一侧每步仍会被重力推一下再被解掉，
+        // 残留多少不好猜；但"转起来"和"被顶住"差一个数量级，4 倍是稳的。
+        Check(std::min(spin_neg, spin_pos) * 4.f < std::max(spin_neg, spin_pos), "CJ17p",
+              "and the other one blocks it: one side turns at least 4x more than the other (not 'the whole range became free')");
 
         // =====================================================================
         // 3. 接线门（源码级）：证明脚本面真的被发布了、flush 真的被调了
@@ -4437,6 +4492,37 @@ namespace
                   CountOccurrences(prelude, "declare interface JointMotor {") >= 1 &&
                   CountOccurrences(prelude, "declare interface JointSpring {") >= 1,
               "JN96d", "and so are the three joint value types");
+
+        // =====================================================================
+        // 渲染器：ZCLASS 类"静默消失"这个坑
+        // =====================================================================
+        // ⚠️ ZCLASS 类若既无 ZFUNCTION 也无 ZSCRIPTPROPERTY，codegen 不发 ⇒
+        // **不进 d.ts**。MeshRenderer / SkinMeshRenderer 之前就是这么消失的：
+        // 引擎里有类、Inspector 能挂、C++ 能拿到，但脚本里连 `MeshRenderer`
+        // 这个名字都不存在，`GetComponent(MeshRenderer)` 无从谈起 —— 而构建
+        // 零警告、测试零失败。
+        Check(CountOccurrences(dts, "declare class MeshRenderer extends BaseRenderer") >= 1, "MR1",
+              "MeshRenderer reaches the d.ts (a ZCLASS with no ZFUNCTION is emitted as nothing at all)");
+        Check(CountOccurrences(dts, "declare class SkinMeshRenderer extends BaseRenderer") >= 1, "MR2",
+              "and so does SkinMeshRenderer (Unity spells it SkinnedMeshRenderer)");
+        // 光查 d.ts 不够：它是**生成物**。源头在头文件里，所以再查一遍源头 ——
+        // "把那个 ZFUNCTION 删掉"的改动在生成物上要等下一次 regen 才看得见。
+        const std::string mesh_renderer_h =
+            ReadFile("Source/Runtime/Function/Framework/Component/Mesh/MeshRenderer.h");
+        Check(!mesh_renderer_h.empty() && CountOccurrences(mesh_renderer_h, "ZFUNCTION()") >= 1 &&
+                  CountOccurrences(mesh_renderer_h, "bool HasMeshFilter() const;") >= 1,
+              "MR3", "MeshRenderer.h really carries a ZFUNCTION (without one the class is never emitted)");
+        const std::string skin_renderer_h =
+            ReadFile("Source/Runtime/Function/Framework/Component/Mesh/SkinMeshRenderer.h");
+        Check(!skin_renderer_h.empty() && CountOccurrences(skin_renderer_h, "ZFUNCTION()") >= 1 &&
+                  CountOccurrences(skin_renderer_h, "bool HasAnimator() const;") >= 1,
+              "MR4", "and so does SkinMeshRenderer.h");
+        // Unity 拼作 `SkinnedMeshRenderer`（两个 n），引擎里是 `SkinMeshRenderer`
+        // —— 所以还需要一条**类型别名**。别名是 prelude 里手写的，同样两头查。
+        Check(CountOccurrences(dts, "declare type SkinnedMeshRenderer = SkinMeshRenderer;") >= 1, "MR5",
+              "Unity's SkinnedMeshRenderer spelling reaches the d.ts as a type alias");
+        Check(CountOccurrences(prelude, "declare type SkinnedMeshRenderer = SkinMeshRenderer;") >= 1, "MR6",
+              "and the alias really is emitted from the prelude in ScriptBinding.cpp (the d.ts is a build artifact)");
 
         const std::string binding = ReadFile("Source/Runtime/Scripting/Binding/ScriptBinding.h");
         Check(!binding.empty(), "JN97", "ScriptBinding.h is readable");

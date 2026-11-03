@@ -42,6 +42,11 @@ GameObjectDesc SkinMeshRenderer::BuildGameObjectDesc(const Transform* transform_
     return BuildGameObjectDescFromParts(render_parts);
 }
 
+bool SkinMeshRenderer::HasAnimator() const
+{
+    return m_ParentObject != nullptr && m_ParentObject->tryGetComponentConst(AnimationComponent) != nullptr;
+}
+
 void SkinMeshRenderer::Tick(float delta_time)
 {
     if (m_ParentObject == nullptr)

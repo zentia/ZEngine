@@ -71,6 +71,46 @@ d.ts 里消失**，不是变成 `any`，所以 TS 侧毫无察觉 —— `Script
 | — | `HasRenderer()` | 诊断用，非 Unity 成员 |
 | — | `GetLocalBounds()` | 本 filter 贡献的盒 |
 
+### `MeshRenderer`
+
+Unity 的 `MeshRenderer` 几乎没有基类 `Renderer` 之外的独有成员，本引擎也一样 ——
+它继承 `BaseRenderer`，材质 / 包围盒 / 可见性那一套全在基类上（见
+`MATERIAL_LIGHT_SCRIPT_API.md`）。自己只发一条：
+
+| Unity | 本引擎 | 备注 |
+|---|---|---|
+| — | `HasMeshFilter()` | 与 `MeshFilter.HasRenderer()` 是同一件事的反向那一半 |
+
+⚠️ **它必须至少有一条 `ZFUNCTION` 才会存在。** `ZCLASS` 类若既无 `ZFUNCTION` 也无
+`ZSCRIPTPROPERTY`，codegen 不发 ⇒ **不进 d.ts**。两个渲染器之前就是这么"消失"的：
+引擎里有类、Inspector 能挂、C++ 拿得到，但脚本里连 `MeshRenderer` 这个名字都没有，
+`GetComponent(MeshRenderer)` 无从谈起 —— 而构建零警告、测试零失败。门禁 `MR1` /
+`MR3`。
+
+### `SkinMeshRenderer`
+
+Unity 拼写是 `SkinnedMeshRenderer`；本引擎类名少一个 `ed`。所以 prelude 里发了一条
+类型别名（`ScriptBinding.cpp`，与 `HingeJoint` / `Rigidbody` 等别名同一处）：
+
+```ts
+declare type SkinnedMeshRenderer = SkinMeshRenderer;
+```
+
+⚠️ 只是**类型**别名，不是新类：`GetComponent("SkinnedMeshRenderer")` 查不到 ——
+反射名仍然是 `SkinMeshRenderer`。门禁 `MR5` / `MR6`。
+
+| Unity | 本引擎 | 备注 |
+|---|---|---|
+| — | `HasAnimator()` | 同对象上有没有 `AnimationComponent` 在驱动蒙皮 |
+
+没有动画组件时蒙皮**退化成静态网格**（`Tick` 走 `BaseRenderer::Tick`），而这条路是
+静默的 —— 既不报错也不警告，症状只是"角色不动"。门禁 `MR2` / `MR4`。
+
+⚠️ 与 `MeshRenderer` 同一个坑：类里**必须至少有一条 `ZFUNCTION`** 才会进 d.ts。
+
+尚未对齐的 Unity 成员：`bones` / `rootBone` / `quality` / `updateWhenOffscreen` /
+`BakeMesh()`。引擎侧目前没有对应状态，不打算为了对齐而发明。
+
 ## 4. 三条"宁可窄而诚实"的规则
 
 1. **`GetUVs(1)` 返回空数组而不是 0 号那份。** 让"我要 uv2"悄悄拿到 uv，会让光照
