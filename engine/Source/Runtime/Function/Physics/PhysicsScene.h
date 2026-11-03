@@ -189,6 +189,21 @@ public:
                              int32_t unity_layer = 0);
     void RemoveRigidBody(uint32_t body_id);
 
+    /// 一个不动、不参与碰撞的刚体，用来当关节的"世界那一头"（Unity 里
+    /// `Joint.connectedBody == null` 的意思）。
+    ///
+    /// Jolt 没有"世界"这个约束端点：任何 `TwoBodyConstraint` 都要两个
+    /// `Body`。所以"拴在世界某个点上"必须真的造一个 body 出来。它用 Jolt 的
+    /// `EmptyShape` —— 没有体积、不与任何东西碰撞。换成任何有体积的形状，
+    /// 这个锚点就会去推它本该拴住的那个物体，关节看起来像"自己会抖"。
+    ///
+    /// ⚠️ 调用方**拥有**它：关节没了要 `RemoveRigidBody` 掉，否则关卡里会
+    /// 积攒一批看不见也撞不到的静态 body（不崩，但 `Physics` 的 body 计数
+    /// 一直涨，是最难发现的一类泄漏）。
+    ///
+    /// @return 新 body 的 id，失败时 `s_InvalidRigidbodyId`。
+    uint32_t CreateStaticAnchorBody(const Vector3& world_position);
+
     // --- layers -------------------------------------------------------------
     //
     // The Unity layer IS the Jolt object layer, so there is no side table to
@@ -430,6 +445,92 @@ public:
     /// Detach and destroy a joint. Returns false when the id is unknown.
     bool RemoveJoint(uint32_t joint_id);
 
+    // --- joint runtime control ---------------------------------------------
+    //
+    // `CreateJoint` / `RemoveJoint` were the whole API, which meant a script
+    // could make a joint but never touch it again: no way to read the hinge
+    // angle, no way to drive a motor, no way to re-tune a spring. These are
+    // the per-frame / per-event knobs Unity's joint classes expose.
+    //
+    // ⚠️ 类型**不做**记录，一律问 Jolt（`Constraint::GetSubType()`）。另存一份
+    // "这个 id 是什么类型" 的表就会在 `RemoveJoint` 留空洞（id 不复用）之后和
+    // 真实约束分叉 —— 而分叉的表现是"调用了一个 hinge 的方法，改的其实是个
+    // distance 约束"。Jolt 自己知道，就让它自己说。
+    //
+    // ⚠️ 每个方法都**按类型拒绝**：拿 hinge 的方法去动一个 distance 约束返回
+    // false 而不是"尽力而为"。静默干点别的是最难查的一类。
+
+    /// @return false when the id is unknown or the joint was already removed.
+    bool GetJointType(uint32_t joint_id, PhysicsJointType& out_type) const;
+
+    /// 关掉的约束完全不参与求解（Unity 没有这个开关，但"临时拆掉门闩"要它）。
+    bool SetJointEnabled(uint32_t joint_id, bool enabled);
+    bool IsJointEnabled(uint32_t joint_id, bool& out_enabled) const;
+
+    /// 铰链**当前**角度（弧度，带符号）。Unity 的 `HingeJoint.angle`。
+    /// 非铰链返回 false。
+    bool GetJointAngle(uint32_t joint_id, float& out_angle_radians) const;
+
+    /// 铰链**当前**角速度（弧度/秒）：两个刚体的相对角速度在铰链轴上的投影。
+    /// Unity 的 `HingeJoint.velocity`。非铰链返回 false。
+    ///
+    /// ⚠️ 从两个刚体现算而不是读约束：Jolt 的 `HingeConstraint` 没有
+    /// "当前角速度" 这个访问器，只有目标角速度（`mTargetAngularVelocity`，那是
+    /// **电机**的输入）。把目标当成当前值读回来，会让"门关上了吗"这种判断在
+    /// 电机开着时永远是"到了"。
+    bool GetJointVelocity(uint32_t joint_id, float& out_radians_per_second) const;
+
+    /// 铰链 / 滑轨的限制区间。单位随类型：**弧度**（铰链）/ **米**（滑轨）。
+    /// 传 min > max 表示"不要限制"（Jolt 的初值是 [-inf, inf] 那一族）。
+    bool SetJointLimits(uint32_t joint_id, float min_limit, float max_limit);
+    bool GetJointLimits(uint32_t joint_id, float& out_min_limit, float& out_max_limit) const;
+
+    /// 铰链 / 滑轨的电机。
+    ///
+    /// ⚠️ `target` 与 `max_force` 的**单位随类型**：
+    ///   * hinge  -- target 是角速度（弧度/秒），max_force 是最大力矩（牛·米）；
+    ///   * slider -- target 是位置（米），max_force 是最大推力（牛）。
+    /// 收成一个方法而不是 `SetHingeMotor` / `SetSliderMotor` 各一个，是因为
+    /// 脚本已经能从 `GetJointType` 知道自己手上是什么 —— 而两个名字只有一个
+    /// 参数表不同，是最容易传错的一种重载。
+    bool SetJointMotor(uint32_t joint_id, bool enabled, float target, float max_force);
+
+    /// **位置**电机（Unity 的 `HingeJoint.useSpring` + `spring.targetPosition`，
+    /// 以及滑轨上"走到某个位置"）。
+    ///
+    /// ⚠️ 与 `SetJointMotor` 是**两个不同的目标量**，不合成一个方法：`target`
+    /// 那里是"速度"（铰链 rad/s、滑轨 m/s 意义上的目标速度），这里是"位置"
+    ///（铰链 rad、滑轨 m）。合成一个就得再加一个"模式"参数，而"两个只有一个
+    /// 参数表不同的重载"是最容易传错的一种。
+    ///
+    /// `frequency_hz` 是驱动弹簧的**频率**（Hz，> 0）：Jolt 的位置电机按
+    /// `F = stiffness*(target - cur) - damping*cur_vel` 施力，刚度由频率推出。
+    /// 传 0 会让 `MotorSettings::IsValid()` 为假，而 `SetMotorState` 会断言 ——
+    /// 这里直接拒掉。
+    bool SetJointPositionMotor(uint32_t joint_id,
+                               bool enabled,
+                               float target,
+                               float max_force,
+                               float frequency_hz,
+                               float damping);
+
+    /// 弹簧关节（`PhysicsJointType::distance`）的距离区间。**米**。
+    bool SetJointDistance(uint32_t joint_id, float min_distance, float max_distance);
+    bool GetJointDistance(uint32_t joint_id, float& out_min_distance, float& out_max_distance) const;
+
+    /// 弹簧的软硬。`frequency_hz` 为 0 时 Jolt 走"硬限位"（多硬取决于时间步与
+    /// 求解步数），这正是 Unity 里 `spring = 0` 的意思 —— 但**不是**"没有弹簧"。
+    bool SetJointSpring(uint32_t joint_id, float frequency_hz, float damping);
+
+    /// 上一步这个约束实际施加的冲量**模长**（N·s / N·m·s），除以步长就是力与
+    /// 力矩。Unity 的 `Joint.breakForce` / `breakTorque` 判的就是它。
+    ///
+    /// ⚠️ 只给**模长**，不给矢量：每个约束的 lambda 活在自己的坐标系里（铰链那
+    /// 两个"旋转"分量是垂直于轴的那两维，滑轨那个"位置"分量同理），拼成一个
+    /// Vector3 会得到一个看着像世界矢量、其实不是的东西。而"断不断"只需要大小。
+    /// 这也是本引擎没有 Unity 的 `Joint.currentForce`（Vector3）的原因。
+    bool GetJointImpulse(uint32_t joint_id, float& out_linear_impulse, float& out_angular_impulse) const;
+
     /// cast a ray and find the hits
     /// @ray_origin: origin of ray
     /// @ray_direction: ray direction
@@ -549,4 +650,7 @@ protected:
     /// Constraints owned by this scene. Jolt's ConstraintManager does not take
     /// ownership, so entries are released by hand.
     std::vector<JPH::Constraint*> m_Joints;
+
+    /// 关节 id -> 约束，越界 / 已拆除返回 nullptr。上面那一组运行时控制共用。
+    JPH::Constraint* JointAt(uint32_t joint_id) const;
 };

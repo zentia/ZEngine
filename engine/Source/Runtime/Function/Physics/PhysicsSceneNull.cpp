@@ -68,6 +68,14 @@ uint32_t PhysicsScene::CreateRigidBody(const TransformTRS&, const RigidBodyCompo
 
 void PhysicsScene::RemoveRigidBody(uint32_t) {}
 
+uint32_t PhysicsScene::CreateStaticAnchorBody(const Vector3&)
+{
+    // 没有 Jolt 就没有 body，"拴在世界某个点上"这件事也就没有落点。返回
+    // 无效 id，让调用方走"关节建不出来"那条路（而不是返回一个假的 id，
+    // 之后每个关节方法都拿它去查、全部静默失败）。
+    return s_InvalidRigidbodyId;
+}
+
 bool PhysicsScene::GetBodyLayer(uint32_t, int32_t&) const
 {
     return false;
@@ -315,6 +323,83 @@ bool PhysicsScene::SetBodyMaxAngularVelocity(uint32_t, float)
 bool PhysicsScene::GetBodyPointVelocity(uint32_t, const Vector3&, Vector3& out_velocity) const
 {
     out_velocity = Vector3::ZERO;
+    return false;
+}
+
+// --- 关节运行时控制 --------------------------------------------------------
+
+bool PhysicsScene::GetJointType(uint32_t, PhysicsJointType& out_type) const
+{
+    out_type = PhysicsJointType::fixed;
+    return false;
+}
+
+bool PhysicsScene::SetJointEnabled(uint32_t, bool)
+{
+    return false;
+}
+
+bool PhysicsScene::IsJointEnabled(uint32_t, bool& out_enabled) const
+{
+    out_enabled = false;
+    return false;
+}
+
+bool PhysicsScene::GetJointAngle(uint32_t, float& out_angle_radians) const
+{
+    out_angle_radians = 0.f;
+    return false;
+}
+
+bool PhysicsScene::GetJointVelocity(uint32_t, float& out_radians_per_second) const
+{
+    out_radians_per_second = 0.f;
+    return false;
+}
+
+bool PhysicsScene::SetJointLimits(uint32_t, float, float)
+{
+    return false;
+}
+
+bool PhysicsScene::GetJointLimits(uint32_t, float& out_min_limit, float& out_max_limit) const
+{
+    out_min_limit = 0.f;
+    out_max_limit = 0.f;
+    return false;
+}
+
+bool PhysicsScene::SetJointMotor(uint32_t, bool, float, float)
+{
+    return false;
+}
+
+bool PhysicsScene::SetJointPositionMotor(uint32_t, bool, float, float, float, float)
+{
+    return false;
+}
+
+bool PhysicsScene::SetJointDistance(uint32_t, float, float)
+{
+    return false;
+}
+
+bool PhysicsScene::GetJointDistance(uint32_t, float& out_min_distance, float& out_max_distance) const
+{
+    out_min_distance = 0.f;
+    out_max_distance = 0.f;
+    return false;
+}
+
+bool PhysicsScene::SetJointSpring(uint32_t, float, float)
+{
+    return false;
+}
+
+bool PhysicsScene::GetJointImpulse(uint32_t, float& out_linear_impulse, float& out_angular_impulse) const
+{
+    out_linear_impulse = 0.f;
+    out_angular_impulse = 0.f;
     return false;
 }
 

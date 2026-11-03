@@ -17,6 +17,7 @@
 #include "Jolt/Physics/Collision/RayCast.h"
 #include "Jolt/Physics/Collision/Shape/BoxShape.h"
 #include "Jolt/Physics/Collision/Shape/CapsuleShape.h"
+#include "Jolt/Physics/Collision/Shape/EmptyShape.h"
 #include "Jolt/Physics/Collision/Shape/CompoundShapeVisitors.h"
 #include "Jolt/Physics/Collision/Shape/SphereShape.h"
 #include "Jolt/Physics/Collision/Shape/StaticCompoundShape.h"
@@ -53,6 +54,19 @@ namespace
     /// 最小质量（千克）。0 / 负质量会让倒数质量变成 inf，一步积分之后就是 NaN
     /// 位置，而一个 NaN 物体会把整个 broadphase 拖垮。
     constexpr float kMinMass = 0.0001f;
+
+    /// 退化限位（min == max，即"锁死"）时必须给的限位弹簧频率。
+    ///
+    /// Jolt 在 HingeConstraint / SliderConstraint 的构造函数里断言
+    /// `mLimitsMin != mLimitsMax || mLimitsSpringSettings.mFrequency > 0`
+    /// —— 意思是"两个限位重合了，那你干脆用 fixed 约束"。可 Unity 的语义
+    /// 不是这样：脚本写 `useLimits = true` 而还没挑区间时，min 和 max 都是 0，
+    /// 用户想要的正是"锁死在这个角度"，不是"没有限位"。
+    ///
+    /// 一个断言在 shipped build 里比一条稍微软一点的限位糟得多，所以这里给
+    /// 退化区间配一个真实的弹簧：频率不算高（不会抖），但足够硬。
+    constexpr float kDegenerateLimitFrequency = 2.0f;
+    constexpr float kDegenerateLimitDamping = 1.0f;
 
     /// MoveKinematic 用位移 / delta_time 反推速度，delta_time 为 0 会得到 inf。
     constexpr float kMinDeltaTime = 0.0001f;
@@ -609,6 +623,38 @@ uint32_t PhysicsScene::CreateRigidBody(const TransformTRS& global_transform,
 void PhysicsScene::RemoveRigidBody(uint32_t body_id)
 {
     m_PendingRemoveBodies.push_back(body_id);
+}
+
+uint32_t PhysicsScene::CreateStaticAnchorBody(const Vector3& world_position)
+{
+    JPH::BodyInterface& body_interface = m_Physics.m_JoltPhysicsSystem->GetBodyInterface();
+
+    // `EmptyShape` 是 Shape（不是 ShapeSettings），所以只能走 `SetShape()`
+    // 那条路。Body 的 `mShape` 是 `RefConst<Shape>`，赋值时会自己 AddRef ——
+    // 也就是说这里 `new` 出来的形状由 Body 接管，函数返回后不会悬空。
+    //
+    // ⚠️ 但 `BodyCreationSettings` 在 Body 造出来**之前**只存裸指针，所以
+    // 万一 CreateBody 失败要自己 delete。
+    JPH::EmptyShape* empty_shape = new JPH::EmptyShape;
+
+    JPH::BodyCreationSettings body_settings(empty_shape,
+                                           JPH::RVec3(toVec3(world_position)),
+                                           JPH::Quat::sIdentity(),
+                                           JPH::EMotionType::Static,
+                                           static_cast<JPH::ObjectLayer>(0));
+
+    JPH::Body* jph_body = body_interface.CreateBody(body_settings);
+    if (jph_body == nullptr)
+    {
+        delete empty_shape;
+        LOG_ERROR(ZPhysics, "CreateStaticAnchorBody: Jolt refused to create the anchor body");
+        return s_InvalidRigidbodyId;
+    }
+
+    // 锚点不参与碰撞，也就不需要被唤醒；DontActivate 省掉一次激活回调。
+    body_interface.AddBody(jph_body->GetID(), JPH::EActivation::DontActivate);
+
+    return jph_body->GetID().GetIndexAndSequenceNumber();
 }
 
 bool PhysicsScene::GetBodySurface(uint32_t body_id, float& out_friction, float& out_restitution) const
@@ -1730,10 +1776,17 @@ uint32_t PhysicsScene::CreateJoint(const PhysicsJointDesc& in_desc)
             // constraint frame.
             settings.mNormalAxis1 = MakePerpendicularAxis(settings.mHingeAxis1);
             settings.mNormalAxis2 = MakePerpendicularAxis(settings.mHingeAxis2);
+            // Jolt 断言限位区间跨 0，且两端不能相等（除非带弹簧，见
+            // `kDegenerateLimitFrequency` 的注释）。
             if (in_desc.m_MinLimit <= 0.f && in_desc.m_MaxLimit >= 0.f)
             {
                 settings.mLimitsMin = in_desc.m_MinLimit;
                 settings.mLimitsMax = in_desc.m_MaxLimit;
+                if (settings.mLimitsMin == settings.mLimitsMax)
+                {
+                    settings.mLimitsSpringSettings.mFrequency = kDegenerateLimitFrequency;
+                    settings.mLimitsSpringSettings.mDamping = kDegenerateLimitDamping;
+                }
             }
             jph_constraint = settings.Create(*jph_body_a, *jph_body_b);
             break;
@@ -1756,10 +1809,17 @@ uint32_t PhysicsScene::CreateJoint(const PhysicsJointDesc& in_desc)
             settings.mSliderAxis2 = toVec3(in_desc.m_AxisB.normalisedCopy());
             settings.mNormalAxis1 = MakePerpendicularAxis(settings.mSliderAxis1);
             settings.mNormalAxis2 = MakePerpendicularAxis(settings.mSliderAxis2);
-            if (in_desc.m_MinLimit < 0.f && in_desc.m_MaxLimit > 0.f)
+            // 与铰链同一套规则（`<` / `>` 改成 `<=` / `>=` 是刻意的：滑块的
+            // 0/0 同样是"锁死"，不该被静默丢弃成"没有限位"）。
+            if (in_desc.m_MinLimit <= 0.f && in_desc.m_MaxLimit >= 0.f)
             {
                 settings.mLimitsMin = in_desc.m_MinLimit;
                 settings.mLimitsMax = in_desc.m_MaxLimit;
+                if (settings.mLimitsMin == settings.mLimitsMax)
+                {
+                    settings.mLimitsSpringSettings.mFrequency = kDegenerateLimitFrequency;
+                    settings.mLimitsSpringSettings.mDamping = kDegenerateLimitDamping;
+                }
             }
             jph_constraint = settings.Create(*jph_body_a, *jph_body_b);
             break;
@@ -1814,6 +1874,390 @@ bool PhysicsScene::RemoveJoint(uint32_t joint_id)
     m_Joints[joint_id - 1] = nullptr;
 
     return true;
+}
+
+// 关节 id 是"1 基下标"，而 `RemoveJoint` 只把槽位置空、**不**收缩数组 ——
+// 所以 id 永不复用，一个被拆掉的 id 之后永远读不到（这正是想要的：脚本手里
+// 那个旧 id 不会忽然指向另一个关节）。
+//
+// ⚠️ 只认 `m_Joints` 这一份真值，不另存"id -> 类型"表：那份表会在 RemoveJoint
+// 之后和真实约束分叉。
+JPH::Constraint* PhysicsScene::JointAt(uint32_t joint_id) const
+{
+    if (joint_id == s_InvalidJointId || joint_id > m_Joints.size())
+    {
+        return nullptr;
+    }
+    return m_Joints[joint_id - 1];
+}
+
+bool PhysicsScene::GetJointType(uint32_t joint_id, PhysicsJointType& out_type) const
+{
+    const JPH::Constraint* jph_constraint = JointAt(joint_id);
+    if (jph_constraint == nullptr)
+    {
+        return false;
+    }
+
+    switch (jph_constraint->GetSubType())
+    {
+        case JPH::EConstraintSubType::Fixed:
+            out_type = PhysicsJointType::fixed;
+            return true;
+        case JPH::EConstraintSubType::Hinge:
+            out_type = PhysicsJointType::hinge;
+            return true;
+        case JPH::EConstraintSubType::Point:
+            out_type = PhysicsJointType::point;
+            return true;
+        case JPH::EConstraintSubType::Slider:
+            out_type = PhysicsJointType::slider;
+            return true;
+        case JPH::EConstraintSubType::Distance:
+            out_type = PhysicsJointType::distance;
+            return true;
+        default:
+            // 引擎目前只建这五种；剩下的（齿轮 / 路径 / 六自由度）今天没有
+            // 入口，报"查不到"而不是猜一个。
+            return false;
+    }
+}
+
+bool PhysicsScene::SetJointEnabled(uint32_t joint_id, bool enabled)
+{
+    JPH::Constraint* jph_constraint = JointAt(joint_id);
+    if (jph_constraint == nullptr)
+    {
+        return false;
+    }
+
+    jph_constraint->SetEnabled(enabled);
+    return true;
+}
+
+bool PhysicsScene::IsJointEnabled(uint32_t joint_id, bool& out_enabled) const
+{
+    const JPH::Constraint* jph_constraint = JointAt(joint_id);
+    if (jph_constraint == nullptr)
+    {
+        return false;
+    }
+
+    out_enabled = jph_constraint->GetEnabled();
+    return true;
+}
+
+bool PhysicsScene::GetJointAngle(uint32_t joint_id, float& out_angle_radians) const
+{
+    const JPH::Constraint* jph_constraint = JointAt(joint_id);
+    if (jph_constraint == nullptr || jph_constraint->GetSubType() != JPH::EConstraintSubType::Hinge)
+    {
+        return false;
+    }
+
+    out_angle_radians = static_cast<const JPH::HingeConstraint*>(jph_constraint)->GetCurrentAngle();
+    return true;
+}
+
+bool PhysicsScene::GetJointVelocity(uint32_t joint_id, float& out_radians_per_second) const
+{
+    const JPH::Constraint* jph_constraint = JointAt(joint_id);
+    if (jph_constraint == nullptr || jph_constraint->GetSubType() != JPH::EConstraintSubType::Hinge)
+    {
+        return false;
+    }
+
+    const JPH::HingeConstraint* hinge = static_cast<const JPH::HingeConstraint*>(jph_constraint);
+    const JPH::BodyID body_ids[2] = {hinge->GetBody1()->GetID(), hinge->GetBody2()->GetID()};
+
+    // 两个刚体要一起锁、且用多锁：Jolt 按线程记加锁顺序，两把同优先级的单体锁
+    // 会撞 "lock of same or higher priority" 断言（见 CreateJoint 里那段注释）。
+    //
+    // ⚠️ `BodyLockMultiBase` 没有 `Succeeded()`（只有 `BodyLockWrite`/`BodyLockRead`
+    // 才有）。失败与否看 `GetBody(i)` 是否为 nullptr —— 锁内部对无效 id 直接返空。
+    JPH::BodyLockMultiRead joint_lock(m_Physics.m_JoltPhysicsSystem->GetBodyLockInterface(), body_ids, 2);
+    const JPH::Body* body_1 = joint_lock.GetBody(0);
+    const JPH::Body* body_2 = joint_lock.GetBody(1);
+    if (body_1 == nullptr || body_2 == nullptr)
+    {
+        return false;
+    }
+
+    // 对象空间的铰链轴要过 `GetCenterOfMassTransform()`（质心变换）才到世界空间。
+    // 用 `GetRotation()` 会漏掉形状质心偏移那一半。
+    const JPH::Vec3 world_axis = body_1->GetCenterOfMassTransform().Multiply3x3(hinge->GetLocalSpaceHingeAxis1());
+    const JPH::Vec3 relative_angular = body_1->GetAngularVelocity() - body_2->GetAngularVelocity();
+
+    out_radians_per_second = relative_angular.Dot(world_axis);
+    return true;
+}
+
+bool PhysicsScene::SetJointLimits(uint32_t joint_id, float min_limit, float max_limit)
+{
+    JPH::Constraint* jph_constraint = JointAt(joint_id);
+    if (jph_constraint == nullptr)
+    {
+        return false;
+    }
+
+    // min > max 不是一个区间。Jolt 的 SetLimits 会断言，这里直接拒掉 —— 脚本里
+    // "把上下限写反了"是常见笔误，而拒掉比在求解器里断言崩掉好诊断。
+    if (min_limit > max_limit)
+    {
+        return false;
+    }
+
+    switch (jph_constraint->GetSubType())
+    {
+        case JPH::EConstraintSubType::Hinge:
+            static_cast<JPH::HingeConstraint*>(jph_constraint)->SetLimits(min_limit, max_limit);
+            return true;
+        case JPH::EConstraintSubType::Slider:
+            static_cast<JPH::SliderConstraint*>(jph_constraint)->SetLimits(min_limit, max_limit);
+            return true;
+        default:
+            return false;
+    }
+}
+
+bool PhysicsScene::GetJointLimits(uint32_t joint_id, float& out_min_limit, float& out_max_limit) const
+{
+    const JPH::Constraint* jph_constraint = JointAt(joint_id);
+    if (jph_constraint == nullptr)
+    {
+        return false;
+    }
+
+    switch (jph_constraint->GetSubType())
+    {
+        case JPH::EConstraintSubType::Hinge:
+        {
+            const JPH::HingeConstraint* hinge = static_cast<const JPH::HingeConstraint*>(jph_constraint);
+            out_min_limit = hinge->GetLimitsMin();
+            out_max_limit = hinge->GetLimitsMax();
+            return true;
+        }
+        case JPH::EConstraintSubType::Slider:
+        {
+            const JPH::SliderConstraint* slider = static_cast<const JPH::SliderConstraint*>(jph_constraint);
+            out_min_limit = slider->GetLimitsMin();
+            out_max_limit = slider->GetLimitsMax();
+            return true;
+        }
+        default:
+            return false;
+    }
+}
+
+bool PhysicsScene::SetJointMotor(uint32_t joint_id, bool enabled, float target, float max_force)
+{
+    JPH::Constraint* jph_constraint = JointAt(joint_id);
+    if (jph_constraint == nullptr)
+    {
+        return false;
+    }
+
+    // 力矩 / 力必须非负：`SetTorqueLimit` 给的是**对称**区间 [-m, +m]，传一个负
+    // 值会断言（min > max）。0 是合法的 —— 那就是"电机使不上劲"，而关掉电机是
+    // `enabled = false` 那件事，不该靠 0 表达。
+    if (max_force < 0.f)
+    {
+        return false;
+    }
+
+    switch (jph_constraint->GetSubType())
+    {
+        case JPH::EConstraintSubType::Hinge:
+        {
+            JPH::HingeConstraint* hinge = static_cast<JPH::HingeConstraint*>(jph_constraint);
+            hinge->GetMotorSettings().SetTorqueLimit(max_force);
+            hinge->SetTargetAngularVelocity(target);
+            // Velocity 而不是 Position：Unity 的 `HingeJoint.motor` 驱动的也是
+            // 目标角速度（要"转到某个角度"走限位 + 弹簧）。
+            hinge->SetMotorState(enabled ? JPH::EMotorState::Velocity : JPH::EMotorState::Off);
+            return true;
+        }
+        case JPH::EConstraintSubType::Slider:
+        {
+            JPH::SliderConstraint* slider = static_cast<JPH::SliderConstraint*>(jph_constraint);
+            slider->GetMotorSettings().SetForceLimit(max_force);
+            slider->SetTargetPosition(target);
+            slider->SetMotorState(enabled ? JPH::EMotorState::Position : JPH::EMotorState::Off);
+            return true;
+        }
+        default:
+            return false;
+    }
+}
+
+bool PhysicsScene::SetJointPositionMotor(uint32_t joint_id,
+                                        bool enabled,
+                                        float target,
+                                        float max_force,
+                                        float frequency_hz,
+                                        float damping)
+{
+    JPH::Constraint* jph_constraint = JointAt(joint_id);
+    if (jph_constraint == nullptr)
+    {
+        return false;
+    }
+
+    if (max_force < 0.f || frequency_hz <= 0.f || damping < 0.f)
+    {
+        return false;
+    }
+
+    const JPH::MotorSettings motor_settings(JPH::ESpringMode::FrequencyAndDamping, frequency_hz, damping);
+
+    switch (jph_constraint->GetSubType())
+    {
+        case JPH::EConstraintSubType::Hinge:
+        {
+            JPH::HingeConstraint* hinge = static_cast<JPH::HingeConstraint*>(jph_constraint);
+            JPH::MotorSettings settings = motor_settings;
+            settings.SetTorqueLimit(max_force);
+            hinge->GetMotorSettings() = settings;
+            hinge->SetTargetAngle(target);
+            hinge->SetMotorState(enabled ? JPH::EMotorState::Position : JPH::EMotorState::Off);
+            return true;
+        }
+        case JPH::EConstraintSubType::Slider:
+        {
+            JPH::SliderConstraint* slider = static_cast<JPH::SliderConstraint*>(jph_constraint);
+            JPH::MotorSettings settings = motor_settings;
+            settings.SetForceLimit(max_force);
+            slider->GetMotorSettings() = settings;
+            slider->SetTargetPosition(target);
+            slider->SetMotorState(enabled ? JPH::EMotorState::Position : JPH::EMotorState::Off);
+            return true;
+        }
+        default:
+            return false;
+    }
+}
+
+bool PhysicsScene::SetJointDistance(uint32_t joint_id, float min_distance, float max_distance)
+{
+    JPH::Constraint* jph_constraint = JointAt(joint_id);
+    if (jph_constraint == nullptr || jph_constraint->GetSubType() != JPH::EConstraintSubType::Distance)
+    {
+        return false;
+    }
+
+    if (min_distance > max_distance)
+    {
+        return false;
+    }
+
+    static_cast<JPH::DistanceConstraint*>(jph_constraint)->SetDistance(min_distance, max_distance);
+    return true;
+}
+
+bool PhysicsScene::GetJointDistance(uint32_t joint_id, float& out_min_distance, float& out_max_distance) const
+{
+    const JPH::Constraint* jph_constraint = JointAt(joint_id);
+    if (jph_constraint == nullptr || jph_constraint->GetSubType() != JPH::EConstraintSubType::Distance)
+    {
+        return false;
+    }
+
+    const JPH::DistanceConstraint* distance_constraint =
+        static_cast<const JPH::DistanceConstraint*>(jph_constraint);
+    out_min_distance = distance_constraint->GetMinDistance();
+    out_max_distance = distance_constraint->GetMaxDistance();
+    return true;
+}
+
+bool PhysicsScene::SetJointSpring(uint32_t joint_id, float frequency_hz, float damping)
+{
+    JPH::Constraint* jph_constraint = JointAt(joint_id);
+    if (jph_constraint == nullptr)
+    {
+        return false;
+    }
+
+    if (frequency_hz < 0.f || damping < 0.f)
+    {
+        return false;
+    }
+
+    // FrequencyAndDamping：Unity 的 `SoftJointLimitSpring.spring` / `.damper`
+    // 也是这一对。frequency 为 0 时 Jolt 退化成硬限位 —— 与 Unity 里
+    // `spring = 0` 的意思一致（不是"没有弹簧"）。
+    const JPH::SpringSettings spring_settings(JPH::ESpringMode::FrequencyAndDamping, frequency_hz, damping);
+
+    switch (jph_constraint->GetSubType())
+    {
+        case JPH::EConstraintSubType::Distance:
+            static_cast<JPH::DistanceConstraint*>(jph_constraint)->SetLimitsSpringSettings(spring_settings);
+            return true;
+        case JPH::EConstraintSubType::Hinge:
+            static_cast<JPH::HingeConstraint*>(jph_constraint)->SetLimitsSpringSettings(spring_settings);
+            return true;
+        case JPH::EConstraintSubType::Slider:
+            static_cast<JPH::SliderConstraint*>(jph_constraint)->SetLimitsSpringSettings(spring_settings);
+            return true;
+        default:
+            return false;
+    }
+}
+
+bool PhysicsScene::GetJointImpulse(uint32_t joint_id, float& out_linear_impulse, float& out_angular_impulse) const
+{
+    const JPH::Constraint* jph_constraint = JointAt(joint_id);
+    if (jph_constraint == nullptr)
+    {
+        return false;
+    }
+
+    out_linear_impulse = 0.f;
+    out_angular_impulse = 0.f;
+
+    switch (jph_constraint->GetSubType())
+    {
+        case JPH::EConstraintSubType::Fixed:
+        {
+            const JPH::FixedConstraint* fixed = static_cast<const JPH::FixedConstraint*>(jph_constraint);
+            out_linear_impulse = fixed->GetTotalLambdaPosition().Length();
+            out_angular_impulse = fixed->GetTotalLambdaRotation().Length();
+            return true;
+        }
+        case JPH::EConstraintSubType::Point:
+        {
+            // 点约束只焊位置，不传力矩 —— 这正是"球窝"和"焊死"的差别。
+            out_linear_impulse =
+                static_cast<const JPH::PointConstraint*>(jph_constraint)->GetTotalLambdaPosition().Length();
+            return true;
+        }
+        case JPH::EConstraintSubType::Hinge:
+        {
+            const JPH::HingeConstraint* hinge = static_cast<const JPH::HingeConstraint*>(jph_constraint);
+            out_linear_impulse = hinge->GetTotalLambdaPosition().Length();
+            // 两股力矩：保持轴对齐的那两维，加上撞限位时的那一股。取较大的那
+            // 一股而不是相加 —— 相加会把"轴对齐"和"撞限位"这两件同时发生的事
+            // 算成两倍，于是限位一碰就断。
+            const float axis_torque = hinge->GetTotalLambdaRotation().Length();
+            const float limit_torque = std::abs(hinge->GetTotalLambdaRotationLimits());
+            out_angular_impulse = std::max(axis_torque, limit_torque);
+            return true;
+        }
+        case JPH::EConstraintSubType::Slider:
+        {
+            const JPH::SliderConstraint* slider = static_cast<const JPH::SliderConstraint*>(jph_constraint);
+            out_linear_impulse = slider->GetTotalLambdaPosition().Length();
+            out_angular_impulse = slider->GetTotalLambdaRotation().Length();
+            return true;
+        }
+        case JPH::EConstraintSubType::Distance:
+        {
+            out_linear_impulse = std::abs(
+                static_cast<const JPH::DistanceConstraint*>(jph_constraint)->GetTotalLambdaPosition());
+            return true;
+        }
+        default:
+            return false;
+    }
 }
 
 void PhysicsScene::FilterHitsByLayer(std::vector<PhysicsHitInfo>& in_out_hits, uint32_t layer_mask)
