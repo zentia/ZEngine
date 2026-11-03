@@ -740,6 +740,7 @@ class Mover extends Behaviour {
     meshProbe: string = "";
     animatorProbe: string = "";
     rigidbodyProbe: string = "";
+    jointProbe: string = "";
 
     ProbePlatformFacades(): void {
         // ---- SystemInfo：headless 下必须是哨兵值 ----
@@ -955,6 +956,89 @@ class Mover extends Behaviour {
             String(rigidbodyHasRelativeForce),
             String(rigidbodyHasDensity),
             String(rigidbodyNoBodySafe)
+        ].join("|");
+
+        // ---- Unity 的 Joint 一族（slice 56）--------------------------------
+        //
+        // 分成**四层**查，每层抓的是不同一类漏发：
+        //   1. 四个子类是不是都进了绑定表（`typeof X === "function"`）。一个既
+        //      没有 ZFUNCTION 又没有 ZSCRIPTPROPERTY 的类会被 codegen 整个跳过
+        //      —— 编译得过、运行得了，只是脚本里根本不存在。
+        //   2. 基类 `Joint` 的门面（anchor / axis / connectedBody / breakForce）。
+        //   3. 三个**值类型**接口 `JointLimits` / `JointMotor` / `JointSpring`：
+        //      它们是手写的 `declare interface`，只在**编译期**存在。下面那三个
+        //      字面量赋值就是这一层的门禁 —— 少一个字段，tsc 直接报错。
+        //   4. TS 侧的类型别名（`HingeJoint`）：`let j: HingeJoint` 过不了编译的
+        //      话，Unity 工程贴过来的标注全都红，而 C++ 侧完全无感。
+        const jointClassesPublished: boolean =
+            (typeof HingeJointComponent === "function") &&
+            (typeof FixedJointComponent === "function") &&
+            (typeof SpringJointComponent === "function") &&
+            (typeof SliderJointComponent === "function") &&
+            (typeof JointComponent === "function");
+        const jointBaseFacade: boolean =
+            (typeof JointComponent.prototype.GetAnchor === "function") &&
+            (typeof JointComponent.prototype.SetAnchor === "function") &&
+            (typeof JointComponent.prototype.GetAxis === "function") &&
+            (typeof JointComponent.prototype.SetAxis === "function") &&
+            (typeof JointComponent.prototype.GetConnectedBody === "function") &&
+            (typeof JointComponent.prototype.SetConnectedBody === "function") &&
+            (typeof JointComponent.prototype.RebuildJoint === "function") &&
+            (typeof JointComponent.prototype.HasJoint === "function");
+        const jointBreak: boolean =
+            (typeof JointComponent.prototype.GetBreakForce === "function") &&
+            (typeof JointComponent.prototype.SetBreakForce === "function") &&
+            (typeof JointComponent.prototype.GetBreakTorque === "function") &&
+            (typeof JointComponent.prototype.HasBroken === "function") &&
+            (typeof JointComponent.prototype.RepairJoint === "function");
+        const hingeFacade: boolean =
+            (typeof HingeJointComponent.prototype.GetAngle === "function") &&
+            (typeof HingeJointComponent.prototype.GetVelocity === "function") &&
+            (typeof HingeJointComponent.prototype.GetLimits === "function") &&
+            (typeof HingeJointComponent.prototype.SetLimits === "function") &&
+            (typeof HingeJointComponent.prototype.GetMotor === "function") &&
+            (typeof HingeJointComponent.prototype.SetMotor === "function") &&
+            (typeof HingeJointComponent.prototype.GetSpring === "function") &&
+            (typeof HingeJointComponent.prototype.SetSpring === "function");
+        const springFacade: boolean =
+            (typeof SpringJointComponent.prototype.GetSpring === "function") &&
+            (typeof SpringJointComponent.prototype.SetSpring === "function") &&
+            (typeof SpringJointComponent.prototype.GetMinDistance === "function") &&
+            (typeof SpringJointComponent.prototype.SetMinDistance === "function") &&
+            (typeof SpringJointComponent.prototype.GetMaxDistance === "function") &&
+            (typeof SpringJointComponent.prototype.SetMaxDistance === "function");
+        const sliderFixedFacade: boolean =
+            (typeof SliderJointComponent.prototype.GetMotorTargetPosition === "function") &&
+            (typeof SliderJointComponent.prototype.SetMotorTargetPosition === "function") &&
+            (typeof SliderJointComponent.prototype.GetMotorForce === "function") &&
+            (typeof SliderJointComponent.prototype.SetMotorForce === "function") &&
+            (typeof FixedJointComponent.prototype.GetBreakForce === "function") &&
+            (typeof FixedJointComponent.prototype.SetBreakForce === "function");
+        // 编译期门禁：这三个字面量的**字段名**必须和 d.ts 里的 interface 一致，
+        // 否则 tsc 直接红（而运行时这边什么都查不出来 —— 值类型在 JS 里就是普通
+        // 对象，多一个少一个字段都不报错）。
+        const limits: JointLimits = { min: -1, max: 1 };
+        const motor: JointMotor = { targetVelocity: 2, force: 10 };
+        const spring: JointSpring = { spring: 2, damper: 0.5, targetPosition: 0.25 };
+        const jointValueTypes: boolean =
+            (limits.min === -1) && (motor.force === 10) && (spring.targetPosition === 0.25);
+        // Unity 的拼写是类型别名：这一行过不了编译，就是别名没写进 d.ts。
+        let typedHinge: HingeJoint = null as any;
+        let typedFixed: FixedJoint = null as any;
+        let typedSpring: SpringJoint = null as any;
+        let typedSlider: SliderJoint = null as any;
+        const jointAliases: boolean = (typedHinge === null) && (typedFixed === null) &&
+            (typedSpring === null) && (typedSlider === null);
+
+        this.jointProbe = [
+            String(jointClassesPublished),
+            String(jointBaseFacade),
+            String(jointBreak),
+            String(hingeFacade),
+            String(springFacade),
+            String(sliderFixedFacade),
+            String(jointValueTypes),
+            String(jointAliases)
         ].join("|");
 
         // ---- Unity 的 Input 那一层（slice 51）----

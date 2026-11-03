@@ -72,6 +72,9 @@
 // be marshallable here, and PhysicsScene.h would pull Jolt/Jolt.h into every
 // generated .gen.cpp (and into the Web build, which does not link Jolt).
 #include "Runtime/Function/Physics/PhysicsQuery.h"
+// 同是"Jolt-free 的那半物理"：`JointLimits` / `JointMotor` / `JointSpring`
+// 要 Converter，而 ScriptBinding.h 不能拖进 Jolt。
+#include "Runtime/Function/Physics/PhysicsJoint.h"
 // Touch.h 是纯值类型（只依赖 Vector2 与几个 ZENUM），不会把 InputSystem /
 // WindowSystem 拖进每个 .gen.cpp。
 #include "Runtime/Function/Input/Touch.h"
@@ -1340,6 +1343,73 @@ namespace ZScript
             out.bodyId = Converter<uint32_t>::FromJs(apis, env, apis->get_property(env, v, "bodyId"));
             out.layer = Converter<int32_t>::FromJs(apis, env, apis->get_property(env, v, "layer"));
             out.gameObject = Converter<GameObject*>::FromJs(apis, env, apis->get_property(env, v, "gameObject"));
+            return out;
+        }
+    };
+
+    // Unity 的关节值类型。三个都是**纯值**：脚本写
+    // `hinge.limits = {min: -1, max: 1}` 会先造一个 JS 对象、再由 FromJs 搬成
+    // C++ 结构，读回来则是一次快照（改那个对象不影响关节 —— 与
+    // `Converter<AnimationCurve>` 的 `keys` 同一条约定）。
+    //
+    // ⚠️ 三个都**不**继承 Object，也不是 ZCLASS：它们是 `struct`，靠下面这三个
+    // 手写 Converter 过界。做成 ZCLASS 的话每个都要一个 InstanceID，而脚本
+    // 每次读 `hinge.limits` 都会分配一个引擎对象。
+    template <>
+    struct Converter<JointLimits>
+    {
+        static pesapi_value ToJs(pesapi_ffi* apis, pesapi_env env, const JointLimits& v)
+        {
+            pesapi_value o = apis->create_object(env);
+            apis->set_property(env, o, "min", Converter<float>::ToJs(apis, env, v.min));
+            apis->set_property(env, o, "max", Converter<float>::ToJs(apis, env, v.max));
+            return o;
+        }
+        static JointLimits FromJs(pesapi_ffi* apis, pesapi_env env, pesapi_value v)
+        {
+            JointLimits out;
+            out.min = Converter<float>::FromJs(apis, env, apis->get_property(env, v, "min"));
+            out.max = Converter<float>::FromJs(apis, env, apis->get_property(env, v, "max"));
+            return out;
+        }
+    };
+
+    template <>
+    struct Converter<JointMotor>
+    {
+        static pesapi_value ToJs(pesapi_ffi* apis, pesapi_env env, const JointMotor& v)
+        {
+            pesapi_value o = apis->create_object(env);
+            apis->set_property(env, o, "targetVelocity", Converter<float>::ToJs(apis, env, v.targetVelocity));
+            apis->set_property(env, o, "force", Converter<float>::ToJs(apis, env, v.force));
+            return o;
+        }
+        static JointMotor FromJs(pesapi_ffi* apis, pesapi_env env, pesapi_value v)
+        {
+            JointMotor out;
+            out.targetVelocity = Converter<float>::FromJs(apis, env, apis->get_property(env, v, "targetVelocity"));
+            out.force = Converter<float>::FromJs(apis, env, apis->get_property(env, v, "force"));
+            return out;
+        }
+    };
+
+    template <>
+    struct Converter<JointSpring>
+    {
+        static pesapi_value ToJs(pesapi_ffi* apis, pesapi_env env, const JointSpring& v)
+        {
+            pesapi_value o = apis->create_object(env);
+            apis->set_property(env, o, "spring", Converter<float>::ToJs(apis, env, v.spring));
+            apis->set_property(env, o, "damper", Converter<float>::ToJs(apis, env, v.damper));
+            apis->set_property(env, o, "targetPosition", Converter<float>::ToJs(apis, env, v.targetPosition));
+            return o;
+        }
+        static JointSpring FromJs(pesapi_ffi* apis, pesapi_env env, pesapi_value v)
+        {
+            JointSpring out;
+            out.spring = Converter<float>::FromJs(apis, env, apis->get_property(env, v, "spring"));
+            out.damper = Converter<float>::FromJs(apis, env, apis->get_property(env, v, "damper"));
+            out.targetPosition = Converter<float>::FromJs(apis, env, apis->get_property(env, v, "targetPosition"));
             return out;
         }
     };

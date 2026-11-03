@@ -487,6 +487,51 @@ namespace
         // Unity 的 RaycastHit。`valid` 是 Unity 用 Physics.Raycast 的 bool
         // 返回值表达的那一位——TS 侧没有 out 参数，所以由记录自己携带。
         // 键名与 ZScript::Converter<RaycastHit> 一致。
+        // Unity 的关节值类型。键名与 ZScript::Converter<JointLimits> /
+        // <JointMotor> / <JointSpring> 一致。
+        //
+        // ⚠️ 字段比 Unity 少，这是**故意**的（见 PhysicsJoint.h）：Unity 的
+        // `JointLimits` 还有 bounciness / bounceMinVelocity / contactDistance，
+        // `JointMotor` 还有 freeSpin —— Jolt 那侧没有对应位置。少声明，脚本
+        // 用到这些字段时会**编译不过**，而编译不过优于"能跑、改了个没人读的
+        // 字段"。
+        "declare interface JointLimits {\n"
+        "    /** 最小角度（铰链，弧度）/ 最小位置（滑轨、弹簧，米）。 */\n"
+        "    min: number;\n"
+        "    /** 最大角度（铰链，弧度）/ 最大位置（滑轨、弹簧，米）。 */\n"
+        "    max: number;\n"
+        "}\n"
+        "\n"
+        "declare interface JointMotor {\n"
+        "    /** 目标角速度（铰链，弧度/秒）。 */\n"
+        "    targetVelocity: number;\n"
+        "    /** 电机最大力矩（铰链，牛·米）。 */\n"
+        "    force: number;\n"
+        "}\n"
+        "\n"
+        "declare interface JointSpring {\n"
+        "    /** 刚度。Jolt 里是驱动弹簧的频率（Hz）。 */\n"
+        "    spring: number;\n"
+        "    /** 阻尼。 */\n"
+        "    damper: number;\n"
+        "    /** 弹簧要拉到的角度（铰链，弧度）。 */\n"
+        "    targetPosition: number;\n"
+        "}\n"
+        "\n"
+        // 关节族：引擎里的类叫 `HingeJointComponent` 等（与 RigidBodyComponent
+        // / CameraComponent 一族对齐），Unity 叫 `HingeJoint` / `FixedJoint` /
+        // `SpringJoint`。与 `Rigidbody` 同一条例子的第二、三、四、五例。
+        //
+        // ⚠️ 只是类型别名：`AddComponent("HingeJoint")` 拿不到东西 —— 反射名
+        // 仍是 `HingeJointComponent`，AddComponent 收的是字符串、按反射名查。
+        "declare type HingeJoint = HingeJointComponent;\n"
+        "\n"
+        "declare type FixedJoint = FixedJointComponent;\n"
+        "\n"
+        "declare type SpringJoint = SpringJointComponent;\n"
+        "\n"
+        "declare type SliderJoint = SliderJointComponent;\n"
+        "\n"
         "declare interface RaycastHit {\n"
         "    valid: boolean;\n"
         "    point: Vector3;\n"

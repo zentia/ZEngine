@@ -91,6 +91,11 @@
 #include "Runtime/Function/Physics/Physics.h"
 #include "Runtime/Function/Physics/PhysicsManager.h"
 #include "Runtime/Function/Framework/Component/Rigidbody/RigidbodyComponent.h"
+#include "Runtime/Function/Framework/Component/Joint/JointComponent.h"
+#include "Runtime/Function/Framework/Component/Joint/HingeJointComponent.h"
+#include "Runtime/Function/Framework/Component/Joint/FixedJointComponent.h"
+#include "Runtime/Function/Framework/Component/Joint/SpringJointComponent.h"
+#include "Runtime/Function/Framework/Component/Joint/SliderJointComponent.h"
 #include "Runtime/Function/Framework/Component/Motor/MotorComponent.h"
 #include "Runtime/Function/Controller/CharacterController.h"
 #include "Runtime/Function/Physics/PhysicsScene.h"
@@ -155,6 +160,13 @@ template<> void RegisterKlass<Sphere>();
 template<> void RegisterKlass<Geometry>();
 template<> void RegisterKlass<RigidBodyShape>();
 template<> void RegisterKlass<RigidBodyComponent>();
+// 关节族：`Cast<JointComponent>` 与四个子类的 `Produce` 都要它们的
+// TypeContainer 已经填上（否则 TypeOf<T>() 解引用空类型）。
+template<> void RegisterKlass<JointComponent>();
+template<> void RegisterKlass<HingeJointComponent>();
+template<> void RegisterKlass<FixedJointComponent>();
+template<> void RegisterKlass<SpringJointComponent>();
+template<> void RegisterKlass<SliderJointComponent>();
 template<> void RegisterKlass<Collider>();
 template<> void RegisterKlass<PlayerPrefs>();
 
@@ -2220,6 +2232,11 @@ namespace
         RegisterKlass<Geometry>();
         RegisterKlass<RigidBodyShape>();
         RegisterKlass<RigidBodyComponent>();
+        RegisterKlass<JointComponent>();
+        RegisterKlass<HingeJointComponent>();
+        RegisterKlass<FixedJointComponent>();
+        RegisterKlass<SpringJointComponent>();
+        RegisterKlass<SliderJointComponent>();
         RegisterKlass<Collider>();
         RegisterKlass<PlayerPrefs>();
         type_manager.InitializeAllTypes();
@@ -3685,6 +3702,529 @@ namespace
         // 原点是 transform —— 写成质心会在复合碰撞体上整体偏一个 localCOM。
         Check(CountOccurrences(rb_source, "GetPosition() + GetRotation() * local_point") >= 1,
               "RB78", "GetRelativePointVelocity measures from the body origin, not the centre of mass");
+    }
+
+    /// 一个"能挂关节"的演员：GameObject + Transform + 带盒子形状的刚体。
+    ///
+    /// 不走 `AddComponentByTypeName` 是因为它**先** PostLoadResource **再**返回，
+    /// 而刚体的 res（形状 / 类型）必须在那一刻之前就填好 —— 否则第一次建体会
+    /// 因为没有形状而失败，且 `m_HasPendingBody` 已经是 false，再也补不回来。
+    struct JointActor
+    {
+        GameObject* object {nullptr};
+        Transform* transform {nullptr};
+        RigidBodyComponent* body {nullptr};
+    };
+
+    JointActor SpawnJointActor(ObjectManager& om, const Vector3& position)
+    {
+        JointActor actor;
+
+        actor.object = new GameObject();
+        om.AllocateAndAssignInstanceID(actor.object);
+
+        actor.transform = new Transform();
+        om.AllocateAndAssignInstanceID(actor.transform);
+        actor.object->addComponent(actor.transform);
+        actor.transform->PostLoadResource(actor.object);
+        actor.transform->SetPosition(position);
+
+        Box* box = new Box();
+        om.AllocateAndAssignInstanceID(box);
+        RigidBodyShape* shape = new RigidBodyShape();
+        om.AllocateAndAssignInstanceID(shape);
+        shape->m_Type = RigidBodyShapeType::box;
+        shape->m_Geometry = box;
+
+        actor.body = new RigidBodyComponent();
+        om.AllocateAndAssignInstanceID(actor.body);
+        actor.body->GetRigidbodyResMutable().m_Shapes.push_back(shape);
+        actor.body->GetRigidbodyResMutable().SetActorType(RigidBodyActorType::dynamic);
+        actor.object->addComponent(actor.body);
+        actor.body->PostLoadResource(actor.object);
+
+        return actor;
+    }
+
+    void TestJointComponents()
+    {
+        // 与 `TestPhysicsQueries` 那组同一个场景：组件层走 `Physics::CurrentScene()`
+        //（`PhysicsManager` 的第一张场景），所以这里也必须查同一个 —— 各用一张
+        // 场景的话，"组件报告建好了"和"后端真有一个约束"会落在两个世界里。
+        std::shared_ptr<PhysicsScene> scene = Physics::CurrentScene();
+        Check(scene != nullptr, "JN0", "the joint fixture starts from the live physics scene");
+        if (!scene)
+        {
+            return;
+        }
+        // 重力固定成 -Z：本组有"关节在扛着重力"的判断，而这张场景是前面某组
+        // 建的，重力未知。
+        scene->setGravity(Vector3(0.f, 0.f, -9.81f));
+
+        // =====================================================================
+        // 1. PhysicsScene 的关节运行时控制（真场景，直投 Jolt 的刚体）
+        // =====================================================================
+
+        const uint32_t hinge_a = SpawnBox(*scene, Vector3(0.f, 0.f, 0.f), 0, true);
+        const uint32_t hinge_b = SpawnBox(*scene, Vector3(0.f, 0.f, 2.f), 0, true);
+        Check(hinge_a != kInvalidPhysicsBodyId && hinge_b != kInvalidPhysicsBodyId,
+              "JN1", "two bodies for the hinge");
+
+        PhysicsJointDesc hinge_desc;
+        hinge_desc.m_Type = PhysicsJointType::hinge;
+        hinge_desc.m_BodyA = hinge_a;
+        hinge_desc.m_BodyB = hinge_b;
+        hinge_desc.m_PivotA = Vector3(0.f, 0.f, 1.f);
+        hinge_desc.m_PivotB = Vector3(0.f, 0.f, -1.f);
+        hinge_desc.m_AxisA = Vector3(0.f, 0.f, 1.f);
+        hinge_desc.m_AxisB = Vector3(0.f, 0.f, 1.f);
+        hinge_desc.m_AutoDetectPoint = false;
+        const uint32_t hinge_id = scene->CreateJoint(hinge_desc);
+        Check(hinge_id != s_InvalidJointId, "JN2", "a hinge joint can be created");
+
+        PhysicsJointType read_type = PhysicsJointType::fixed;
+        Check(scene->GetJointType(hinge_id, read_type) && read_type == PhysicsJointType::hinge, "JN3",
+              "and it reports itself as a hinge (asked of Jolt, not of a side table)");
+        Check(!scene->GetJointType(9999u, read_type), "JN4", "an unknown joint id reports no type");
+
+        bool enabled = false;
+        Check(scene->IsJointEnabled(hinge_id, enabled) && enabled, "JN5", "a new joint is enabled");
+        Check(scene->SetJointEnabled(hinge_id, false) && scene->IsJointEnabled(hinge_id, enabled) && !enabled,
+              "JN6", "SetJointEnabled(false) reads back as disabled");
+        Check(scene->SetJointEnabled(hinge_id, true) && scene->IsJointEnabled(hinge_id, enabled) && enabled,
+              "JN7", "and it can be switched back on");
+        Check(!scene->SetJointEnabled(9999u, true), "JN8", "enabling an unknown joint is refused");
+
+        float angle = 0.f;
+        float angular_velocity = 0.f;
+        Check(scene->GetJointAngle(hinge_id, angle), "JN9", "the hinge angle can be read");
+        Check(scene->GetJointVelocity(hinge_id, angular_velocity), "JN10", "and so can its angular velocity");
+
+        // 对照组：这两个方法在一个**不是**铰链的约束上必须失败。少了这一条，
+        // "读角度"实现成 `out = 0; return true;` 也是绿的。
+        PhysicsJointDesc fixed_desc = hinge_desc;
+        fixed_desc.m_Type = PhysicsJointType::fixed;
+        const uint32_t fixed_id = scene->CreateJoint(fixed_desc);
+        Check(fixed_id != s_InvalidJointId, "JN11", "a fixed joint can be created");
+        Check(!scene->GetJointAngle(fixed_id, angle), "JN12", "GetJointAngle refuses a joint that is not a hinge");
+        Check(!scene->GetJointVelocity(fixed_id, angular_velocity), "JN13", "and so does GetJointVelocity");
+
+        float min_limit = 0.f;
+        float max_limit = 0.f;
+        Check(scene->SetJointLimits(hinge_id, -1.f, 0.5f), "JN14", "hinge limits can be set");
+        Check(scene->GetJointLimits(hinge_id, min_limit, max_limit) && Near(min_limit, -1.f) &&
+                  Near(max_limit, 0.5f),
+              "JN15", "and they read back unchanged");
+        Check(!scene->SetJointLimits(hinge_id, 1.f, -1.f), "JN16", "min > max is refused, not silently swapped");
+        Check(!scene->GetJointLimits(fixed_id, min_limit, max_limit), "JN17", "a fixed joint has no limits to read");
+
+        // 速度电机与位置电机是**两个不同的目标量**：一个是角速度、一个是角度。
+        Check(scene->SetJointMotor(hinge_id, true, 2.f, 10.f), "JN18", "the velocity motor can be driven");
+        // 光读到 `true` 不算数：`out = 0; return true;` 也是绿的。判"读到的是真的
+        // 相对角速度"最稳的办法是直接给 B 一个已知的绕轴角速度 —— 至于电机能不能
+        // 推得动，那是另一回事，下面单独判。
+        Check(scene->SetAngularVelocity(hinge_b, Vector3(0.f, 0.f, 3.f)), "JN18a",
+              "the backend can set an angular velocity (the hinge axis is +Z here)");
+        Check(scene->GetJointVelocity(hinge_id, angular_velocity) &&
+                  std::fabs(std::fabs(angular_velocity) - 3.f) < 0.5f,
+              "JN18b", "and the joint reports that REAL relative spin (JN10 alone would pass with 0)");
+        scene->SetAngularVelocity(hinge_b, Vector3::ZERO);
+
+        // 电机本身：A 静态、B 动态挂在铰链上，给一个够大的力矩上限（默认密度
+        // 1000kg/m³ ⇒ 这个 1m 的箱子 1000kg、绕轴惯量约 167kg·m²，10N·m 推 5 步
+        // 只攒得出 ~0.005rad/s —— 那种失败是"数太小"，不是"没转"，诊断会带偏）。
+        const uint32_t motor_a = SpawnBox(*scene, Vector3(0.f, 0.f, 10.f), 0, false);
+        const uint32_t motor_b = SpawnBox(*scene, Vector3(0.f, 0.f, 12.f), 0, true);
+        PhysicsJointDesc motor_desc = hinge_desc;
+        motor_desc.m_BodyA = motor_a;
+        motor_desc.m_BodyB = motor_b;
+        motor_desc.m_PivotA = Vector3(0.f, 0.f, 1.f);
+        motor_desc.m_PivotB = Vector3(0.f, 0.f, -1.f);
+        const uint32_t motor_hinge = scene->CreateJoint(motor_desc);
+        Check(motor_hinge != s_InvalidJointId && scene->SetJointMotor(motor_hinge, true, 2.f, 1.0e5f),
+              "JN18c", "a hinge motor against a STATIC body can be set up");
+        StepScene(*scene, 10);
+        float motor_spin = 0.f;
+        Check(scene->GetJointVelocity(motor_hinge, motor_spin) && std::fabs(motor_spin) > 0.1f, "JN18d",
+              "and it really spins the dynamic body up (the motor is not decorative)");
+        scene->SetJointMotor(hinge_id, false, 0.f, 0.f);
+        Check(scene->SetJointPositionMotor(hinge_id, true, 0.25f, 10.f, 2.f, 0.5f), "JN19",
+              "and so can the position motor");
+        Check(!scene->SetJointPositionMotor(hinge_id, true, 0.f, 10.f, 0.f, 0.f), "JN20",
+              "a position motor with zero frequency is refused (MotorSettings would be invalid)");
+        Check(!scene->SetJointMotor(hinge_id, true, 0.f, -1.f), "JN21", "a negative max force is refused");
+        Check(!scene->SetJointMotor(fixed_id, true, 0.f, 1.f), "JN22", "a fixed joint has no motor");
+        Check(scene->SetJointSpring(hinge_id, 2.f, 0.5f), "JN23", "the hinge spring can be retuned");
+
+        // 冲量的对照组：**静态** + **动态**焊在一起，重力一直拉，所以约束每步
+        // 都要使力。两个都自由落体的话冲量恒为 0，那条断言在"永远返回 0"的实现
+        // 上也是绿的。
+        const uint32_t held_static = SpawnBox(*scene, Vector3(10.f, 0.f, 0.f), 0, false);
+        const uint32_t held_dynamic = SpawnBox(*scene, Vector3(10.f, 0.f, 2.f), 0, true);
+        PhysicsJointDesc held_desc;
+        held_desc.m_Type = PhysicsJointType::fixed;
+        held_desc.m_BodyA = held_static;
+        held_desc.m_BodyB = held_dynamic;
+        const uint32_t held_id = scene->CreateJoint(held_desc);
+        Check(held_id != s_InvalidJointId, "JN24", "a fixed joint between a static and a dynamic body");
+        StepScene(*scene, 10);
+        float linear_impulse = 0.f;
+        float angular_impulse = 0.f;
+        Check(scene->GetJointImpulse(held_id, linear_impulse, angular_impulse) && linear_impulse > 0.f, "JN25",
+              "a joint holding a body against gravity reports a NON-ZERO impulse");
+        Check(!scene->GetJointImpulse(9999u, linear_impulse, angular_impulse), "JN26",
+              "an unknown joint has no impulse");
+
+        // 拆掉之后这个 id 必须死透。
+        Check(scene->RemoveJoint(hinge_id), "JN27", "a joint can be removed");
+        Check(!scene->RemoveJoint(hinge_id), "JN28", "removing it twice is refused (the slot was cleared)");
+        Check(!scene->GetJointType(hinge_id, read_type), "JN29", "a removed joint reports no type");
+        Check(!scene->SetJointEnabled(hinge_id, true), "JN30", "and cannot be switched back on");
+
+        PhysicsJointDesc slider_desc = hinge_desc;
+        slider_desc.m_Type = PhysicsJointType::slider;
+        const uint32_t slider_id = scene->CreateJoint(slider_desc);
+        Check(slider_id != s_InvalidJointId, "JN31", "a slider joint can be created");
+        Check(scene->SetJointLimits(slider_id, -0.5f, 0.5f) &&
+                  scene->GetJointLimits(slider_id, min_limit, max_limit) && Near(min_limit, -0.5f) &&
+                  Near(max_limit, 0.5f),
+              "JN32", "slider limits round-trip through the same unit-less API as the hinge's");
+        Check(scene->SetJointMotor(slider_id, true, 0.5f, 20.f), "JN33", "the slider motor drives to a position");
+
+        PhysicsJointDesc distance_desc = hinge_desc;
+        distance_desc.m_Type = PhysicsJointType::distance;
+        const uint32_t distance_id = scene->CreateJoint(distance_desc);
+        Check(distance_id != s_InvalidJointId, "JN34", "a distance (spring) joint can be created");
+        Check(scene->SetJointDistance(distance_id, 1.f, 3.f) &&
+                  scene->GetJointDistance(distance_id, min_limit, max_limit) && Near(min_limit, 1.f) &&
+                  Near(max_limit, 3.f),
+              "JN35", "the distance range round-trips");
+        Check(!scene->SetJointDistance(distance_id, 3.f, 1.f), "JN36", "and min > max is refused");
+        Check(!scene->SetJointDistance(slider_id, 0.f, 1.f), "JN37",
+              "the distance setters refuse a joint that is not a distance constraint");
+
+        // "拴在世界"：Jolt 没有世界这个端点，得造一个锚点 body。
+        const uint32_t anchor = scene->CreateStaticAnchorBody(Vector3(0.f, 0.f, 20.f));
+        Check(anchor != s_InvalidRigidbodyId, "JN38", "a world anchor body can be created");
+        Vector3 anchor_position = Vector3::ZERO;
+        Check(scene->GetRigidBodyPosition(anchor, anchor_position) && Near(anchor_position.z, 20.f), "JN39",
+              "and it sits exactly where it was asked to");
+        PhysicsJointDesc anchored_desc = hinge_desc;
+        anchored_desc.m_Type = PhysicsJointType::distance;
+        anchored_desc.m_BodyA = hinge_b;
+        anchored_desc.m_BodyB = anchor;
+        Check(scene->CreateJoint(anchored_desc) != s_InvalidJointId, "JN40",
+              "a joint can be made against a world anchor (Unity's connectedBody === null)");
+
+        // 退化限位：`useLimits = true` 而区间还是 0/0。Unity 的意思是"锁死在这个
+        // 角度"，Jolt 却断言 `min != max || frequency > 0`（"你干脆用 fixed"）。
+        // 后端必须自己补一条弹簧把它建出来 —— 静默丢掉限位 和 断言崩在用户机器
+        // 上，都是不能接受的。
+        PhysicsJointDesc locked_hinge_desc = hinge_desc;
+        locked_hinge_desc.m_MinLimit = 0.f;
+        locked_hinge_desc.m_MaxLimit = 0.f;
+        const uint32_t locked_hinge_id = scene->CreateJoint(locked_hinge_desc);
+        Check(locked_hinge_id != s_InvalidJointId, "JN41",
+              "a hinge whose two limits coincide still builds (Jolt would say 'use a fixed constraint')");
+        Check(scene->GetJointLimits(locked_hinge_id, min_limit, max_limit) && Near(min_limit, 0.f) &&
+                  Near(max_limit, 0.f),
+              "JN42", "and it keeps the degenerate range instead of silently dropping it");
+        PhysicsJointDesc locked_slider_desc = slider_desc;
+        locked_slider_desc.m_MinLimit = 0.f;
+        locked_slider_desc.m_MaxLimit = 0.f;
+        const uint32_t locked_slider_id = scene->CreateJoint(locked_slider_desc);
+        Check(locked_slider_id != s_InvalidJointId &&
+                  scene->GetJointLimits(locked_slider_id, min_limit, max_limit) && Near(min_limit, 0.f) &&
+                  Near(max_limit, 0.f),
+              "JN43", "the slider follows the same rule (0/0 locks it, it is not 'no limits')");
+
+        // =====================================================================
+        // 2. JointComponent 一族（真 GameObject + RigidBodyComponent）
+        // =====================================================================
+
+        ObjectManager* om = GET_SYSTEM(ObjectManager);
+        Check(om != nullptr, "JN50", "ObjectManager is reachable");
+        if (om == nullptr)
+        {
+            return;
+        }
+
+        const JointActor actor_a = SpawnJointActor(*om, Vector3(0.f, 0.f, 30.f));
+        const JointActor actor_b = SpawnJointActor(*om, Vector3(0.f, 0.f, 32.f));
+        Check(actor_a.body != nullptr && actor_a.body->HasBody(), "JN51", "the first actor has a live body");
+        Check(actor_b.body != nullptr && actor_b.body->HasBody(), "JN52", "and so does the second");
+        if (actor_a.body == nullptr || actor_b.body == nullptr)
+        {
+            return;
+        }
+
+        HingeJointComponent* hinge_joint = new HingeJointComponent();
+        om->AllocateAndAssignInstanceID(hinge_joint);
+        actor_a.object->addComponent(hinge_joint);
+        hinge_joint->PostLoadResource(actor_a.object);
+
+        // 没设连接体 ⇒ 挂在世界锚点上，关节**照样**建得出来。
+        Check(hinge_joint->HasJoint(), "JN53", "a joint with no connected body hangs off a world anchor");
+        Check(hinge_joint->GetConnectedBody() == nullptr, "JN54", "connectedBody is null when world-anchored");
+
+        hinge_joint->SetConnectedBody(actor_b.body);
+        Check(hinge_joint->GetConnectedBody() == actor_b.body, "JN55", "connectedBody round-trips");
+        Check(hinge_joint->HasJoint(), "JN56", "and the joint was rebuilt against the new body");
+        const uint32_t component_joint_id = hinge_joint->GetJointId();
+        Check(component_joint_id != kInvalidJointId, "JN57", "the component exposes its joint id");
+        Check(scene->GetJointType(component_joint_id, read_type) && read_type == PhysicsJointType::hinge, "JN58",
+              "and the backend really built a hinge for a HingeJointComponent");
+
+        // --- 限位：烘在约束里，所以要重建 ----------------------------------
+        Check(!hinge_joint->GetUseLimits(), "JN59", "useLimits defaults to off");
+        // 只开开关、还没挑区间：min == max == 0。这是 Jolt 断言的那一种输入，
+        // 也是脚本最容易写出来的那一种（先 `useLimits = true` 再配 `limits`）。
+        hinge_joint->SetUseLimits(true);
+        Check(hinge_joint->HasJoint() &&
+                  scene->GetJointLimits(hinge_joint->GetJointId(), min_limit, max_limit) &&
+                  Near(min_limit, 0.f) && Near(max_limit, 0.f),
+              "JN59b", "useLimits = true on its own locks the hinge -- it must not blow up");
+        JointLimits limits;
+        limits.min = -1.f;
+        limits.max = 0.25f;
+        hinge_joint->SetUseLimits(true);
+        hinge_joint->SetLimits(limits);
+        Check(hinge_joint->GetUseLimits(), "JN60", "useLimits reads back");
+        Check(Near(hinge_joint->GetLimits().min, -1.f) && Near(hinge_joint->GetLimits().max, 0.25f), "JN61",
+              "and so do the limits");
+        const uint32_t limited_id = hinge_joint->GetJointId();
+        Check(limited_id != component_joint_id, "JN62", "turning limits on REBUILT the joint (they are baked in)");
+        Check(scene->GetJointLimits(limited_id, min_limit, max_limit) && Near(min_limit, -1.f) &&
+                  Near(max_limit, 0.25f),
+              "JN63", "and the backend really got them");
+        // Jolt 断言限位区间跨 0，所以一个正数的 min 要被夹住，不是原样存下。
+        JointLimits one_sided;
+        one_sided.min = 0.75f;
+        one_sided.max = 0.9f;
+        hinge_joint->SetLimits(one_sided);
+        Check(Near(hinge_joint->GetLimits().min, 0.f) && Near(hinge_joint->GetLimits().max, 0.9f), "JN64",
+              "a positive min is clamped to 0 (Jolt asserts the range straddles zero)");
+        // 限位还开着 ⇒ 这一次也重建。电机/弹簧的判据必须拿**重建之后**的 id，
+        // 否则 `limited_id` 已经是死槽了，比对必定不等、断言也就恒假了。
+        const uint32_t motor_id = hinge_joint->GetJointId();
+        Check(motor_id != limited_id, "JN64b", "re-clamping the limits rebuilt the joint again");
+
+        // --- 电机 / 弹簧：运行时可改，不重建 --------------------------------
+        JointMotor motor;
+        motor.targetVelocity = 3.f;
+        motor.force = 12.f;
+        hinge_joint->SetUseMotor(true);
+        hinge_joint->SetMotor(motor);
+        Check(hinge_joint->GetUseMotor() && Near(hinge_joint->GetMotor().targetVelocity, 3.f) &&
+                  Near(hinge_joint->GetMotor().force, 12.f),
+              "JN65", "the motor round-trips");
+        Check(hinge_joint->GetJointId() == motor_id, "JN66", "and driving the motor did NOT rebuild the joint");
+
+        JointSpring spring_settings;
+        spring_settings.spring = 2.f;
+        spring_settings.damper = 0.4f;
+        spring_settings.targetPosition = 0.5f;
+        hinge_joint->SetUseSpring(true);
+        hinge_joint->SetSpring(spring_settings);
+        Check(hinge_joint->GetUseSpring() && Near(hinge_joint->GetSpring().spring, 2.f) &&
+                  Near(hinge_joint->GetSpring().targetPosition, 0.5f),
+              "JN67", "the spring round-trips");
+        Check(hinge_joint->GetJointId() == motor_id, "JN68", "and neither did the spring");
+
+        StepScene(*scene, 3);
+        float backend_angle = -999.f;
+        Check(scene->GetJointAngle(hinge_joint->GetJointId(), backend_angle) &&
+                  Near(hinge_joint->GetAngle(), backend_angle),
+              "JN69", "HingeJoint.angle is the backend's angle, not a component-side copy");
+
+        hinge_joint->SetEnabled(false);
+        Check(scene->IsJointEnabled(hinge_joint->GetJointId(), enabled) && !enabled, "JN70",
+              "disabling the component disables the Jolt constraint");
+        hinge_joint->SetEnabled(true);
+        Check(scene->IsJointEnabled(hinge_joint->GetJointId(), enabled) && enabled, "JN71",
+              "and re-enabling switches it back on");
+
+        // --- 断裂 ------------------------------------------------------------
+        Check(hinge_joint->GetBreakForce() >= kInfiniteBreak && hinge_joint->GetBreakTorque() >= kInfiniteBreak,
+              "JN72", "breakForce / breakTorque default to 'never break' (Unity's Mathf.Infinity)");
+        Check(!hinge_joint->HasBroken(), "JN73", "and a fresh joint has not broken");
+        hinge_joint->FixedTick(1.0f / 60.0f);
+        Check(!hinge_joint->HasBroken(), "JN74", "one fixed step with an infinite threshold breaks nothing");
+        // 上面那条走的是"两个阈值都无穷 ⇒ 直接返回"的捷径，`force <= breakForce`
+        // 这个比较**一次都没被执行过**。给一个有限但极大的阈值，让比较真的发生。
+        hinge_joint->SetBreakForce(1.0e9f);
+        hinge_joint->FixedTick(1.0f / 60.0f);
+        Check(!hinge_joint->HasBroken(), "JN74b", "a huge but finite breakForce still survives the step");
+        // 再让它真的吃上力：两个刚体都是动态时它们一起自由落体，铰链不受力，
+        // "零阈值必断"就成了看运气。A 转静态、B 吊在铰链上才是受力姿态。
+        actor_a.body->SetActorType(RigidBodyActorType::static_body);
+        StepScene(*scene, 4);
+        float load_linear = 0.f;
+        float load_angular = 0.f;
+        Check(scene->GetJointImpulse(hinge_joint->GetJointId(), load_linear, load_angular) &&
+                  (load_linear > 0.f || load_angular > 0.f),
+              "JN74c", "the hanging hinge really carries a load (otherwise the break test is luck)");
+        hinge_joint->SetBreakForce(0.f);
+        hinge_joint->FixedTick(1.0f / 60.0f);
+        Check(hinge_joint->HasBroken(), "JN74d", "and a zero breakForce breaks it on the very next step");
+        bool broken_enabled = true;
+        Check(scene->IsJointEnabled(hinge_joint->GetJointId(), broken_enabled) && !broken_enabled, "JN74e",
+              "the broken joint is switched off in Jolt too, not just flagged");
+
+        // --- 另外三个子类 ----------------------------------------------------
+        FixedJointComponent* fixed_joint = new FixedJointComponent();
+        om->AllocateAndAssignInstanceID(fixed_joint);
+        actor_a.object->addComponent(fixed_joint);
+        fixed_joint->PostLoadResource(actor_a.object);
+        fixed_joint->SetConnectedBody(actor_b.body);
+        Check(fixed_joint->HasJoint() && scene->GetJointType(fixed_joint->GetJointId(), read_type) &&
+                  read_type == PhysicsJointType::fixed,
+              "JN75", "a FixedJointComponent builds a fixed constraint");
+
+        SpringJointComponent* spring_joint = new SpringJointComponent();
+        om->AllocateAndAssignInstanceID(spring_joint);
+        actor_a.object->addComponent(spring_joint);
+        spring_joint->PostLoadResource(actor_a.object);
+        spring_joint->SetConnectedBody(actor_b.body);
+        Check(spring_joint->HasJoint() && scene->GetJointType(spring_joint->GetJointId(), read_type) &&
+                  read_type == PhysicsJointType::distance,
+              "JN76", "a SpringJointComponent builds a distance constraint");
+        spring_joint->SetSpring(3.f);
+        spring_joint->SetDamper(0.5f);
+        Check(Near(spring_joint->GetSpring(), 3.f) && Near(spring_joint->GetDamper(), 0.5f), "JN77",
+              "its spring / damper round-trip");
+        // 没设过距离 ⇒ 后端按当前姿态推，所以读回来必须是一个真距离（不是 -1）。
+        Check(spring_joint->GetMinDistance() >= 0.f && spring_joint->GetMaxDistance() >= 0.f, "JN78",
+              "an unconfigured distance range reads back as a real distance, not -1");
+        spring_joint->SetMaxDistance(4.f);
+        Check(Near(spring_joint->GetMaxDistance(), 4.f) &&
+                  scene->GetJointDistance(spring_joint->GetJointId(), min_limit, max_limit) &&
+                  Near(max_limit, 4.f),
+              "JN79", "and setting the max distance reaches the backend");
+
+        SliderJointComponent* slider_joint = new SliderJointComponent();
+        om->AllocateAndAssignInstanceID(slider_joint);
+        actor_a.object->addComponent(slider_joint);
+        slider_joint->PostLoadResource(actor_a.object);
+        slider_joint->SetConnectedBody(actor_b.body);
+        Check(slider_joint->HasJoint() && scene->GetJointType(slider_joint->GetJointId(), read_type) &&
+                  read_type == PhysicsJointType::slider,
+              "JN80", "a SliderJointComponent builds a slider constraint");
+        JointLimits slider_limits;
+        slider_limits.min = -0.5f;
+        slider_limits.max = 0.5f;
+        slider_joint->SetUseLimits(true);
+        slider_joint->SetLimits(slider_limits);
+        Check(scene->GetJointLimits(slider_joint->GetJointId(), min_limit, max_limit) &&
+                  Near(min_limit, -0.5f) && Near(max_limit, 0.5f),
+              "JN81", "and its limits reach the backend");
+        slider_joint->SetMotorTargetPosition(0.25f);
+        slider_joint->SetMotorForce(30.f);
+        Check(Near(slider_joint->GetMotorTargetPosition(), 0.25f) && Near(slider_joint->GetMotorForce(), 30.f),
+              "JN82", "the slider motor round-trips");
+        // 负的力没有意义（`SetForceLimit` 给的是对称区间），必须被夹住而不是
+        // 原样存下 —— 否则脚本读到 -5 会以为"反向也能使 5N 的劲"。
+        slider_joint->SetMotorForce(-5.f);
+        Check(Near(slider_joint->GetMotorForce(), 0.f), "JN82b",
+              "a negative motor force is clamped to 0, not stored raw");
+
+        // --- anchor / axis / autoConfigure -----------------------------------
+        Check(Near(hinge_joint->GetAxis().x, 1.f) && Near(hinge_joint->GetAxis().y, 0.f) &&
+                  Near(hinge_joint->GetAxis().z, 0.f),
+              "JN83", "Joint.axis defaults to +X (Unity's default)");
+        Check(hinge_joint->GetAutoConfigureConnectedAnchor(), "JN84",
+              "autoConfigureConnectedAnchor defaults to true (Unity's default)");
+        hinge_joint->SetAxis(Vector3(0.f, 1.f, 0.f));
+        Check(Near(hinge_joint->GetAxis().y, 1.f) && hinge_joint->GetJointId() != limited_id, "JN85",
+              "changing the axis rebuilds the joint (the axis is baked into the constraint frame)");
+        // 零向量轴：宁可建不出关节，也不要建一个轴是 nan 的关节。
+        hinge_joint->SetAxis(Vector3::ZERO);
+        Check(!hinge_joint->HasJoint(), "JN86", "a zero axis is refused: the joint is dropped, not built wrong");
+        hinge_joint->SetAxis(Vector3(0.f, 0.f, 1.f));
+        Check(hinge_joint->HasJoint(), "JN87", "and a valid axis brings it back");
+        hinge_joint->SetAnchor(Vector3(0.f, 0.f, 0.5f));
+        Check(Near(hinge_joint->GetAnchor().z, 0.5f) && hinge_joint->HasJoint(), "JN88",
+              "the anchor round-trips and rebuilds");
+
+        // `connectedAnchor` 是这条分界唯一的判据：**有连接体时是连接体的局部
+        // 空间**，关掉 autoConfigure 之后它就该真的挪动连接点。写成"永远用宿主
+        // 锚点"的话，下面这条还是绿的（两个 pivot 重合 → 距离恒为 0）。
+        // ⚠️ 基线必须在关掉 autoConfigure **之后**读：开着的时候两个 pivot 重合
+        // （距离 0），关掉之后连接点才落到连接体的原点上。拿"开着的时候"当基线
+        // 的话，"忽略 connectedAnchor"和"照做"都会让距离变大 —— 断言恒真。
+        spring_joint->SetAutoConfigureConnectedAnchor(false);
+        const float anchored_distance = spring_joint->GetMinDistance();
+        spring_joint->SetConnectedAnchor(Vector3(0.f, 0.f, -1.f));
+        Check(!spring_joint->GetAutoConfigureConnectedAnchor() &&
+                  Near(spring_joint->GetConnectedAnchor().z, -1.f),
+              "JN88a", "autoConfigureConnectedAnchor and connectedAnchor both round-trip");
+        Check(std::fabs(spring_joint->GetMinDistance() - anchored_distance) > 0.5f, "JN88b",
+              "with autoConfigure off, connectedAnchor really moves the attachment point");
+
+        // =====================================================================
+        // 3. 接线门（源码级）：证明脚本面真的被发布了、flush 真的被调了
+        // =====================================================================
+
+        const std::string dts = ReadFile("Source/Runtime/Scripting/ScriptVM/Test/Typings/zengine.d.ts");
+        Check(!dts.empty(), "JN90", "the generated zengine.d.ts is readable");
+        Check(CountOccurrences(dts, "declare class HingeJointComponent extends JointComponent") >= 1, "JN91",
+              "HingeJointComponent is published to scripts and inherits the Joint facade");
+        Check(CountOccurrences(dts, "declare class FixedJointComponent extends JointComponent") >= 1, "JN92",
+              "and so is FixedJointComponent (it needs its own members to be published at all)");
+        Check(CountOccurrences(dts, "declare class SpringJointComponent extends JointComponent") >= 1, "JN93",
+              "and SpringJointComponent");
+        Check(CountOccurrences(dts, "declare class SliderJointComponent extends JointComponent") >= 1, "JN94",
+              "and SliderJointComponent");
+        Check(CountOccurrences(dts, "declare type HingeJoint = HingeJointComponent;") >= 1, "JN95",
+              "Unity's spelling (HingeJoint) is a type alias, so `let j: HingeJoint` compiles");
+        Check(CountOccurrences(dts, "declare interface JointLimits {") >= 1 &&
+                  CountOccurrences(dts, "declare interface JointMotor {") >= 1 &&
+                  CountOccurrences(dts, "declare interface JointSpring {") >= 1,
+              "JN96", "Unity's three joint value types are declared for scripts");
+
+        // ⚠️ 上面那组读的是**签进仓库的那份** d.ts。它只在有人跑
+        // `ScriptTsChainSmokeTest --dump-dts` 时才更新，所以"把 prelude 里的
+        // 别名删掉"这类改动在那里是看不见的（变异体 JN31/JN32 就是这么活下来
+        // 的）。发布面本身住在 ScriptBinding.cpp 的 prelude 里 —— 那条才是源头，
+        // 这里直接在源头上查一遍。
+        const std::string prelude = ReadFile("Source/Runtime/Scripting/Binding/ScriptBinding.cpp");
+        Check(!prelude.empty(), "JN96b", "ScriptBinding.cpp is readable");
+        Check(CountOccurrences(prelude, "declare type HingeJoint = HingeJointComponent;") >= 1 &&
+                  CountOccurrences(prelude, "declare type FixedJoint = FixedJointComponent;") >= 1 &&
+                  CountOccurrences(prelude, "declare type SpringJoint = SpringJointComponent;") >= 1 &&
+                  CountOccurrences(prelude, "declare type SliderJoint = SliderJointComponent;") >= 1,
+              "JN96c", "all four Unity spellings are emitted as aliases from the prelude");
+        Check(CountOccurrences(prelude, "declare interface JointLimits {") >= 1 &&
+                  CountOccurrences(prelude, "declare interface JointMotor {") >= 1 &&
+                  CountOccurrences(prelude, "declare interface JointSpring {") >= 1,
+              "JN96d", "and so are the three joint value types");
+
+        const std::string binding = ReadFile("Source/Runtime/Scripting/Binding/ScriptBinding.h");
+        Check(!binding.empty(), "JN97", "ScriptBinding.h is readable");
+        Check(CountOccurrences(binding, "struct Converter<JointLimits>") >= 1 &&
+                  CountOccurrences(binding, "struct Converter<JointMotor>") >= 1 &&
+                  CountOccurrences(binding, "struct Converter<JointSpring>") >= 1,
+              "JN98", "and each of them has a marshaller (without one the method vanishes from the .d.ts)");
+
+        const std::string world_source = ReadFile("Source/Runtime/Function/Framework/World/WorldManager.cpp");
+        Check(!world_source.empty(), "JN99", "WorldManager.cpp is readable");
+        const std::size_t at_rigid_flush = world_source.find("FlushPendingRigidBodies(new_level)");
+        const std::size_t at_joint_flush = world_source.find("FlushPendingJoints(new_level)");
+        Check(at_rigid_flush != std::string::npos && at_joint_flush != std::string::npos &&
+                  at_joint_flush > at_rigid_flush,
+              "JNA0", "deferred joints are flushed AFTER deferred bodies (a joint needs both bodies)");
+
+        const std::string null_scene = ReadFile("Source/Runtime/Function/Physics/PhysicsSceneNull.cpp");
+        Check(!null_scene.empty(), "JNA1", "PhysicsSceneNull.cpp is readable");
+        // ⚠️ 记号必须带参数表。只写 `PhysicsScene::CreateStaticAnchorBody` 的话，
+        // 一个把它改名成 `CreateStaticAnchorBodyRenamed` 的改动**照样命中**
+        // （前缀匹配）—— 那条断言就恒真了。
+        Check(CountOccurrences(null_scene, "PhysicsScene::CreateStaticAnchorBody(const Vector3&)") >= 1 &&
+                  CountOccurrences(null_scene,
+                                   "PhysicsScene::SetJointPositionMotor(uint32_t, bool, float, float, float, "
+                                   "float)") >= 1 &&
+                  CountOccurrences(null_scene, "PhysicsScene::GetJointImpulse(uint32_t, float&") >= 1,
+              "JNA2", "the no-physics build defines the new symbols too (a missing one is EXC_BAD_ACCESS)");
     }
 
     // ---------------------------------------------------------------- O ----
@@ -15269,6 +15809,7 @@ int main()
     TestMeshParity();
     TestAnimatorParity();
     TestRigidbodyExtras();
+    TestJointComponents();
     TestGradient();
     TestGradientWiring();
     TestColliderBounds();

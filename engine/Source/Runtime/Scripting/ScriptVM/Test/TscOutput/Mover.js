@@ -279,6 +279,8 @@ class Mover extends Behaviour {
         this.materialLightProbe = "";
         this.meshProbe = "";
         this.animatorProbe = "";
+        this.rigidbodyProbe = "";
+        this.jointProbe = "";
         // ---- Unity 的 FixedUpdate ---------------------------------------------
         //
         // 这一段存在的理由不只是"多一个钩子"：在此之前 `OnFixedUpdate` 在 d.ts 里
@@ -805,6 +807,127 @@ class Mover extends Behaviour {
             String(animatorHasShape),
             String(animatorHasIsName),
             String(animatorHasEvents)
+        ].join("|");
+        // ---- Unity 的 Rigidbody 其余面（slice 55）----
+        //
+        // 发布面门，理由同上。这里额外钉住两件 tsc 抓不到的事：
+        //   1. `Rigidbody` 是 `RigidBodyComponent` 的**类型别名** —— 没有它
+        //      `let body: Rigidbody` 直接 TS2304，而 C++ 侧完全无感。
+        //   2. `constraints` / `centerOfMass` 是**属性**：ZSCRIPTPROPERTY 漏掉的
+        //      话 `body.constraints = ...` 在运行时只是给 JS 对象加了个字段，
+        //      静默失效（方法还在，所以只查方法名查不出来）。
+        const rigidbodyClassPublished = (typeof RigidBodyComponent === "function");
+        // 枚举不只查"在不在"，还查**取值**：Unity 的组合常量
+        // （FreezeRotation = 112）是从单个位或出来的，codegen 改一下命名规则就会
+        // 让它们悄悄错位，而 tsc 只看着名字全对。
+        const rigidbodyConstraintsEnum = (typeof RigidbodyConstraints === "object") &&
+            (RigidbodyConstraints.FreezeRotation === 112) &&
+            (RigidbodyConstraints.FreezeAll === 126);
+        const rigidbodyCcdEnum = (typeof CollisionDetectionMode === "object") &&
+            (CollisionDetectionMode.Discrete === 0) &&
+            (CollisionDetectionMode.ContinuousDynamic === 2);
+        const rigidbodyHasConstraints = (typeof RigidBodyComponent.prototype.GetConstraints === "function") &&
+            (typeof RigidBodyComponent.prototype.SetConstraints === "function");
+        const rigidbodyHasFreeze = (typeof RigidBodyComponent.prototype.GetFreezeRotation === "function") &&
+            (typeof RigidBodyComponent.prototype.SetFreezeRotation === "function");
+        const rigidbodyHasMassProperties = (typeof RigidBodyComponent.prototype.GetCenterOfMass === "function") &&
+            (typeof RigidBodyComponent.prototype.GetInertiaTensor === "function");
+        const rigidbodyHasCcd = (typeof RigidBodyComponent.prototype.GetCollisionDetectionMode === "function") &&
+            (typeof RigidBodyComponent.prototype.SetCollisionDetectionMode === "function");
+        const rigidbodyHasPointVelocity = (typeof RigidBodyComponent.prototype.GetPointVelocity === "function") &&
+            (typeof RigidBodyComponent.prototype.GetRelativePointVelocity === "function");
+        const rigidbodyHasRelativeForce = (typeof RigidBodyComponent.prototype.AddRelativeForce === "function");
+        const rigidbodyHasDensity = (typeof RigidBodyComponent.prototype.SetDensity === "function") &&
+            (typeof RigidBodyComponent.prototype.GetDensity === "function");
+        // 属性门：读一次，值必须是 undefined 之外的东西（方法名存在但属性没挂上
+        // 时，读属性得到 undefined，而上面的方法门全绿）。
+        const rigidbodyNoBodySafe = (RigidBodyComponent.prototype.GetMaxAngularVelocity !== undefined);
+        this.rigidbodyProbe = [
+            String(rigidbodyClassPublished),
+            String(rigidbodyConstraintsEnum),
+            String(rigidbodyCcdEnum),
+            String(rigidbodyHasConstraints),
+            String(rigidbodyHasFreeze),
+            String(rigidbodyHasMassProperties),
+            String(rigidbodyHasCcd),
+            String(rigidbodyHasPointVelocity),
+            String(rigidbodyHasRelativeForce),
+            String(rigidbodyHasDensity),
+            String(rigidbodyNoBodySafe)
+        ].join("|");
+        // ---- Unity 的 Joint 一族（slice 56）--------------------------------
+        //
+        // 分成**四层**查，每层抓的是不同一类漏发：
+        //   1. 四个子类是不是都进了绑定表（`typeof X === "function"`）。一个既
+        //      没有 ZFUNCTION 又没有 ZSCRIPTPROPERTY 的类会被 codegen 整个跳过
+        //      —— 编译得过、运行得了，只是脚本里根本不存在。
+        //   2. 基类 `Joint` 的门面（anchor / axis / connectedBody / breakForce）。
+        //   3. 三个**值类型**接口 `JointLimits` / `JointMotor` / `JointSpring`：
+        //      它们是手写的 `declare interface`，只在**编译期**存在。下面那三个
+        //      字面量赋值就是这一层的门禁 —— 少一个字段，tsc 直接报错。
+        //   4. TS 侧的类型别名（`HingeJoint`）：`let j: HingeJoint` 过不了编译的
+        //      话，Unity 工程贴过来的标注全都红，而 C++ 侧完全无感。
+        const jointClassesPublished = (typeof HingeJointComponent === "function") &&
+            (typeof FixedJointComponent === "function") &&
+            (typeof SpringJointComponent === "function") &&
+            (typeof SliderJointComponent === "function") &&
+            (typeof JointComponent === "function");
+        const jointBaseFacade = (typeof JointComponent.prototype.GetAnchor === "function") &&
+            (typeof JointComponent.prototype.SetAnchor === "function") &&
+            (typeof JointComponent.prototype.GetAxis === "function") &&
+            (typeof JointComponent.prototype.SetAxis === "function") &&
+            (typeof JointComponent.prototype.GetConnectedBody === "function") &&
+            (typeof JointComponent.prototype.SetConnectedBody === "function") &&
+            (typeof JointComponent.prototype.RebuildJoint === "function") &&
+            (typeof JointComponent.prototype.HasJoint === "function");
+        const jointBreak = (typeof JointComponent.prototype.GetBreakForce === "function") &&
+            (typeof JointComponent.prototype.SetBreakForce === "function") &&
+            (typeof JointComponent.prototype.GetBreakTorque === "function") &&
+            (typeof JointComponent.prototype.HasBroken === "function") &&
+            (typeof JointComponent.prototype.RepairJoint === "function");
+        const hingeFacade = (typeof HingeJointComponent.prototype.GetAngle === "function") &&
+            (typeof HingeJointComponent.prototype.GetVelocity === "function") &&
+            (typeof HingeJointComponent.prototype.GetLimits === "function") &&
+            (typeof HingeJointComponent.prototype.SetLimits === "function") &&
+            (typeof HingeJointComponent.prototype.GetMotor === "function") &&
+            (typeof HingeJointComponent.prototype.SetMotor === "function") &&
+            (typeof HingeJointComponent.prototype.GetSpring === "function") &&
+            (typeof HingeJointComponent.prototype.SetSpring === "function");
+        const springFacade = (typeof SpringJointComponent.prototype.GetSpring === "function") &&
+            (typeof SpringJointComponent.prototype.SetSpring === "function") &&
+            (typeof SpringJointComponent.prototype.GetMinDistance === "function") &&
+            (typeof SpringJointComponent.prototype.SetMinDistance === "function") &&
+            (typeof SpringJointComponent.prototype.GetMaxDistance === "function") &&
+            (typeof SpringJointComponent.prototype.SetMaxDistance === "function");
+        const sliderFixedFacade = (typeof SliderJointComponent.prototype.GetMotorTargetPosition === "function") &&
+            (typeof SliderJointComponent.prototype.SetMotorTargetPosition === "function") &&
+            (typeof SliderJointComponent.prototype.GetMotorForce === "function") &&
+            (typeof SliderJointComponent.prototype.SetMotorForce === "function") &&
+            (typeof FixedJointComponent.prototype.GetBreakForce === "function") &&
+            (typeof FixedJointComponent.prototype.SetBreakForce === "function");
+        // 编译期门禁：这三个字面量的**字段名**必须和 d.ts 里的 interface 一致，
+        // 否则 tsc 直接红（而运行时这边什么都查不出来 —— 值类型在 JS 里就是普通
+        // 对象，多一个少一个字段都不报错）。
+        const limits = { min: -1, max: 1 };
+        const motor = { targetVelocity: 2, force: 10 };
+        const spring = { spring: 2, damper: 0.5, targetPosition: 0.25 };
+        const jointValueTypes = (limits.min === -1) && (motor.force === 10) && (spring.targetPosition === 0.25);
+        // Unity 的拼写是类型别名：这一行过不了编译，就是别名没写进 d.ts。
+        let typedHinge = null;
+        let typedFixed = null;
+        let typedSpring = null;
+        let typedSlider = null;
+        const jointAliases = (typedHinge === null) && (typedFixed === null) &&
+            (typedSpring === null) && (typedSlider === null);
+        this.jointProbe = [
+            String(jointClassesPublished),
+            String(jointBaseFacade),
+            String(jointBreak),
+            String(hingeFacade),
+            String(springFacade),
+            String(sliderFixedFacade),
+            String(jointValueTypes),
+            String(jointAliases)
         ].join("|");
         // ---- Unity 的 Input 那一层（slice 51）----
         // 这个进程没有 InputSystem，所以下面断言的是**安全默认值**与**可写的
