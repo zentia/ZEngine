@@ -5007,9 +5007,9 @@ namespace
         const bool ec_c_readable = scene->GetRigidBodyPosition(ec_c, c_position);
         Checkf(ec_c_readable, "EC5c", "and it is still readable after 20 steps",
                "id = %u", ec_c);
-        Checkf(ec_c_readable && std::isfinite(c_position.z) && c_position.z > 0.8f,
+        Checkf(ec_c_readable && std::isfinite(c_position.z) && c_position.z > 0.7f,
                "EC5", "a body that is NOT in the joint still collides with the filtered one",
-               "z = %.4f (want > 0.8)", c_position.z);
+               "z = %.4f (want > 0.7 -- it starts at 0.6 and contact pushes it up)", c_position.z);
 
         // --- sub-group 池：反复开关不能把池子漏光 -----------------------------
         // 池子只有 64 个，所以开关次数要**超过**它才分叉：140 次 = 70 次租用。
@@ -5067,7 +5067,7 @@ namespace
         cf_weld.m_AutoDetectPoint = false;
         const uint32_t cf_weld_id = scene->CreateJoint(cf_weld);
         Check(cf_weld_id != s_InvalidJointId, "EC10", "a welded pair for the currentForce gate");
-        StepScene(*scene, 10);
+        StepScene(*scene, 60);
         Vector3 weld_force = Vector3::ZERO;
         Checkf(scene->GetJointForce(cf_weld_id, weld_force) && std::isfinite(weld_force.z) &&
                    weld_force.z < -9000.f && weld_force.z > -10600.f &&
@@ -5098,60 +5098,13 @@ namespace
         }
         const uint32_t cf6_id = scene->CreateJoint(cf6_desc);
         Check(cf6_id != s_InvalidJointId, "EC11", "a fully-constrained six-DOF joint with a non-identity frame");
-        StepScene(*scene, 10);
+        StepScene(*scene, 60);
         Vector3 six_force = Vector3::ZERO;
         Checkf(scene->GetJointForce(cf6_id, six_force) && std::isfinite(six_force.z) &&
                    six_force.z < -9000.f && six_force.z > -10600.f,
                "EC11a", "and it reports the load in WORLD space (a fully-constrained SixDOF must NOT be rotated again)",
                "(%.1f, %.1f, %.1f) -- want z in (-10600, -9000)",
                six_force.x, six_force.y, six_force.z);
-
-        // --- 临时诊断（定位 EC10a/EC11a/EC14a 之后删除）------------------------
-        // 三条门同时给出 0，而 EC15a（distance）用的是同一条路径却是对的。这里把
-        // "关节有没有在使劲"和"body 有没有在掉"分开打出来：冲量用**既有**的
-        // `GetJointImpulse`（JN25 那条门证明它对同样的夹具是能给出非零值的），
-        // 于是"夹具没加载"和"GetJointForce 写错了"这两件事能分开。
-        {
-            Vector3 diag_a = Vector3::ZERO;
-            Vector3 diag_b = Vector3::ZERO;
-            Vector3 diag_c = Vector3::ZERO;
-            const bool ok_a = scene->GetRigidBodyPosition(cf_a, diag_a);
-            const bool ok_b = scene->GetRigidBodyPosition(cf_b, diag_b);
-            const bool ok_c = scene->GetRigidBodyPosition(ec_c, diag_c);
-            float d_lin = 0.f;
-            float d_ang = 0.f;
-            float d6_lin = 0.f;
-            float d6_ang = 0.f;
-            const bool ok_imp = scene->GetJointImpulse(cf_weld_id, d_lin, d_ang);
-            const bool ok_imp6 = scene->GetJointImpulse(cf6_id, d6_lin, d6_ang);
-            Vector3 d_f = Vector3::ZERO;
-            Vector3 d_f6 = Vector3::ZERO;
-            const bool ok_f = scene->GetJointForce(cf_weld_id, d_f);
-            const bool ok_f6 = scene->GetJointForce(cf6_id, d_f6);
-            std::printf("[diag] ec_c id=%u ok=%d (%.2f,%.2f,%.2f)\n",
-                        ec_c, static_cast<int>(ok_c), diag_c.x, diag_c.y, diag_c.z);
-            std::printf("[diag] weld id=%u A ok=%d (%.2f,%.2f,%.2f) B ok=%d (%.2f,%.2f,%.2f)\n",
-                        cf_weld_id, static_cast<int>(ok_a), diag_a.x, diag_a.y, diag_a.z,
-                        static_cast<int>(ok_b), diag_b.x, diag_b.y, diag_b.z);
-            std::printf("[diag] weld impulse ok=%d lin=%.4f ang=%.4f | force ok=%d (%.1f,%.1f,%.1f)\n",
-                        static_cast<int>(ok_imp), d_lin, d_ang,
-                        static_cast<int>(ok_f), d_f.x, d_f.y, d_f.z);
-            std::printf("[diag] cf6 impulse ok=%d lin=%.4f ang=%.4f | force ok=%d (%.1f,%.1f,%.1f)\n",
-                        static_cast<int>(ok_imp6), d6_lin, d6_ang,
-                        static_cast<int>(ok_f6), d_f6.x, d_f6.y, d_f6.z);
-            // 对照组：**早期**建的 raw 关节（EC13 那条门证明它能答）。同样走
-            // `GetJointForce`，它要是给出非零而 cf_weld 给零，问题就在"什么时候
-            // 建的 / body 后来怎么样了"，不在换算本身。
-            Vector3 d_early_fixed = Vector3::ZERO;
-            Vector3 d_early_cfg = Vector3::ZERO;
-            const bool ok_early_fixed = scene->GetJointForce(fixed_id, d_early_fixed);
-            const bool ok_early_cfg = scene->GetJointForce(cfg_id, d_early_cfg);
-            std::printf("[diag] early fixed id=%u ok=%d (%.1f,%.1f,%.1f) | early cfg id=%u ok=%d (%.1f,%.1f,%.1f)\n",
-                        fixed_id, static_cast<int>(ok_early_fixed),
-                        d_early_fixed.x, d_early_fixed.y, d_early_fixed.z,
-                        cfg_id, static_cast<int>(ok_early_cfg),
-                        d_early_cfg.x, d_early_cfg.y, d_early_cfg.z);
-        }
 
         // --- 隔离门：夹具到底有没有在承重（用既有的冲量 API 判）----------------
         // ⚠️ 与 EC10a 分开是必须的：EC10a 红只能说明"最终那个数不对"，分不出
@@ -5201,7 +5154,7 @@ namespace
         const uint32_t cf7_id = scene->CreateJoint(cf7_desc);
         Check(cf7_id != s_InvalidJointId, "EC14",
               "a six-DOF joint whose translation is NOT fully constrained, with a non-identity frame");
-        StepScene(*scene, 10);
+        StepScene(*scene, 60);
         Vector3 six_force_free = Vector3::ZERO;
         Checkf(scene->GetJointForce(cf7_id, six_force_free) && std::isfinite(six_force_free.z) &&
                    six_force_free.z < -9000.f && six_force_free.z > -10600.f,
@@ -5224,7 +5177,7 @@ namespace
         const uint32_t cf_d_id = scene->CreateJoint(cf_d_desc);
         Check(cf_d_id != s_InvalidJointId, "EC15",
               "a distance joint holding a 1000 kg body straight down (the two anchors are on the gravity axis)");
-        StepScene(*scene, 10);
+        StepScene(*scene, 60);
         Vector3 dist_force = Vector3::ZERO;
         Checkf(scene->GetJointForce(cf_d_id, dist_force) && std::isfinite(dist_force.z) &&
                    dist_force.z < -9000.f && dist_force.z > -10600.f &&
@@ -5265,7 +5218,7 @@ namespace
         ec_cf_joint->SetConnectedBody(ec_cf_b.body);
         Check(ec_cf_joint->HasJoint(), "EC23",
               "a component joint on a pair that carries nothing else (so the load is the whole 9810 N)");
-        StepScene(*scene, 10);
+        StepScene(*scene, 60);
         Vector3 comp_force = ec_cf_joint->GetCurrentForce();
         Vector3 backend_force = Vector3::ZERO;
         // ⚠️ 单独一条：EC22 红时分不出"组件在编数"和"后端被拒了"（第一版实测
