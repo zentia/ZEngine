@@ -658,6 +658,11 @@ public:
 
     /// Unity 的 `Joint.currentForce`：约束这一帧施加的**力**（牛，世界空间）。
     ///
+    /// 方向是"关节施加到 **body A**（宿主自己）上的力"，与 Unity 的语义对齐。
+    /// ⚠️ Jolt 的 lambda 给 body1 减、给 body2 加（`PointConstraintPart::
+    /// ApplyVelocityStep`），所以这里取负 —— 拿反了会得到一对大小全对、方向
+    /// 全反的力。
+    ///
     /// `totalLambda` 是冲量（N·s），这里除以**物理步长**
     /// `1 / m_Config.m_UpdateFrequency` —— 不是 `Tick(delta_time)` 的形参，引擎是
     /// 固定步长，那个形参在 `Tick` 里压根没被用。

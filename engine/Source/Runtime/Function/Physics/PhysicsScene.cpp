@@ -2906,7 +2906,11 @@ bool PhysicsScene::GetJointForce(uint32_t joint_id, Vector3& out_force) const
             return false;
     }
 
-    out_force = toVec3(world_impulse) / step;
+    // ⚠️ 符号：`PointConstraintPart::ApplyVelocityStep` 给 body1 **减** lambda、
+    // 给 body2 **加** lambda。而我们的 `m_BodyA` 是**宿主自己**（Unity 的
+    // `Joint.currentForce` 是"关节施加到它自己刚体上的力"），所以取负。
+    // 拿错方向会得到一对大小全对、方向全反的力 —— 这种错在"能跑"上看不出来。
+    out_force = (-toVec3(world_impulse)) / step;
     return true;
 }
 

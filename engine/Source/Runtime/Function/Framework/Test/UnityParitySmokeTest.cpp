@@ -4875,6 +4875,194 @@ namespace
               "CF31a", "and reaches the backend");
 
         // =====================================================================
+        // 2d. enableCollision / currentForce（slice 59）
+        // =====================================================================
+        // Unity 的 `enableCollision` 默认 **false**：被同一个关节连起来的两个刚体
+        // 互不碰撞。Jolt 的约束完全不参与接触生成，只能走 GroupFilterTable。
+
+        const uint32_t ec_a = SpawnBox(*scene, Vector3(0.f, 210.f, 0.f), 0, false);
+        const uint32_t ec_b = SpawnBox(*scene, Vector3(0.f, 212.f, 0.f), 0, true);
+        PhysicsJointDesc ec_desc;
+        ec_desc.m_Type = PhysicsJointType::fixed;
+        ec_desc.m_BodyA = ec_a;
+        ec_desc.m_BodyB = ec_b;
+        ec_desc.m_PivotA = Vector3(0.f, 210.f, 0.f);
+        ec_desc.m_PivotB = Vector3(0.f, 210.f, 0.f);
+        ec_desc.m_AutoDetectPoint = false;
+        const uint32_t ec_id = scene->CreateJoint(ec_desc);
+        Check(ec_id != s_InvalidJointId, "EC0", "a joint for the collision-filter gates can be created");
+
+        bool ec_read = false;
+        Check(scene->GetJointEnableCollision(ec_id, ec_read) && ec_read, "EC1",
+              "a fresh joint reports enableCollision = true at the BACKEND (it is the component that defaults it to false)");
+        Check(scene->SetJointEnableCollision(ec_id, false) &&
+                  scene->GetJointEnableCollision(ec_id, ec_read) && !ec_read,
+              "EC2", "it can be switched off and reads back off");
+        Check(scene->SetJointEnableCollision(ec_id, true) &&
+                  scene->GetJointEnableCollision(ec_id, ec_read) && ec_read,
+              "EC2a", "and back on");
+        Check(!scene->SetJointEnableCollision(s_InvalidJointId, false) &&
+                  !scene->SetJointEnableCollision(9999u, false),
+              "EC2b", "an unknown joint is refused");
+
+        // --- 行为门：关掉之后两个 body 真的不互相推开 -------------------------
+        // ⚠️ 只读"设置成功"是白测 —— setter 永远返回 true。必须看 body 动没动。
+        //
+        // 夹具：A 静态、B 动态，沿 X **重叠** 0.1 m（两个 1m 盒子中心距 0.9）；
+        // 关节把 X 那一路留成 Free（否则约束自己就会把它们按住，碰不碰都看不出来），
+        // 其余五轴锁掉（免得 body 绕枢轴摆，位移就不只是平移了）。
+        const uint32_t off_a = SpawnBox(*scene, Vector3(0.f, 220.f, 0.f), 0, false);
+        const uint32_t off_b = SpawnBox(*scene, Vector3(0.9f, 220.f, 0.f), 0, true);
+        PhysicsJointDesc off_desc;
+        off_desc.m_Type = PhysicsJointType::configurable;
+        off_desc.m_BodyA = off_a;
+        off_desc.m_BodyB = off_b;
+        off_desc.m_PivotA = Vector3(0.f, 220.f, 0.f);
+        off_desc.m_PivotB = Vector3(0.f, 220.f, 0.f);
+        off_desc.m_AxisA = Vector3(1.f, 0.f, 0.f);
+        off_desc.m_AxisB = Vector3(1.f, 0.f, 0.f);
+        off_desc.m_SecondaryAxisA = Vector3(0.f, 1.f, 0.f);
+        off_desc.m_SecondaryAxisB = Vector3(0.f, 1.f, 0.f);
+        off_desc.m_AutoDetectPoint = false;
+        for (int axis_index = 0; axis_index < kConfigurableAxisCount; ++axis_index)
+        {
+            off_desc.m_Motion[axis_index] = ConfigurableJointMotion::Locked;
+        }
+        off_desc.m_Motion[static_cast<int>(ConfigurableJointAxis::TranslationX)] =
+            ConfigurableJointMotion::Free;
+        const uint32_t off_id = scene->CreateJoint(off_desc);
+        Check(off_id != s_InvalidJointId && scene->SetJointEnableCollision(off_id, false), "EC3",
+              "an overlapping pair can be told not to collide");
+        StepScene(*scene, 30);
+        Vector3 off_position = Vector3::ZERO;
+        Check(scene->GetRigidBodyPosition(off_b, off_position) && std::isfinite(off_position.x) &&
+                  std::fabs(off_position.x - 0.9f) < 0.03f,
+              "EC3a", "and it really does NOT push them apart: the 0.1 m overlap survives 30 steps (contact would have separated them)");
+
+        // --- 对照组：同样的夹具，碰撞**开着** ⇒ 被接触推开 ---------------------
+        const uint32_t on_a = SpawnBox(*scene, Vector3(0.f, 230.f, 0.f), 0, false);
+        const uint32_t on_b = SpawnBox(*scene, Vector3(0.9f, 230.f, 0.f), 0, true);
+        PhysicsJointDesc on_desc = off_desc;
+        on_desc.m_BodyA = on_a;
+        on_desc.m_BodyB = on_b;
+        on_desc.m_PivotA = Vector3(0.f, 230.f, 0.f);
+        on_desc.m_PivotB = Vector3(0.f, 230.f, 0.f);
+        const uint32_t on_id = scene->CreateJoint(on_desc);
+        Check(on_id != s_InvalidJointId, "EC4", "the control pair is created with collision left ON");
+        StepScene(*scene, 30);
+        Vector3 on_position = Vector3::ZERO;
+        Check(scene->GetRigidBodyPosition(on_b, on_position) && std::isfinite(on_position.x) &&
+                  on_position.x > 0.97f,
+              "EC4a", "and contact really separates them: 0.9 -> ~1.0 (that is exactly what enableCollision = false turns off)");
+
+        // --- 对照组：没被任何关节连的 body 必须**照旧**碰撞 --------------------
+        // ⚠️ 这一条挡的是那条反直觉的分支：同一 group 但 filter 指针不同 ⇒
+        // **不**碰撞。所以"只给一端设 filter"不是没生效，而是把那个 body 与同组
+        // 所有 body 的碰撞全关掉 —— 一个比没生效更坏的静默错误。C 与 B 重叠，
+        // 且 C 与 A 在 X 上不重叠（免得 A 也来推它）。
+        const uint32_t ec_c = SpawnBox(*scene, Vector3(1.4f, 220.f, 0.6f), 0, true);
+        StepScene(*scene, 20);
+        Vector3 c_position = Vector3::ZERO;
+        Check(scene->GetRigidBodyPosition(ec_c, c_position) && std::isfinite(c_position.z) &&
+                  c_position.z > 0.8f,
+              "EC5", "a body that is NOT in the joint still collides with the filtered one (the filter must not spread)");
+
+        // --- sub-group 池：反复开关不能把池子漏光 -----------------------------
+        // 池子只有 64 个，所以开关次数要**超过**它才分叉：140 次 = 70 次租用。
+        bool ec_pool_ok = true;
+        for (int i = 0; i < 140; ++i)
+        {
+            if (!scene->SetJointEnableCollision(ec_id, (i % 2) == 0 ? false : true))
+            {
+                ec_pool_ok = false;
+                break;
+            }
+        }
+        Check(ec_pool_ok, "EC6",
+              "toggling enableCollision 140 times still succeeds (a sub-group that is never returned exhausts the 64-slot pool)");
+
+        // --- currentForce：已知输入 -------------------------------------------
+        // 静态 + 动态焊在一起：盒子 1 m³ × 密度 1000 = 1000 kg，重力 -Z ⇒ 约束要
+        // 顶住 9810 N。这是"读回来型"API 的标准夹具 —— 靠积分攒出来的量会被
+        // "数太小"打掉，诊断跟着跑偏。
+        const uint32_t cf_a = SpawnBox(*scene, Vector3(0.f, 240.f, 0.f), 0, false);
+        const uint32_t cf_b = SpawnBox(*scene, Vector3(0.f, 242.f, 0.f), 0, true);
+        PhysicsJointDesc cf_weld;
+        cf_weld.m_Type = PhysicsJointType::fixed;
+        cf_weld.m_BodyA = cf_a;
+        cf_weld.m_BodyB = cf_b;
+        cf_weld.m_PivotA = Vector3(0.f, 240.f, 0.f);
+        cf_weld.m_PivotB = Vector3(0.f, 240.f, 0.f);
+        cf_weld.m_AutoDetectPoint = false;
+        const uint32_t cf_weld_id = scene->CreateJoint(cf_weld);
+        Check(cf_weld_id != s_InvalidJointId, "EC10", "a welded pair for the currentForce gate");
+        StepScene(*scene, 10);
+        Vector3 weld_force = Vector3::ZERO;
+        Check(scene->GetJointForce(cf_weld_id, weld_force) && std::isfinite(weld_force.z) &&
+                  weld_force.z < -9000.f && weld_force.z > -10600.f &&
+                  std::fabs(weld_force.x) < 200.f && std::fabs(weld_force.y) < 200.f,
+              "EC10a", "currentForce is the known gravity load: ~9810 N (1000 kg), and it is the force the joint applies to body A");
+
+        // --- SixDOF 那条"世界空间 / 约束空间"二选一 ---------------------------
+        // 参考系刻意取**非单位**（axis = +Z ⇒ 约束空间 X 指向世界 +Z）。忘了那个
+        // 分支、一律按约束空间换算，会把这个已知的 -Z 载荷转到错的方向上。
+        const uint32_t cf6_a = SpawnBox(*scene, Vector3(0.f, 250.f, 0.f), 0, false);
+        const uint32_t cf6_b = SpawnBox(*scene, Vector3(0.f, 252.f, 0.f), 0, true);
+        PhysicsJointDesc cf6_desc;
+        cf6_desc.m_Type = PhysicsJointType::configurable;
+        cf6_desc.m_BodyA = cf6_a;
+        cf6_desc.m_BodyB = cf6_b;
+        cf6_desc.m_PivotA = Vector3(0.f, 250.f, 0.f);
+        cf6_desc.m_PivotB = Vector3(0.f, 250.f, 0.f);
+        cf6_desc.m_AxisA = Vector3(0.f, 0.f, 1.f);
+        cf6_desc.m_AxisB = Vector3(0.f, 0.f, 1.f);
+        cf6_desc.m_SecondaryAxisA = Vector3(0.f, 1.f, 0.f);
+        cf6_desc.m_SecondaryAxisB = Vector3(0.f, 1.f, 0.f);
+        cf6_desc.m_AutoDetectPoint = false;
+        for (int axis_index = 0; axis_index < kConfigurableAxisCount; ++axis_index)
+        {
+            cf6_desc.m_Motion[axis_index] = ConfigurableJointMotion::Locked;
+        }
+        const uint32_t cf6_id = scene->CreateJoint(cf6_desc);
+        Check(cf6_id != s_InvalidJointId, "EC11", "a fully-constrained six-DOF joint with a non-identity frame");
+        StepScene(*scene, 10);
+        Vector3 six_force = Vector3::ZERO;
+        Check(scene->GetJointForce(cf6_id, six_force) && std::isfinite(six_force.z) &&
+                  six_force.z < -9000.f && six_force.z > -10600.f,
+              "EC11a", "and it reports the load in WORLD space (a fully-constrained SixDOF takes the point-constraint path)");
+
+        Check(!scene->GetJointForce(s_InvalidJointId, weld_force) &&
+                  !scene->GetJointForce(9999u, weld_force),
+              "EC12", "an unknown joint has no force");
+        Check(scene->GetJointForce(fixed_id, weld_force) && scene->GetJointForce(cfg_id, weld_force),
+              "EC13", "the fixed and the six-DOF joint both answer GetJointForce");
+
+        // --- 组件层 -----------------------------------------------------------
+        Check(!cfg_joint->GetEnableCollision(), "EC20",
+              "enableCollision defaults to false (Unity's default -- a fresh joint's two bodies do NOT collide)");
+        bool ec_backend = true;
+        Check(scene->GetJointEnableCollision(cfg_joint->GetJointId(), ec_backend) && !ec_backend,
+              "EC20a", "and the backend really heard it (the component is not just remembering a field)");
+        cfg_joint->SetEnableCollision(true);
+        Check(cfg_joint->GetEnableCollision() &&
+                  scene->GetJointEnableCollision(cfg_joint->GetJointId(), ec_backend) && ec_backend,
+              "EC21", "enableCollision can be turned on and the backend hears it");
+        // ⚠️ 改它**不**重建（后端是事后改 body 的碰撞组）—— 与改参考系相反。
+        const uint32_t ec_before = cfg_joint->GetJointId();
+        cfg_joint->SetEnableCollision(false);
+        Check(cfg_joint->GetJointId() == ec_before && !cfg_joint->GetEnableCollision(), "EC21a",
+              "and switching it does NOT rebuild the joint (unlike the frame axes)");
+
+        // ⚠️ "恒返回零"的 getter 能过"有限"这条断言，所以这里判的是**与后端一致**：
+        // 后端那条已知载荷的门是 EC10a，两级串起来才覆盖得住。
+        Vector3 comp_force = cfg_joint->GetCurrentForce();
+        Vector3 backend_force = Vector3::ZERO;
+        Check(scene->GetJointForce(cfg_joint->GetJointId(), backend_force) &&
+                  Near(comp_force.x, backend_force.x) && Near(comp_force.y, backend_force.y) &&
+                  Near(comp_force.z, backend_force.z) && std::isfinite(comp_force.z),
+              "EC22", "currentForce through the component agrees with the backend (the component is not making a number up)");
+
+        // =====================================================================
         // 3. 接线门（源码级）：证明脚本面真的被发布了、flush 真的被调了
         // =====================================================================
 
@@ -4988,6 +5176,30 @@ namespace
                   CountOccurrences(null_scene_cfg, "PhysicsScene::SetJointAxisDrive(uint32_t, ConfigurableJointAxis") >= 1 &&
                   CountOccurrences(null_scene_cfg, "PhysicsScene::GetJointLinearLimitSpring(uint32_t, float&") >= 1,
               "CF49", "the no-physics build defines the new symbols too (a missing one is a link error there)");
+
+        // --- enableCollision / currentForce 的发布面（slice 59）----------------
+        const std::string joint_component_h =
+            ReadFile("Source/Runtime/Function/Framework/Component/Joint/JointComponent.h");
+        Check(!joint_component_h.empty(), "EC40", "JointComponent.h is readable");
+        Check(CountOccurrences(dts, "enableCollision: boolean;") >= 1, "EC41",
+              "enableCollision is published to scripts");
+        Check(CountOccurrences(dts, "currentForce: Vector3;") >= 1, "EC42",
+              "and currentForce (a read-only Vector3)");
+        // d.ts 是生成物、不入 git ⇒ 每条都配源码级孪生。
+        Check(CountOccurrences(joint_component_h, "ZSCRIPTPROPERTY(Name=\"enableCollision\"") >= 1 &&
+                  CountOccurrences(joint_component_h, "ZSCRIPTPROPERTY(Name=\"currentForce\"") >= 1,
+              "EC43", "and both really are declared in JointComponent.h");
+        Check(CountOccurrences(scene_source, "PhysicsScene::SetJointEnableCollision") >= 1 &&
+                  CountOccurrences(scene_source, "PhysicsScene::GetJointForce") >= 1,
+              "EC44", "and the backend really implements them");
+        // ⚠️ 记号带参数表：只写方法名会被 `...Renamed` 前缀命中 ⇒ 断言恒真。
+        Check(CountOccurrences(null_scene_cfg, "PhysicsScene::SetJointEnableCollision(uint32_t, bool)") >= 1 &&
+                  CountOccurrences(null_scene_cfg, "PhysicsScene::GetJointForce(uint32_t, Vector3&") >= 1,
+              "EC45", "the no-physics build defines them too (a missing one is a link error there)");
+        // 角的那一路刻意**不**发布：方向在 hinge / slider / swing-twist 上不可靠
+        // （第 10.2 节）。给出来就是"大小对、方向是猜的"。
+        Check(CountOccurrences(dts, "currentTorque:") == 0, "EC46",
+              "currentTorque is deliberately NOT published (its direction is not recoverable)");
 
         const std::string binding = ReadFile("Source/Runtime/Scripting/Binding/ScriptBinding.h");
         Check(!binding.empty(), "JN97", "ScriptBinding.h is readable");
