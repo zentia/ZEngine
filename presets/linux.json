@@ -22,6 +22,16 @@
             }
         },
         {
+            "name": "linux_make_headless",
+            "displayName": "Linux Make Debug (headless, no X11 window layer)",
+            "description": "Same as linux_make_debug, but for machines without a working X11 window stack: the Linux X11 window layer compiles to no-op stubs (ZENGINE_LINUX_WINDOW_STUB) and Jolt's Vulkan compute shaders are off (they need a dxc binary that has no Linux/arm64 build). Enough to configure and build ZRuntime, not to run the editor.",
+            "inherits": "linux_make_debug",
+            "cacheVariables": {
+                "JPH_USE_VK": "OFF",
+                "ZENGINE_LINUX_WINDOW_STUB": "ON"
+            }
+        },
+        {
             "name": "linux_make_release",
             "displayName": "Linux Make Release",
             "generator": "Unix Makefiles",
