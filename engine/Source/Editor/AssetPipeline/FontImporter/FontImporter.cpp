@@ -7,7 +7,7 @@
 #include "Runtime/Project/ProjectInfo.h"
 #include "Runtime/BaseClasses/ObjectManager.h"
 #include "Runtime/Resource/Asset/AssetManager.h"
-#include "core/Log/LogSystem.h"
+#include "Core/Log/LogSystem.h"
 
 #include "Editor/EditorAsset/EditorAssetManager.h"
 

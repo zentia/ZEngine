@@ -5,7 +5,7 @@
 #include "Runtime/File/FileSystem.h"
 #include "Runtime/Scripting/Binding/ScriptBinding.h"
 #include "Runtime/Function/Command/CommandSystem.h"
-#include "core/Log/LogSystem.h"
+#include "Core/Log/LogSystem.h"
 
 #include <cstdio>
 #include <ctime>

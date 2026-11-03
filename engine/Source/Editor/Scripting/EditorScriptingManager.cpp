@@ -7,7 +7,7 @@
 #include "Runtime/Scripting/Binding/ScriptBinding.h"
 #include "Runtime/Scripting/ScriptingManager.h"
 #include "Runtime/Scripting/Wrapper/ScriptEnv.h"
-#include "core/Log/LogSystem.h"
+#include "Core/Log/LogSystem.h"
 
 #include <cstdlib>
 #include <fstream>

@@ -7,7 +7,7 @@
 // fails inside EditorSelection.gen.cpp.
 #include "Runtime/BaseClasses/GameObject.h"
 
-#include <eastl/string.h>
+#include <EASTL/string.h>
 
 #include <vector>
 

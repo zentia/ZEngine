@@ -1,8 +1,8 @@
 #pragma once
 
 #include "Runtime/Function/Render/RenderPass.h"
-#include "Runtime/UI/Render/UIGpuResources.h"
-#include "Runtime/UI/Render/UIRenderBatch.h"
+#include "Runtime/UI/Render/UiGpuResources.h"
+#include "Runtime/UI/Render/UiRenderBatch.h"
 
 #include <cstdint>
 #include <vector>

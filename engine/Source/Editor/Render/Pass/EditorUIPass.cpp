@@ -15,7 +15,7 @@
 #include "Runtime/Function/Render/RenderType.h"
 #include "Runtime/Function/Render/WindowSystem.h"
 #include "Runtime/UI/Core/WindowUI.h"
-#include "Runtime/UI/Render/UIGpuResources.h"
+#include "Runtime/UI/Render/UiGpuResources.h"
 
 REGISTER_FACTORY(RenderPass, EditorUIPass, "EditorUIPass");
 void EditorUIPass::Initialize(const RenderPassInitInfo* init_info)

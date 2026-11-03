@@ -1,7 +1,7 @@
 #pragma once
 
 #include "Editor/EditorFileService/EditorFileService.h"
-#include "function/framework/Object/ObjectIdAllocator.h"
+#include "Function/Framework/Object/ObjectIdAllocator.h"
 
 #include <EASTL/string.h>
 

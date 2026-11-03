@@ -7,7 +7,7 @@
 #include "Runtime/BaseClasses/PPtr.h"
 #include "Runtime/Core/Base/Macro.h"
 #include "Runtime/Core/Base/SystemRegistry.h"
-#include "core/Log/LogSystem.h"
+#include "Core/Log/LogSystem.h"
 #include "Runtime/Function/Render/ShaderRegistry.h"
 #include "Runtime/Function/ShaderLab/ShaderLabParser.h"
 #include "Runtime/Function/ShaderLab/ShaderLabVariant.h"

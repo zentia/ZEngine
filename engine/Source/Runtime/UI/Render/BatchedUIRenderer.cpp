@@ -6,7 +6,7 @@
 #include "Runtime/Function/Render/Texture/Texture2D.h"
 #include "Runtime/Function/Render/WindowSystem.h"
 #include "Runtime/UI/Render/TextGenerator.h"
-#include "Runtime/UI/Render/UIGpuResources.h"
+#include "Runtime/UI/Render/UiGpuResources.h"
 #include "Runtime/UI/Render/ZFontAtlas.h"
 
 #include <algorithm>

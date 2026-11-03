@@ -11,7 +11,7 @@
 #include "GPUSpine/SpineGpuBatch.h"
 #include "GPUSpine/SpineGpuPoseSolver.h"
 #include "GPUSpine/SpineGpuTintBlack.h"
-#include "core/Log/LogSystem.h"
+#include "Core/Log/LogSystem.h"
 
 #include <algorithm>
 #include <array>

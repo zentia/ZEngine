@@ -1,7 +1,7 @@
 #pragma once
 
 #include "Runtime/UI/Render/UIRenderer.h"
-#include "Runtime/UI/Render/UIRenderBatch.h"
+#include "Runtime/UI/Render/UiRenderBatch.h"
 
 // Records Canvas draw commands into a CPU batch consumed by UIPass on the render thread.
 class BatchedUIRenderer final : public UIRenderer

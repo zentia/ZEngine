@@ -80,7 +80,7 @@
 #include "Runtime/Function/Input/Touch.h"
 #include "pesapi.h"
 
-#include <eastl/string.h>
+#include <EASTL/string.h>
 
 #include <cstddef>
 #include <cstdio>

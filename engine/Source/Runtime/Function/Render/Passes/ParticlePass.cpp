@@ -13,7 +13,7 @@
 // 匹配来钉"这个 TU 已经解耦"的，注释里出现一次就会把契约蒙过去。
 #include "Runtime/Function/Render/RenderCamera.h"
 #include "Runtime/Function/Render/RenderSystem.h"
-#include "core/base/Macro.h"
+#include "Core/Base/Macro.h"
 #include "particle_emit_comp.h"
 #include "particle_kickoff_comp.h"
 #include "particle_simulate_comp.h"

@@ -3,7 +3,7 @@
 #include "Runtime/Core/Base/EngineSystem.h"
 #include "Runtime/Platform/Encoding/EncodingUtils.h"
 #include "Runtime/Project/ProjectInfo.h"
-#include "core/Log/LogSystem.h"
+#include "Core/Log/LogSystem.h"
 #include "rapidjson/document.h"
 #include "rapidjson/filereadstream.h"
 #include "rapidjson/prettywriter.h"

@@ -20,7 +20,7 @@
 class ObjectVsBroadPhaseLayerFilterImpl;
 class ObjectLayerPairFilterImpl;
 #else
-    #include "jolt/utils.h"
+    #include "Jolt/Utils.h"
     // `enableCollision` 要用 Jolt 的 sub-group 表。`jolt/utils.h` 不保证把它带进来，
     // 显式引一次 —— 少引一个头文件在别的机器上就是"换台机器编不过"。
     #include "Jolt/Physics/Collision/GroupFilterTable.h"

@@ -19,7 +19,7 @@
 #include "Runtime/Function/Render/WindowSystem.h"
 #include "Runtime/Resource/Asset/AssetManager.h"
 #include "ZSlate/Application/SlateApplication.h"
-#include "Runtime/UI/Render/UIGpuResources.h"  // GPU cache invalidation callback
+#include "Runtime/UI/Render/UiGpuResources.h"  // GPU cache invalidation callback
 #include "ZSlate/Widgets/Panels/SBorder.h"
 #include "ZSlate/Widgets/Layout/SBoxPanel.h"
 #include "ZSlate/Widgets/Input/SButton.h"

@@ -1,11 +1,11 @@
-#include "Runtime/UI/Render/UIGpuResources.h"
+#include "Runtime/UI/Render/UiGpuResources.h"
 
 #include "Runtime/UI/Core/Font.h"
 #include "Runtime/UI/Render/ZFontAtlas.h"
 #include "Runtime/Function/Render/Texture/Texture2D.h"
 #include "Runtime/Resource/Config/ConfigManager.h"
 #include "Runtime/Core/Base/SystemRegistry.h"
-#include "core/Log/LogSystem.h"
+#include "Core/Log/LogSystem.h"
 
 #include <algorithm>
 #include <cstdlib>

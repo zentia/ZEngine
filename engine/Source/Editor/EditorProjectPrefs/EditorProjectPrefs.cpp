@@ -2,7 +2,7 @@
 
 #include "Runtime/Core/Base/Macro.h"
 #include "Runtime/Project/ProjectInfo.h"
-#include "core/Log/LogSystem.h"
+#include "Core/Log/LogSystem.h"
 #include "rapidjson/istreamwrapper.h"
 #include "rapidjson/prettywriter.h"
 #include "rapidjson/stringbuffer.h"

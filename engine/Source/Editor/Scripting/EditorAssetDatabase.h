@@ -2,7 +2,7 @@
 
 #include "Runtime/BaseClasses/Object.h"
 
-#include <eastl/string.h>
+#include <EASTL/string.h>
 
 #include <vector>
 

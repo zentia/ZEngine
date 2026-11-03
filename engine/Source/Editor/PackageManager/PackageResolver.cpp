@@ -3,7 +3,7 @@
 #include "PackageManifest.h"
 
 #include "Runtime/Core/Base/Macro.h"
-#include "core/Log/LogSystem.h"
+#include "Core/Log/LogSystem.h"
 
 #include "rapidjson/document.h"
 #include "rapidjson/prettywriter.h"

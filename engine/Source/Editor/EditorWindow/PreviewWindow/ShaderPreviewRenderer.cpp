@@ -7,8 +7,8 @@
 #include "Runtime/Function/ShaderLab/ShaderLabParser.h"
 #include "Runtime/Project/ProjectInfo.h"
 #include "Runtime/Resource/ResType/Data/Material.h"
-#include "Runtime/UI/Render/UIGpuResources.h"  // AdoptExternalImageView (native ZSlate preview handle)
-#include "core/Log/LogSystem.h"
+#include "Runtime/UI/Render/UiGpuResources.h"  // AdoptExternalImageView (native ZSlate preview handle)
+#include "Core/Log/LogSystem.h"
 
 #include <algorithm>
 #include <array>

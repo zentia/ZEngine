@@ -1,7 +1,7 @@
 #include "Runtime/Core/YamlSerialize/YAMLWrite.h"
 
 #include "Runtime/Core/YamlSerialize/YamlText.h"
-#include "core/Log/LogSystem.h"
+#include "Core/Log/LogSystem.h"
 
 const TextTransferTraits<YAMLWrite>::InternalNodeRef TextTransferTraits<YAMLWrite>::kInvalidNode = NULL;
 

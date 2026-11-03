@@ -8,7 +8,7 @@
 #include "Runtime/Function/Framework/Component/Component.h"
 #include "Runtime/Function/Framework/Component/Transform/Transform.h"
 
-#include <eastl/string.h>
+#include <EASTL/string.h>
 
 #include "EditorHistory.generated.h"
 

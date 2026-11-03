@@ -5,7 +5,7 @@
 
 #include "Runtime/Core/Base/EngineSystem.h"
 #include "Runtime/Project/ProjectInfo.h"
-#include "core/Log/LogSystem.h"
+#include "Core/Log/LogSystem.h"
 
 #include <chrono>
 #include <cstdlib>

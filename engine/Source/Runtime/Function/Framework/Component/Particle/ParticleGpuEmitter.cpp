@@ -6,7 +6,7 @@
 #include "Runtime/Function/Framework/Component/Transform/Transform.h"
 #include "Runtime/Function/Render/Particle/ParticleGpuRenderer.h"
 
-#include "core/Log/LogSystem.h"
+#include "Core/Log/LogSystem.h"
 
 ParticleGpuEmitter::ParticleGpuEmitter() = default;
 

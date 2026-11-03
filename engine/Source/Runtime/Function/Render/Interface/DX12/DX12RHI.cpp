@@ -8,7 +8,7 @@
 #include "Runtime/Function/Render/Interface/DX12/DX12RHIResource.h"
 #include "Runtime/Function/Render/Interface/DX12/DX12ShaderCompiler.h"
 #include "Runtime/Function/Render/WindowSystem.h"
-#include "Runtime/UI/Render/UIGpuResources.h"
+#include "Runtime/UI/Render/UiGpuResources.h"
 #include "Runtime/Project/ProjectInfo.h"
 #include <algorithm>
 #include <array>

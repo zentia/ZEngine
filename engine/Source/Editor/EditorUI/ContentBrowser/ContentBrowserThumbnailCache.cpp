@@ -8,7 +8,7 @@
 #include "Runtime/Core/Base/SystemRegistry.h"
 #include "Runtime/Function/Render/Texture/Texture2D.h"
 #include "Runtime/Resource/Asset/AssetManager.h"
-#include "Runtime/UI/Render/UIGpuResources.h"
+#include "Runtime/UI/Render/UiGpuResources.h"
 
 #include <filesystem>
 #include <string>

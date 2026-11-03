@@ -2,7 +2,7 @@
 
 #include "GPUParticle/ParticleGpuEmitter.h"
 
-#include "core/Log/LogSystem.h"   // LOG_ERROR(ZRender, ...) —— 与 SpineGpuRenderer.cpp:14 同一条路径
+#include "Core/Log/LogSystem.h"   // LOG_ERROR(ZRender, ...) —— 与 SpineGpuRenderer.cpp:14 同一条路径
 #include "Runtime/Core/Base/Macro.h"             // LOG_ERROR（与 SpineGpuRenderer.cpp:5 同款）
 #include "Runtime/Function/Render/Interface/RHI.h"
 #include "Runtime/Function/Render/RenderSystem.h"   // ZRender 日志分类

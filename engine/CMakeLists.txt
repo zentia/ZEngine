@@ -224,7 +224,17 @@ if(ZENGINE_USE_VULKAN)
     # find_package 失败不致命：窗口层 .cpp 有 Z_PLATFORM_LINUX && !__EMSCRIPTEN__
     # 守卫，缺 X11 时该 TU 编译为空；但链接期需要这些库，故找到才启用窗口层。
     find_package(X11 REQUIRED)
-    find_package(Xrandr REQUIRED)
+    # Xrandr：libXrandr 由 FindX11 统一探测，并在找到时创建 X11::Xrandr 导入目标。
+    # 发行版的 libxrandr-dev 只提供 pkg-config 文件，并不安装 XrandrConfig.cmake，
+    # 所以裸的 find_package(Xrandr REQUIRED) 在 Ubuntu / Debian 上必然失败（它会
+    # 退化到 config 模式去找 XrandrConfig.cmake）。先尝试 config 模式以兼容确实
+    # 提供 config 包的机器，再退回 FindX11 的探测结果。
+    find_package(Xrandr QUIET)
+    if(NOT TARGET X11::Xrandr)
+      message(FATAL_ERROR
+        "Xrandr not found, but the Linux X11 window layer needs it. "
+        "Install the Xrandr development package (Debian/Ubuntu: libxrandr-dev).")
+    endif()
     set(ZENGINE_LINUX_X11 ON)
     message(STATUS "Linux: X11 window layer + xlib surface (X11 ${X11_VERSION})")
   else()

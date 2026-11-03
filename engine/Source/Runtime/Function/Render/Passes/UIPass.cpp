@@ -4,10 +4,10 @@
 #include "Runtime/Function/Render/Interface/RHI.h"
 #include "Runtime/UI/Render/BatchedUIRenderer.h"
 #include "Runtime/UI/UISystem.h"
-#include "Runtime/UI/Render/UIRenderBatch.h"
-#include "Runtime/UI/Render/UIGpuResources.h"
+#include "Runtime/UI/Render/UiRenderBatch.h"
+#include "Runtime/UI/Render/UiGpuResources.h"
 #include "Runtime/UI/Core/WindowUI.h"
-#include "core/Log/LogSystem.h"
+#include "Core/Log/LogSystem.h"
 
 #include <cstddef>
 #include <cstring>

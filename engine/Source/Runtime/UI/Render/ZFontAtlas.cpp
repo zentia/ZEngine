@@ -1,6 +1,6 @@
 #include "Runtime/UI/Render/ZFontAtlas.h"
 
-#include "core/Log/LogSystem.h"
+#include "Core/Log/LogSystem.h"
 
 #include <algorithm>
 #include <cmath>

@@ -12,7 +12,7 @@
 #include <EASTL/unordered_map.h>
 #include <EASTL/unordered_set.h>
 #include <EASTL/vector.h>
-#include <eastl/string.h>
+#include <EASTL/string.h>
 
 // ============================================================================
 // Standard Library Headers

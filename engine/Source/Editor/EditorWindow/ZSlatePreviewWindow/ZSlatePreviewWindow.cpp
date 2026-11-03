@@ -21,7 +21,7 @@
 #include "ZSlate/Widgets/SImage.h"
 #include "ZSlate/Widgets/Layout/SScrollBox.h"
 #include "ZSlate/Widgets/Text/STextBlock.h"
-#include "Runtime/UI/Render/UIGpuResources.h"  // EnsureTexture2D (native texture preview)
+#include "Runtime/UI/Render/UiGpuResources.h"  // EnsureTexture2D (native texture preview)
 
 #include <algorithm>
 #include <cstdio>

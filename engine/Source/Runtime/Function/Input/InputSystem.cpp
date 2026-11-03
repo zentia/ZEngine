@@ -4,7 +4,7 @@
 #include "Runtime/Function/Render/RenderCamera.h"
 #include "Runtime/Function/Render/RenderSystem.h"
 #include "Runtime/Function/Render/WindowSystem.h"
-#include "core/base/Macro.h"
+#include "Core/Base/Macro.h"
 
 #include "Runtime/Function/Input/KeyCodes.h"
 

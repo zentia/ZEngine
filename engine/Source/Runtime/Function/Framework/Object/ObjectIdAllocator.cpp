@@ -1,6 +1,6 @@
 #include "Runtime/Function/Framework/Object/ObjectIdAllocator.h"
 
-#include "core/base/Macro.h"
+#include "Core/Base/Macro.h"
 
 std::atomic<GObjectID> ObjectIDAllocator::m_NextId {0};
 

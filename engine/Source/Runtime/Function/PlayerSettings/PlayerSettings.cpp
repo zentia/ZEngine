@@ -1,7 +1,7 @@
 #include "PlayerSettings.h"
 
 #include "Runtime/Core/Base/Macro.h"
-#include "core/Log/LogSystem.h"
+#include "Core/Log/LogSystem.h"
 #include "rapidjson/document.h"
 #include "rapidjson/istreamwrapper.h"
 #include "rapidjson/prettywriter.h"

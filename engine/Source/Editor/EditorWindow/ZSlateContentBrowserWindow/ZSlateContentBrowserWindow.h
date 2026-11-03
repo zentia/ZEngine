@@ -8,7 +8,7 @@
 #include "Runtime/UI/Render/UIRenderer.h"
 #include "ZSlate/Application/SlateInput.h"
 #include "ZSlate/Core/SlateGeometry.h"  // Vector2
-#include "function/framework/Object/ObjectIdAllocator.h"
+#include "Function/Framework/Object/ObjectIdAllocator.h"
 
 #include <EASTL/string.h>
 #include <EASTL/unordered_map.h>

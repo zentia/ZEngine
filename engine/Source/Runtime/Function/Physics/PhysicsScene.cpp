@@ -39,7 +39,7 @@
 // `GetConstraintToBody*Matrix` 都在这一层）。别指望被上面那些头文件顺带引进来。
 #include "Jolt/Physics/Constraints/TwoBodyConstraint.h"
 #include "Runtime/Resource/ResType/Components/RigidBody.h"
-#include "core/base/Macro.h"
+#include "Core/Base/Macro.h"
 
 #include <unordered_map>
 #include <utility>

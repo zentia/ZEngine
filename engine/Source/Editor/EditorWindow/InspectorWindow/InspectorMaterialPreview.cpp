@@ -4,7 +4,7 @@
 
 #include "Editor/EditorWindow/PreviewWindow/PreviewRaster.h"
 #include "Runtime/Core/Math/MathHeaders.h"
-#include "Runtime/UI/Render/UIGpuResources.h"
+#include "Runtime/UI/Render/UiGpuResources.h"
 
 #include <algorithm>
 #include <array>

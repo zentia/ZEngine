@@ -20,7 +20,7 @@
 
 #include "Runtime/Function/Render/Interface/RHI.h"
 #include "Runtime/UI/Render/BatchedUIRenderer.h"
-#include "Runtime/UI/Render/UIRenderBatch.h"
+#include "Runtime/UI/Render/UiRenderBatch.h"
 
 #include "ZSlate/Backend/SlateUIRendererBackend.h"  // ISlateRenderer
 

@@ -8,8 +8,8 @@
 #include "ZSlate/Backend/SlateUIRendererBackend.h"
 #include "Runtime/Function/Render/WindowSystem.h"
 #include "Runtime/UI/Core/UITypes.h"
-#include "Runtime/UI/Render/UIGpuResources.h"
-#include "core/Log/LogSystem.h"
+#include "Runtime/UI/Render/UiGpuResources.h"
+#include "Core/Log/LogSystem.h"
 
 #if defined(_WIN32)
     #include "Runtime/Function/Render/Interface/DX12/DX12RHI.h"

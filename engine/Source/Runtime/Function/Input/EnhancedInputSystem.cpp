@@ -1,7 +1,7 @@
 #include "Runtime/Function/Input/EnhancedInputSystem.h"
 
 #include "Runtime/Function/Render/WindowSystem.h"
-#include "core/base/Macro.h"
+#include "Core/Base/Macro.h"
 
 #include <algorithm>
 #include "Runtime/Function/Input/KeyCodes.h"

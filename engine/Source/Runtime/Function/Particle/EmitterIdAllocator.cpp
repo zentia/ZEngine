@@ -1,6 +1,6 @@
 #include "Runtime/Function/Particle/EmitterIdAllocator.h"
 
-#include "core/base/Macro.h"
+#include "Core/Base/Macro.h"
 
 std::atomic<ParticleEmitterID> ParticleEmitterIDAllocator::m_NextId {0};
 

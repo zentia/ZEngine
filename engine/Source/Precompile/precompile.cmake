@@ -2,7 +2,11 @@
 # Generate engine_log.h at configure time so it exists before the build starts
 # This ensures the file exists even after a clean configure (git clean -xfd)
 set(BQLOG_CONFIG_FILE "${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/bq_log_category_config.ini")
-set(BQLOG_OUTPUT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/Source/Runtime/Core/log/generated")
+# NOTE: the on-disk directory is `Core/Log/` (capital L). A lowercase `log` only
+# works on case-insensitive filesystems; on Linux it creates a parallel
+# `Core/log/` tree and LogSystem.h's relative `#include "generated/engine_log.h"`
+# then fails to resolve.
+set(BQLOG_OUTPUT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/Source/Runtime/Core/Log/generated")
 set(BQLOG_CLASS_NAME "engine_log")
 
 if(EXISTS "${BQLOG_CONFIG_FILE}")

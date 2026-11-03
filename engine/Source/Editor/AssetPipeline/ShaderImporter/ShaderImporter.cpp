@@ -10,7 +10,7 @@
 #include "Runtime/Resource/Asset/AssetManager.h"
 #include "Runtime/Resource/ResType/Data/Material.h"
 #include "Runtime/Resource/ResType/Data/Shader.h"
-#include "core/Log/LogSystem.h"
+#include "Core/Log/LogSystem.h"
 
 #include <algorithm>
 #include <cctype>

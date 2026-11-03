@@ -480,13 +480,9 @@ namespace Z
 
 #else
 
-namespace Z
-{
-    void RenderDocAPI::Init(const RenderDocInitParams&) {}
-    bool RenderDocAPI::IsInstalled() { return false; }
-    void RenderDocAPI::LoadModule() {}
-    RENDERDOC_API_1_0_0* RenderDocAPI::Get() { return nullptr; }
-    const char* RenderDocAPI::GetModulePath() { return ""; }
-}  // namespace Z
+// Non-Windows: RenderDocAPI.h is empty (the class is declared only for Win32),
+// so there is nothing to define here. An earlier stub block referenced
+// RenderDocAPI / RENDERDOC_API_1_0_0, which do not exist on this path and broke
+// the Linux/macOS build. Keep this translation unit empty instead.
 
 #endif

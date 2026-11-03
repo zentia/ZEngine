@@ -19,7 +19,7 @@
 #include "Runtime/Function/Render/Spine/SpineGpuRenderer.h"
 #include "Runtime/Project/ProjectInfo.h"
 #include "Runtime/Resource/Asset/AssetManager.h"
-#include "core/Log/LogSystem.h"
+#include "Core/Log/LogSystem.h"
 
 #include <algorithm>
 #include <cctype>

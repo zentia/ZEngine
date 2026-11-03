@@ -10,7 +10,7 @@
 #include "Editor/EditorUI/ContentBrowser/ContentBrowserHelpers.h"
 #include "Editor/Platform/Interface/EditorUtility.h"
 #include "Runtime/Project/ProjectInfo.h"
-#include "core/Log/LogSystem.h"
+#include "Core/Log/LogSystem.h"
 #include "Runtime/Core/Math/Vector3.h"
 #include "Runtime/Function/Framework/World/WorldManager.h"
 

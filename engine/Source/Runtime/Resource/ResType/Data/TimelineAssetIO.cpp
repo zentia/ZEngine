@@ -4,7 +4,7 @@
 #include "Runtime/Core/Base/SystemRegistry.h"
 #include "Runtime/Resource/Asset/AssetManager.h"
 #include "Runtime/Resource/ResType/Data/TimelineAsset.h"
-#include "core/Log/LogSystem.h"
+#include "Core/Log/LogSystem.h"
 
 #include <unordered_set>
 #include <utility>

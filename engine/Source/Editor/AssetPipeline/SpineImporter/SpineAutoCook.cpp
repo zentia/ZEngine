@@ -3,7 +3,7 @@
 #include "Runtime/Function/Framework/Component/Spine/SpineRenderer.h"
 #include "GPUSpine/SpineGpuAssetFile.h"
 #include "GPUSpine/SpineGpuFormat.h"
-#include "core/Log/LogSystem.h"
+#include "Core/Log/LogSystem.h"
 
 #include <algorithm>
 #include <cctype>

@@ -3,7 +3,7 @@
 #include "Runtime/Core/Base/Macro.h"
 #include "Runtime/Function/Animation/AnimationLoader.h"
 #include "Runtime/Function/Animation/Skeleton.h"
-#include "resource/ResType/Data/BoneBlendMask.h"
+#include "Resource/ResType/Data/BoneBlendMask.h"
 
 #include <algorithm>
 #include <cmath>

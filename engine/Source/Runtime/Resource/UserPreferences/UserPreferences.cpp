@@ -2,7 +2,7 @@
 
 #include "Runtime/Function/PlayerSettings/PlayerSettings.h"
 #include "Runtime/Platform/Encoding/EncodingUtils.h"
-#include "core/Log/LogSystem.h"
+#include "Core/Log/LogSystem.h"
 #include "rapidjson/filereadstream.h"
 #include "rapidjson/prettywriter.h"
 

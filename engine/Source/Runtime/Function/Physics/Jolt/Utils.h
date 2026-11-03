@@ -2,10 +2,10 @@
 
 #include "Jolt/Jolt.h"
 #include "Jolt/Physics/Collision/BroadPhase/BroadPhaseLayer.h"
-#include "core/Math/Matrix4.h"
-#include "core/Math/Quaternion.h"
-#include "core/Math/Vector3.h"
-#include "core/base/Macro.h"
+#include "Core/Math/Matrix4.h"
+#include "Core/Math/Quaternion.h"
+#include "Core/Math/Vector3.h"
+#include "Core/Base/Macro.h"
 
 namespace JPH
 {
