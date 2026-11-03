@@ -1,3 +1,33 @@
+// Vulkan-Headers 1.3.x+ no longer auto-defines VK_USE_PLATFORM_XLIB_KHR on
+// Linux (Ubuntu 24.04 ships 1.3.275), so the xlib surface entry points used at
+// the bottom of this file only exist when the macro is defined BEFORE the first
+// <vulkan/vulkan.h>. Defining it build-wide is not an option: vulkan_xlib.h
+// then drags <X11/Xlib.h> into every TU that includes Vulkan, and Xlib's
+// `Bool` / `None` / `Status` macros break rapidjson and the STL. Keep it local
+// to the one TU that actually creates the surface, and drop the colliding
+// macros right after.
+#if defined(Z_PLATFORM_LINUX) && !defined(__EMSCRIPTEN__)
+    #ifndef VK_USE_PLATFORM_XLIB_KHR
+        #define VK_USE_PLATFORM_XLIB_KHR 1
+    #endif
+    #include <X11/Xlib.h>
+    #undef Bool
+    #undef None
+    #undef Status
+    #undef Success
+    #undef Always
+    #undef Above
+    #undef Below
+    #undef True
+    #undef False
+    #undef Complex
+    #undef Convex
+    #undef Font
+    #undef Pick
+    #undef MIN
+    #undef MAX
+#endif
+
 #include "Runtime/Function/Render/Interface/Vulkan/VulkanRHI.h"
 
 #include "Runtime/Function/Render/Interface/RHIFactory.h"

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <filesystem>
+
 #include "Runtime/BaseClasses/Object.h"
 #include "Runtime/BaseClasses/Type.h"
 class EditorResources

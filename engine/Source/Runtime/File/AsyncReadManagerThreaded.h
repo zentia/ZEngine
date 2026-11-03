@@ -1,4 +1,6 @@
 #pragma once
+
+#include <filesystem>
 #include "AsyncReadManager.h"
 #include "OpenFileCache.h"
 #include "Runtime/Core/Base/EngineSystem.h"

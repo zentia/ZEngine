@@ -1,5 +1,7 @@
 #pragma once
 
+#include <filesystem>
+
 #include "Editor/AssetPipeline/AssetImporter.h"
 #include "Editor/AssetPipeline/AnimationImporter/AnimationImporterSettings.h"
 

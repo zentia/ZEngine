@@ -1,5 +1,7 @@
 #pragma once
 
+#include <filesystem>
+
 #include "Runtime/Core/Serialize/SerializedFile.h"
 #include "Runtime/Resource/Asset/AssetManager.h"
 #include "SerializationCaching/MemoryCacheReader.h"

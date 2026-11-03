@@ -1,5 +1,8 @@
 #pragma once
 
+#include <atomic>
+#include <filesystem>
+
 #include "Runtime/BaseClasses/Type.h"
 #include "Runtime/Core/Serialize/SerializationMetaFlags.h"
 #include "Runtime/Core/Thread/AtomicRefCounter.h"

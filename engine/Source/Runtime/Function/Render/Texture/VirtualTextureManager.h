@@ -1,5 +1,7 @@
 #pragma once
 
+#include <condition_variable>
+
 #include "Runtime/Core/Math/AxisAligned.h"
 #include "Runtime/Function/Render/MaterialCustomParamSlots.h"
 #include "Runtime/Function/Render/RenderResourceBase.h"

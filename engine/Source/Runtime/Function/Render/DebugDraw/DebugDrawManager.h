@@ -1,5 +1,7 @@
 #pragma once
 
+#include <mutex>
+
 #include "DebugDrawBuffer.h"
 #include "DebugDrawContext.h"
 #include "DebugDrawFont.h"

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <condition_variable>
+
 #include "Runtime/Function/Render/RenderResourceBase.h"
 #include "TextureStreamingTypes.h"
 

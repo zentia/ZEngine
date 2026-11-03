@@ -1,4 +1,6 @@
 #pragma once
+
+#include <atomic>
 #include "Runtime/Core/Memory/MemoryManager.h"
 #include "Runtime/Function/CommonStringTable/CommonString.h"
 #include "SerializationMetaFlags.h"

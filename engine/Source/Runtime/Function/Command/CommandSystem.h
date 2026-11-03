@@ -1,5 +1,7 @@
 #pragma once
 
+#include <filesystem>
+
 #include "Runtime/Core/Base/EngineSystem.h"
 #include "Runtime/Core/Base/Macro.h"
 #include "Runtime/Function/Command/CommandParser.h"

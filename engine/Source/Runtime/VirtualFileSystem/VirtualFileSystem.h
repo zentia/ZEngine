@@ -1,4 +1,6 @@
 #pragma once
+
+#include <filesystem>
 #include "VirtualFileSystemTypes.h"
 
 class FileSystemEntry

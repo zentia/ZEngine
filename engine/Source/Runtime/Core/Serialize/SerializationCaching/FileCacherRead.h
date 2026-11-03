@@ -1,5 +1,7 @@
 #pragma once
 
+#include <filesystem>
+
 #include "CacheReaderBase.h"
 #include "Runtime/File/AsyncReadManager.h"
 

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <filesystem>
+
 #include "Editor/AssetPipeline/AssetImporter.h"
 #include "ShaderImporterSetting.h"
 

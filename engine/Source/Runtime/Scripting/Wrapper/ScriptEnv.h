@@ -1,4 +1,6 @@
 #pragma once
+
+#include <filesystem>
 #include "pesapi.h"
 
 #include "Runtime/Function/Framework/Coroutine/ScriptYield.h"

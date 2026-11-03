@@ -1,5 +1,7 @@
 #pragma once
 
+#include <filesystem>
+
 #include "Runtime/VirtualFileSystem/VirtualFileSystemTypes.h"
 
 struct AsyncReadCommand

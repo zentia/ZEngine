@@ -21,7 +21,7 @@
 #include <X11/keysym.h>
 #include <X11/Xatom.h>
 #include <X11/Xutil.h>
-#include <X11/Xrandr/Xrandr.h>   // 多显示器枚举（顺带覆盖 C7 的多屏子项）
+#include <X11/extensions/Xrandr.h>   // 多显示器枚举（顺带覆盖 C7 的多屏子项）
 
 #include <algorithm>
 #include <string>

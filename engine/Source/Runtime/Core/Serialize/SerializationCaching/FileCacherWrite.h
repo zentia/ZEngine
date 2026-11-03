@@ -1,4 +1,6 @@
 #pragma once
+
+#include <filesystem>
 #include "CacheWriterBase.h"
 #include "Runtime/File/File.h"
 

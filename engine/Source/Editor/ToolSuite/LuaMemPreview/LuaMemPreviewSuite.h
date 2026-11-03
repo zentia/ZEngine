@@ -1,5 +1,7 @@
 #pragma once
 
+#include <filesystem>
+
 #include "Editor/ToolSuite/ToolSuite.h"
 
 namespace ZEditor

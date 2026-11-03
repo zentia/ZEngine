@@ -1,3 +1,5 @@
+#include <filesystem>
+
 #include "Runtime/Resource/Asset/AssetManager.h"
 
 class RuntimeAssetManager : public AssetManager
