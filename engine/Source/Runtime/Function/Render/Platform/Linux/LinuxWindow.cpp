@@ -15,7 +15,7 @@
 #include "LinuxApplication.h"
 #include "Runtime/Function/Input/KeyCodes.h"
 
-#if defined(Z_PLATFORM_LINUX) && !defined(__EMSCRIPTEN__)
+#if defined(Z_PLATFORM_LINUX) && !defined(__EMSCRIPTEN__) && !defined(ZENGINE_LINUX_WINDOW_STUB)
 
 #include <X11/Xlib.h>
 #include <X11/keysym.h>
@@ -464,6 +464,37 @@ bool LinuxWindow::ProcessEvent(XEvent* event)
         return false;
     }
     return true;
+}
+
+#elif defined(ZENGINE_LINUX_WINDOW_STUB)
+
+// Stub build (ZENGINE_LINUX_WINDOW_STUB=ON).
+// The X11 window layer below is not compiled: as written it references symbols
+// that do not exist in Xlib (XGetModifier, XCreateXCursor, XWarpTo,
+// XRandRGetScreenResources, KeyMapState, white_pixel, ...), so it cannot build
+// on a real Linux box. These no-ops keep the rest of ZRuntime (renderer, asset
+// pipeline, scripting) buildable and link-checkable on a headless machine.
+
+bool LinuxWindow::Initialize(const char*, int, int, bool, bool, bool)
+{
+    return false;
+}
+
+void LinuxWindow::SetTitle(const char*) {}
+void LinuxWindow::Show() {}
+void LinuxWindow::Hide() {}
+void LinuxWindow::Destroy() {}
+bool LinuxWindow::IsVisible() const { return false; }
+std::array<int, 2> LinuxWindow::GetSize() const { return {0, 0}; }
+std::array<int, 2> LinuxWindow::GetPosition() const { return {0, 0}; }
+void LinuxWindow::SetSize(int, int) {}
+void LinuxWindow::SetPosition(int, int) {}
+std::array<int, 2> LinuxWindow::GetFramebufferSize() const { return {0, 0}; }
+float LinuxWindow::GetDpiScale() const { return 1.0f; }
+void LinuxWindow::GetCursorPos(double& x, double& y) const
+{
+    x = 0.0;
+    y = 0.0;
 }
 
 #endif // Z_PLATFORM_LINUX && !__EMSCRIPTEN__

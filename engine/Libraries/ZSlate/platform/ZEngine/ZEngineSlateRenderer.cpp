@@ -2,7 +2,7 @@
 
 // Now we can include ZEngine headers
 #include "Runtime/Core/Math/Vector2.h"
-#include "Runtime/UI/Render/UIGpuResources.h"
+#include "Runtime/UI/Render/UiGpuResources.h"
 #include "Runtime/UI/Render/UIRenderer.h"
 
 namespace ZSlate

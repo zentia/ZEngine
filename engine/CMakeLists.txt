@@ -237,6 +237,16 @@ if(ZENGINE_USE_VULKAN)
     endif()
     set(ZENGINE_LINUX_X11 ON)
     message(STATUS "Linux: X11 window layer + xlib surface (X11 ${X11_VERSION})")
+    # The X11 window layer cannot be compiled as written on a real Linux box: it
+    # calls Xlib entry points that do not exist (XGetModifier, XCreateXCursor,
+    # XWarpTo, XRandRGetScreenResources, KeyMapState, white_pixel, ...). Turn this
+    # on to build the rest of ZRuntime headlessly with a no-op window layer.
+    option(ZENGINE_LINUX_WINDOW_STUB
+      "Compile the Linux X11 window layer as no-op stubs (headless builds)" OFF)
+    if(ZENGINE_LINUX_WINDOW_STUB)
+      add_compile_definitions(ZENGINE_LINUX_WINDOW_STUB)
+      message(STATUS "Linux: X11 window layer compiled as stubs (ZENGINE_LINUX_WINDOW_STUB=ON)")
+    endif()
   else()
     message(FATAL_ERROR "Critical configuration VULKAN_SDK environment variable not set")
   endif()

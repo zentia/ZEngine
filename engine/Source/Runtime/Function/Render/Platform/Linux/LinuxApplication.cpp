@@ -4,7 +4,7 @@
 
 #include "LinuxApplication.h"
 
-#if defined(Z_PLATFORM_LINUX) && !defined(__EMSCRIPTEN__)
+#if defined(Z_PLATFORM_LINUX) && !defined(__EMSCRIPTEN__) && !defined(ZENGINE_LINUX_WINDOW_STUB)
 
 #include <X11/Xlib.h>
 #include <X11/Xatom.h>
@@ -392,5 +392,39 @@ GenericApplication::MonitorInfo LinuxApplication::GetMonitorWorkAreaForWindow(Ge
     XRRFreeScreenResources(res);
     return GetPrimaryMonitorWorkArea();
 }
+
+#elif defined(ZENGINE_LINUX_WINDOW_STUB)
+
+// Stub build (ZENGINE_LINUX_WINDOW_STUB=ON) - see LinuxWindow.cpp.
+
+LinuxApplication::LinuxApplication() = default;
+LinuxApplication::~LinuxApplication() = default;
+
+bool LinuxApplication::Initialize(const char*, int, int) { return false; }
+void LinuxApplication::Shutdown() {}
+void LinuxApplication::PollEvents() {}
+void LinuxApplication::SetTitle(const char*) {}
+void LinuxApplication::ShowMainWindow() {}
+void LinuxApplication::SetCursorMode(bool) {}
+void LinuxApplication::SetClipboardText(const char*) {}
+std::string LinuxApplication::GetClipboardText() { return {}; }
+void* LinuxApplication::CreateStandardCursor(int) { return nullptr; }
+void LinuxApplication::SetCursor(void*, void*) {}
+double LinuxApplication::GetTime() { return 0.0; }
+
+GenericWindow* LinuxApplication::CreateChildWindow(const char*, int, int, int, int, bool)
+{
+    return nullptr;
+}
+
+void LinuxApplication::DestroyChildWindow(GenericWindow*) {}
+
+GenericWindow* LinuxApplication::GetMainWindow() const { return nullptr; }
+std::array<int, 2> LinuxApplication::GetFramebufferSize() const { return {0, 0}; }
+
+int LinuxApplication::GetMonitorCount() const { return 0; }
+GenericApplication::MonitorInfo LinuxApplication::GetPrimaryMonitorWorkArea() const { return {}; }
+GenericApplication::MonitorInfo LinuxApplication::GetMonitorWorkArea(int) const { return {}; }
+GenericApplication::MonitorInfo LinuxApplication::GetMonitorWorkAreaForWindow(GenericWindow*) const { return {}; }
 
 #endif // Z_PLATFORM_LINUX && !__EMSCRIPTEN__
