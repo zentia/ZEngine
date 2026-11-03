@@ -537,6 +537,21 @@ namespace
         "    damper: number;\n"
         "}\n"
         "\n"
+        // Unity 的 `JointDrive`（`ConfigurableJoint.xDrive` / `.angularXDrive` /
+        // ...）。与 `JointMotor` / `JointSpring` 三个并存：追的量不同（速度 /
+        // 角度 / 位置+最大出力）。
+        //
+        // ⚠️ `positionSpring` <= 0 就是"这个轴没有驱动" —— 没有单独的开关，与
+        // Unity 一致。
+        "declare interface JointDrive {\n"
+        "    /** 位置弹簧的刚度（牛/米，旋转轴是牛·米/弧度）。 */\n"
+        "    positionSpring: number;\n"
+        "    /** 阻尼。 */\n"
+        "    positionDamper: number;\n"
+        "    /** 最大出力（牛 / 牛·米）。默认 Number.MAX_VALUE，即不限。 */\n"
+        "    maximumForce: number;\n"
+        "}\n"
+        "\n"
         // 关节族：引擎里的类叫 `HingeJointComponent` 等（与 RigidBodyComponent
         // / CameraComponent 一族对齐），Unity 叫 `HingeJoint` / `FixedJoint` /
         // `SpringJoint`。与 `Rigidbody` 同一条例子的第二、三、四、五例。
@@ -552,6 +567,8 @@ namespace
         "declare type SliderJoint = SliderJointComponent;\n"
         "\n"
         "declare type CharacterJoint = CharacterJointComponent;\n"
+        "\n"
+        "declare type ConfigurableJoint = ConfigurableJointComponent;\n"
         "\n"
         "declare interface RaycastHit {\n"
         "    valid: boolean;\n"

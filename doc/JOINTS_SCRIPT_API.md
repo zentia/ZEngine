@@ -214,6 +214,101 @@ Unity 里"沿一根轴滑动"要用 `ConfigurableJoint` 把 5 个自由度锁掉
 而"活塞 / 抽屉 / 电梯"这种需求用它比用 `ConfigurableJoint` 少写十行、也少十个能
 写错的地方。等 `ConfigurableJoint` 补上之后它会保留（它是那份 API 的一个预设）。
 
+## 6b. ConfigurableJointComponent（六自由度）
+
+Unity 的 `ConfigurableJoint` 是"其他关节的超集"：六个自由度**逐个**配模式、逐轴
+配限位与驱动。后端是 Jolt 的 `SixDOFConstraint`，两者的轴模型一致 ——
+`axis` = 关节参考系 X、`secondaryAxis` = Y、第三条取叉乘（Unity 文档也是这么说
+的）。
+
+```typescript
+declare enum ConfigurableJointMotion { Free = 0, Limited = 1, Locked = 2 }
+declare interface JointDrive {
+    positionSpring: number;   // 刚度（牛/米，旋转轴是 牛·米/弧度）
+    positionDamper: number;
+    maximumForce: number;     // 默认 Number.MAX_VALUE = 不限
+}
+```
+
+| Unity | 本引擎 | 备注 |
+| --- | --- | --- |
+| `xMotion` / `yMotion` / `zMotion` | 同名 | 六个 setter，不是 `SetMotion(axis, mode)` —— 按轴编号写的版本在 TS 里要传 number，拼错也能过编译 |
+| `angularXMotion` / `angularYMotion` / `angularZMotion` | 同名 | |
+| `secondaryAxis` | 同名 | **改它要重建**（参考系是构造时烘进去的） |
+| `linearLimit.limit` | `linearLimit`（米，>= 0） | 三个平移轴**共用**且对称 —— Unity 也是"离原点最大距离，每轴各自算" |
+| `lowAngularXLimit` / `highAngularXLimit` | 同名 | 只有 X 能不对称；必须跨 0，用 `SetAngularXLimits(low, high)` 一次设 |
+| `angularYLimit` / `angularZLimit` | 同名 | 只能对称，所以只收半角 |
+| `linearLimitSpring` | 同名 | 只有**平移**限位有弹簧（见下） |
+| `xDrive` / `yDrive` / `zDrive` | 同名 | |
+| `angularXDrive` / `angularYZDrive` | 同名 | `angularYZDrive` 一份管 Y、Z 两轴 |
+| `targetPosition` / `targetVelocity` / `targetAngularVelocity` / `targetRotation` | 同名 | |
+
+### ⚠️ 六个轴的模式**都可以**运行时改，参考系不行
+
+`SixDOFConstraint` 有 `SetTranslationLimits` / `SetRotationLimits` /
+`SetMotorState`，所以改 `xMotion` 立即生效、不重建。只有 `axis` 与
+`secondaryAxis` 是烘进 `mConstraintToBody1/2` 的，改它们走 `RebuildJoint()`。
+
+### ⚠️ "Locked" 在 Jolt 里是一个**反序**区间
+
+`MakeFixedAxis` 写的是 `min = FLT_MAX / max = -FLT_MAX`，判据是
+`IsFixedAxis() { return min >= max; }`。所以：
+
+* `GetJointAxisMotion` **先判 Free / Fixed，再看数值** —— 倒过来会把 Locked 读成
+  Limited；
+* `CreateJoint` 拒掉 `min > max` 的 Limited 区间：那和 Locked 是两种写法却一个
+  意思，正是"我明明写了区间却被当成焊死"这类最难查的错。
+
+### ⚠️ 驱动"开不开"由 `positionSpring > 0` 决定
+
+没有单独的开关，与 Unity 一致（`spring = 0` 就是没有驱动）。Jolt 那侧对应
+`EMotorState::Off` vs `PositionAndVelocity`：
+
+```
+F = k * (target - cur) + c * (targetVelocity - cur)
+```
+
+`targetVelocity` 为 0 时正好退化成 Unity 的 spring/damper 语义，所以 `targetVelocity`
+不是"另一套电机"，而是同一条公式里的前馈项。
+
+⚠️ 电机关着时**也把弹簧参数写下去**：否则"设了 spring=0"和"从没设过"在
+`GetJointAxisDrive` 上分不出来。建关节时六个电机一律初始化成
+`StiffnessAndDamping(0, 0)` —— Jolt 默认是 `{FrequencyAndDamping, 2 Hz, 1}`，那是
+一组**看着像开着**的参数，不清零的话读回来会报出一个脚本从没写过的 2.0。
+
+### ⚠️ 摆动型用 Pyramid，不是 Jolt 默认的 Cone
+
+`SixDOFConstraintSettings::mSwingType` 默认是 `Cone`，而 `UpdateRotationLimits` 在
+Cone 下会**强行**把 Y / Z 两轴改成对称并且只留 max（`mLimitMin[Y] = -mLimitMax[Y]`、
+`mLimitMax = max(0, ...)`）—— 锥本来就只有一个半径。Unity 的 `angularYLimit` /
+`angularZLimit` 却是各自独立的两个限位：写 Y=0.5 / Z=0.2 是完全正常的用法，Cone
+会把它悄悄改成 Y=Z=0.5。Pyramid 才是"两轴各自上下限"的模型。
+
+### ⚠️ 线性限位弹簧只有平移那三个轴有
+
+Jolt 的 `mLimitsSpringSettings` 只有 `NumTranslation` 个，源码注释写得很直白：
+*"Only soft translation limits are supported, soft rotation limits are not currently
+supported"*。所以 Unity 的 `angularXLimitSpring` / `angularYZLimitSpring` 在本引擎
+**不发布** —— 给了会静默无效，那正是这个引擎一贯避免的一类坑。
+
+### ⚠️ `targetRotation` 存的是 body space，Jolt 存的是 constraint space
+
+`SetTargetOrientationBS(q)` 内部存 `CS = B1⁻¹ * q * B2`。读回来必须反解成
+`q = B1 * CS * B2⁻¹`，否则"设进去再读出来"拿到另一个数 —— 而两个都是合法的四元
+数，看不出错。`mConstraintToBody*` 是 protected，公开侧只有
+`GetConstraintToBody*Matrix()`。
+
+### 刻意没有发布的 Unity 成员
+
+* `slerpDrive` —— Jolt 没有"整体球面插值驱动"。最接近的是三个旋转轴各一个位置
+  电机（`angularXDrive` / `angularYZDrive` 已覆盖），而 Unity 的 slerpDrive 启用时
+  还会**覆盖**那两个驱动；这种优先级关系猜出来的版本只在仿真里看得出错。
+* `angularXLimitSpring` / `angularYZLimitSpring` —— 见上。
+* `projectionMode` / `projectionDistance` / `projectionAngle` —— Jolt 用 Baumgarte
+  做位置求解，没有"投影"这套参数。
+* `configuredInWorldSpace` / `swapBodies` —— 都会让"已建好的关节"和"组件字段"分叉
+  （换了前者，之前设的 `axis` 全变成另一个意思），本引擎一律按宿主局部空间建。
+
 ## 7. 序列化
 
 所有作者态参数装在一个 `JointComponentRes` 里（`ZPROPERTY()`，基类持有，四个子类
@@ -236,7 +331,7 @@ setter**（改了要重建约束）。两条同名属性会让 ZHeaderTool 直�
 | `Joint.enableCollision` | 未实现 | Jolt 的约束不影响接触生成；要"两个刚体互不碰撞"得走 `GroupFilterTable` + 每个 body 一个 sub-group id，会动现有 body 的创建语义 |
 | `Joint.massScale` / `connectedMassScale` | 未实现 | Jolt 没有 per-constraint 质量缩放 |
 | `Joint.currentForce` / `currentTorque`（Vector3） | 未实现 | 只给了**模长**（`GetJointImpulse`）。每个约束的 lambda 活在自己的坐标系里，拼成 Vector3 会给出一个看着像世界矢量、其实不是的东西 |
-| `ConfigurableJoint` | 未实现 | 需要后端补 `SixDOFConstraint` |
+| `ConfigurableJoint` | **已实现**（第 6b 节） | — |
 | `CharacterJoint.enableProjection` / `projectionDistance` / `projectionAngle` | 未实现 | Jolt 没有"投影纠错"；布娃娃拉伸要靠缩短步长 / 加求解步数 |
 | `SoftJointLimit.bounciness` / `contactDistance` | 未实现 | 与 `JointLimits` 同一条取舍（第 4 节）：只给了裸的 `limit` |
 | `JointLimits.bounciness` 等 | 见第 4 节 | — |

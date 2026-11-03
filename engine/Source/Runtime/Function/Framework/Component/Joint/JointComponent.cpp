@@ -120,6 +120,12 @@ bool JointComponent::BuildJointDesc(PhysicsJointDesc& out_desc, uint32_t& out_ot
     out_desc.m_AxisB = world_axis;
     out_desc.m_PlaneAxisA = world_plane_axis;
     out_desc.m_PlaneAxisB = world_plane_axis;
+    // ConfigurableJoint 的参考系：X = axis，Y = secondaryAxis。零向量 / 与 X
+    // 平行都由后端 `PlaneAxisFor` 兜底（那里换成一条垂直轴），所以这里不拒 ——
+    // 它不决定关节存不存在，只决定三个方向怎么摆。
+    const Vector3 world_secondary_axis = (self_rotation * m_JointRes.m_SecondaryAxis).normalisedCopy();
+    out_desc.m_SecondaryAxisA = world_secondary_axis;
+    out_desc.m_SecondaryAxisB = world_secondary_axis;
     out_desc.m_AutoDetectPoint = false;
 
     FillJointLimits(out_desc);

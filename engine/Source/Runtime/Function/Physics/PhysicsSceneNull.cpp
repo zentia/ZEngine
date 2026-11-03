@@ -403,6 +403,50 @@ bool PhysicsScene::GetJointImpulse(uint32_t, float& out_linear_impulse, float& o
     return false;
 }
 
+bool PhysicsScene::SetJointAxisMotion(uint32_t, ConfigurableJointAxis, ConfigurableJointMotion, float, float)
+{
+    return false;
+}
+
+bool PhysicsScene::GetJointAxisMotion(uint32_t,
+                                      ConfigurableJointAxis,
+                                      ConfigurableJointMotion&,
+                                      float&,
+                                      float&) const
+{
+    return false;
+}
+
+bool PhysicsScene::SetJointAxisDrive(uint32_t, ConfigurableJointAxis, const JointDrive&)
+{
+    return false;
+}
+
+bool PhysicsScene::GetJointAxisDrive(uint32_t, ConfigurableJointAxis, JointDrive&) const
+{
+    return false;
+}
+
+bool PhysicsScene::SetJointTarget(uint32_t, const Vector3&, const Vector3&, const Vector3&, const Quaternion&)
+{
+    return false;
+}
+
+bool PhysicsScene::GetJointTarget(uint32_t, Vector3&, Vector3&, Vector3&, Quaternion&) const
+{
+    return false;
+}
+
+bool PhysicsScene::SetJointLinearLimitSpring(uint32_t, float, float)
+{
+    return false;
+}
+
+bool PhysicsScene::GetJointLinearLimitSpring(uint32_t, float&, float&) const
+{
+    return false;
+}
+
 bool PhysicsScene::SetJointSwingTwistLimits(uint32_t, float, float, float, float)
 {
     return false;

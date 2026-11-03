@@ -97,6 +97,7 @@
 #include "Runtime/Function/Framework/Component/Joint/SpringJointComponent.h"
 #include "Runtime/Function/Framework/Component/Joint/SliderJointComponent.h"
 #include "Runtime/Function/Framework/Component/Joint/CharacterJointComponent.h"
+#include "Runtime/Function/Framework/Component/Joint/ConfigurableJointComponent.h"
 #include "Runtime/Function/Framework/Component/Motor/MotorComponent.h"
 #include "Runtime/Function/Controller/CharacterController.h"
 #include "Runtime/Function/Physics/PhysicsScene.h"
@@ -169,6 +170,7 @@ template<> void RegisterKlass<FixedJointComponent>();
 template<> void RegisterKlass<SpringJointComponent>();
 template<> void RegisterKlass<SliderJointComponent>();
 template<> void RegisterKlass<CharacterJointComponent>();
+template<> void RegisterKlass<ConfigurableJointComponent>();
 template<> void RegisterKlass<Collider>();
 template<> void RegisterKlass<PlayerPrefs>();
 
@@ -2240,6 +2242,7 @@ namespace
         RegisterKlass<SpringJointComponent>();
         RegisterKlass<SliderJointComponent>();
         RegisterKlass<CharacterJointComponent>();
+        RegisterKlass<ConfigurableJointComponent>();
         RegisterKlass<Collider>();
         RegisterKlass<PlayerPrefs>();
         type_manager.InitializeAllTypes();
@@ -4456,6 +4459,422 @@ namespace
               "and the other one blocks it: one side turns at least 4x more than the other (not 'the whole range became free')");
 
         // =====================================================================
+        // 2c. ConfigurableJoint（六自由度）
+        // =====================================================================
+        // Jolt 的 `SixDOFConstraint` 与 Unity 的 `ConfigurableJoint` 轴模型一致：
+        // axis = 参考系 X、secondaryAxis = Y、第三条取叉乘（Unity 文档同样这么说）。
+
+        const uint32_t cfg_a = SpawnBox(*scene, Vector3(0.f, 110.f, 0.f), 0, false);
+        const uint32_t cfg_b = SpawnBox(*scene, Vector3(0.f, 112.f, 0.f), 0, true);
+        PhysicsJointDesc cfg_desc;
+        cfg_desc.m_Type = PhysicsJointType::configurable;
+        cfg_desc.m_BodyA = cfg_a;
+        cfg_desc.m_BodyB = cfg_b;
+        cfg_desc.m_PivotA = Vector3(0.f, 110.f, 0.f);
+        cfg_desc.m_PivotB = Vector3(0.f, 110.f, 0.f);
+        cfg_desc.m_AxisA = Vector3(1.f, 0.f, 0.f);
+        cfg_desc.m_AxisB = Vector3(1.f, 0.f, 0.f);
+        cfg_desc.m_SecondaryAxisA = Vector3(0.f, 1.f, 0.f);
+        cfg_desc.m_SecondaryAxisB = Vector3(0.f, 1.f, 0.f);
+        cfg_desc.m_AutoDetectPoint = false;
+        const uint32_t cfg_id = scene->CreateJoint(cfg_desc);
+        Check(cfg_id != s_InvalidJointId && scene->GetJointType(cfg_id, read_type) &&
+                  read_type == PhysicsJointType::configurable,
+              "CF0", "a configurable (six-DOF) joint can be created and reports its own type");
+
+        // 默认六轴全 Free —— 与 Jolt 的 `SixDOFConstraintSettings` 初值（±FLT_MAX）
+        // 一致，也和 Unity 里"刚 AddComponent 还没配"一样。
+        bool cfg_all_free = true;
+        for (int axis_index = 0; axis_index < kConfigurableAxisCount; ++axis_index)
+        {
+            ConfigurableJointMotion axis_motion = ConfigurableJointMotion::Locked;
+            float axis_lo = -1.f;
+            float axis_hi = -1.f;
+            if (!scene->GetJointAxisMotion(cfg_id, static_cast<ConfigurableJointAxis>(axis_index),
+                                           axis_motion, axis_lo, axis_hi) ||
+                axis_motion != ConfigurableJointMotion::Free)
+            {
+                cfg_all_free = false;
+            }
+        }
+        Check(cfg_all_free, "CF1",
+              "all six axes start Free (Jolt's own default, and Unity's fresh ConfigurableJoint)");
+
+        // 按类型拒绝 —— 对照组必须是一个**还活着**的关节（拆掉的那个会让
+        // `JointAt` 直接返回 nullptr，断言于是因为"不存在"而不是"类型不对"通过）。
+        Check(scene->GetJointType(fixed_id, read_type) && read_type == PhysicsJointType::fixed, "CF2",
+              "the control joint for the type refusal is a LIVE fixed joint (a removed one proves nothing)");
+        Check(!scene->SetJointAxisMotion(fixed_id, ConfigurableJointAxis::TranslationX,
+                                         ConfigurableJointMotion::Locked, 0.f, 0.f),
+              "CF2a", "a fixed joint refuses SetJointAxisMotion");
+        Check(!scene->SetJointAxisDrive(fixed_id, ConfigurableJointAxis::TranslationX, JointDrive()),
+              "CF2b", "and SetJointAxisDrive");
+        Check(!scene->SetJointLinearLimitSpring(fixed_id, 1.f, 1.f), "CF2c", "and SetJointLinearLimitSpring");
+        Vector3 cfg_dummy_vec = Vector3::ZERO;
+        Quaternion cfg_dummy_rot = Quaternion::IDENTITY;
+        Check(!scene->GetJointTarget(fixed_id, cfg_dummy_vec, cfg_dummy_vec, cfg_dummy_vec, cfg_dummy_rot),
+              "CF2d", "and GetJointTarget");
+
+        // --- 六个轴的模式与限位 ---------------------------------------------
+        ConfigurableJointMotion read_motion = ConfigurableJointMotion::Free;
+        float read_lo = -1.f;
+        float read_hi = -1.f;
+        Check(scene->SetJointAxisMotion(cfg_id, ConfigurableJointAxis::TranslationX,
+                                        ConfigurableJointMotion::Locked, 0.f, 0.f),
+              "CF3", "an axis can be switched to Locked at runtime (no rebuild needed)");
+        Check(scene->GetJointAxisMotion(cfg_id, ConfigurableJointAxis::TranslationX,
+                                        read_motion, read_lo, read_hi) &&
+                  read_motion == ConfigurableJointMotion::Locked,
+              "CF3a", "and reads back Locked");
+        // ⚠️ Jolt 的平移 / 旋转限位是 **Vec3 整体** setter：改一个轴必须先读回
+        // 另外两个。少了读改写，"改 X"会顺手把 Y / Z 也改掉 —— 而限位被改宽了
+        // 只在物理表现上看得出来，不报错。
+        Check(scene->GetJointAxisMotion(cfg_id, ConfigurableJointAxis::TranslationY,
+                                        read_motion, read_lo, read_hi) &&
+                  read_motion == ConfigurableJointMotion::Free,
+              "CF3b", "and TranslationY is still Free (a whole-Vec3 write without read-modify-write would clobber it)");
+
+        Check(scene->SetJointAxisMotion(cfg_id, ConfigurableJointAxis::TranslationZ,
+                                        ConfigurableJointMotion::Limited, -0.5f, 0.5f) &&
+                  scene->GetJointAxisMotion(cfg_id, ConfigurableJointAxis::TranslationZ,
+                                            read_motion, read_lo, read_hi) &&
+                  read_motion == ConfigurableJointMotion::Limited && Near(read_lo, -0.5f) &&
+                  Near(read_hi, 0.5f),
+              "CF4", "a Limited axis carries its range and reads it back");
+        // 区间写反在 Jolt 里是 `Locked` 的写法（`IsFixedAxis` 判 min >= max），
+        // 与脚本想要的"一个有区间的轴"是两回事 ⇒ 拒掉。
+        Check(!scene->SetJointAxisMotion(cfg_id, ConfigurableJointAxis::TranslationZ,
+                                         ConfigurableJointMotion::Limited, 0.5f, -0.5f),
+              "CF4a", "an inverted range is refused (in Jolt that spelling means Locked)");
+        // ⚠️ 上面走的是 **setter**。`CreateJoint` 那条路上也有一个同样的守卫，得
+        // 单独钉：少了它，desc 里的反序区间会被当成 Locked 建出来 —— 而
+        // "CreateJoint 返回了 id" 全程是绿的。
+        const uint32_t inv_a = SpawnBox(*scene, Vector3(0.f, 170.f, 0.f), 0, false);
+        const uint32_t inv_b = SpawnBox(*scene, Vector3(0.f, 172.f, 0.f), 0, true);
+        PhysicsJointDesc inv_desc = cfg_desc;
+        inv_desc.m_BodyA = inv_a;
+        inv_desc.m_BodyB = inv_b;
+        inv_desc.m_PivotA = Vector3(0.f, 170.f, 0.f);
+        inv_desc.m_PivotB = Vector3(0.f, 170.f, 0.f);
+        const int inv_z = static_cast<int>(ConfigurableJointAxis::TranslationZ);
+        inv_desc.m_Motion[inv_z] = ConfigurableJointMotion::Limited;
+        inv_desc.m_AxisLimitMin[inv_z] = 0.5f;
+        inv_desc.m_AxisLimitMax[inv_z] = -0.5f;
+        Check(scene->CreateJoint(inv_desc) == s_InvalidJointId, "CF4b",
+              "CreateJoint refuses a desc with an inverted limit range (that spelling means Locked)");
+
+        // --- 驱动 -------------------------------------------------------------
+        JointDrive x_drive;
+        x_drive.positionSpring = 100.f;
+        x_drive.positionDamper = 10.f;
+        x_drive.maximumForce = 500.f;
+        JointDrive x_read;
+        Check(scene->SetJointAxisDrive(cfg_id, ConfigurableJointAxis::TranslationX, x_drive) &&
+                  scene->GetJointAxisDrive(cfg_id, ConfigurableJointAxis::TranslationX, x_read) &&
+                  Near(x_read.positionSpring, 100.f) && Near(x_read.positionDamper, 10.f) &&
+                  Near(x_read.maximumForce, 500.f),
+              "CF5", "a translation drive round-trips (spring / damper / max force)");
+        JointDrive rot_drive;
+        rot_drive.positionSpring = 50.f;
+        rot_drive.positionDamper = 5.f;
+        rot_drive.maximumForce = 200.f;
+        JointDrive rot_read;
+        Check(scene->SetJointAxisDrive(cfg_id, ConfigurableJointAxis::RotationX, rot_drive) &&
+                  scene->GetJointAxisDrive(cfg_id, ConfigurableJointAxis::RotationX, rot_read) &&
+                  Near(rot_read.positionSpring, 50.f) && Near(rot_read.maximumForce, 200.f),
+              "CF5a", "a rotation drive round-trips through the TORQUE limit (same field, a different cut)");
+        // ⚠️ 从没驱动过的轴必须读回 spring = 0。Jolt 的 `MotorSettings` 默认是
+        // `{FrequencyAndDamping, 2 Hz, 1}` —— 不清零的话这里会读到一个脚本从来
+        // 没写过的 2.0，而"关节身上有一个看不见的弹簧"只在手感上暴露。
+        JointDrive virgin_drive;
+        Check(scene->GetJointAxisDrive(cfg_id, ConfigurableJointAxis::TranslationY, virgin_drive) &&
+                  Near(virgin_drive.positionSpring, 0.f),
+              "CF6", "an axis that was never driven reads back spring = 0 (CreateJoint must zero Jolt's 2 Hz default)");
+        JointDrive bad_drive;
+        bad_drive.positionSpring = 10.f;
+        bad_drive.positionDamper = -1.f;
+        Check(!scene->SetJointAxisDrive(cfg_id, ConfigurableJointAxis::TranslationY, bad_drive),
+              "CF6a", "a negative damper is refused");
+
+        // --- 目标量 -----------------------------------------------------------
+        // ⚠️ `targetRotation` 那道门必须用**非单位**的约束参考系：B1 / B2 都是单位
+        // 四元数时 `CS = B1⁻¹·q·B2` 退化成 `CS = q`，任何写错的反解公式读回来都还
+        // 是 q ⇒ 断言恒真。所以这条关节的 axis 取 +Z、secondaryAxis 取 +Y
+        //（参考系 X = +Z、Y = +Y、Z = -X，不是单位阵）。
+        const uint32_t cfg2_a = SpawnBox(*scene, Vector3(0.f, 120.f, 0.f), 0, false);
+        const uint32_t cfg2_b = SpawnBox(*scene, Vector3(0.f, 122.f, 0.f), 0, true);
+        PhysicsJointDesc cfg2_desc = cfg_desc;
+        cfg2_desc.m_BodyA = cfg2_a;
+        cfg2_desc.m_BodyB = cfg2_b;
+        cfg2_desc.m_PivotA = Vector3(0.f, 120.f, 0.f);
+        cfg2_desc.m_PivotB = Vector3(0.f, 120.f, 0.f);
+        cfg2_desc.m_AxisA = Vector3(0.f, 0.f, 1.f);
+        cfg2_desc.m_AxisB = Vector3(0.f, 0.f, 1.f);
+        const uint32_t cfg2_id = scene->CreateJoint(cfg2_desc);
+        Check(cfg2_id != s_InvalidJointId, "CF7",
+              "a configurable joint whose frame axes are not the identity can be created");
+        // 绕 Z 转 30°（w = cos15°、z = sin15°）。
+        const Quaternion target_rot(0.9659258f, 0.f, 0.f, 0.2588190f);
+        Check(scene->SetJointTarget(cfg2_id, Vector3(0.f, 1.f, 0.f), Vector3(0.f, 0.f, 2.f),
+                                    Vector3(1.f, 0.f, 0.f), target_rot),
+              "CF7a", "the four target values can be written");
+        Vector3 read_target_position = Vector3::ZERO;
+        Vector3 read_target_velocity = Vector3::ZERO;
+        Vector3 read_target_angular_velocity = Vector3::ZERO;
+        Quaternion read_target_rotation = Quaternion::IDENTITY;
+        Check(scene->GetJointTarget(cfg2_id, read_target_position, read_target_velocity,
+                                    read_target_angular_velocity, read_target_rotation) &&
+                  Near(read_target_position.y, 1.f) && Near(read_target_velocity.z, 2.f) &&
+                  Near(read_target_angular_velocity.x, 1.f),
+              "CF7b", "the three vector targets round-trip");
+        // 这条是 BS / CS 换算那道门：写入走 `SetTargetOrientationBS`（body space），
+        // Jolt 只存 constraint space 的那一份，读回来必须反解 `q = B1·CS·B2⁻¹`。
+        Check(Near(read_target_rotation.w, target_rot.w) && Near(read_target_rotation.x, target_rot.x) &&
+                  Near(read_target_rotation.y, target_rot.y) && Near(read_target_rotation.z, target_rot.z),
+              "CF7c", "and targetRotation round-trips: the constraint-space value is converted back to body space");
+
+        // --- 线性限位弹簧 -----------------------------------------------------
+        Check(scene->SetJointLinearLimitSpring(cfg_id, 50.f, 2.f), "CF8",
+              "the linear limit spring can be written");
+        float read_lls_spring = -1.f;
+        float read_lls_damper = -1.f;
+        Check(scene->GetJointLinearLimitSpring(cfg_id, read_lls_spring, read_lls_damper) &&
+                  Near(read_lls_spring, 50.f) && Near(read_lls_damper, 2.f),
+              "CF8a", "and reads back (translation axes only — Jolt has no soft rotation limits)");
+        Check(!scene->SetJointLinearLimitSpring(cfg_id, -1.f, 2.f), "CF8b",
+              "a negative spring is refused");
+
+        // --- 行为门：六个轴全 Locked = 焊死 -----------------------------------
+        const uint32_t weld_a = SpawnBox(*scene, Vector3(0.f, 130.f, 0.f), 0, false);
+        const uint32_t weld_b = SpawnBox(*scene, Vector3(0.f, 132.f, 0.f), 0, true);
+        PhysicsJointDesc weld_desc = cfg_desc;
+        weld_desc.m_BodyA = weld_a;
+        weld_desc.m_BodyB = weld_b;
+        weld_desc.m_PivotA = Vector3(0.f, 130.f, 0.f);
+        weld_desc.m_PivotB = Vector3(0.f, 130.f, 0.f);
+        for (int axis_index = 0; axis_index < kConfigurableAxisCount; ++axis_index)
+        {
+            weld_desc.m_Motion[axis_index] = ConfigurableJointMotion::Locked;
+        }
+        const uint32_t weld_id = scene->CreateJoint(weld_desc);
+        Check(weld_id != s_InvalidJointId, "CF9", "a joint with all six axes Locked can be created");
+        StepScene(*scene, 10);
+        Vector3 weld_position = Vector3::ZERO;
+        Check(scene->GetRigidBodyPosition(weld_b, weld_position) && std::isfinite(weld_position.z) &&
+                  std::fabs(weld_position.z) < 0.05f && std::fabs(weld_position.y - 132.f) < 0.05f,
+              "CF9a", "and it really welds: the hanging body does not fall (all six DOF locked)");
+
+        // --- 行为门：Limited 的平移轴真的把 body 拦在限位上 --------------------
+        // 三个旋转轴也锁掉，否则 body 会绕枢轴摆，COM 的位置就不只是平移了。
+        const uint32_t lim_a = SpawnBox(*scene, Vector3(0.f, 140.f, 0.f), 0, false);
+        const uint32_t lim_b = SpawnBox(*scene, Vector3(0.f, 142.f, 0.f), 0, true);
+        PhysicsJointDesc lim_desc = cfg_desc;
+        lim_desc.m_BodyA = lim_a;
+        lim_desc.m_BodyB = lim_b;
+        lim_desc.m_PivotA = Vector3(0.f, 140.f, 0.f);
+        lim_desc.m_PivotB = Vector3(0.f, 140.f, 0.f);
+        for (int axis_index = 0; axis_index < kConfigurableAxisCount; ++axis_index)
+        {
+            lim_desc.m_Motion[axis_index] = ConfigurableJointMotion::Locked;
+        }
+        const int lim_z = static_cast<int>(ConfigurableJointAxis::TranslationZ);
+        lim_desc.m_Motion[lim_z] = ConfigurableJointMotion::Limited;
+        lim_desc.m_AxisLimitMin[lim_z] = -0.5f;
+        lim_desc.m_AxisLimitMax[lim_z] = 0.f;
+        const uint32_t lim_id = scene->CreateJoint(lim_desc);
+        Check(lim_id != s_InvalidJointId, "CF10", "a joint with one Limited translation axis can be created");
+        StepScene(*scene, 60);
+        Vector3 lim_position = Vector3::ZERO;
+        Check(scene->GetRigidBodyPosition(lim_b, lim_position) && std::isfinite(lim_position.z) &&
+                  lim_position.z < -0.35f && lim_position.z > -0.6f,
+              "CF10a", "and the body stops AT the limit: it fell but only 0.5 m (a Free axis would fall forever)");
+        Check(std::fabs(lim_position.x) < 0.05f && std::fabs(lim_position.y - 142.f) < 0.05f, "CF10b",
+              "and the locked axes really held (no sideways drift)");
+
+        // --- 行为门：驱动真的在驱动 -------------------------------------------
+        // ⚠️ 只有**行为**能证明电机是开着的：`GetJointAxisDrive` 读的是弹簧参数，
+        // 而参数不管电机开不开都会写下去（这是刻意的，见后端注释）。所以夹具要
+        // 看 body 到底动没动。取 X 轴：重力在 -Z，X 上没有别的力，"到位"只可能
+        // 来自电机。
+        const uint32_t drv_a = SpawnBox(*scene, Vector3(0.f, 160.f, 0.f), 0, false);
+        const uint32_t drv_b = SpawnBox(*scene, Vector3(0.f, 162.f, 0.f), 0, true);
+        PhysicsJointDesc drv_desc = cfg_desc;
+        drv_desc.m_BodyA = drv_a;
+        drv_desc.m_BodyB = drv_b;
+        drv_desc.m_PivotA = Vector3(0.f, 160.f, 0.f);
+        drv_desc.m_PivotB = Vector3(0.f, 160.f, 0.f);
+        for (int axis_index = 0; axis_index < kConfigurableAxisCount; ++axis_index)
+        {
+            drv_desc.m_Motion[axis_index] = ConfigurableJointMotion::Locked;
+        }
+        const int drv_x = static_cast<int>(ConfigurableJointAxis::TranslationX);
+        drv_desc.m_Motion[drv_x] = ConfigurableJointMotion::Free;
+        JointDrive move_drive;
+        move_drive.positionSpring = 20000.f;   // 临界阻尼附近：ω = √(k/m) ≈ 4.5 rad/s
+        move_drive.positionDamper = 9000.f;
+        move_drive.maximumForce = 100000.f;
+        drv_desc.m_AxisDrive[drv_x] = move_drive;
+        drv_desc.m_TargetPosition = Vector3(0.8f, 0.f, 0.f);
+        const uint32_t drv_id = scene->CreateJoint(drv_desc);
+        Check(drv_id != s_InvalidJointId, "CF11", "a joint with one driven free axis can be created");
+        StepScene(*scene, 90);
+        Vector3 drv_position = Vector3::ZERO;
+        Check(scene->GetRigidBodyPosition(drv_b, drv_position) && std::isfinite(drv_position.x) &&
+                  drv_position.x > 0.2f,
+              "CF11a", "and the drive really drives: the body moved toward targetPosition (a motor left Off would not budge)");
+
+        // --- 参考系两条轴平行 = NaN -------------------------------------------
+        // 与 swing-twist 那条 `PlaneAxisFor` 同一条路：Jolt 只叉乘一次，
+        // cross(parallel, parallel) 是零向量，后面 `GetQuaternion()` 拿到退化矩阵
+        // ⇒ 姿态 NaN，一步之后整个 broadphase 被拖垮。
+        const uint32_t par_a = SpawnBox(*scene, Vector3(0.f, 150.f, 0.f), 0, false);
+        const uint32_t par_b = SpawnBox(*scene, Vector3(0.f, 152.f, 0.f), 0, true);
+        PhysicsJointDesc par_desc = cfg_desc;
+        par_desc.m_BodyA = par_a;
+        par_desc.m_BodyB = par_b;
+        par_desc.m_PivotA = Vector3(0.f, 150.f, 0.f);
+        par_desc.m_PivotB = Vector3(0.f, 150.f, 0.f);
+        par_desc.m_SecondaryAxisA = Vector3(1.f, 0.f, 0.f);   // 与 axis（+X）平行
+        par_desc.m_SecondaryAxisB = Vector3(1.f, 0.f, 0.f);
+        const uint32_t par_id = scene->CreateJoint(par_desc);
+        Check(par_id != s_InvalidJointId, "CF12",
+              "a secondaryAxis parallel to axis does NOT poison the constraint");
+        StepScene(*scene, 3);
+        Vector3 par_position = Vector3::ZERO;
+        Check(scene->GetRigidBodyPosition(par_b, par_position) && std::isfinite(par_position.x) &&
+                  std::isfinite(par_position.y) && std::isfinite(par_position.z),
+              "CF12a", "and a few steps later the body is still finite (a NaN frame poisons everything)");
+
+        // --- 组件层 -----------------------------------------------------------
+        ConfigurableJointComponent* cfg_joint = new ConfigurableJointComponent();
+        om->AllocateAndAssignInstanceID(cfg_joint);
+        actor_a.object->addComponent(cfg_joint);
+        cfg_joint->PostLoadResource(actor_a.object);
+        cfg_joint->SetConnectedBody(actor_b.body);
+        Check(cfg_joint->HasJoint() &&
+                  scene->GetJointType(cfg_joint->GetJointId(), read_type) &&
+                  read_type == PhysicsJointType::configurable,
+              "CF20", "a ConfigurableJointComponent builds a six-DOF constraint");
+        Check(cfg_joint->GetXMotion() == ConfigurableJointMotion::Free &&
+                  cfg_joint->GetYMotion() == ConfigurableJointMotion::Free &&
+                  cfg_joint->GetAngularZMotion() == ConfigurableJointMotion::Free,
+              "CF21", "the six motions default to Free");
+        Check(Near(cfg_joint->GetSecondaryAxis().y, 1.f), "CF22",
+              "secondaryAxis defaults to +Y (Unity's default)");
+        Check(Near(cfg_joint->GetLinearLimit(), 0.f) && Near(cfg_joint->GetAngularYLimit(), 0.f),
+              "CF22a", "and the limits default to 0");
+
+        const uint32_t cfg_component_id = cfg_joint->GetJointId();
+        Check(cfg_joint->SetXMotion(ConfigurableJointMotion::Locked) &&
+                  cfg_joint->GetXMotion() == ConfigurableJointMotion::Locked,
+              "CF23", "xMotion round-trips through the component");
+        // ⚠️ 改模式**不**重建（后端有 setter），与改参考系那条相反。
+        Check(cfg_joint->GetJointId() == cfg_component_id, "CF23a",
+              "and changing a motion does NOT rebuild the joint (unlike the frame axes)");
+        // 光读组件字段不够 —— 组件可以只是记住了一个数。直接问后端。
+        Check(scene->GetJointAxisMotion(cfg_component_id, ConfigurableJointAxis::TranslationX,
+                                        read_motion, read_lo, read_hi) &&
+                  read_motion == ConfigurableJointMotion::Locked,
+              "CF23b", "the backend really heard it (the component is not just remembering a field)");
+        // 改参考系要重建（它是构造时烘进 `mConstraintToBody1/2` 的）。
+        cfg_joint->SetSecondaryAxis(Vector3(0.f, 0.f, 1.f));
+        Check(Near(cfg_joint->GetSecondaryAxis().z, 1.f) && cfg_joint->GetJointId() != cfg_component_id,
+              "CF24", "changing secondaryAxis REBUILDS the joint (the frame is baked in)");
+
+        // 限位：linearLimit 三个平移轴共用，只在 Limited 的轴上可见。
+        Check(cfg_joint->SetZMotion(ConfigurableJointMotion::Limited), "CF25", "zMotion can be Limited");
+        Check(!cfg_joint->SetLinearLimit(-1.f), "CF25a", "a negative linearLimit is refused");
+        Check(cfg_joint->SetLinearLimit(0.25f) && Near(cfg_joint->GetLinearLimit(), 0.25f),
+              "CF25b", "and a non-negative one round-trips");
+        Check(scene->GetJointAxisMotion(cfg_joint->GetJointId(), ConfigurableJointAxis::TranslationZ,
+                                        read_motion, read_lo, read_hi) &&
+                  read_motion == ConfigurableJointMotion::Limited && Near(read_lo, -0.25f) &&
+                  Near(read_hi, 0.25f),
+              "CF25c", "the shared linear limit reaches the backend on the Limited axis");
+
+        // 旋转限位：X 可以不对称（必须跨 0），Y / Z 只收半角。
+        Check(!cfg_joint->SetAngularXLimits(0.2f, 0.5f), "CF26",
+              "an angular X range that misses zero is refused");
+        Check(cfg_joint->SetAngularXLimits(-0.2f, 0.5f) &&
+                  Near(cfg_joint->GetLowAngularXLimit(), -0.2f) &&
+                  Near(cfg_joint->GetHighAngularXLimit(), 0.5f),
+              "CF26a", "and one that straddles zero round-trips");
+        Check(cfg_joint->SetAngularXMotion(ConfigurableJointMotion::Limited) &&
+                  scene->GetJointAxisMotion(cfg_joint->GetJointId(), ConfigurableJointAxis::RotationX,
+                                            read_motion, read_lo, read_hi) &&
+                  read_motion == ConfigurableJointMotion::Limited && Near(read_lo, -0.2f) &&
+                  Near(read_hi, 0.5f),
+              "CF26b", "the ASYMMETRIC X range reaches the backend (only X may be asymmetric)");
+        Check(!cfg_joint->SetAngularYLimit(-0.1f), "CF27", "a negative angularYLimit is refused");
+        Check(cfg_joint->SetAngularYLimit(0.3f) && cfg_joint->SetAngularZLimit(0.15f) &&
+                  cfg_joint->SetAngularYMotion(ConfigurableJointMotion::Limited) &&
+                  cfg_joint->SetAngularZMotion(ConfigurableJointMotion::Limited),
+              "CF27a", "Y and Z take independent half angles");
+        // ⚠️ 这条是 `ESwingType::Pyramid` 那道门：Cone 会把 Y / Z **强行**改成
+        // 对称并且只留 max，于是 Z 会变成 0.3 而不是 0.15 —— 而 Unity 的
+        // angularYLimit / angularZLimit 本来就是各自独立的。
+        float y_hi = -1.f;
+        float z_hi = -1.f;
+        Check(scene->GetJointAxisMotion(cfg_joint->GetJointId(), ConfigurableJointAxis::RotationY,
+                                        read_motion, read_lo, y_hi) &&
+                  scene->GetJointAxisMotion(cfg_joint->GetJointId(), ConfigurableJointAxis::RotationZ,
+                                            read_motion, read_lo, z_hi) &&
+                  Near(y_hi, 0.3f) && Near(z_hi, 0.15f),
+              "CF27b", "Y and Z keep DIFFERENT limits (Cone would have squashed them into one radius — hence Pyramid)");
+
+        // 驱动
+        JointDrive comp_drive;
+        comp_drive.positionSpring = 80.f;
+        comp_drive.positionDamper = 4.f;
+        comp_drive.maximumForce = 300.f;
+        Check(cfg_joint->SetXDrive(comp_drive) && Near(cfg_joint->GetXDrive().positionSpring, 80.f) &&
+                  Near(cfg_joint->GetXDrive().maximumForce, 300.f),
+              "CF28", "xDrive round-trips through the component");
+        JointDrive comp_drive_read;
+        Check(scene->GetJointAxisDrive(cfg_joint->GetJointId(), ConfigurableJointAxis::TranslationX,
+                                       comp_drive_read) &&
+                  Near(comp_drive_read.positionSpring, 80.f),
+              "CF28a", "and reaches the backend");
+        JointDrive yz_drive;
+        yz_drive.positionSpring = 60.f;
+        yz_drive.positionDamper = 3.f;
+        yz_drive.maximumForce = 200.f;
+        JointDrive y_read;
+        JointDrive z_read;
+        Check(cfg_joint->SetAngularYZDrive(yz_drive) &&
+                  scene->GetJointAxisDrive(cfg_joint->GetJointId(), ConfigurableJointAxis::RotationY, y_read) &&
+                  scene->GetJointAxisDrive(cfg_joint->GetJointId(), ConfigurableJointAxis::RotationZ, z_read) &&
+                  Near(y_read.positionSpring, 60.f) && Near(z_read.positionSpring, 60.f),
+              "CF29", "angularYZDrive drives BOTH Y and Z (one field, two axes)");
+        JointDrive bad_component_drive;
+        bad_component_drive.positionSpring = 10.f;
+        bad_component_drive.maximumForce = -5.f;
+        Check(!cfg_joint->SetXDrive(bad_component_drive), "CF29a",
+              "a negative maximumForce is refused (and the res is left alone)");
+        // 枚举是从 TS 的 number 来的，可以越界 —— 越界值要拒掉，而不是存下来之后
+        // 让 getter 报一个没有任何 case 认它的值。
+        Check(!cfg_joint->SetXMotion(static_cast<ConfigurableJointMotion>(99)) &&
+                  cfg_joint->GetXMotion() == ConfigurableJointMotion::Locked,
+              "CF29b", "an out-of-range motion is refused and the stored value is left alone");
+
+        // 目标量与线性限位弹簧
+        cfg_joint->SetTargetPosition(Vector3(0.f, 1.f, 0.f));
+        Check(Near(cfg_joint->GetTargetPosition().y, 1.f), "CF30", "targetPosition round-trips");
+        Check(scene->GetJointTarget(cfg_joint->GetJointId(), read_target_position, read_target_velocity,
+                                    read_target_angular_velocity, read_target_rotation) &&
+                  Near(read_target_position.y, 1.f),
+              "CF30a", "and reaches the backend");
+        SoftJointLimitSpring comp_spring;
+        comp_spring.spring = 50.f;
+        comp_spring.damper = 2.f;
+        Check(cfg_joint->SetLinearLimitSpring(comp_spring) &&
+                  Near(cfg_joint->GetLinearLimitSpring().spring, 50.f),
+              "CF31", "linearLimitSpring round-trips through the component");
+        Check(scene->GetJointLinearLimitSpring(cfg_joint->GetJointId(), read_lls_spring, read_lls_damper) &&
+                  Near(read_lls_spring, 50.f) && Near(read_lls_damper, 2.f),
+              "CF31a", "and reaches the backend");
+
+        // =====================================================================
         // 3. 接线门（源码级）：证明脚本面真的被发布了、flush 真的被调了
         // =====================================================================
 
@@ -4523,6 +4942,52 @@ namespace
               "Unity's SkinnedMeshRenderer spelling reaches the d.ts as a type alias");
         Check(CountOccurrences(prelude, "declare type SkinnedMeshRenderer = SkinMeshRenderer;") >= 1, "MR6",
               "and the alias really is emitted from the prelude in ScriptBinding.cpp (the d.ts is a build artifact)");
+
+        // --- ConfigurableJoint 的发布面 ---------------------------------------
+        // ⚠️ d.ts 是**生成物**、不入 git，只查它会"还没 regen 就绿的"骗过去；所以
+        // 每条都配一个**源码级**的孪生断言。
+        Check(CountOccurrences(dts, "declare class ConfigurableJointComponent extends JointComponent") >= 1,
+              "CF40", "ConfigurableJointComponent is published to scripts and inherits the Joint facade");
+        Check(CountOccurrences(dts, "declare enum ConfigurableJointMotion") >= 1, "CF41",
+              "and so is the ConfigurableJointMotion enum (without ZENUM the enum is silently skipped)");
+        Check(CountOccurrences(dts, "declare interface JointDrive {") >= 1, "CF42",
+              "and the JointDrive value type");
+        Check(CountOccurrences(dts, "declare type ConfigurableJoint = ConfigurableJointComponent;") >= 1,
+              "CF43", "Unity's ConfigurableJoint spelling is published as a type alias");
+        Check(CountOccurrences(dts, "ConfigurableJointMotion;") >= 6, "CF44",
+              "the six motion accessors really carry the enum type (not a plain number)");
+        // 源码级孪生
+        const std::string joint_value_h = ReadFile("Source/Runtime/Function/Physics/PhysicsJoint.h");
+        Check(!joint_value_h.empty() && CountOccurrences(joint_value_h, "ZENUM()") >= 1 &&
+                  CountOccurrences(joint_value_h, "enum class ConfigurableJointMotion") >= 1,
+              "CF45", "PhysicsJoint.h really annotates the enum with ZENUM (the d.ts is generated from it)");
+        Check(CountOccurrences(prelude, "declare interface JointDrive {") >= 1 &&
+                  CountOccurrences(prelude, "declare type ConfigurableJoint = ConfigurableJointComponent;") >= 1,
+              "CF46", "and ScriptBinding.cpp really emits the interface and the alias");
+        const std::string binding_h_cfg = ReadFile("Source/Runtime/Scripting/Binding/ScriptBinding.h");
+        Check(!binding_h_cfg.empty() && CountOccurrences(binding_h_cfg, "struct Converter<JointDrive>") >= 1,
+              "CF47", "and ScriptBinding.h carries a marshaller for JointDrive");
+        // 后端那些"必须这么写"的地方，各钉一条源码级断言 —— 它们都没有行为上的
+        // 单一判据（都只在特定夹具下才分叉），只能查源头。
+        const std::string scene_source = ReadFile("Source/Runtime/Function/Physics/PhysicsScene.cpp");
+        Check(!scene_source.empty(), "CF48", "PhysicsScene.cpp is readable");
+        Check(CountOccurrences(scene_source, "JPH::ESwingType::Pyramid") >= 1, "CF48a",
+              "the swing type really is Pyramid (Cone would force Y and Z to share one radius)");
+        Check(CountOccurrences(scene_source, "JPH::MotorSettings(JPH::ESpringMode::StiffnessAndDamping, 0.f, 0.f)") >= 1,
+              "CF48b", "CreateJoint zeroes the motor settings (Jolt's 2 Hz default would read back as a phantom spring)");
+        Check(CountOccurrences(scene_source, "JPH::EMotorState::PositionAndVelocity") >= 1, "CF48c",
+              "an enabled drive uses PositionAndVelocity (that is what makes positionDamper mean Unity's damper)");
+        Check(CountOccurrences(scene_source, "case PhysicsJointType::configurable:") >= 1 &&
+                  CountOccurrences(scene_source, "JPH::SixDOFConstraintSettings settings;") >= 1,
+              "CF48d", "CreateJoint has a configurable branch that builds a SixDOFConstraint");
+        Check(CountOccurrences(scene_source, "min.SetComponent(component, new_min);") >= 1 &&
+                  CountOccurrences(scene_source, "max.SetComponent(component, new_max);") >= 1,
+              "CF48e", "the per-axis limit write is a read-modify-write (Jolt's setter takes the whole Vec3)");
+        const std::string null_scene_cfg = ReadFile("Source/Runtime/Function/Physics/PhysicsSceneNull.cpp");
+        Check(CountOccurrences(null_scene_cfg, "PhysicsScene::SetJointAxisMotion(uint32_t, ConfigurableJointAxis") >= 1 &&
+                  CountOccurrences(null_scene_cfg, "PhysicsScene::SetJointAxisDrive(uint32_t, ConfigurableJointAxis") >= 1 &&
+                  CountOccurrences(null_scene_cfg, "PhysicsScene::GetJointLinearLimitSpring(uint32_t, float&") >= 1,
+              "CF49", "the no-physics build defines the new symbols too (a missing one is a link error there)");
 
         const std::string binding = ReadFile("Source/Runtime/Scripting/Binding/ScriptBinding.h");
         Check(!binding.empty(), "JN97", "ScriptBinding.h is readable");

@@ -1435,6 +1435,28 @@ namespace ZScript
         }
     };
 
+    /// Unity 的 `JointDrive`。键名与 C++ 字段同名（Unity 的拼写本来就是驼峰）。
+    template<>
+    struct Converter<JointDrive>
+    {
+        static pesapi_value ToJs(pesapi_ffi* apis, pesapi_env env, const JointDrive& v)
+        {
+            pesapi_value o = apis->create_object(env);
+            apis->set_property(env, o, "positionSpring", Converter<float>::ToJs(apis, env, v.positionSpring));
+            apis->set_property(env, o, "positionDamper", Converter<float>::ToJs(apis, env, v.positionDamper));
+            apis->set_property(env, o, "maximumForce", Converter<float>::ToJs(apis, env, v.maximumForce));
+            return o;
+        }
+        static JointDrive FromJs(pesapi_ffi* apis, pesapi_env env, pesapi_value v)
+        {
+            JointDrive out;
+            out.positionSpring = Converter<float>::FromJs(apis, env, apis->get_property(env, v, "positionSpring"));
+            out.positionDamper = Converter<float>::FromJs(apis, env, apis->get_property(env, v, "positionDamper"));
+            out.maximumForce = Converter<float>::FromJs(apis, env, apis->get_property(env, v, "maximumForce"));
+            return out;
+        }
+    };
+
     // --- trampolines ------------------------------------------------------
 
     template <typename R>

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Runtime/BaseClasses/PPtr.h"
+#include "Runtime/Core/Math/Quaternion.h"
 #include "Runtime/Core/Math/Vector3.h"
 #include "Runtime/Core/Serialize/SerializeUtility.h"
 #include "Runtime/Function/Framework/Component/Component.h"
@@ -105,6 +106,71 @@ public:
     float m_SwingDamper {0.f};
     float m_TwistSpring {0.f};
     float m_TwistDamper {0.f};
+
+    // --- ConfigurableJoint --------------------------------------------------
+    //
+    // ⚠️ 运动模式存成 `uint8_t` 而不是 `ConfigurableJointMotion`：序列化只认识
+    // 基础类型（泛型的 `SerializeTraits<T>` 会去找 `T::Transfer`，枚举没有），
+    // 所以这里存整数、由组件那层 static_cast。sizeof 与枚举一致（都是
+    // `unsigned char`），磁盘上没有区别。
+
+    /// 与 `m_Axis` 一起定出关节参考系的那条轴（宿主局部空间）。Unity 的
+    /// `secondaryAxis`：X = axis、Y = secondaryAxis、Z 取叉乘。
+    Vector3 m_SecondaryAxis {Vector3::UNIT_Y};
+
+    uint8_t m_MotionX {0};
+    uint8_t m_MotionY {0};
+    uint8_t m_MotionZ {0};
+    uint8_t m_AngularMotionX {0};
+    uint8_t m_AngularMotionY {0};
+    uint8_t m_AngularMotionZ {0};
+
+    /// 线性限位（米，>= 0）。三个平移轴**共用**它 —— Unity 的 `Linear Limit`
+    /// 也是"离原点的最大距离，每个轴各自算"。
+    float m_LinearLimit {0.f};
+
+    /// 绕 X 的旋转限位（弧度）：Unity 的 X 轴**可以**上下不对称。
+    /// low <= 0 <= high。
+    float m_LowAngularXLimit {0.f};
+    float m_HighAngularXLimit {0.f};
+
+    /// 绕 Y / Z 的旋转限位（弧度，>= 0）：Unity 这两轴只能对称，所以只存半角。
+    float m_AngularYLimit {0.f};
+    float m_AngularZLimit {0.f};
+
+    /// 线性限位弹簧（刚度 / 阻尼）。Jolt 只有**平移**限位支持弹簧。
+    float m_LinearLimitSpring {0.f};
+    float m_LinearLimitDamper {0.f};
+
+    /// 五个驱动（Unity 的 `xDrive` / `yDrive` / `zDrive` / `angularXDrive` /
+    /// `angularYZDrive`），各三个数。
+    ///
+    /// ⚠️ 拆成裸 float 而不是直接存 `JointDrive`：`JointDrive` 是**脚本**的值
+    /// 类型（和 `JointLimits` 一样没有 `Transfer`），为了让它可序列化就把序列化
+    /// 宏挂进 `PhysicsJoint.h`，会让那个"必须保持 Jolt-free"的头文件开始依赖
+    /// 序列化那一套 —— 而收益只是少写 10 行。
+    float m_XDriveSpring {0.f};
+    float m_XDriveDamper {0.f};
+    float m_XDriveForce {FLT_MAX};
+    float m_YDriveSpring {0.f};
+    float m_YDriveDamper {0.f};
+    float m_YDriveForce {FLT_MAX};
+    float m_ZDriveSpring {0.f};
+    float m_ZDriveDamper {0.f};
+    float m_ZDriveForce {FLT_MAX};
+    float m_AngularXDriveSpring {0.f};
+    float m_AngularXDriveDamper {0.f};
+    float m_AngularXDriveForce {FLT_MAX};
+    float m_AngularYZDriveSpring {0.f};
+    float m_AngularYZDriveDamper {0.f};
+    float m_AngularYZDriveForce {FLT_MAX};
+
+    /// 四个目标量。Unity 的 `targetPosition` / `targetVelocity` /
+    /// `targetAngularVelocity` / `targetRotation`。
+    Vector3 m_TargetPosition {Vector3::ZERO};
+    Vector3 m_TargetVelocity {Vector3::ZERO};
+    Vector3 m_TargetAngularVelocity {Vector3::ZERO};
+    Quaternion m_TargetRotation {Quaternion::IDENTITY};
 };
 
 template<typename TransferFunction>
@@ -139,6 +205,40 @@ void JointComponentRes::Transfer(TransferFunction& transfer)
     transfer.Transfer(m_SwingDamper, "swing_damper");
     transfer.Transfer(m_TwistSpring, "twist_spring");
     transfer.Transfer(m_TwistDamper, "twist_damper");
+    // ConfigurableJoint（追加在末尾 —— 动既有键的顺序 = 动资产生命线）
+    transfer.Transfer(m_SecondaryAxis, "secondary_axis");
+    transfer.Transfer(m_MotionX, "motion_x");
+    transfer.Transfer(m_MotionY, "motion_y");
+    transfer.Transfer(m_MotionZ, "motion_z");
+    transfer.Transfer(m_AngularMotionX, "angular_motion_x");
+    transfer.Transfer(m_AngularMotionY, "angular_motion_y");
+    transfer.Transfer(m_AngularMotionZ, "angular_motion_z");
+    transfer.Transfer(m_LinearLimit, "linear_limit");
+    transfer.Transfer(m_LowAngularXLimit, "low_angular_x_limit");
+    transfer.Transfer(m_HighAngularXLimit, "high_angular_x_limit");
+    transfer.Transfer(m_AngularYLimit, "angular_y_limit");
+    transfer.Transfer(m_AngularZLimit, "angular_z_limit");
+    transfer.Transfer(m_LinearLimitSpring, "linear_limit_spring");
+    transfer.Transfer(m_LinearLimitDamper, "linear_limit_damper");
+    transfer.Transfer(m_XDriveSpring, "x_drive_spring");
+    transfer.Transfer(m_XDriveDamper, "x_drive_damper");
+    transfer.Transfer(m_XDriveForce, "x_drive_force");
+    transfer.Transfer(m_YDriveSpring, "y_drive_spring");
+    transfer.Transfer(m_YDriveDamper, "y_drive_damper");
+    transfer.Transfer(m_YDriveForce, "y_drive_force");
+    transfer.Transfer(m_ZDriveSpring, "z_drive_spring");
+    transfer.Transfer(m_ZDriveDamper, "z_drive_damper");
+    transfer.Transfer(m_ZDriveForce, "z_drive_force");
+    transfer.Transfer(m_AngularXDriveSpring, "angular_x_drive_spring");
+    transfer.Transfer(m_AngularXDriveDamper, "angular_x_drive_damper");
+    transfer.Transfer(m_AngularXDriveForce, "angular_x_drive_force");
+    transfer.Transfer(m_AngularYZDriveSpring, "angular_yz_drive_spring");
+    transfer.Transfer(m_AngularYZDriveDamper, "angular_yz_drive_damper");
+    transfer.Transfer(m_AngularYZDriveForce, "angular_yz_drive_force");
+    transfer.Transfer(m_TargetPosition, "target_position");
+    transfer.Transfer(m_TargetVelocity, "target_velocity");
+    transfer.Transfer(m_TargetAngularVelocity, "target_angular_velocity");
+    transfer.Transfer(m_TargetRotation, "target_rotation");
 }
 
 INSTANTIATE_TEMPLATE_TRANSFER_WITH_DECL(JointComponentRes, , Transfer, void)

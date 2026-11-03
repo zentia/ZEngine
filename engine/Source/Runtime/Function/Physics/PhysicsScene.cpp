@@ -32,6 +32,7 @@
 #include "Jolt/Physics/Constraints/FixedConstraint.h"
 #include "Jolt/Physics/Constraints/HingeConstraint.h"
 #include "Jolt/Physics/Constraints/PointConstraint.h"
+#include "Jolt/Physics/Constraints/SixDOFConstraint.h"
 #include "Jolt/Physics/Constraints/SliderConstraint.h"
 #include "Jolt/Physics/Constraints/SwingTwistConstraint.h"
 #include "Runtime/Resource/ResType/Components/RigidBody.h"
@@ -69,6 +70,72 @@ namespace
             return MakePerpendicularAxis(in_twist_axis);
         }
         return orthogonal.Normalized();
+    }
+
+    /// `ConfigurableJointAxis` -> Jolt 的 `SixDOFConstraintSettings::EAxis`。
+    ///
+    /// 两个枚举的取值顺序**刻意一致**（都先三个平移再三个旋转），所以这里就是一个
+    /// 下标转换。单独抽成函数是为了让"顺序必须一致"这件事只在一个地方成立，并且
+    /// 挡住越界 —— 轴是从脚本的 number 来的，可以乱给。
+    bool JoltAxisFor(ConfigurableJointAxis in_axis, JPH::SixDOFConstraintSettings::EAxis& out_axis)
+    {
+        const int index = static_cast<int>(in_axis);
+        if (index < 0 || index >= JPH::SixDOFConstraintSettings::EAxis::Num)
+        {
+            return false;
+        }
+        out_axis = static_cast<JPH::SixDOFConstraintSettings::EAxis>(index);
+        return true;
+    }
+
+    /// 平移轴还是旋转轴 —— 决定 `maximumForce` 该当**力**还是**力矩**限幅。
+    bool AxisIsTranslation(ConfigurableJointAxis in_axis)
+    {
+        return in_axis == ConfigurableJointAxis::TranslationX ||
+               in_axis == ConfigurableJointAxis::TranslationY ||
+               in_axis == ConfigurableJointAxis::TranslationZ;
+    }
+
+    /// 把一个驱动写进六自由度约束的某一个轴。
+    ///
+    /// ⚠️ "开不开"由 `positionSpring > 0` 决定，没有一个单独的开关：刚度为 0 的
+    /// 位置电机在 Jolt 里没有意义（`MotorSettings::IsValid()` 过得去但
+    /// `HasStiffness()` 是假，电机什么都不做），而 Unity 的 JointDrive 也是同一
+    /// 条规则 —— `spring = 0` 就是没有驱动。
+    ///
+    /// ⚠️ 用 `PositionAndVelocity` 而不是 `Position`：这样 `positionDamper` 才是
+    /// Unity 那个意思（`targetVelocity` 为 0 时公式退化成
+    /// `F = k*(target - cur) - c*v`，正是 Unity 的 spring/damper）。
+    bool ApplyDriveToAxis(JPH::SixDOFConstraint* in_joint, ConfigurableJointAxis in_axis, const JointDrive& in_drive)
+    {
+        JPH::SixDOFConstraintSettings::EAxis jolt_axis;
+        if (!JoltAxisFor(in_axis, jolt_axis))
+        {
+            return false;
+        }
+        if (in_drive.positionDamper < 0.f || in_drive.maximumForce < 0.f)
+        {
+            return false;
+        }
+
+        JPH::MotorSettings& motor = in_joint->GetMotorSettings(jolt_axis);
+        // ⚠️ 关掉的电机也把弹簧参数写下去：读回来要能拿到脚本写进去的那两个数，
+        // 否则"设了 spring=0"和"从没设过"在 GetJointAxisDrive 上分不出来。
+        motor.mSpringSettings = JPH::SpringSettings(JPH::ESpringMode::StiffnessAndDamping,
+                                                   in_drive.positionSpring,
+                                                   in_drive.positionDamper);
+        if (AxisIsTranslation(in_axis))
+        {
+            motor.SetForceLimit(in_drive.maximumForce);
+        }
+        else
+        {
+            motor.SetTorqueLimit(in_drive.maximumForce);
+        }
+        in_joint->SetMotorState(jolt_axis,
+                                in_drive.positionSpring > 0.f ? JPH::EMotorState::PositionAndVelocity
+                                                              : JPH::EMotorState::Off);
+        return true;
     }
 
     /// 最小质量（千克）。0 / 负质量会让倒数质量变成 inf，一步积分之后就是 NaN
@@ -1891,6 +1958,106 @@ uint32_t PhysicsScene::CreateJoint(const PhysicsJointDesc& in_desc)
             jph_constraint = settings.Create(*jph_body_a, *jph_body_b);
             break;
         }
+        case PhysicsJointType::configurable:
+        {
+            JPH::SixDOFConstraintSettings settings;
+            settings.mPosition1 = JPH::RVec3(toVec3(in_desc.m_PivotA));
+            settings.mPosition2 = JPH::RVec3(toVec3(in_desc.m_PivotB));
+            // ⚠️ 摆动型用 **Pyramid**，不是 Jolt 默认的 Cone。
+            //
+            // Cone 在 `UpdateRotationLimits` 里会**强行**把 Y / Z 两轴改成对称、
+            // 并且只留 max（`mLimitMin[Y] = -mLimitMax[Y]`、`mLimitMax = max(0, ...)`），
+            // 因为锥本来就是"一个半径"。而 Unity 的 `angularYLimit` /
+            // `angularZLimit` 是**各自独立**的两个限位：脚本写 Y=0.5 / Z=0.2
+            // 是完全正常的用法，Cone 会把它悄悄改成 Y=Z=0.5。Pyramid 才是
+            // "两轴各自上下限"的模型（Jolt 的注释：pyramid 不需要对称）。
+            settings.mSwingType = JPH::ESwingType::Pyramid;
+            // 关节参考系：X = axis，Y = secondaryAxis，Z 由 Jolt 自己叉乘
+            // （`axis_z = mAxisX.Cross(mAxisY)`）。
+            //
+            // ⚠️ 两条轴**平行**的后果和 swing-twist 那条平面轴一样：叉乘出零向量，
+            // 后面 `Mat44(...).GetQuaternion()` 拿到一个退化旋转 ⇒ 姿态 NaN，一步
+            // 之后整个 broadphase 被拖垮，而报错的位置离这里很远。所以走同一条
+            // 正交化路。
+            const JPH::Vec3 axis_x1 = toVec3(in_desc.m_AxisA.normalisedCopy());
+            const JPH::Vec3 axis_x2 = toVec3(in_desc.m_AxisB.normalisedCopy());
+            settings.mAxisX1 = axis_x1;
+            settings.mAxisY1 = PlaneAxisFor(axis_x1, in_desc.m_SecondaryAxisA);
+            settings.mAxisX2 = axis_x2;
+            settings.mAxisY2 = PlaneAxisFor(axis_x2, in_desc.m_SecondaryAxisB);
+
+            for (int i = 0; i < JPH::SixDOFConstraintSettings::EAxis::Num; ++i)
+            {
+                const JPH::SixDOFConstraintSettings::EAxis jolt_axis =
+                    static_cast<JPH::SixDOFConstraintSettings::EAxis>(i);
+                switch (in_desc.m_Motion[i])
+                {
+                    case ConfigurableJointMotion::Free:
+                        settings.MakeFreeAxis(jolt_axis);
+                        break;
+                    case ConfigurableJointMotion::Locked:
+                        settings.MakeFixedAxis(jolt_axis);
+                        break;
+                    case ConfigurableJointMotion::Limited:
+                        // min > max 在 Jolt 里被当成"锁死"（`IsFixedAxis` 判的是
+                        // min >= max）—— 那和 `Locked` 是两种不同的写法却一个意思，
+                        // 正是"我明明写了区间却被当成焊死"这类最难查的错。拒掉。
+                        if (in_desc.m_AxisLimitMin[i] > in_desc.m_AxisLimitMax[i])
+                        {
+                            LOG_ERROR(ZPhysics,
+                                      "CreateJoint: configurable axis {} has an inverted limit range ({} .. {})",
+                                      i,
+                                      in_desc.m_AxisLimitMin[i],
+                                      in_desc.m_AxisLimitMax[i]);
+                            return s_InvalidJointId;
+                        }
+                        settings.SetLimitedAxis(jolt_axis, in_desc.m_AxisLimitMin[i], in_desc.m_AxisLimitMax[i]);
+                        break;
+                }
+                // 电机初值一律关掉：Jolt 的默认是 `{FrequencyAndDamping, 2 Hz, 1}`，
+                // 那是一组**看着像开着**的弹簧参数。不清零的话 `GetJointAxisDrive`
+                // 读回来会报出一个脚本从没写过的 2.0。
+                settings.mMotorSettings[i] =
+                    JPH::MotorSettings(JPH::ESpringMode::StiffnessAndDamping, 0.f, 0.f);
+            }
+
+            // 线性限位弹簧：只有平移那三个轴有（`mLimitsSpringSettings` 只有
+            // `NumTranslation` 个），所以三个轴共用一个值 —— 与 Unity 的
+            // `linearLimitSpring` 一个字段管三个方向一致。
+            for (int i = 0; i < JPH::SixDOFConstraintSettings::EAxis::NumTranslation; ++i)
+            {
+                settings.mLimitsSpringSettings[i] = JPH::SpringSettings(
+                    JPH::ESpringMode::StiffnessAndDamping, in_desc.m_LinearLimitSpring, in_desc.m_LinearLimitDamper);
+            }
+
+            jph_constraint = settings.Create(*jph_body_a, *jph_body_b);
+            if (jph_constraint == nullptr)
+            {
+                break;
+            }
+
+            // 驱动与四个目标量只能在约束**建好之后**写：`SetMotorState` 是
+            // `SixDOFConstraint` 上的，settings 里没有。
+            JPH::SixDOFConstraint* joint = static_cast<JPH::SixDOFConstraint*>(jph_constraint);
+            for (int i = 0; i < JPH::SixDOFConstraintSettings::EAxis::Num; ++i)
+            {
+                if (!ApplyDriveToAxis(joint,
+                                      static_cast<ConfigurableJointAxis>(i),
+                                      in_desc.m_AxisDrive[i]))
+                {
+                    LOG_ERROR(ZPhysics, "CreateJoint: configurable axis {} has an invalid drive", i);
+                    jph_constraint->Release();
+                    return s_InvalidJointId;
+                }
+            }
+            joint->SetTargetPositionCS(toVec3(in_desc.m_TargetPosition));
+            joint->SetTargetVelocityCS(toVec3(in_desc.m_TargetVelocity));
+            joint->SetTargetAngularVelocityCS(toVec3(in_desc.m_TargetAngularVelocity));
+            // `BS` = body space：`R2 = R1 * inOrientation`，与 Unity 的
+            // `targetRotation`（"相对宿主姿态还要再转多少"）同一个意思。
+            joint->SetTargetOrientationBS(toQuat(in_desc.m_TargetRotation));
+            break;
+        }
         default:
             break;
     }
@@ -1971,9 +2138,12 @@ bool PhysicsScene::GetJointType(uint32_t joint_id, PhysicsJointType& out_type) c
         case JPH::EConstraintSubType::SwingTwist:
             out_type = PhysicsJointType::swing_twist;
             return true;
+        case JPH::EConstraintSubType::SixDOF:
+            out_type = PhysicsJointType::configurable;
+            return true;
         default:
-            // 引擎目前只建这五种；剩下的（齿轮 / 路径 / 六自由度）今天没有
-            // 入口，报"查不到"而不是猜一个。
+            // 引擎目前只建这七种；剩下的（齿轮 / 路径）今天没有入口，报"查不到"
+            // 而不是猜一个。
             return false;
     }
 }
@@ -2422,9 +2592,254 @@ bool PhysicsScene::GetJointImpulse(uint32_t joint_id, float& out_linear_impulse,
                                                     std::abs(joint->GetTotalLambdaSwingZ())));
             return true;
         }
+        case JPH::EConstraintSubType::SixDOF:
+        {
+            const JPH::SixDOFConstraint* joint = static_cast<const JPH::SixDOFConstraint*>(jph_constraint);
+            // 六自由度这里能拿到**矢量**（`Vec3`），但仍然只给模长：这个 lambda 活
+            // 在**约束空间**里（`mConstraintToBody1` 那个参考系），不是世界空间。
+            // 拼成一个 Vector3 会得到一个看着像世界矢量、其实不是的东西 ——
+            // `GetJointImpulse` 那条注释写的就是这件事。
+            out_linear_impulse = joint->GetTotalLambdaPosition().Length();
+            out_angular_impulse = joint->GetTotalLambdaRotation().Length();
+            return true;
+        }
         default:
             return false;
     }
+}
+
+// -----------------------------------------------------------------------------
+// configurable（Unity 的 ConfigurableJoint）
+// -----------------------------------------------------------------------------
+
+bool PhysicsScene::SetJointAxisMotion(uint32_t joint_id,
+                                     ConfigurableJointAxis axis,
+                                     ConfigurableJointMotion motion,
+                                     float limit_min,
+                                     float limit_max)
+{
+    JPH::Constraint* jph_constraint = JointAt(joint_id);
+    if (jph_constraint == nullptr || jph_constraint->GetSubType() != JPH::EConstraintSubType::SixDOF)
+    {
+        return false;
+    }
+    JPH::SixDOFConstraintSettings::EAxis jolt_axis;
+    if (!JoltAxisFor(axis, jolt_axis))
+    {
+        return false;
+    }
+    if (motion == ConfigurableJointMotion::Limited && limit_min > limit_max)
+    {
+        return false;
+    }
+
+    // 这个轴要写进 Jolt 的那个"限位区间"是什么。
+    //
+    // ⚠️ `Locked` 是**反序**区间（min = FLT_MAX / max = -FLT_MAX）：Jolt 的
+    // `IsFixedAxis` 判的是 `min >= max`，那一条分支会把这个自由度驱动到 0 ——
+    // 这正是 Unity 的 Locked 的意思，不是一个可以顺手夹一夹的非法输入。
+    float new_min = 0.f;
+    float new_max = 0.f;
+    switch (motion)
+    {
+        case ConfigurableJointMotion::Free:
+            new_min = -FLT_MAX;
+            new_max = FLT_MAX;
+            break;
+        case ConfigurableJointMotion::Locked:
+            new_min = FLT_MAX;
+            new_max = -FLT_MAX;
+            break;
+        case ConfigurableJointMotion::Limited:
+            new_min = limit_min;
+            new_max = limit_max;
+            break;
+    }
+
+    // Jolt 的平移 / 旋转限位各自是一个 `Vec3` **整体** setter（三个轴一起写），
+    // 所以先读回当前三个轴、只改其中这一个、再整个写回去。少了读改写这一步，
+    // "改一个轴"会顺手把另外两个轴也改掉 —— 而限位被改宽了只在物理表现上看得
+    // 出来，不报错。
+    JPH::SixDOFConstraint* joint = static_cast<JPH::SixDOFConstraint*>(jph_constraint);
+    const bool translation = jolt_axis <= JPH::SixDOFConstraintSettings::TranslationZ;
+    const int component = translation
+                              ? static_cast<int>(jolt_axis)
+                              : static_cast<int>(jolt_axis) -
+                                    static_cast<int>(JPH::SixDOFConstraintSettings::RotationX);
+    if (translation)
+    {
+        JPH::Vec3 min = joint->GetTranslationLimitsMin();
+        JPH::Vec3 max = joint->GetTranslationLimitsMax();
+        min.SetComponent(component, new_min);
+        max.SetComponent(component, new_max);
+        joint->SetTranslationLimits(min, max);
+    }
+    else
+    {
+        JPH::Vec3 min = joint->GetRotationLimitsMin();
+        JPH::Vec3 max = joint->GetRotationLimitsMax();
+        min.SetComponent(component, new_min);
+        max.SetComponent(component, new_max);
+        joint->SetRotationLimits(min, max);
+    }
+    return true;
+}
+
+bool PhysicsScene::GetJointAxisMotion(uint32_t joint_id,
+                                     ConfigurableJointAxis axis,
+                                     ConfigurableJointMotion& out_motion,
+                                     float& out_limit_min,
+                                     float& out_limit_max) const
+{
+    const JPH::Constraint* jph_constraint = JointAt(joint_id);
+    if (jph_constraint == nullptr || jph_constraint->GetSubType() != JPH::EConstraintSubType::SixDOF)
+    {
+        return false;
+    }
+    JPH::SixDOFConstraintSettings::EAxis jolt_axis;
+    if (!JoltAxisFor(axis, jolt_axis))
+    {
+        return false;
+    }
+
+    const JPH::SixDOFConstraint* joint = static_cast<const JPH::SixDOFConstraint*>(jph_constraint);
+    out_limit_min = joint->GetLimitsMin(jolt_axis);
+    out_limit_max = joint->GetLimitsMax(jolt_axis);
+    // ⚠️ 先判 Free / Fixed 再看数值：`Locked` 在 Jolt 里存的是**反序**区间
+    // （min = FLT_MAX, max = -FLT_MAX），直接按 min/max 判会把它读成 Limited。
+    if (joint->IsFreeAxis(jolt_axis))
+    {
+        out_motion = ConfigurableJointMotion::Free;
+    }
+    else if (joint->IsFixedAxis(jolt_axis))
+    {
+        out_motion = ConfigurableJointMotion::Locked;
+    }
+    else
+    {
+        out_motion = ConfigurableJointMotion::Limited;
+    }
+    return true;
+}
+
+bool PhysicsScene::SetJointAxisDrive(uint32_t joint_id, ConfigurableJointAxis axis, const JointDrive& drive)
+{
+    JPH::Constraint* jph_constraint = JointAt(joint_id);
+    if (jph_constraint == nullptr || jph_constraint->GetSubType() != JPH::EConstraintSubType::SixDOF)
+    {
+        return false;
+    }
+    return ApplyDriveToAxis(static_cast<JPH::SixDOFConstraint*>(jph_constraint), axis, drive);
+}
+
+bool PhysicsScene::GetJointAxisDrive(uint32_t joint_id, ConfigurableJointAxis axis, JointDrive& out_drive) const
+{
+    const JPH::Constraint* jph_constraint = JointAt(joint_id);
+    if (jph_constraint == nullptr || jph_constraint->GetSubType() != JPH::EConstraintSubType::SixDOF)
+    {
+        return false;
+    }
+    JPH::SixDOFConstraintSettings::EAxis jolt_axis;
+    if (!JoltAxisFor(axis, jolt_axis))
+    {
+        return false;
+    }
+
+    const JPH::SixDOFConstraint* joint = static_cast<const JPH::SixDOFConstraint*>(jph_constraint);
+    const JPH::MotorSettings& motor = joint->GetMotorSettings(jolt_axis);
+    out_drive.positionSpring = motor.mSpringSettings.mStiffness;
+    out_drive.positionDamper = motor.mSpringSettings.mDamping;
+    out_drive.maximumForce = AxisIsTranslation(axis) ? motor.mMaxForceLimit : motor.mMaxTorqueLimit;
+    // 电机关着时刚度读回来就是 0（写入时保证了这一点），所以不需要额外报一个
+    // "enabled" —— Unity 那边也是靠 `positionSpring` 判的。
+    return true;
+}
+
+bool PhysicsScene::SetJointTarget(uint32_t joint_id,
+                                  const Vector3& target_position,
+                                  const Vector3& target_velocity,
+                                  const Vector3& target_angular_velocity,
+                                  const Quaternion& target_rotation)
+{
+    JPH::Constraint* jph_constraint = JointAt(joint_id);
+    if (jph_constraint == nullptr || jph_constraint->GetSubType() != JPH::EConstraintSubType::SixDOF)
+    {
+        return false;
+    }
+
+    JPH::SixDOFConstraint* joint = static_cast<JPH::SixDOFConstraint*>(jph_constraint);
+    joint->SetTargetPositionCS(toVec3(target_position));
+    joint->SetTargetVelocityCS(toVec3(target_velocity));
+    joint->SetTargetAngularVelocityCS(toVec3(target_angular_velocity));
+    joint->SetTargetOrientationBS(toQuat(target_rotation));
+    return true;
+}
+
+bool PhysicsScene::GetJointTarget(uint32_t joint_id,
+                                  Vector3& out_target_position,
+                                  Vector3& out_target_velocity,
+                                  Vector3& out_target_angular_velocity,
+                                  Quaternion& out_target_rotation) const
+{
+    const JPH::Constraint* jph_constraint = JointAt(joint_id);
+    if (jph_constraint == nullptr || jph_constraint->GetSubType() != JPH::EConstraintSubType::SixDOF)
+    {
+        return false;
+    }
+
+    const JPH::SixDOFConstraint* joint = static_cast<const JPH::SixDOFConstraint*>(jph_constraint);
+    out_target_position = toVec3(joint->GetTargetPositionCS());
+    out_target_velocity = toVec3(joint->GetTargetVelocityCS());
+    out_target_angular_velocity = toVec3(joint->GetTargetAngularVelocityCS());
+    // ⚠️ 写入走的是 `BS`（body space），读出来也要换回 body space：Jolt 只存
+    // constraint space 的那一份（`GetTargetOrientationCS`）。少这一步的话
+    // "设进去再读出来"会拿到另一个数，而两个都是合法的四元数 —— 看不出错。
+    //
+    // `SetTargetOrientationBS(q)` 存的是 `CS = B1⁻¹ * q * B2`，所以反解是
+    // `q = B1 * CS * B2⁻¹`。`mConstraintToBody*` 是 protected，公开侧只有
+    // `GetConstraintToBody*Matrix()`，从它取旋转即可。
+    const JPH::Quat c_to_b1 = joint->GetConstraintToBody1Matrix().GetQuaternion();
+    const JPH::Quat c_to_b2 = joint->GetConstraintToBody2Matrix().GetQuaternion();
+    out_target_rotation = toQuat(c_to_b1 * joint->GetTargetOrientationCS() * c_to_b2.Conjugated());
+    return true;
+}
+
+bool PhysicsScene::SetJointLinearLimitSpring(uint32_t joint_id, float spring, float damper)
+{
+    JPH::Constraint* jph_constraint = JointAt(joint_id);
+    if (jph_constraint == nullptr || jph_constraint->GetSubType() != JPH::EConstraintSubType::SixDOF)
+    {
+        return false;
+    }
+    if (spring < 0.f || damper < 0.f)
+    {
+        return false;
+    }
+
+    JPH::SixDOFConstraint* joint = static_cast<JPH::SixDOFConstraint*>(jph_constraint);
+    const JPH::SpringSettings settings(JPH::ESpringMode::StiffnessAndDamping, spring, damper);
+    for (int i = 0; i < JPH::SixDOFConstraintSettings::EAxis::NumTranslation; ++i)
+    {
+        joint->SetLimitsSpringSettings(static_cast<JPH::SixDOFConstraintSettings::EAxis>(i), settings);
+    }
+    return true;
+}
+
+bool PhysicsScene::GetJointLinearLimitSpring(uint32_t joint_id, float& out_spring, float& out_damper) const
+{
+    const JPH::Constraint* jph_constraint = JointAt(joint_id);
+    if (jph_constraint == nullptr || jph_constraint->GetSubType() != JPH::EConstraintSubType::SixDOF)
+    {
+        return false;
+    }
+
+    const JPH::SixDOFConstraint* joint = static_cast<const JPH::SixDOFConstraint*>(jph_constraint);
+    // 三个平移轴共用一个值（`SetJointLinearLimitSpring` 保证了它们一致），取
+    // TranslationX 那一份。
+    const JPH::SpringSettings& settings = joint->GetLimitsSpringSettings(JPH::SixDOFConstraintSettings::TranslationX);
+    out_spring = settings.mStiffness;
+    out_damper = settings.mDamping;
+    return true;
 }
 
 void PhysicsScene::FilterHitsByLayer(std::vector<PhysicsHitInfo>& in_out_hits, uint32_t layer_mask)

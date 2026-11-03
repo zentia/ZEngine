@@ -24,6 +24,7 @@ class ObjectLayerPairFilterImpl;
 #include "Runtime/Core/Math/AxisAligned.h"
 #include "Runtime/Core/Math/Quaternion.h"
 #include "Runtime/Function/Physics/PhysicsConfig.h"
+#include "Runtime/Function/Physics/PhysicsJoint.h"
 #include "Runtime/Function/Physics/PhysicsQuery.h"
 
 namespace JPH
@@ -115,7 +116,8 @@ enum class PhysicsJointType : unsigned char
     point,       ///< Keeps two points coincident (ball socket).
     slider,      ///< Translation along one axis, with optional limits.
     distance,    ///< Keeps two points within a distance range (SpringJoint).
-    swing_twist  ///< Cone-limited ball socket (Unity CharacterJoint).
+    swing_twist, ///< Cone-limited ball socket (Unity CharacterJoint).
+    configurable ///< Six DOF: per-axis limits + per-axis drives (Unity ConfigurableJoint).
 };
 
 /// Description of a joint. All pivots/axes are in world space: they are
@@ -166,6 +168,53 @@ struct PhysicsJointDesc
     float m_SwingSpringDamping {0.f};
     float m_TwistSpringFrequency {0.f};
     float m_TwistSpringDamping {0.f};
+
+    // ---- configurable（Unity 的 ConfigurableJoint）--------------------------
+    //
+    // `m_AxisA` / `m_SecondaryAxisA` 是关节参考系的 X / Y，第三条由叉乘得出 ——
+    // 与 Unity 的 `axis` / `secondaryAxis` 是同一件事（Unity 的文档：Axis 和
+    // Secondary Axis 一起表达关节的局部坐标系，第三条自动取叉乘）。
+    //
+    // 下面三组平行数组都按 `ConfigurableJointAxis` 下标（0..5）。
+
+    /// 与 `m_AxisA` 一起定出关节参考系的那条轴（世界空间）。会被投影成垂直分量，
+    /// 不必严格正交；**平行**时后端自己换一条（与 `PlaneAxisFor` 同一条路）。
+    Vector3 m_SecondaryAxisA {0.f, 1.f, 0.f};
+    Vector3 m_SecondaryAxisB {0.f, 1.f, 0.f};
+
+    /// 每个轴的运动模式。**默认全 Free**：与 Jolt 的
+    /// `SixDOFConstraintSettings` 初值（min = -FLT_MAX / max = FLT_MAX）一致，
+    /// 也和 Unity 里"刚 AddComponent 还没配"的 ConfigurableJoint 一样 —— 先什么
+    /// 都不约束，等脚本来配。默认成 Locked 会让一个没配过的关节把物体焊死，
+    /// 而"焊死"和"配错了"从外面看不出来。
+    ConfigurableJointMotion m_Motion[kConfigurableAxisCount] {
+        ConfigurableJointMotion::Free, ConfigurableJointMotion::Free, ConfigurableJointMotion::Free,
+        ConfigurableJointMotion::Free, ConfigurableJointMotion::Free, ConfigurableJointMotion::Free};
+
+    /// 限位区间。只有 `m_Motion[i] == Limited` 时才有意义 —— 单位随轴是弧度还是
+    /// 米，与 Jolt 一致。
+    float m_AxisLimitMin[kConfigurableAxisCount] {0.f, 0.f, 0.f, 0.f, 0.f, 0.f};
+    float m_AxisLimitMax[kConfigurableAxisCount] {0.f, 0.f, 0.f, 0.f, 0.f, 0.f};
+
+    /// 每个轴的驱动。`positionSpring <= 0` 视为"这个轴没有驱动"（Jolt 那侧就把
+    /// 电机置成 Off —— 刚度为 0 的电机没有意义，而 Jolt 的 `SetMotorState` 会在
+    /// 打开电机时断言设置合法）。
+    JointDrive m_AxisDrive[kConfigurableAxisCount];
+
+    /// 线性限位弹簧（刚度 / 阻尼）。**只有平移那三个轴有** —— Jolt 的
+    /// `mLimitsSpringSettings` 只有 `NumTranslation` 个，旋转限位是硬的。
+    /// 0 = 硬限位。
+    float m_LinearLimitSpring {0.f};
+    float m_LinearLimitDamper {0.f};
+
+    /// 四个目标量（Unity 的 `targetPosition` / `targetVelocity` /
+    /// `targetAngularVelocity` / `targetRotation`）。`targetRotation` 是**宿主
+    /// 局部**的姿态，与 Unity 一致（`ConfigurableJoint.targetRotation` 是相对
+    /// 关节建立时姿态的旋转）。
+    Vector3 m_TargetPosition {Vector3::ZERO};
+    Vector3 m_TargetVelocity {Vector3::ZERO};
+    Vector3 m_TargetAngularVelocity {Vector3::ZERO};
+    Quaternion m_TargetRotation {Quaternion::IDENTITY};
 
     /// Let Jolt compute the attachment points from the current body poses.
     bool m_AutoDetectPoint {true};
@@ -586,6 +635,60 @@ public:
     /// Vector3 会得到一个看着像世界矢量、其实不是的东西。而"断不断"只需要大小。
     /// 这也是本引擎没有 Unity 的 `Joint.currentForce`（Vector3）的原因。
     bool GetJointImpulse(uint32_t joint_id, float& out_linear_impulse, float& out_angular_impulse) const;
+
+    // --- configurable（Unity 的 ConfigurableJoint）---------------------------
+
+    /// 单个轴的**运动模式**与限位。
+    ///
+    /// @param limit_min / limit_max  只有 `motion == Limited` 时被读；`Locked` 时
+    /// 忽略（Jolt 那边是"区间写反"，没有数值可填）。
+    ///
+    /// ⚠️ `Locked` 在 Jolt 里是"把区间写成 [FLT_MAX, -FLT_MAX]"，读回来要认这个
+    /// 反序 —— 所以 `GetJointAxisMotion` 给的 min/max 在 Locked 时是**反的**，
+    /// 别拿它去判"区间合不合法"。
+    bool SetJointAxisMotion(uint32_t joint_id,
+                            ConfigurableJointAxis axis,
+                            ConfigurableJointMotion motion,
+                            float limit_min,
+                            float limit_max);
+    bool GetJointAxisMotion(uint32_t joint_id,
+                            ConfigurableJointAxis axis,
+                            ConfigurableJointMotion& out_motion,
+                            float& out_limit_min,
+                            float& out_limit_max) const;
+
+    /// 单个轴的**驱动**。
+    ///
+    /// ⚠️ 电机开不开由 `drive.positionSpring > 0` 决定，没有一个单独的开关：
+    /// Unity 的 JointDrive 也是这样（spring 为 0 就是没有驱动）。刚度为 0 的
+    /// 位置电机在 Jolt 里会断言设置非法，所以这里直接拒掉而不是"设了但不生效"。
+    ///
+    /// ⚠️ 平移轴用 `maximumForce` 当**力**限幅，旋转轴当**力矩**限幅 —— 与 Jolt
+    /// 的 `MotorSettings::SetForceLimit` / `SetTorqueLimit` 同一条分割线。
+    bool SetJointAxisDrive(uint32_t joint_id, ConfigurableJointAxis axis, const JointDrive& drive);
+    bool GetJointAxisDrive(uint32_t joint_id, ConfigurableJointAxis axis, JointDrive& out_drive) const;
+
+    /// 四个目标量一起设：Jolt 那侧它们各自是一个 setter，但语义上是"同一个目标
+    /// 姿态"的四个面，分开设会经过三个中间态（设了 targetPosition 但
+    /// targetVelocity 还是旧的 ⇒ 驱动朝一个没人想要的方向使劲）。
+    bool SetJointTarget(uint32_t joint_id,
+                        const Vector3& target_position,
+                        const Vector3& target_velocity,
+                        const Vector3& target_angular_velocity,
+                        const Quaternion& target_rotation);
+    bool GetJointTarget(uint32_t joint_id,
+                        Vector3& out_target_position,
+                        Vector3& out_target_velocity,
+                        Vector3& out_target_angular_velocity,
+                        Quaternion& out_target_rotation) const;
+
+    /// 线性限位的软硬。**只有平移那三个轴有**：Jolt 的注释写得很直白 ——
+    /// "Only soft translation limits are supported, soft rotation limits are not
+    /// currently supported"，所以 Unity 的 `angularXLimitSpring` /
+    /// `angularYZLimitSpring` 在本引擎里没有对应物（写了会静默无效，那正是这
+    /// 个引擎一贯避免的一类坑 ⇒ 干脆不发布这两个属性）。
+    bool SetJointLinearLimitSpring(uint32_t joint_id, float spring, float damper);
+    bool GetJointLinearLimitSpring(uint32_t joint_id, float& out_spring, float& out_damper) const;
 
     /// cast a ray and find the hits
     /// @ray_origin: origin of ray
