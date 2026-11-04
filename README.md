@@ -211,6 +211,18 @@ From the repository root:
 ./bin/Debug/ZEditor -p engine/ZGameSmoke.zproject
 ```
 
+#### Headless smoke test
+
+```bash
+scripts/smoke_linux_xvfb.sh --seconds 20
+```
+
+Boots ZEditor on a throwaway Xvfb display, waits for the engine to reach
+"All systems initialized successfully", keeps it running and fails (exit 1) if
+the process dies or never gets there. Prerequisites are checked up front
+(`xvfb`, the editor binary and the `.zproject`). Options: `--seconds`,
+`--project`, `--binary`, `--keep-log`.
+
 ### zbuild.py
 
 `zbuild.py` is a unified driver wrapping the steps above, and the only way to

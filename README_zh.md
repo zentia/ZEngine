@@ -176,6 +176,14 @@ python zbuild.py build --target ZEditor
 
 工程目录里需要有 `ZEditor.ini` 描述的资产结构（`asset/`、`resource/` 等）；首次打开会重建 `Assets/_Generated/` 下的导入产物。
 
+#### 无头冒烟测试
+
+```bash
+scripts/smoke_linux_xvfb.sh --seconds 20
+```
+
+脚本会起一个临时的 Xvfb 显示、用 `-p` 拉起 ZEditor，等日志出现 “All systems initialized successfully” 后继续挂一段时间；进程中途死掉或者一直没就绪都算失败（退出码 1）。前置条件（`xvfb`、编辑器二进制、`.zproject`）会先检查。可用参数：`--seconds`、`--project`、`--binary`、`--keep-log`。
+
 ### zbuild.py
 
 `zbuild.py` 是上述步骤的统一入口，也是构建独立工具的唯一方式：
