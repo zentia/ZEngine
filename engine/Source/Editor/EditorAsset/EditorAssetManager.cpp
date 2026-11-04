@@ -225,7 +225,7 @@ bool EditorAssetManager::Initialize()
     {
         const std::filesystem::path content_root = projectInfo->GetProjectContent();
         SpineAutoCook::CookProject(content_root);
-        m_SpineSourceWatcher.SetExtensionFilter({".bytes", ".skel", ".json", ".atlas", ".txt"});
+        m_SpineSourceWatcher.SetExtensionFilter({".bytes", ".skel", ".atlas", ".txt"});
         auto on_spine_source = [](const std::filesystem::path& p) { SpineAutoCook::Queue(p); };
         m_SpineSourceWatcher.SetOnFileCreated(on_spine_source);
         m_SpineSourceWatcher.SetOnFileChanged(on_spine_source);

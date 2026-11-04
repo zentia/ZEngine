@@ -37,7 +37,7 @@
 //                     画在 **RP1 的 forward / 透明 subpass**（DrawWorld），测场景深度、不写深度、远→近排序，
 //                     输出转线性后与透明网格 / 粒子一起经 tonemap。
 //     两层每帧缓冲 / 合包 / 管线各一份（同一帧两个时刻录制，共用会互相覆盖）。
-//   * 资产来源：骨架源文件（.skel.bytes / .skel / .json + 同名图集，加载时现烘焙）**或** 已烘焙的
+//   * 资产来源：骨架源文件（.skel.bytes / .skel + 同名图集，加载时现烘焙）**或** 已烘焙的
 //     `.zspg` 容器（直接读，图集页按页名相对 .zspg 所在目录找）。两者进同一份运行时数据。
 // =====================================================================
 
@@ -83,7 +83,7 @@ public:
     static SpineGpuRenderer& Get();
 
     // 游戏线程：请求加载（实际加载在渲染线程下一次 Draw 时做）。
-    // `skeleton_path` 是 .skel.bytes / .skel / .json；图集取同名 .atlas.txt / .atlas，
+    // `skeleton_path` 是 .skel.bytes / .skel；图集取同名 .atlas.txt / .atlas，
     // 贴图取图集里写的页名（相对图集所在目录）。
     // RequestLoad = RequestClear + RequestAddInstance（多实例之前的语义：替换掉全部实例）。
     void RequestLoad(const std::string& skeleton_path, int anim_index);

@@ -68,7 +68,7 @@ struct SpineAnimationEvent
 /// 场景里的 GPU-Spine 骨架（spine-unity 的 SkeletonAnimation 同位）。
 ///
 /// 资产：`.zspg`（编辑器会把 Assets 下的骨架源自动 cook 成同目录同名 .zspg，见 SpineAutoCook）；也认骨架源文件
-/// （`.skel.bytes` / `.skel` / 带同名图集的 `.json`，加载时现烘焙）。引用同时存**路径 + GUID**：路径找不到时按
+/// （`.skel.bytes` / `.skel`，仅二进制，加载时现烘焙）。引用同时存**路径 + GUID**：路径找不到时按
 /// GUID 在 AssetRegistry 里重定向并改写路径（编辑器内重命名 / 移动 .zspg 不断引用）。
 ///
 /// 运行时：解算 / 绘制在 SpineGpuRenderer（渲染线程）。本组件持有一个"世界实例" id，每次 Tick 推变换 + dt，
