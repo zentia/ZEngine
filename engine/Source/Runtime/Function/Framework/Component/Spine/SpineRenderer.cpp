@@ -78,7 +78,7 @@ namespace
     {
         const std::u8string file = std::filesystem::path(std::u8string(asset.begin(), asset.end())).filename().u8string();
         std::string name(file.begin(), file.end());
-        for (const char* suffix : {".zspg", ".skel.bytes", ".skel", ".json"})
+        for (const char* suffix : {".zspg", ".skel.bytes", ".skel"})
         {
             const size_t n = std::char_traits<char>::length(suffix);
             if (name.size() > n && name.compare(name.size() - n, n, suffix) == 0)

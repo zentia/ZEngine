@@ -1,8 +1,8 @@
 #include "Editor/ToolSuite/SpineCook/SpineCookSuite.h"
 
-#include "Runtime/Function/Render/Spine/SpineGpuAssetFile.h"
-#include "Runtime/Function/Render/Spine/SpineGpuFormat.h"
-#include "Runtime/Function/Render/Spine/SpineGpuImporter.h"
+#include "GPUSpine/SpineGpuAssetFile.h"
+#include "GPUSpine/SpineGpuFormat.h"
+#include "GPUSpine/SpineGpuImporter.h"
 
 #include <cstdio>
 #include <cstring>
@@ -35,7 +35,7 @@ namespace
     const char* const kUsage =
         "用法：ZEditor -batchmode -suite=SpineCook <输入> [选项]\n"
         "\n"
-        "  输入            一个 .json / .skel 骨架，或一个目录\n"
+        "  输入            一个 .skel / .skel.bytes 二进制骨架，或一个目录（不支持 json）\n"
         "                  Unity 的 `<名>.skel.bytes` 同样认（图集找 `<名>.atlas.txt`）\n"
         "\n"
         "  -o <路径>       输出 .zspg（或目录）；省略 ⇒ 与骨架同目录同名\n"
@@ -134,7 +134,6 @@ namespace
     enum class SkeletonKind
     {
         kNone,
-        kJson,
         kBinary,
     };
 
@@ -150,7 +149,6 @@ namespace
         // ⚠️ 先判 `.skel.bytes`：`.skel` 是它的前缀，顺序反了会把二进制当二进制……
         // 实际上两者都走二进制解析器，真正的坑在 StripSkeletonSuffix 那边。
         if (EndsWith(name, ".skel") || EndsWith(name, ".skel.bytes")) return SkeletonKind::kBinary;
-        if (EndsWith(name, ".json")) return SkeletonKind::kJson;
         return SkeletonKind::kNone;
     }
 
@@ -160,7 +158,7 @@ namespace
     std::filesystem::path StripSkeletonSuffix(const std::filesystem::path& p)
     {
         const std::string name = PathToUtf8(p.filename());
-        for (const char* suf : {".skel.bytes", ".skel", ".json"})
+        for (const char* suf : {".skel.bytes", ".skel"})
         {
             if (EndsWith(name, suf))
             {
@@ -373,7 +371,7 @@ int SpineCookSuite::RunBatch(const std::vector<std::string>& args)
 
     if (inputs.empty())
     {
-        std::fprintf(stderr, "输入里没有 .json / .skel / .skel.bytes：%s\n", PathToUtf8(input).c_str());
+        std::fprintf(stderr, "输入里没有 .skel / .skel.bytes：%s\n", PathToUtf8(input).c_str());
         return 1;
     }
 
@@ -412,7 +410,7 @@ int SpineCookSuite::RunBatch(const std::vector<std::string>& args)
         }
         else if (out_is_dir)
         {
-            // 目录 → 目录时保持相对结构：两个子目录里都叫 hero.json 是常态，
+            // 目录 → 目录时保持相对结构：两个子目录里都叫 hero.skel 是常态，
             // 铺平就只剩一个。
             std::error_code rel_ec;
             const std::filesystem::path rel = std::filesystem::relative(skeleton, input, rel_ec);
@@ -453,7 +451,7 @@ int SpineCookSuite::RunInteractive(const std::filesystem::path& /*project_file*/
     using namespace ZSlate;
 
     auto in_box = std::make_shared<SEditableTextBox>();
-    in_box->HintText = "骨架（.json / .skel）";
+    in_box->HintText = "骨架（.skel / .skel.bytes）";
     in_box->MinWidth = 520.0f;
 
     auto out_box = std::make_shared<SEditableTextBox>();
@@ -514,7 +512,7 @@ int SpineCookSuite::RunInteractive(const std::filesystem::path& /*project_file*/
                                   ofn.hwndOwner    = app.GetHwnd();
                                   ofn.lpstrFile    = buffer;
                                   ofn.nMaxFile     = 4096;
-                                  ofn.lpstrFilter  = L"Spine 骨架 (*.json;*.skel)\0*.json;*.skel\0"
+                                  ofn.lpstrFilter  = L"Spine 骨架 (*.skel;*.bytes)\0*.skel;*.bytes\0"
                                                      L"所有文件 (*.*)\0*.*\0";
                                   ofn.nFilterIndex = 1;
                                   ofn.lpstrTitle   = L"打开 Spine 骨架";
