@@ -82,6 +82,12 @@ list(SORT _z_clang_versions)
 list(REVERSE _z_clang_versions)
 list(GET _z_clang_versions 0 _z_resource_dir)
 
+# bionic has pthread inside libc and never had pthread_cancel, so CMake's
+# FindThreads probe fails and it falls back to -lpthreads/-lpthread, which then
+# do not exist. Tell CMake up front that the C library provides threads.
+set(CMAKE_HAVE_LIBC_PTHREAD TRUE CACHE INTERNAL "bionic ships pthread in libc")
+set(CMAKE_THREAD_LIBS_INIT "" CACHE STRING "bionic ships pthread in libc")
+
 set(CMAKE_SYSTEM_NAME Android)
 set(CMAKE_SYSTEM_VERSION ${_z_api})
 set(CMAKE_ANDROID_ARCH_ABI ${ANDROID_ABI})
@@ -93,10 +99,23 @@ set(CMAKE_C_COMPILER_TARGET "${_z_target_triple}${_z_api}")
 set(CMAKE_CXX_COMPILER_TARGET "${_z_target_triple}${_z_api}")
 set(CMAKE_LINKER ld.lld)
 
+# bionic folds pthread into libc: there is deliberately no libpthread.so in the
+# NDK sysroot, but a few third-party CMakeLists (and CMake's own LTO/unwind
+# probes) still ask for -lpthread and the link fails. Provide a linker script
+# that redirects it to libc. Written under the build tree so nothing leaks into
+# the NDK install.
+set(_z_stub_lib_dir "${CMAKE_BINARY_DIR}/android_stub_libs")
+file(MAKE_DIRECTORY "${_z_stub_lib_dir}")
+foreach(_z_stub pthread pthreads rt util)
+    if(NOT EXISTS "${_z_stub_lib_dir}/lib${_z_stub}.so")
+        file(WRITE "${_z_stub_lib_dir}/lib${_z_stub}.so" "INPUT(libc.so)\n")
+    endif()
+endforeach()
+
 # Single string, not a CMake list: a list interpolated into a flags variable
 # becomes "a;b;c" and clang sees one broken argument.
 set(_z_common_flags
-    "-resource-dir=${_z_resource_dir} -rtlib=compiler-rt -fuse-ld=lld -L${_z_api_lib_dir}")
+    "-resource-dir=${_z_resource_dir} -rtlib=compiler-rt -fuse-ld=lld -L${_z_api_lib_dir} -L${_z_stub_lib_dir}")
 
 # C: no unwinder needed; C++: libc++ (headers come from the sysroot) plus the
 # NDK's libunwind, which --unwindlib=none would otherwise leave unresolved.
@@ -107,7 +126,11 @@ set(CMAKE_MODULE_LINKER_FLAGS_INIT   "${_z_common_flags} -stdlib=libc++ -lunwind
 set(CMAKE_EXE_LINKER_FLAGS_INIT      "${_z_common_flags} -stdlib=libc++ -lunwind")
 
 # Everything must come from the NDK sysroot; the host's /usr/lib must not leak in.
+# find_library() must see the API-level directory too, otherwise -landroid /
+# -llog / -lvulkan look "not found" even though the NDK ships them under
+# <sysroot>/usr/lib/<abi>/<api>/.
 set(CMAKE_FIND_ROOT_PATH "${_z_sysroot}")
+list(APPEND CMAKE_LIBRARY_PATH "${_z_api_lib_dir}")
 set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
 set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
 set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
