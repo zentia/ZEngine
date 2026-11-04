@@ -12,7 +12,7 @@
 	url = https://github.com/tencent/bqlog
 [submodule "engine/3rdparty/JoltPhysics"]
 	path = engine/3rdparty/JoltPhysics
-	url = https://github.com/zentia/JoltPhysics.git
+	url = https://github.com/jrouwe/JoltPhysics.git
 	branch = master
 [submodule "engine/3rdparty/tinyobjloader"]
 	path = engine/3rdparty/tinyobjloader
@@ -25,7 +25,7 @@
 	url = https://github.com/zlib-ng/minizip-ng
 [submodule "engine/3rdparty/lmdb"]
 	path = engine/3rdparty/lmdb
-	url = https://github.com/zentia/lmdb.git
+	url = https://github.com/LMDB/lmdb.git
 	branch = mdb.master3
 [submodule "engine/3rdparty/rapidjson"]
 	path = engine/3rdparty/rapidjson
