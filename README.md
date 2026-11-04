@@ -220,8 +220,14 @@ scripts/smoke_linux_xvfb.sh --seconds 20
 Boots ZEditor on a throwaway Xvfb display, waits for the engine to reach
 "All systems initialized successfully", keeps it running and fails (exit 1) if
 the process dies or never gets there. Prerequisites are checked up front
-(`xvfb`, the editor binary and the `.zproject`). Options: `--seconds`,
-`--project`, `--binary`, `--keep-log`.
+(`xvfb`, the editor binary and the `.zproject`).
+
+It then also waits for the engine's one-shot "First frame presented" log line.
+On a software rasteriser (Mesa llvmpipe) that line usually never appears - the
+renderer is simply too slow without a GPU - so a missing frame is a warning by
+default. Pass `--require-frame` on machines with a real Vulkan device to make
+it fatal. Options: `--seconds`, `--project`, `--binary`, `--frame-timeout`,
+`--require-frame`, `--keep-log`.
 
 ### zbuild.py
 

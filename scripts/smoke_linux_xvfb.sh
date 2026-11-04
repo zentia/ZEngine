@@ -11,6 +11,7 @@
 #
 # Usage:
 #   scripts/smoke_linux_xvfb.sh [--seconds N] [--project PATH] [--binary PATH] [--keep-log]
+#                                [--require-frame] [--frame-timeout SECONDS]
 #
 # Exit codes:
 #   0  passed
@@ -30,6 +31,8 @@ RUN_SECONDS=20
 PROJECT="${ROOT_DIR}/engine/ZGameSmoke.zproject"
 BINARY="${ROOT_DIR}/bin/Debug/ZEditor"
 KEEP_LOG=0
+REQUIRE_FRAME=0
+FRAME_TIMEOUT=120
 READY_TIMEOUT=180
 
 while [ $# -gt 0 ]; do
@@ -38,6 +41,8 @@ while [ $# -gt 0 ]; do
         --project)  PROJECT="$2";     shift 2 ;;
         --binary)   BINARY="$2";      shift 2 ;;
         --keep-log) KEEP_LOG=1;       shift ;;
+        --require-frame) REQUIRE_FRAME=1; shift ;;
+        --frame-timeout) FRAME_TIMEOUT="$2"; shift 2 ;;
         -h|--help)
             sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'
             exit 0 ;;
@@ -48,6 +53,7 @@ while [ $# -gt 0 ]; do
 done
 
 log_info()  { echo "[smoke] $*"; }
+log_warn()  { echo "[smoke][WARN] $*" >&2; }
 log_error() { echo "[smoke][ERROR] $*" >&2; }
 
 # ---------------------------------------------------------------- prerequisites
@@ -166,7 +172,38 @@ if [ "${READY}" -ne 1 ]; then
     exit 1
 fi
 
-log_info "engine ready after ~${elapsed}s; keeping it alive for ${RUN_SECONDS}s"
+log_info "engine ready after ~${elapsed}s; waiting up to ${FRAME_TIMEOUT}s for the first presented frame"
+
+FRAME_OK=0
+frame_elapsed=0
+while [ "${frame_elapsed}" -lt "${FRAME_TIMEOUT}" ]; do
+    if [ -n "${NEW_LOG}" ] && grep -q "First frame presented" "${NEW_LOG}" 2>/dev/null; then
+        FRAME_OK=1
+        break
+    fi
+    if ! kill -0 "${EDITOR_PID}" 2>/dev/null; then
+        break
+    fi
+    sleep 1
+    frame_elapsed=$((frame_elapsed + 1))
+done
+
+if [ "${FRAME_OK}" -eq 1 ]; then
+    log_info "first frame presented after ~${frame_elapsed}s"
+else
+    log_warn "no frame presented within ${FRAME_TIMEOUT}s"
+    log_warn "  On a software rasteriser (Mesa llvmpipe) the editor can take minutes per"
+    log_warn "  frame, and in practice never presents at all - that is a property of the"
+    log_warn "  renderer running without a GPU, not a regression. Use --require-frame on"
+    log_warn "  machines with a real Vulkan device to make this fatal."
+    if [ "${REQUIRE_FRAME}" -eq 1 ]; then
+        log_error "--require-frame was given but no frame was presented"
+        [ -n "${NEW_LOG}" ] && tail -15 "${NEW_LOG}" | sed 's/^/    /' >&2
+        exit 1
+    fi
+fi
+
+log_info "keeping the editor alive for ${RUN_SECONDS}s"
 
 survived=1
 for _ in $(seq 1 "${RUN_SECONDS}"); do
@@ -190,5 +227,9 @@ if [ "${survived}" -ne 1 ]; then
     exit 1
 fi
 
-log_info "PASS - editor stayed up for ${RUN_SECONDS}s (log: ${NEW_LOG:-<none>})"
+if [ "${FRAME_OK}" -eq 1 ]; then
+    log_info "PASS - editor stayed up for ${RUN_SECONDS}s and presented a frame (log: ${NEW_LOG:-<none>})"
+else
+    log_info "PASS (liveness only) - editor stayed up for ${RUN_SECONDS}s, no frame presented (log: ${NEW_LOG:-<none>})"
+fi
 exit 0

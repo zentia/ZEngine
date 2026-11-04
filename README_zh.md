@@ -182,7 +182,9 @@ python zbuild.py build --target ZEditor
 scripts/smoke_linux_xvfb.sh --seconds 20
 ```
 
-脚本会起一个临时的 Xvfb 显示、用 `-p` 拉起 ZEditor，等日志出现 “All systems initialized successfully” 后继续挂一段时间；进程中途死掉或者一直没就绪都算失败（退出码 1）。前置条件（`xvfb`、编辑器二进制、`.zproject`）会先检查。可用参数：`--seconds`、`--project`、`--binary`、`--keep-log`。
+脚本会起一个临时的 Xvfb 显示、用 `-p` 拉起 ZEditor，等日志出现 “All systems initialized successfully” 后继续挂一段时间；进程中途死掉或者一直没就绪都算失败（退出码 1）。前置条件（`xvfb`、编辑器二进制、`.zproject`）会先检查。
+
+之后还会等引擎那次性的 “First frame presented” 日志行。软件光栅化（Mesa llvmpipe）下这一行通常永远不出现——没有 GPU 时渲染器实在太慢——所以默认只当作警告；在有真实 Vulkan 设备的机器上加 `--require-frame` 才会让它成为失败条件。可用参数：`--seconds`、`--project`、`--binary`、`--frame-timeout`、`--require-frame`、`--keep-log`。
 
 ### zbuild.py
 

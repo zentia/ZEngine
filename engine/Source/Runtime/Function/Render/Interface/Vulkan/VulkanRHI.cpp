@@ -844,6 +844,19 @@ void VulkanRHI::SubmitRendering(std::function<void()> passUpdateAfterRecreateSwa
                 return;
             }
         }
+
+        // One-shot marker: the first frame the swapchain actually accepted. The
+        // headless smoke test greps for this line, so "the engine is up" and
+        // "something is really being presented" stay distinguishable.
+        static bool s_first_frame_presented = false;
+        if (!s_first_frame_presented)
+        {
+            s_first_frame_presented = true;
+            LOG_INFO(ZVulkan,
+                     "First frame presented (swapchain {}x{})",
+                     m_SwapchainExtent.width,
+                     m_SwapchainExtent.height);
+        }
     }
 
     m_CurrentFrameIndex = (m_CurrentFrameIndex + 1) % k_max_frames_in_flight;
