@@ -331,7 +331,13 @@ namespace
             return 0;  // 未处理：按键等交回系统默认行为
         }
 
-        const int32_t masked = AMotionEvent_getAction(event) & AMOTION_EVENT_ACTION_MASK;
+        // 低 8 位是 action，高 8 位在 POINTER_DOWN/UP 时编码"第几根手指"。NDK 没有
+        // AMotionEvent_getActionIndex()，索引必须自己从 action 里拆出来。
+        const int32_t raw_action = AMotionEvent_getAction(event);
+        const int32_t masked     = raw_action & AMOTION_EVENT_ACTION_MASK;
+        const int     action_index_raw =
+            static_cast<int>((raw_action & AMOTION_EVENT_ACTION_POINTER_INDEX_MASK) >>
+                             AMOTION_EVENT_ACTION_POINTER_INDEX_SHIFT);
 
         int action       = -1;
         int action_index = -1;  // 只对 POINTER_DOWN / POINTER_UP 有意义
@@ -343,7 +349,7 @@ namespace
                 break;
             case AMOTION_EVENT_ACTION_POINTER_DOWN:
                 action = ZPlayer_Touch_Down;
-                action_index = AMotionEvent_getActionIndex(event);
+                action_index = action_index_raw;
                 break;
             case AMOTION_EVENT_ACTION_UP:
                 action = ZPlayer_Touch_Up;
@@ -351,7 +357,7 @@ namespace
                 break;
             case AMOTION_EVENT_ACTION_POINTER_UP:
                 action = ZPlayer_Touch_Up;
-                action_index = AMotionEvent_getActionIndex(event);
+                action_index = action_index_raw;
                 break;
             case AMOTION_EVENT_ACTION_MOVE:
                 action = ZPlayer_Touch_Move;
@@ -456,7 +462,7 @@ extern "C" void android_main(struct android_app* app)
         // 有窗口时用 0 超时（尽快进下一帧），没窗口时阻塞等事件（-1），
         // 免得后台空转烧电。
         const int timeout = g_window_ready ? 0 : -1;
-        while (ALooper_pollAll(timeout, nullptr, &events, &source) >= 0)
+        while (ALooper_pollOnce(timeout, nullptr, &events, &source) >= 0)
         {
             if (source != nullptr)
             {

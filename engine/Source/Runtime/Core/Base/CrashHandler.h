@@ -698,7 +698,11 @@ namespace zcrash_posix
 // 可靠区分代码指针与数据的边界。宁可少给帧，也绝不冒二次踩内存的风险——崩溃
 // 快照的必达产物是 signal/platform/日志尾，帧只是锦上添花。等 Emscripten 上游
 // 补齐 <execinfo.h> 后可整段移除本兜底。
-#if defined(__EMSCRIPTEN__)
+//
+// Android：bionic 的 backtrace() 是 __INTRODUCED_IN(33)，minSdk 26 的目标既没有
+// 符号、头文件里也不声明它（execinfo.h 只在 __ANDROID_API__ >= 33 时导出）。同样
+// 退化成 0 帧：崩溃快照照旧写出 signal / platform / 日志尾，只是没有帧列表。
+#if defined(__EMSCRIPTEN__) || (defined(__ANDROID__) && __ANDROID_API__ < 33)
 inline int backtrace(void** buffer, int buffer_size)
 {
     if (buffer != nullptr && buffer_size > 0)

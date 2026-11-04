@@ -1,3 +1,14 @@
+// Vulkan-Headers 1.3.x+ do not define the platform surface macros by themselves.
+// On Android that hides VkAndroidSurfaceCreateInfoKHR / vkCreateAndroidSurfaceKHR
+// (NDK r27 ships headers 1.3.275), so define it here, before the first
+// <vulkan/vulkan.h> arrives through VulkanRHI.h -> vma -> vulkan.h.
+#if defined(__ANDROID__)
+    #ifndef VK_USE_PLATFORM_ANDROID_KHR
+        #define VK_USE_PLATFORM_ANDROID_KHR 1
+    #endif
+    #include <android/native_window.h>
+#endif
+
 // Vulkan-Headers 1.3.x+ no longer auto-defines VK_USE_PLATFORM_XLIB_KHR on
 // Linux (Ubuntu 24.04 ships 1.3.275), so the xlib surface entry points used at
 // the bottom of this file only exist when the macro is defined BEFORE the first
