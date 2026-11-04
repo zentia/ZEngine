@@ -5,6 +5,38 @@
 File::File()
     : m_Entry(nullptr), m_Accessor(nullptr), m_OpenFlags(kFileFlagNone) {}
 
+File::~File()
+{
+    Close();
+}
+
+File::File(File&& other) noexcept
+    : m_Entry(other.m_Entry),
+      m_Accessor(other.m_Accessor),
+      m_Position(other.m_Position),
+      m_OpenFlags(other.m_OpenFlags)
+{
+    other.m_Entry = nullptr;
+    other.m_Accessor = nullptr;
+    other.m_OpenFlags = kFileFlagNone;
+}
+
+File& File::operator=(File&& other) noexcept
+{
+    if (this != &other)
+    {
+        Close();
+        m_Entry = other.m_Entry;
+        m_Accessor = other.m_Accessor;
+        m_Position = other.m_Position;
+        m_OpenFlags = other.m_OpenFlags;
+        other.m_Entry = nullptr;
+        other.m_Accessor = nullptr;
+        other.m_OpenFlags = kFileFlagNone;
+    }
+    return *this;
+}
+
 bool File::Open(const std::filesystem::path& path, FilePermission perm, FileAutoBehavior behavior)
 {
     FileSystemEntry fileSystemEntry(path);
