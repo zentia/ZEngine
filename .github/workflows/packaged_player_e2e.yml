@@ -26,6 +26,8 @@ name: Packaged player E2E (Windows)
 #   ZENGINE_PLAYER_PROJECT 指向已打包项目。原先的 install 规则产出 1653 个文件、
 #   顶层 0 个 DLL（exe 在根、ZRuntimeShared.dll 在 bin/），Player 根本起不来；
 #   现在 61 个文件 / 53 DLL / 3 bundle，本地 20/20 全绿。
+#   CPack 也已收敛到同一 component：ZIP 55 文件（骨架）/ 61 文件（含项目），
+#   解压后直接启动可跑 OnUpdate；改回 ALL 会因中文文档名无法转 CP437 而打包失败。
 #   本 workflow 尚未在 runner 上真实触发过：文件未上 origin/main，且本机没有
 #   gh CLI / GitHub token 能调 workflow_dispatch。见 doc/PACKAGED_PLAYER_E2E.md。
 #

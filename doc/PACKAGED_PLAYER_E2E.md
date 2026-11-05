@@ -193,7 +193,7 @@ Quit requested + All systems shut down, EXIT=0
 
 ### 修法：独立 `ZGamePlayer` component
 
-不动任何既有 SDK 规则（它们保持 Unspecified component，其它会话与既有 CPack 用法不受影响），在 `engine/CMakeLists.txt` 新增一段：
+不动任何既有 SDK 规则（它们保持 Unspecified component，其它会话依赖的 SDK 安装用法不受影响），在 `engine/CMakeLists.txt` 新增一段：
 
 - `install(TARGETS ZGame ... COMPONENT ZGamePlayer)` + `install(FILES ZEditor.ini ... COMPONENT ZGamePlayer)`，两者都落在安装根。
 - **DLL 必须在 install 时枚举**：configure 时 `bin/<Config>/*.dll` 可能还不存在，所以不能用 `install(FILES)`；用 `install(CODE)` + `file(GLOB)` 从 `BINARY_ROOT_DIR/$<CONFIG>` 拷全部 53 个 DLL 到 `${CMAKE_INSTALL_PREFIX}`。生成的 `cmake_install.cmake` 里 `$<CONFIG>` 已展开成 Debug / Release / MinSizeRel / RelWithDebInfo 四个分支。
@@ -223,9 +223,37 @@ ZENGINE_PLAYER_PROJECT=<已 bundle.build 的项目> \
 | 负向对照 A：不带 `ZENGINE_PLAYER_PROJECT` | 0 个 `.zproject`、0 个 manifest（53 DLL 仍在）→ 项目内容确实只由那段 install 规则提供 |
 | 负向对照 B：在真实 install 目录里藏 `shared.zbundle` | `MUTANT_EXIT=3765269347`、`OnUpdate=0`、`particle.global.json load failed!`；已还原 |
 
+### 第四轮续：CPack 也收敛到 Player 布局
+
+`cmake --install --component ZGamePlayer` 修好后，CPack 是最后一条还会产出旧布局的路径。`build/CPackConfig.cmake` 的默认值实测是：
+
+```cmake
+set(CPACK_COMPONENTS_ALL "EnvironmentCollector;Unspecified;ZGamePlayer")
+set(CPACK_INSTALL_CMAKE_PROJECTS "E:/Engine/ZEngine/build;ZEngine;ALL;/")
+```
+
+第三项为 `ALL` 时，安装阶段 `CMAKE_INSTALL_COMPONENT` 为空，`cmake_install.cmake` 里所有 `if(<component> STREQUAL ... OR NOT CMAKE_INSTALL_COMPONENT)` 分支都会执行——两套规则叠加。把两行都钉到 `ZGamePlayer`：
+
+```cmake
+set(CPACK_COMPONENTS_ALL "${ZGAME_PLAYER_COMPONENT}")
+set(CPACK_INSTALL_CMAKE_PROJECTS
+    "${CMAKE_BINARY_DIR};${CMAKE_PROJECT_NAME};${ZGAME_PLAYER_COMPONENT};/")
+```
+
+| 检查 | 结果 |
+|---|---|
+| `cpack -C Debug -G ZIP`（骨架） | 成功，ZIP **55 文件**：exe + ini + 53 DLL，0 `.scene` / 0 头文件 / 无子目录 |
+| `ZENGINE_PLAYER_PROJECT=<已打包项目> cpack ...`（完整） | 成功，ZIP **61 文件**：骨架 + `ZProbe.zproject` + `Build/Standalone/`（manifest + 3 bundle） |
+| 解压完整 ZIP 到全新目录后直接启动 `ZGame.exe` | `EXIT=0`、`OnUpdate` 10 帧、`served from a mounted bundle` 5 次、0 ZPak 错误 / 0 FATAL、干净关停 |
+| 用解压出的 exe 跑 `verify_packaged_player_e2e.py --player <unpacked>/ZGame.exe` | **9/9**，17 bundle mounted / 0 个 ZPak 错误 |
+| 重新配置后 `verify_player_install_e2e.py --frames 10` 回归 | **20/20** |
+| **负向对照**：把两行改回 `ALL` / 全 component | staging **1707 文件**（3 `.scene`、1109 头文件、`bin/` 里 1 个 DLL），且**压缩阶段直接失败**：`share/doc/BqLog/docs/文章1_为何BqLog如此快 - 高性能实时压缩日志格式.MD` 无法转 CP437。旧布局不只是不可运行，连包都打不出来 |
+
+环境坑：重新 configure 时 `FetchContent` 的 zycore subbuild 又撞上 MSB6001，这次是 `HTTPS_PROXY` / `https_proxy`（以及 `HTTP_PROXY` / `http_proxy`）大小写重复键；Bash 下 `env -u http_proxy -u https_proxy cmake -S . -B build` 可解。此前记录的是 `Path` / `PATH` / `path` 变体。
+
 ### 如实记录的边界
 
-- **CPack 仍产出旧布局**：`CPACK_COMPONENTS_ALL` 没有改，`cpack -C Debug -G ZIP` 仍会打那 1653 个文件的 SDK 包。正式安装请用 `cmake --install --component ZGamePlayer`；把 CPack 收敛到 Player component 是下一步。
+- **CPack 已收敛**（见上一节）：`cmake --install --component ZGamePlayer` 与 `cpack` 现在产出同一份布局。需要 SDK 包时把 `engine/CMakeLists.txt` 里那两行 CPack 设置注释掉即可恢复旧行为——但旧布局连 ZIP 都打不出来，见负向对照。
 - `Build/Standalone/AssetBundleBuildCache.json` 是 builder 缓存，随 `Build/` 一起被安装；它在 `Build/` 下不违反零源资产约定，但严格发布可排除。
 - 默认 `cmake --install`（不带 `--component`）仍是旧 SDK 布局，这是刻意保留的兼容行为；不要把它当 Player 发布产物。
 
@@ -245,5 +273,5 @@ ZENGINE_PLAYER_PROJECT=<已 bundle.build 的项目> \
 - `AssetRegistry` 本身仍会索引 `Intermediate/` 与 `Build/`（扫描根是项目根）；builder 已过滤，但更彻底的做法是收紧扫描根，避免缓存里持续堆积无效条目。
 - macOS 不构建 ZGame（`AGENTS.md` §2.24 既有缺口）；本闭环目前只在 Windows / DX12 验证。
 - `.zbundle` 的 cook 目前仍只有贴图真正做了平台 cook，其它资产按原字节打包。
-- **exe 脱离源码树已验证**（见「第二轮」）。「全仓没有 ZGame 的 `cmake --install` 规则」是第二 / 三轮的**误判**（当时只 grep 了 `engine/Source/Game/CMakeLists.txt`）；`engine/CMakeLists.txt:618` 一直有规则，只是产出错误布局。第四轮已用 `ZGamePlayer` component 收敛成正式安装产物，脚本默认走真实 install；CPack 仍待收敛。
+- **exe 脱离源码树已验证**（见「第二轮」）。「全仓没有 ZGame 的 `cmake --install` 规则」是第二 / 三轮的**误判**（当时只 grep 了 `engine/Source/Game/CMakeLists.txt`）；`engine/CMakeLists.txt:618` 一直有规则，只是产出错误布局。第四轮已用 `ZGamePlayer` component 收敛成正式安装产物，脚本默认走真实 install，CPack 也已收敛到同一布局。
 - **上一节把 `30 render entities exist but none are visible` 归为「与打包链无关」是误判**：在真正隔离的安装目录里，材质 / 骨骼 JSON 全部 `open file failed`，根因是 #7，不是单纯的视锥剔除问题。

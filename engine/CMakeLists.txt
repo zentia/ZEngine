@@ -728,4 +728,18 @@ if(WIN32)
 else()
   set(CPACK_GENERATOR "TGZ")
 endif()
+
+# CPack 也必须只打 Player 布局（第四轮续）。
+#
+# CPack 默认是 monolithic install：CPACK_INSTALL_CMAKE_PROJECTS 第三项为 ALL，
+# 安装时 CMAKE_INSTALL_COMPONENT 为空，于是 cmake_install.cmake 里所有
+# `if(<component> STREQUAL ... OR NOT CMAKE_INSTALL_COMPONENT)` 分支都会执行
+# —— 1653 个 SDK 文件、公共头、3 个 .scene 又回到包里，且 exe 与
+# ZRuntimeShared.dll 仍然分家。显式把 install project 钉到 ZGamePlayer
+# component，让 ZIP / TGZ 与
+#   `cmake --install build --config Debug --component ZGamePlayer`
+# 完全同构。需要 SDK 包时把下面两行注释掉即可恢复旧行为。
+set(CPACK_COMPONENTS_ALL "${ZGAME_PLAYER_COMPONENT}")
+set(CPACK_INSTALL_CMAKE_PROJECTS
+    "${CMAKE_BINARY_DIR};${CMAKE_PROJECT_NAME};${ZGAME_PLAYER_COMPONENT};/")
 include(CPack)
