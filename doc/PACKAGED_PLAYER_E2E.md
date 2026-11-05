@@ -263,7 +263,7 @@ set(CPACK_INSTALL_CMAKE_PROJECTS
 
 **默认只 `workflow_dispatch` 手动触发，没有挂到 push**：GitHub-hosted Windows runner 没有可用 GPU，DX12 能否落 WARP 未验证；在确认之前挂上去只会制造与代码无关的红灯。文件里保留了注释掉的 `push` / `pull_request` 段，确认 runner 具备 DX12 后取消注释即成为真正的回归门禁。**本地已实测全绿，CI runner 上未验证。**
 
-2026-11-05 09:55 **已把本地提交推到默认分支**：远端 `main` = `45f0e619`，与本地一致。推送前发现远端有 1 个独有提交 `8f0fc3e9`（android host-clang 工具链），与本地 3 个提交从 `de264933` 分叉；核对它与本会话改动、以及工作树 45 个并发会话在途文件均**零重叠**后，用普通 `git merge --no-ff` 合入，未 force、未 rebase、未改写已有提交，工作树完好。`git ls-tree origin/main` 已确认 `packaged_player_e2e.yml` 在默认分支上。
+2026-11-05 09:55 **已把本地提交推到默认分支**。当时远端 `main` = `45f0e619`；此后只追加了文档一致性提交，当前远端 HEAD 以 `git ls-remote origin refs/heads/main` 为准。推送前发现远端有 1 个独有提交 `8f0fc3e9`（android host-clang 工具链），与本地 3 个提交从 `de264933` 分叉；核对它与本会话改动、以及工作树 45 个并发会话在途文件均**零重叠**后，用普通 `git merge --no-ff` 合入，未 force、未 rebase、未改写已有提交，工作树完好。`git ls-tree origin/main` 已确认 `packaged_player_e2e.yml` 在默认分支上。
 
 但**真实 dispatch 仍未执行**：本机没有 `gh` CLI、`GITHUB_TOKEN` / `GH_TOKEN` / `GITHUB_PAT` 全未设置、`~/.config/gh/hosts.yml` 不存在；匿名 `GET /repos/zentia/ZEngine/actions/workflows` 返回 0 个 workflow，匿名 `POST .../packaged_player_e2e.yml/dispatches` 返回 `HTTP 403`——认证后才可见 / 可触发。要跑一次需在 Actions 页面手动 dispatch，或提供具备 `actions:write` 的 token。在此之前 runner 的 DX12 / WARP 结论一律不算已验证，push / PR 门不放开。
 
