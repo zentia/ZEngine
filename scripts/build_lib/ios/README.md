@@ -31,7 +31,7 @@ scripts/build_lib/ios/macos_build_zruntime_shared.sh \
   [--config Release|Debug|MinSizeRel|RelWithDebInfo] \
   [--all-configs] \
   [--platform OS64] \
-  [--deployment-target 16.0] \
+  [--deployment-target 13.0] \
   [--jobs N] \
   [--vulkan-sdk PATH] \
   [--toolchain PATH] \
@@ -69,7 +69,7 @@ scripts/build_lib/ios/macos_build_zruntime_shared.sh --all-configs --jobs 8
 scripts/build_lib/ios/macos_build_zruntime_shared.sh \
   --vulkan-sdk "$HOME/VulkanSDK/local" \
   --platform OS64 \
-  --deployment-target 16.0 \
+  --deployment-target 13.0 \
   --config Release
 ```
 

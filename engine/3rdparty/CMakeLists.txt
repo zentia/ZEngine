@@ -338,7 +338,20 @@ if(NOT TARGET Jolt)
 
         if(APPLE)
             set(JPH_USE_VK OFF CACHE BOOL "Use Vulkan" FORCE)
-            set(JPH_USE_MTL ON CACHE BOOL "Use Metal" FORCE)
+            if(IOS)
+                # Jolt 的 Metal 计算后端 (Jolt/Compute/MTL/ComputeShaderMTL.mm)
+                # 用了 MTLComputePipelineReflection.bindings —— 该 API 自
+                # iOS 16.0 起才可用。我们的部署目标是 13.0（与 Unity 工程的
+                # targetOSVersionString 对齐），Clang 的
+                # -Wunguarded-availability-new 会把这里升级成硬错误：
+                #   'bindings' is only available on iOS 16.0 or newer
+                # 引擎侧从不调用 Jolt 的 GPU compute（ZRender 有自己的
+                # RHIQueue/ComputeQueue，与 Jolt 无关），iOS 也只用 CPU 物理，
+                # 所以直接把这条后端关掉比压警告更干净：整个 TU 不再编译。
+                set(JPH_USE_MTL OFF CACHE BOOL "Use Metal" FORCE)
+            else()
+                set(JPH_USE_MTL ON CACHE BOOL "Use Metal" FORCE)
+            endif()
         endif()
 
         add_subdirectory(JoltPhysics/Build)

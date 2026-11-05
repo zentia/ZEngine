@@ -4,7 +4,11 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 CONFIG="Release"
 PLATFORM="OS64"
-DEPLOYMENT_TARGET="16.0"
+# Must stay <= the host app's targetOSVersionString. Unity 侧工程设的是 13.0
+# (Program/GameScripts/Assets/Editor/Build/AutoBuildPlayer.cs)；如果这里的
+# minos 更高,dyld 在低版本设备上会拒载本 framework
+# ("built for a newer version of iOS"),主 App 也过不了 App Store 归档校验。
+DEPLOYMENT_TARGET="13.0"
 CLEAN=0
 BUILD_ALL=0
 STRIP_OUTPUT="auto"
@@ -31,7 +35,7 @@ PAPI_TYPE="quickjs"
 SLIM_MODULES=1
 
 usage() {
-  echo "Usage: $(basename "$0") [--config Release|Debug|MinSizeRel|RelWithDebInfo] [--all-configs] [--platform OS64] [--deployment-target 16.0] [--jobs N] [--vulkan-sdk PATH] [--toolchain PATH] [--papi quickjs|v8] [--slim] [--no-slim] [--clean] [--strip] [--no-strip] [--no-export-list] [--framework] [--no-framework] [--framework-name NAME] [--bundle-id ID]"
+  echo "Usage: $(basename "$0") [--config Release|Debug|MinSizeRel|RelWithDebInfo] [--all-configs] [--platform OS64] [--deployment-target 13.0] [--jobs N] [--vulkan-sdk PATH] [--toolchain PATH] [--papi quickjs|v8] [--slim] [--no-slim] [--clean] [--strip] [--no-strip] [--no-export-list] [--framework] [--no-framework] [--framework-name NAME] [--bundle-id ID]"
   echo "Output:    bin/ios/PLATFORM/CONFIG/libZRuntimeShared.dylib"
   echo "Framework: bin/ios/PLATFORM/CONFIG/ZRuntimeShared.framework"
   echo "Symbols:   bin/ios/PLATFORM/CONFIG/libZRuntimeShared.dylib.dSYM"
