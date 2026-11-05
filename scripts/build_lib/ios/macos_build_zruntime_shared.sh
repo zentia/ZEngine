@@ -19,10 +19,16 @@ IOS_TOOLCHAIN="$ROOT_DIR/engine/3rdparty/bqlog/build/lib/ios/ios.toolchain.cmake
 # is also what the engine ships on Web/wasm. v8 is selectable for dev-only
 # iOS builds (must run in jitless mode under Apple's policy).
 PAPI_TYPE="quickjs"
-# Drop SPIRV-Cross / GPUSpine / Jolt from the dylib. Opt-in: it changes what the
-# dylib *is*, not just how it is built. See "--slim" in the usage text and the
+# Drop SPIRV-Cross / GPUSpine / Jolt from the dylib.
+# DEFAULT ON: GPUSpine (submodule, cannot be patched here) uses std::ifstream
+# internally, and its file-IO TU is reachable from the framework's exported
+# ABI -- so a non-slim dylib always carries undefined libc++
+# `basic_ifstream` VTT/VTable symbols. Unity's embedded libc++ does not export
+# them, and UnityFramework's dyld aborts the process on load with
+#   Symbol not found: __ZTTNSt3__114basic_ifstreamIcNS_11char_traitsIcEEEE
+# i.e. the framework cannot be loaded at all. See the
 # "what gets dropped" section of README.md.
-SLIM_MODULES=0
+SLIM_MODULES=1
 
 usage() {
   echo "Usage: $(basename "$0") [--config Release|Debug|MinSizeRel|RelWithDebInfo] [--all-configs] [--platform OS64] [--deployment-target 16.0] [--jobs N] [--vulkan-sdk PATH] [--toolchain PATH] [--papi quickjs|v8] [--slim] [--no-slim] [--clean] [--strip] [--no-strip] [--no-export-list] [--framework] [--no-framework] [--framework-name NAME] [--bundle-id ID]"
@@ -146,7 +152,9 @@ Vulkan SDK: $VULKAN_SDK
 Platform:   $PLATFORM
 Deploy:     $DEPLOYMENT_TARGET
 PAPI:       $PAPI_TYPE
-Slim:       $SLIM_MODULES (drop SPIRV-Cross / GPUSpine / Jolt)
+Slim:       $SLIM_MODULES (drop SPIRV-Cross / GPUSpine / Jolt; keep 1 or the
+            dylib references libc++ basic_ifstream VTT and Unity's dyld
+            refuses to load it)
 Configs:    ${CONFIGS[*]}
 Strip:      $STRIP_OUTPUT (auto strips Release/MinSizeRel)
 Output:     $ROOT_DIR/bin/$OUTPUT_SUBDIR/<CONFIG>/libZRuntimeShared.dylib

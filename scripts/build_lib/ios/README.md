@@ -210,8 +210,21 @@ framework（含 ad-hoc 签名）：修完构建配置是 **4.45 MB**，`--slim` 
 scripts/build_lib/ios/macos_build_zruntime_shared.sh --slim --papi quickjs
 ```
 
-即 CMake 的 `ZENGINE_IOS_SHARED_SLIM_MODULES`（默认 **OFF**）。它是 opt-in 不是因为它有
-风险没验，而是因为它改的是**这个 dylib 是什么**，不只是"怎么编"：
+即 CMake 的 `ZENGINE_IOS_SHARED_SLIM_MODULES`（脚本默认 **ON**，可用 `--no-slim` 关掉）。
+
+> **默认 ON 的原因（2026-11-05）**：GPUSpine / tinyobjloader 是子模块，内部用
+> `std::ifstream`，而它们的文件 IO TU 从导出 ABI 是 reachable 的 —— `-dead_strip`
+> 摘不掉。非 slim 的 dylib 因此必然带 `U __ZTTNSt3__114basic_ifstream...` 这类
+> libc++ VTT/VTable 未定义符号；Unity 内嵌的 libc++ 不导出它们，UnityFramework
+> dlopen 本 framework 时 dyld 直接
+> `Symbol not found: __ZTTNSt3__114basic_ifstreamIcNS_11char_traitsIcEEEE` 并终止进程。
+> 也就是说**非 slim 产物在 Unity 里根本加载不起来**。
+>
+> 代价：framework 里不再有 Spine / SPIRV-Cross / Jolt，且 `RenderResourceBase::LoadStaticMesh`
+> 在共享库下是带日志的空实现（`ZENGINE_SHARED_NO_TINYOBJ`）—— iOS 侧请在编辑器里
+> 导入成 `.zasset`，不要再依赖运行时解析 `.obj` 文本。
+
+它改变的是**这个 dylib 是什么**，不只是"怎么编"：
 
 - 它**只作用于 `ZRuntimeShared`**。静态库 `ZRuntime`（iOS 播放器、Editor、宿主工具）一行
   没变 —— 所以 iOS 播放器仍然有 Metal 后端、Spine 和物理。
