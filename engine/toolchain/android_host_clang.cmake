@@ -112,21 +112,23 @@ foreach(_z_stub pthread pthreads rt util)
     endif()
 endforeach()
 
-# Single string, not a CMake list: a list interpolated into a flags variable
-# becomes "a;b;c" and clang sees one broken argument.
-set(_z_common_flags
-    "-resource-dir=${_z_resource_dir} -rtlib=compiler-rt -fuse-ld=lld -L${_z_api_lib_dir} -L${_z_stub_lib_dir}")
+# Two strings, not CMake lists: a list interpolated into a flags variable becomes
+# "a;b;c" and clang sees one broken argument.
+#
+# Compile-time flags and link-time flags must stay separate: some targets build
+# with -Werror=unused-command-line-argument, and -fuse-ld/-L are link-only, so
+# leaving them in CMAKE_*_FLAGS turns every compile into an error.
+set(_z_compile_flags "-resource-dir=${_z_resource_dir} -rtlib=compiler-rt")
+set(_z_link_flags "-fuse-ld=lld -rtlib=compiler-rt -L${_z_api_lib_dir} -L${_z_stub_lib_dir}")
 
-# C: no unwinder needed; C++: libc++ (headers come from the sysroot) plus the
-# NDK's libunwind, which --unwindlib=none would otherwise leave unresolved.
-set(CMAKE_C_FLAGS_INIT   "${_z_common_flags} --unwindlib=none")
-set(CMAKE_CXX_FLAGS_INIT "${_z_common_flags} -stdlib=libc++")
-set(CMAKE_SHARED_LINKER_FLAGS_INIT   "${_z_common_flags} -stdlib=libc++ -lunwind")
-set(CMAKE_MODULE_LINKER_FLAGS_INIT   "${_z_common_flags} -stdlib=libc++ -lunwind")
-set(CMAKE_EXE_LINKER_FLAGS_INIT      "${_z_common_flags} -stdlib=libc++ -lunwind")
+set(CMAKE_C_FLAGS_INIT   "${_z_compile_flags} --unwindlib=none")
+set(CMAKE_CXX_FLAGS_INIT "${_z_compile_flags} -stdlib=libc++")
+set(CMAKE_EXE_LINKER_FLAGS_INIT "${_z_link_flags} -stdlib=libc++ -lunwind")
+set(CMAKE_SHARED_LINKER_FLAGS_INIT "${_z_link_flags} -stdlib=libc++ -lunwind")
+set(CMAKE_MODULE_LINKER_FLAGS_INIT "${_z_link_flags} -stdlib=libc++ -lunwind")
 
 # Everything must come from the NDK sysroot; the host's /usr/lib must not leak in.
-# find_library() must see the API-level directory too, otherwise -landroid /
+# find_library() also has to see the API-level directory, otherwise -landroid /
 # -llog / -lvulkan look "not found" even though the NDK ships them under
 # <sysroot>/usr/lib/<abi>/<api>/.
 set(CMAKE_FIND_ROOT_PATH "${_z_sysroot}")
