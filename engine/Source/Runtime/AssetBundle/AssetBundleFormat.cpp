@@ -1,5 +1,7 @@
 #include "AssetBundleFormat.h"
 
+#include "Runtime/Core/Base/ZFileStream.h"
+
 // ZENGINE_BUNDLE_HAS_ZLIB is set by engine/Source/Runtime/CMakeLists.txt when
 // zlib is linked into this build. Without it the container still reads and
 // writes fine -- it just cannot produce or consume deflated entries.
@@ -9,7 +11,6 @@
 
 #include <cstdio>
 #include <cstring>
-#include <fstream>
 #include <utility>
 
 namespace AssetBundles
@@ -304,43 +305,50 @@ namespace AssetBundles
             std::filesystem::create_directories(out_path.parent_path(), ec);
         }
 
-        std::ofstream out(out_path, std::ios::binary | std::ios::trunc);
-        if (!out.is_open())
+        // C FILE* 而不是 std::ofstream：iOS 上 ZRuntimeShared.framework 被
+        // UnityFramework dlopen 时，dyld 解析不到 libc++ 的
+        // std::basic_ofstream VTT/VTable（见 Core/Base/ZFileStream.h）。
+        std::FILE* out = std::fopen(out_path.string().c_str(), "wb");
+        if (out == nullptr)
         {
             out_error = "cannot open bundle for writing: " + out_path.string();
             return false;
         }
 
-        out.write(reinterpret_cast<const char*>(&header), sizeof(header));
-        if (!entry_table.empty())
+        bool ok = std::fwrite(&header, 1, sizeof(header), out) == sizeof(header);
+        if (ok && !entry_table.empty())
         {
-            out.write(reinterpret_cast<const char*>(entry_table.data()), static_cast<std::streamsize>(entry_table.size()));
+            ok = std::fwrite(entry_table.data(), 1, entry_table.size(), out) == entry_table.size();
         }
 
         // Padding between the table and the blob.
         const uint64_t pad_end = header.blob_offset;
         const uint64_t written_so_far = sizeof(BundleFileHeader) + entry_table.size();
-        for (uint64_t i = written_so_far; i < pad_end; ++i)
+        for (uint64_t i = written_so_far; ok && i < pad_end; ++i)
         {
-            out.put(0);
+            ok = std::fputc(0, out) != EOF;
         }
 
-        for (size_t i = 0; i < entries.size(); ++i)
+        for (size_t i = 0; ok && i < entries.size(); ++i)
         {
             const std::vector<uint8_t>& bytes = *payloads[i];
             if (!bytes.empty())
             {
-                out.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+                ok = std::fwrite(bytes.data(), 1, bytes.size(), out) == bytes.size();
             }
             const uint64_t next = AlignUp(table[i].offset + bytes.size(), kBundleAlignment);
-            for (uint64_t pad = bytes.size(); pad < next - table[i].offset; ++pad)
+            for (uint64_t pad = bytes.size(); ok && pad < next - table[i].offset; ++pad)
             {
-                out.put(0);
+                ok = std::fputc(0, out) != EOF;
             }
         }
 
-        out.flush();
-        if (!out.good())
+        ok = (std::fflush(out) == 0) && ok;
+        if (std::fclose(out) != 0)
+        {
+            ok = false;
+        }
+        if (!ok)
         {
             out_error = "write failed: " + out_path.string();
             return false;
@@ -353,16 +361,15 @@ namespace AssetBundles
                           std::vector<BundleEntry>& out_entries,
                           std::string& out_error)
     {
-        std::ifstream in(in_path, std::ios::binary);
-        if (!in.is_open())
+        zcore::ZFileReader in(in_path.string());
+        if (!in.isOpen())
         {
             out_error = "cannot open bundle: " + in_path.string();
             return false;
         }
 
         BundleFileHeader header {};
-        in.read(reinterpret_cast<char*>(&header), sizeof(header));
-        if (!in.good() || header.magic != kBundleMagic)
+        if (in.read(&header, sizeof(header)) != sizeof(header) || header.magic != kBundleMagic)
         {
             out_error = "not a .zbundle (bad magic): " + in_path.string();
             return false;
@@ -374,11 +381,10 @@ namespace AssetBundles
         }
 
         std::vector<uint8_t> table(static_cast<size_t>(header.entry_table_size));
-        in.seekg(static_cast<std::streamoff>(header.entry_table_offset), std::ios::beg);
+        in.seek(static_cast<long>(header.entry_table_offset), SEEK_SET);
         if (header.entry_table_size > 0)
         {
-            in.read(reinterpret_cast<char*>(table.data()), static_cast<std::streamsize>(table.size()));
-            if (!in.good())
+            if (in.read(table.data(), table.size()) != table.size())
             {
                 out_error = "truncated entry table: " + in_path.string();
                 return false;
@@ -425,16 +431,15 @@ namespace AssetBundles
             return false;
         }
 
-        std::ifstream in(in_path, std::ios::binary);
-        if (!in.is_open())
+        zcore::ZFileReader in(in_path.string());
+        if (!in.isOpen())
         {
             out_error = "cannot open bundle: " + in_path.string();
             return false;
         }
 
-        const std::streamoff position = static_cast<std::streamoff>(header.blob_offset + entry.offset);
-        in.seekg(position, std::ios::beg);
-        if (!in.good())
+        const long position = static_cast<long>(header.blob_offset + entry.offset);
+        if (in.seek(position, SEEK_SET) != 0)
         {
             out_error = "cannot seek to asset blob: " + entry.path;
             return false;
@@ -443,8 +448,7 @@ namespace AssetBundles
         out_bytes.resize(static_cast<size_t>(entry.stored_size));
         if (entry.stored_size > 0)
         {
-            in.read(reinterpret_cast<char*>(out_bytes.data()), static_cast<std::streamsize>(out_bytes.size()));
-            if (!in.good())
+            if (in.read(out_bytes.data(), out_bytes.size()) != out_bytes.size())
             {
                 out_error = "truncated asset blob: " + entry.path;
                 return false;

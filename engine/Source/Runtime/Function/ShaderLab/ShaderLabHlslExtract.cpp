@@ -1,5 +1,6 @@
 #include "Runtime/Function/ShaderLab/ShaderLabHlslExtract.h"
 
+#include "Runtime/Core/Base/ZFileStream.h"
 #include "Runtime/Function/ShaderLab/ShaderLabParser.h"
 #include "Runtime/Function/ShaderLab/ShaderLabSemanticRewrite.h"
 
@@ -8,8 +9,8 @@
 #include <cctype>
 #include <cstring>
 #include <filesystem>
-#include <fstream>
-#include <sstream>
+#include <string>
+#include <vector>
 
 namespace ZEngine::ShaderLab
 {
@@ -86,13 +87,55 @@ namespace ZEngine::ShaderLab
             return true;
         }
 
+        // std::istringstream / std::ostringstream 在 iOS 上同样躲不开 libc++
+        // 的 VTT 符号（basic_stringstream 带虚基类），所以这里的逐行 / 分词
+        // 处理用纯 std::string 手工切分。
+        std::vector<std::string> SplitLines(const std::string& text)
+        {
+            std::vector<std::string> lines;
+            size_t begin = 0;
+            while (true)
+            {
+                const size_t end = text.find('\n', begin);
+                if (end == std::string::npos)
+                {
+                    lines.emplace_back(text.substr(begin));
+                    break;
+                }
+                lines.emplace_back(text.substr(begin, end - begin));
+                begin = end + 1;
+            }
+            return lines;
+        }
+
+        std::vector<std::string> SplitWhitespace(const std::string& text)
+        {
+            std::vector<std::string> tokens;
+            size_t i = 0;
+            while (i < text.size())
+            {
+                while (i < text.size() && std::isspace(static_cast<unsigned char>(text[i])))
+                {
+                    ++i;
+                }
+                const size_t begin = i;
+                while (i < text.size() && !std::isspace(static_cast<unsigned char>(text[i])))
+                {
+                    ++i;
+                }
+                if (i > begin)
+                {
+                    tokens.emplace_back(text.substr(begin, i - begin));
+                }
+            }
+            return tokens;
+        }
+
         void ExtractEntryPointsFromProgramText(const std::string& program_source,
                                                std::string& vertex_entry,
                                                std::string& fragment_entry)
         {
-            std::istringstream stream(program_source);
-            std::string line;
-            while (std::getline(stream, line))
+            for (const std::string& line : SplitLines(program_source))
             {
                 const std::string trimmed = TrimLine(line);
                 if (!StartsWithInsensitive(trimmed, "#pragma"))
@@ -100,12 +143,10 @@ namespace ZEngine::ShaderLab
                     continue;
                 }
 
-                std::istringstream line_stream(trimmed);
-                std::string pragma_token;
-                std::string stage_token;
-                std::string entry_token;
-                line_stream >> pragma_token >> stage_token >> entry_token;
-                stage_token = ToLowerAscii(stage_token);
+                const std::vector<std::string> tokens = SplitWhitespace(trimmed);
+                const std::string stage_token =
+                    ToLowerAscii(tokens.size() > 1 ? tokens[1] : std::string());
+                const std::string entry_token = tokens.size() > 2 ? tokens[2] : std::string();
                 if (stage_token == "vertex" && !entry_token.empty())
                 {
                     vertex_entry = entry_token;
@@ -119,11 +160,9 @@ namespace ZEngine::ShaderLab
 
         std::string SanitizeProgramBody(const std::string& program_source)
         {
-            std::istringstream stream(program_source);
-            std::ostringstream sanitized;
-            std::string line;
+            std::string sanitized;
             bool first_line = true;
-            while (std::getline(stream, line))
+            for (const std::string& line : SplitLines(program_source))
             {
                 const std::string trimmed = TrimLine(line);
                 if (StartsWithInsensitive(trimmed, "#pragma"))
@@ -133,13 +172,13 @@ namespace ZEngine::ShaderLab
 
                 if (!first_line)
                 {
-                    sanitized << '\n';
+                    sanitized += '\n';
                 }
-                sanitized << line;
+                sanitized += line;
                 first_line = false;
             }
 
-            return TrimLine(sanitized.str());
+            return TrimLine(sanitized);
         }
 
         std::string PickEntryForStage(ShaderStage stage, const std::string& vertex_entry, const std::string& fragment_entry, const std::string& fallback_entry)
@@ -428,16 +467,14 @@ namespace ZEngine::ShaderLab
                                                             std::size_t pass_index)
     {
         ShaderLabHlslExtractResult out {};
-        std::ifstream file(file_path);
-        if (!file.is_open())
+        std::string source;
+        if (!zcore::ReadWholeFile(file_path, source))
         {
             out.error_message = "Failed to open shader file: " + file_path;
             return out;
         }
 
-        std::stringstream buffer;
-        buffer << file.rdbuf();
-        return ExtractHlslFromShaderLabSource(buffer.str(),
+        return ExtractHlslFromShaderLabSource(source,
                                               file_path,
                                               stage,
                                               fallback_entry,
@@ -487,16 +524,14 @@ namespace ZEngine::ShaderLab
                                                             std::size_t pass_index)
     {
         ShaderLabGlslExtractResult out {};
-        std::ifstream file(file_path);
-        if (!file.is_open())
+        std::string source;
+        if (!zcore::ReadWholeFile(file_path, source))
         {
             out.error_message = "Failed to open shader file: " + file_path;
             return out;
         }
 
-        std::stringstream buffer;
-        buffer << file.rdbuf();
-        return ExtractGlslFromShaderLabSource(buffer.str(),
+        return ExtractGlslFromShaderLabSource(source,
                                               file_path,
                                               stage,
                                               fallback_entry,

@@ -5,6 +5,7 @@
 #include "Runtime/ZEngineApi/ZEngineToolApi.h"
 
 #include "Runtime/Core/Base/Macro.h"
+#include "Runtime/Core/Base/ZFileStream.h"
 #include "Runtime/Core/Log/LogSystem.h"
 #include "Runtime/Core/Memory/MemoryManager.h"
 #include "Runtime/RegisterRuntime.h"
@@ -16,9 +17,8 @@
 
 #include <cstdint>
 #include <filesystem>
-#include <fstream>
 #include <mutex>
-#include <sstream>
+#include <string>
 
 namespace
 {
@@ -143,16 +143,17 @@ namespace
                               eastl::vector<LocalizationRow>& out_rows,
                               eastl::string& out_error)
     {
-        std::ifstream input(csv_path, std::ios::binary);
-        if (!input)
+        // C FILE* 而不是 std::ifstream / std::ostringstream：iOS 上
+        // ZRuntimeShared.framework 被 UnityFramework dlopen 时，dyld 解析不到
+        // libc++ 的 basic_ifstream / basic_stringstream VTT/VTable
+        // （见 Core/Base/ZFileStream.h）。
+        std::string source;
+        if (!zcore::ReadWholeFile(csv_path.generic_string(), source))
         {
             out_error = "cannot open CSV";
             return false;
         }
-
-        std::ostringstream buffer;
-        buffer << input.rdbuf();
-        eastl::string text(buffer.str().c_str());
+        eastl::string text(source.c_str());
 
         // Excel on Windows writes a UTF-8 BOM; the rest of the engine's CSV
         // readers strip it too.

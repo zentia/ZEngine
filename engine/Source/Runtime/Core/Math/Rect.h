@@ -176,8 +176,16 @@ public:
     T height;
 };
 
-using Rectf = RectT<float>;
 /// Unity 的 `UnityEngine.Rect`（float）。
-using Rect = RectT<float>;
+///
+/// 名字是 `Rectf` 而不是 `Rect`：Apple 平台（iOS/macOS）的 `MacTypes.h` 会在
+/// **全局命名空间**声明 `struct Rect`，而 Foundation / Metal / CoreGraphics
+/// 任何一条 include 链都会把它带进来。C++ 里类型别名与类名同名即
+/// "definition of type 'Rect' conflicts with type alias of the same name"，
+/// 且与 include 先后无关 —— 所以引擎的值类型不能叫 `::Rect`。
+/// Unity 自己的原生代码也是同样的取舍（`Rectf` / `RectInt`）。
+/// 脚本侧对外的 `Rect` 名字由 `namespace Runtime` 的门面类提供（ScriptRect.h），
+/// 它是有命名空间限定的，不会与 SDK 冲突。
+using Rectf = RectT<float>;
 /// Unity 的 `UnityEngine.RectInt`（int）。
 using RectInt = RectT<int>;

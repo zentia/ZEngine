@@ -2,12 +2,13 @@
 
 #include "RuntimeConsoleCommands.h"
 
+#include "Runtime/Core/Base/ZFileStream.h"
 #include "Runtime/Project/ProjectInfo.h"
 
 #include <algorithm>
 #include <cctype>
+#include <cstdio>
 #include <cstdlib>
-#include <fstream>
 
 std::string ConsoleManager::NormalizeKey(const std::string& name)
 {
@@ -497,17 +498,27 @@ int ConsoleManager::SaveVariablesToFile(const std::string& path,
         return NormalizeKey(a.first) < NormalizeKey(b.first);
     });
 
-    std::ofstream out(path, std::ios::binary | std::ios::trunc);
-    if (!out)
+    // C FILE* 而不是 std::ofstream：iOS 上 ZRuntimeShared.framework 被
+    // UnityFramework dlopen 时，dyld 解析不到 libc++ 的
+    // std::basic_ofstream VTT/VTable（见 Core/Base/ZFileStream.h）。
+    std::FILE* out = std::fopen(path.c_str(), "wb");
+    if (out == nullptr)
     {
         LOG_ERROR(ZConsole, "cvar.save: cannot open '{}' for writing", path);
         return -1;
     }
-    out << "; ZEngine console variables (name=value). Load with: cvar.load <file>\n";
+    std::string text = "; ZEngine console variables (name=value). Load with: cvar.load <file>\n";
     for (const auto& [name, value] : lines)
-        out << name << '=' << value << '\n';
-    out.flush();
-    if (!out)
+    {
+        text += name;
+        text += '=';
+        text += value;
+        text += '\n';
+    }
+    const size_t written = std::fwrite(text.data(), 1, text.size(), out);
+    std::fflush(out);
+    std::fclose(out);
+    if (written != text.size())
     {
         LOG_ERROR(ZConsole, "cvar.save: write to '{}' failed", path);
         return -1;
@@ -600,19 +611,25 @@ int ConsoleManager::LoadStartupVariables(const char* override_spec)
 
 int ConsoleManager::LoadVariablesFromFile(const std::string& path, std::vector<std::string>* out_failed)
 {
-    std::ifstream in(path, std::ios::binary);
-    if (!in)
+    // C FILE* 而不是 std::ifstream，理由同上面的 cvar.save。
+    zcore::ZFileReader in(path);
+    if (!in.isOpen())
     {
         LOG_ERROR(ZConsole, "cvar.load: cannot open '{}'", path);
         return -1;
     }
 
     int applied = 0;
-    std::string raw;
+    char raw_buffer[4096];
     int line_number = 0;
-    while (std::getline(in, raw))
+    while (in.getline(raw_buffer, sizeof(raw_buffer)))
     {
         ++line_number;
+        std::string raw(raw_buffer);
+        while (!raw.empty() && (raw.back() == '\n' || raw.back() == '\r'))
+        {
+            raw.pop_back();
+        }
         const std::string line = TrimCopy(raw);  // also drops a CR of CRLF files
         if (line.empty() || line[0] == '#' || line[0] == ';' || line[0] == '[')
             continue;

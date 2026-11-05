@@ -9,75 +9,75 @@ namespace Runtime
     // Rect（float）
     // =====================================================================
 
-    ::Rect Rect::Create(float x, float y, float width, float height)
+    ::Rectf Rect::Create(float x, float y, float width, float height)
     {
-        return ::Rect(x, y, width, height);
+        return ::Rectf(x, y, width, height);
     }
 
-    ::Rect Rect::MinMaxRect(float xmin, float ymin, float xmax, float ymax)
+    ::Rectf Rect::MinMaxRect(float xmin, float ymin, float xmax, float ymax)
     {
-        ::Rect r;
+        ::Rectf r;
         r.SetMinMax(xmin, ymin, xmax, ymax);
         return r;
     }
 
-    float Rect::GetXMin(const ::Rect& r) { return r.GetXMin(); }
-    float Rect::GetXMax(const ::Rect& r) { return r.GetXMax(); }
-    float Rect::GetYMin(const ::Rect& r) { return r.GetYMin(); }
-    float Rect::GetYMax(const ::Rect& r) { return r.GetYMax(); }
+    float Rect::GetXMin(const ::Rectf& r) { return r.GetXMin(); }
+    float Rect::GetXMax(const ::Rectf& r) { return r.GetXMax(); }
+    float Rect::GetYMin(const ::Rectf& r) { return r.GetYMin(); }
+    float Rect::GetYMax(const ::Rectf& r) { return r.GetYMax(); }
 
-    Vector2 Rect::GetMin(const ::Rect& r) { return Vector2(r.GetXMin(), r.GetYMin()); }
-    Vector2 Rect::GetMax(const ::Rect& r) { return Vector2(r.GetXMax(), r.GetYMax()); }
+    Vector2 Rect::GetMin(const ::Rectf& r) { return Vector2(r.GetXMin(), r.GetYMin()); }
+    Vector2 Rect::GetMax(const ::Rectf& r) { return Vector2(r.GetXMax(), r.GetYMax()); }
 
-    Vector2 Rect::GetSize(const ::Rect& r) { return Vector2(r.width, r.height); }
-    Vector2 Rect::GetPosition(const ::Rect& r) { return Vector2(r.x, r.y); }
-    Vector2 Rect::GetCenter(const ::Rect& r)
+    Vector2 Rect::GetSize(const ::Rectf& r) { return Vector2(r.width, r.height); }
+    Vector2 Rect::GetPosition(const ::Rectf& r) { return Vector2(r.x, r.y); }
+    Vector2 Rect::GetCenter(const ::Rectf& r)
     {
         return Vector2(r.x + r.width * 0.5f, r.y + r.height * 0.5f);
     }
 
-    ::Rect Rect::WithXMin(const ::Rect& r, float v)
+    ::Rectf Rect::WithXMin(const ::Rectf& r, float v)
     {
-        ::Rect out = r;
+        ::Rectf out = r;
         out.x = v;
         out.width = r.GetXMax() - v;
         return out;
     }
 
-    ::Rect Rect::WithXMax(const ::Rect& r, float v)
+    ::Rectf Rect::WithXMax(const ::Rectf& r, float v)
     {
-        ::Rect out = r;
+        ::Rectf out = r;
         out.x = r.GetXMin();
         out.width = v - r.GetXMin();
         return out;
     }
 
-    ::Rect Rect::WithYMin(const ::Rect& r, float v)
+    ::Rectf Rect::WithYMin(const ::Rectf& r, float v)
     {
-        ::Rect out = r;
+        ::Rectf out = r;
         out.y = v;
         out.height = r.GetYMax() - v;
         return out;
     }
 
-    ::Rect Rect::WithYMax(const ::Rect& r, float v)
+    ::Rectf Rect::WithYMax(const ::Rectf& r, float v)
     {
-        ::Rect out = r;
+        ::Rectf out = r;
         out.y = r.GetYMin();
         out.height = v - r.GetYMin();
         return out;
     }
 
-    ::Rect Rect::WithLayout(const ::Rect& r, float x, float y, float width, float height)
+    ::Rectf Rect::WithLayout(const ::Rectf& r, float x, float y, float width, float height)
     {
-        ::Rect out = r;
+        ::Rectf out = r;
         out.Set(x, y, width, height);
         return out;
     }
 
-    ::Rect Rect::WithMin(const ::Rect& r, const Vector2& min)
+    ::Rectf Rect::WithMin(const ::Rectf& r, const Vector2& min)
     {
-        ::Rect out = r;
+        ::Rectf out = r;
         out.x = min.x;
         out.y = min.y;
         out.width = r.GetXMax() - min.x;
@@ -85,9 +85,9 @@ namespace Runtime
         return out;
     }
 
-    ::Rect Rect::WithMax(const ::Rect& r, const Vector2& max)
+    ::Rectf Rect::WithMax(const ::Rectf& r, const Vector2& max)
     {
-        ::Rect out = r;
+        ::Rectf out = r;
         out.x = r.GetXMin();
         out.y = r.GetYMin();
         out.width = max.x - r.GetXMin();
@@ -95,25 +95,25 @@ namespace Runtime
         return out;
     }
 
-    ::Rect Rect::WithSize(const ::Rect& r, const Vector2& size)
+    ::Rectf Rect::WithSize(const ::Rectf& r, const Vector2& size)
     {
-        ::Rect out = r;
+        ::Rectf out = r;
         out.width = size.x;
         out.height = size.y;
         return out;
     }
 
-    ::Rect Rect::WithPosition(const ::Rect& r, const Vector2& position)
+    ::Rectf Rect::WithPosition(const ::Rectf& r, const Vector2& position)
     {
-        ::Rect out = r;
+        ::Rectf out = r;
         out.x = position.x;
         out.y = position.y;
         return out;
     }
 
-    ::Rect Rect::WithCenter(const ::Rect& r, const Vector2& center)
+    ::Rectf Rect::WithCenter(const ::Rectf& r, const Vector2& center)
     {
-        ::Rect out = r;
+        ::Rectf out = r;
         // center == x + width / 2 对负 width 同样成立（xMin = x + width、
         // xMax = x，两者中点还是 x + width/2），所以这里不用先归一化。
         out.x = center.x - r.width * 0.5f;
@@ -121,18 +121,18 @@ namespace Runtime
         return out;
     }
 
-    bool Rect::ContainsPoint(const ::Rect& r, const Vector2& point)
+    bool Rect::ContainsPoint(const ::Rectf& r, const Vector2& point)
     {
         return r.Contains(point.x, point.y);
     }
 
-    bool Rect::ContainsXY(const ::Rect& r, float x, float y) { return r.Contains(x, y); }
+    bool Rect::ContainsXY(const ::Rectf& r, float x, float y) { return r.Contains(x, y); }
 
-    bool Rect::Overlaps(const ::Rect& a, const ::Rect& b) { return a.Overlaps(b); }
+    bool Rect::Overlaps(const ::Rectf& a, const ::Rectf& b) { return a.Overlaps(b); }
 
-    ::Rect Rect::OrderMinMax(const ::Rect& r)
+    ::Rectf Rect::OrderMinMax(const ::Rectf& r)
     {
-        ::Rect out;
+        ::Rectf out;
         out.x = r.GetXMin();
         out.y = r.GetYMin();
         out.width = r.GetXMax() - r.GetXMin();
@@ -140,7 +140,7 @@ namespace Runtime
         return out;
     }
 
-    Vector2 Rect::PointToNormalized(const ::Rect& r, const Vector2& p)
+    Vector2 Rect::PointToNormalized(const ::Rectf& r, const Vector2& p)
     {
         const float span_x = r.GetXMax() - r.GetXMin();
         const float span_y = r.GetYMax() - r.GetYMin();
@@ -152,13 +152,13 @@ namespace Runtime
         return Vector2(u, v);
     }
 
-    Vector2 Rect::NormalizedToPoint(const ::Rect& r, const Vector2& uv)
+    Vector2 Rect::NormalizedToPoint(const ::Rectf& r, const Vector2& uv)
     {
         return Vector2(r.GetXMin() + uv.x * (r.GetXMax() - r.GetXMin()),
                        r.GetYMin() + uv.y * (r.GetYMax() - r.GetYMin()));
     }
 
-    eastl::string Rect::ToString(const ::Rect& r)
+    eastl::string Rect::ToString(const ::Rectf& r)
     {
         char buffer[160];
         std::snprintf(buffer, sizeof(buffer), "(x:%.2f, y:%.2f, width:%.2f, height:%.2f)", r.x, r.y,

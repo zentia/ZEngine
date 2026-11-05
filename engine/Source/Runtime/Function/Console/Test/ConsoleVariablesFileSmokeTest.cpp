@@ -18,6 +18,7 @@
 // work, no project / window / GPU.
 // =====================================================================
 
+#include "Runtime/Core/Base/ZFileStream.h"
 #include "Runtime/Function/Console/ConsoleManager.h"
 
 #include <cstdio>
@@ -43,16 +44,17 @@ namespace
 
     std::string ReadAll(const std::filesystem::path& path)
     {
-        std::ifstream in(path, std::ios::binary);
-        std::stringstream ss;
-        ss << in.rdbuf();
-        return ss.str();
+        // C FILE* 而不是 std::ifstream：iOS 上 ZRuntimeShared.framework 被
+        // UnityFramework dlopen 时，dyld 解析不到 libc++ 的
+        // std::basic_ifstream VTT/VTable（见 Core/Base/ZFileStream.h）。
+        std::string text;
+        zcore::ReadWholeFile(path.generic_string(), text);
+        return text;
     }
 
     void WriteAll(const std::filesystem::path& path, const std::string& text)
     {
-        std::ofstream out(path, std::ios::binary | std::ios::trunc);
-        out << text;
+        zcore::WriteWholeFile(path.generic_string().c_str(), text.data(), text.size());
     }
 
     struct Vars
@@ -89,8 +91,7 @@ namespace
     {
         std::error_code ec;
         std::filesystem::create_directories(path.parent_path(), ec);
-        std::ofstream out(path, std::ios::binary | std::ios::trunc);
-        out << text;
+        zcore::WriteWholeFile(path.generic_string().c_str(), text.data(), text.size());
     }
 }  // namespace
 

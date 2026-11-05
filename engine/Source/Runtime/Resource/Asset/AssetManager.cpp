@@ -6,6 +6,7 @@
 #include "Runtime/BaseClasses/PPtr.h"
 #include "Runtime/BaseClasses/Type.h"
 #include "Runtime/BaseClasses/TypeManager.h"
+#include "Runtime/Core/Base/ZFileStream.h"
 #include "Runtime/Core/Serialize/SerializationCaching/FileCacherRead.h"
 #include "Runtime/Core/Serialize/SerializationCaching/FileCacherWrite.h"
 #include "Runtime/Core/Serialize/SerializedFile.h"
@@ -458,12 +459,14 @@ std::string AssetManager::GetAssetTypeName(const std::filesystem::path& asset_pa
     {
         // 只认魔数（'ZSPG'，SpineGpuConstants::kMagic）：版本 / 结构由 SpineGpuRenderer 加载时校验。
         // 绝不能落到下面的 SerializedFile：它不是 ZASS 文件。
-        std::ifstream file(asset_path, std::ios::binary);
+        // C FILE* 而不是 std::ifstream：iOS 上 ZRuntimeShared.framework 被
+        // UnityFramework dlopen 时，dyld 解析不到 libc++ 的
+        // std::basic_ifstream VTT/VTable（见 Core/Base/ZFileStream.h 的说明）。
         uint32_t magic = 0;
-        file.read(reinterpret_cast<char*>(&magic), sizeof(magic));
+        const size_t read_bytes = ::zcore::ReadFilePrefix(asset_path, &magic, sizeof(magic));
         constexpr uint32_t kSpineGpuMagic = 0x5A535047u;
-        return (file.gcount() == sizeof(magic) && magic == kSpineGpuMagic) ? SpineSkeletonAssetTypeName()
-                                                                           : std::string();
+        return (read_bytes == sizeof(magic) && magic == kSpineGpuMagic) ? SpineSkeletonAssetTypeName()
+                                                                        : std::string();
     }
 
     if (IsYamlAuthoringAssetPath(asset_path))

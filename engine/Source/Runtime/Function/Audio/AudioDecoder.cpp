@@ -1,4 +1,5 @@
 #include "Runtime/Function/Audio/AudioDecoder.h"
+#include "Runtime/Core/Base/ZFileStream.h"
 
 #include <algorithm>
 #include <cctype>
@@ -274,8 +275,11 @@ bool DecodeAudioBuffer(const std::string& in_extension, const uint8_t* in_data, 
 
 bool DecodeAudioFile(const std::string& in_path, AudioClipData& out_clip, std::string* out_error)
 {
-    std::ifstream file(in_path, std::ios::binary | std::ios::ate);
-    if (!file.is_open())
+    // C FILE* 而不是 std::ifstream：iOS 上 ZRuntimeShared.framework 被
+    // UnityFramework dlopen 时，dyld 解析不到 libc++ 的
+    // std::basic_ifstream VTT/VTable（见 Core/Base/ZFileStream.h）。
+    zcore::ZFileReader file(in_path);
+    if (!file.isOpen())
     {
         if (out_error)
         {
@@ -284,7 +288,8 @@ bool DecodeAudioFile(const std::string& in_path, AudioClipData& out_clip, std::s
         return false;
     }
 
-    const std::streamoff file_size = file.tellg();
+    file.seek(0, SEEK_END);
+    const long file_size = file.tell();
     if (file_size <= 0)
     {
         if (out_error)
@@ -294,10 +299,18 @@ bool DecodeAudioFile(const std::string& in_path, AudioClipData& out_clip, std::s
         return false;
     }
 
-    file.seekg(0, std::ios::beg);
+    file.seek(0, SEEK_SET);
     std::vector<uint8_t> buffer(static_cast<size_t>(file_size));
-    file.read(reinterpret_cast<char*>(buffer.data()), file_size);
+    const size_t read_bytes = file.read(buffer.data(), buffer.size());
     file.close();
+    if (read_bytes != buffer.size())
+    {
+        if (out_error)
+        {
+            *out_error = "Audio: '" + in_path + "' is truncated";
+        }
+        return false;
+    }
 
     const size_t dot_position = in_path.find_last_of('.');
     const std::string extension = (dot_position == std::string::npos) ? std::string() : in_path.substr(dot_position);

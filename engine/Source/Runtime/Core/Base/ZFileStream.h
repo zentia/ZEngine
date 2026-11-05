@@ -19,6 +19,69 @@
 namespace zcore {
 
 /**
+ * Read at most `size` bytes from the head of `path`. Returns the number of
+ * bytes actually read (0 when the file cannot be opened). Binary mode.
+ */
+inline size_t ReadFilePrefix(const char* path, void* buf, size_t size) {
+    if (path == nullptr || buf == nullptr || size == 0) return 0;
+    std::FILE* f = std::fopen(path, "rb");
+    if (f == nullptr) return 0;
+    const size_t read_bytes = std::fread(buf, 1, size, f);
+    std::fclose(f);
+    return read_bytes;
+}
+
+inline size_t ReadFilePrefix(const std::string& path, void* buf, size_t size) {
+    return ReadFilePrefix(path.c_str(), buf, size);
+}
+
+/**
+ * Read the entire file into `out` (binary, no NUL terminator appended).
+ * Returns false when the file cannot be opened / is empty.
+ */
+inline bool ReadWholeFile(const char* path, std::string& out) {
+    out.clear();
+    if (path == nullptr) return false;
+    std::FILE* f = std::fopen(path, "rb");
+    if (f == nullptr) return false;
+    if (std::fseek(f, 0, SEEK_END) != 0) {
+        std::fclose(f);
+        return false;
+    }
+    const long size = std::ftell(f);
+    if (size <= 0) {
+        std::fclose(f);
+        return false;
+    }
+    std::rewind(f);
+    out.resize(static_cast<size_t>(size));
+    const size_t read_bytes = std::fread(&out[0], 1, out.size(), f);
+    std::fclose(f);
+    if (read_bytes != out.size()) {
+        out.clear();
+        return false;
+    }
+    return true;
+}
+
+inline bool ReadWholeFile(const std::string& path, std::string& out) {
+    return ReadWholeFile(path.c_str(), out);
+}
+
+/**
+ * Write `size` bytes at the head of `path`, truncating it first.
+ * Returns false when the file cannot be opened or the write is short.
+ */
+inline bool WriteWholeFile(const char* path, const void* data, size_t size) {
+    if (path == nullptr) return false;
+    std::FILE* f = std::fopen(path, "wb");
+    if (f == nullptr) return false;
+    const size_t written = (size == 0) ? 0 : std::fwrite(data, 1, size, f);
+    std::fclose(f);
+    return written == size;
+}
+
+/**
  * Minimal RAII file reader (binary mode).
  * Drop-in for the common std::ifstream read pattern.
  */

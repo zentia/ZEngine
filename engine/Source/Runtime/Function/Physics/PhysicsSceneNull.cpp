@@ -35,6 +35,10 @@
 #include "Runtime/Function/Physics/PhysicsScene.h"
 
 #include "Runtime/Core/Log/LogSystem.h"
+// PhysicsScene.h 只前向声明了 `enum class CollisionDetectionMode`；
+// GetBodyMotionQuality() 里要写 `CollisionDetectionMode::Discrete`，
+// 必须拿到完整定义（否则 slim 构建报 incomplete type）。
+#include "Runtime/Resource/ResType/Components/RigidBody.h"
 
 namespace
 {

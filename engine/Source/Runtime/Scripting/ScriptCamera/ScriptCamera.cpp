@@ -481,14 +481,14 @@ void Camera::ResetAspect()
     }
 }
 
-::Rect Camera::GetPixelRect() const
+::Rectf Camera::GetPixelRect() const
 {
     if (m_RenderCamera == nullptr)
     {
-        return ::Rect(0.0f, 0.0f, 0.0f, 0.0f);
+        return ::Rectf(0.0f, 0.0f, 0.0f, 0.0f);
     }
     const Rectf rect = m_RenderCamera->GetCameraRect();
-    return ::Rect(rect.x, rect.y, rect.width, rect.height);
+    return ::Rectf(rect.x, rect.y, rect.width, rect.height);
 }
 
 // ---------------------------------------------------------------------------

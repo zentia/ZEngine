@@ -27,6 +27,7 @@
 // 退出码：0 = 全部判据通过；1 = 有判据失败。
 // =============================================================================
 
+#include "Runtime/Core/Base/ZFileStream.h"
 #include "Runtime/Core/Log/CrashLogTail.h"
 
 #include <atomic>
@@ -89,14 +90,22 @@ namespace
     {
         std::vector<std::string> lines;
         const std::string path = dir + "/crash_log_tail.txt";
-        std::ifstream in(path);
-        if (!in.is_open())
+        // C FILE* 而不是 std::ifstream：iOS 上 ZRuntimeShared.framework 被
+        // UnityFramework dlopen 时，dyld 解析不到 libc++ 的
+        // std::basic_ifstream VTT/VTable（见 Core/Base/ZFileStream.h）。
+        zcore::ZFileReader in(path);
+        if (!in.isOpen())
         {
             return lines;
         }
-        std::string line;
-        while (std::getline(in, line))
+        char line_buffer[4096];
+        while (in.getline(line_buffer, sizeof(line_buffer)))
         {
+            std::string line(line_buffer);
+            while (!line.empty() && line.back() == '\n')
+            {
+                line.pop_back();
+            }
             if (!line.empty() && line.back() == '\r')
             {
                 line.pop_back();

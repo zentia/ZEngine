@@ -7654,7 +7654,7 @@ namespace
         // `pixelRect` 现在是 **Rect**（不是早先那个把四个数塞进 Vector4 的
         // 退路）：字段名与 Unity 一致，`Rect` 那套 `width` / `height` /
         // `Contains` 都能直接用。
-        Check(unbound.GetPixelRect() == ::Rect(0.f, 0.f, 0.f, 0.f), "AR3", "and an empty pixel rect");
+        Check(unbound.GetPixelRect() == ::Rectf(0.f, 0.f, 0.f, 0.f), "AR3", "and an empty pixel rect");
         // 屏幕 <-> 视口只依赖**屏幕尺寸**、不依赖相机，所以未绑定时照样是一次真
         // 换算。断言"返回 ZERO"是错的（那等于把一次坐标转换静默变成没做），
         // 这里要的是"有结果且不出现 NaN"。
@@ -7745,7 +7745,7 @@ namespace
               "ResetAspect goes back to the screen aspect ratio");
 
         // --- pixelRect ----------------------------------------------------
-        const ::Rect rect = cam.GetPixelRect();
+        const ::Rectf rect = cam.GetPixelRect();
         // ⚠️ 这里读的是 `width` / `height`，不是 `z` / `w`：Rect 那四个字段是
         // Unity 的拼写，把 z/w 的旧写法留着的话下面两条会静默地读到 0。
         Check(rect.width > 0.f && rect.height > 0.f, "AR22", "pixelRect has a positive size");
@@ -12255,15 +12255,15 @@ namespace
     //      在正 width 上也是绿的。
     void TestRects()
     {
-        using ::Rect;
+        using ::Rectf;
         using ::RectInt;
 
         // --- 值类型：边与归一化 ------------------------------------------------
-        const Rect normal(0.f, 0.f, 10.f, 20.f);
+        const Rectf normal(0.f, 0.f, 10.f, 20.f);
         Check(normal.GetXMin() == 0.f && normal.GetXMax() == 10.f && normal.GetYMin() == 0.f &&
                   normal.GetYMax() == 20.f, "RC0", "a positive rect's edges are x .. x+width");
         // ⚠️ 负 width：两条边**交换**，`xMin` 不是 `x`。
-        const Rect flipped(10.f, 20.f, -10.f, -20.f);
+        const Rectf flipped(10.f, 20.f, -10.f, -20.f);
         Check(flipped.GetXMin() == 0.f && flipped.GetXMax() == 10.f, "RC1",
               "a negative-width rect's xMin is NOT x (it is 0, not 10)");
         Check(flipped.GetYMin() == 0.f && flipped.GetYMax() == 20.f, "RC2",
@@ -12437,10 +12437,12 @@ namespace
         const std::string value_header = ReadFile("Source/Runtime/Core/Math/Rect.h");
         Check(!value_header.empty(), "RCW0", "Rect.h is readable");
         if (value_header.empty()) { return; }
-        // ⚠️ 两个 using 是"Rect / RectInt 存在"的源头：没有它们，`::Rect` 只是
+        // ⚠️ 两个 using 是"Rectf / RectInt 存在"的源头：没有它们，`::Rectf` 只是
         // `RectT<float>` 的一个模板实例化，脚本侧名字对不上。
-        Check(CountOccurrences(value_header, "using Rect = RectT<float>;") >= 1, "RCW1",
-              "Rect is RectT<float>");
+        // 值类型用 `Rectf` 而不是 `Rect`：Apple 平台的 MacTypes.h 在全局命名空间
+        // 已经有 `struct Rect`，同名别名在 iOS 上是硬编译错误（见 Rect.h 注释）。
+        Check(CountOccurrences(value_header, "using Rectf = RectT<float>;") >= 1, "RCW1",
+              "Rectf is RectT<float>");
         Check(CountOccurrences(value_header, "using RectInt = RectT<int>;") >= 1, "RCW2",
               "RectInt is RectT<int>");
         // 归一化那两个 getter 是"负 width 也正确"的唯一来源。
@@ -12474,7 +12476,7 @@ namespace
         {
             Check(CountOccurrences(binding_header, "struct Converter<Vector2Int>") >= 1 &&
                       CountOccurrences(binding_header, "struct Converter<Vector3Int>") >= 1 &&
-                      CountOccurrences(binding_header, "struct Converter<Rect>") >= 1 &&
+                      CountOccurrences(binding_header, "struct Converter<Rectf>") >= 1 &&
                       CountOccurrences(binding_header, "struct Converter<RectInt>") >= 1, "RCW10",
                   "all four value types have a marshaller");
         }
@@ -12499,7 +12501,7 @@ namespace
             // 这条上是错的，但没有任何一条行为测试能发现。这里按**所在类**数。
             Check(CountOccurrences(rect_facade, "static ::RectInt ClampToBounds(") >= 1, "RCW14",
                   "RectInt exports ClampToBounds");
-            Check(CountOccurrences(rect_facade, "static ::Rect ClampToBounds(") == 0, "RCW15",
+            Check(CountOccurrences(rect_facade, "static ::Rectf ClampToBounds(") == 0, "RCW15",
                   "and Rect does NOT (Unity has no Rect.ClampToBounds)");
             Check(CountOccurrences(rect_facade, "PointToNormalized") >= 1, "RCW16",
                   "Rect exports PointToNormalized");

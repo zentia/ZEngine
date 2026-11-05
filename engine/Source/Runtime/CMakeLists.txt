@@ -288,7 +288,15 @@ elseif(APPLE)
     # MainCameraFramebufferResources.cpp / MainCameraPassShaderCommon.cpp。
     set(ZENGINE_APPLE_EXCLUDED_PASSES
         "(^|.*/)Function/Render/Passes/(DX12.*|BindlessTonemapPass|MainCameraPass|ColorGradingPass|CombineUIPass|FXAAPass|PickPass|BloomPass|TAAPass)\\.cpp$")
+    # Nanite 的三个 A/B 真机冒烟测试（NaniteHiZABSmokeTest /
+    # NaniteHiZOcclusionABSmokeTest / NanitePagePoolABSmokeTest）是 Vulkan
+    # headless 专用的：它们 include VulkanRHI.h 并把 Vulkan 后端在无窗口环境下
+    # 整个拉起来比对 GBuffer。Apple 上没有 vulkan.h，且这里的目的是验证 Vulkan
+    # 后端本身，排除掉不损失任何 Apple 侧覆盖（同名 CPU 冒烟测试仍在编译）。
+    set(ZENGINE_APPLE_EXCLUDED_VULKAN_TESTS
+        "(^|.*/)Function/Render/[Nn]anite/Test/Nanite[A-Za-z]*AB[A-Za-z]*SmokeTest\\.cpp$")
     list(FILTER SOURCE_FILES EXCLUDE REGEX "${ZENGINE_APPLE_EXCLUDED_PASSES}")
+    list(FILTER SOURCE_FILES EXCLUDE REGEX "${ZENGINE_APPLE_EXCLUDED_VULKAN_TESTS}")
     list(FILTER SOURCE_FILES EXCLUDE REGEX "(^|.*/)Function/Render/Texture/VirtualTexture.*\\.cpp$")
     list(FILTER SOURCE_FILES EXCLUDE REGEX "(^|.*/)Function/Render/[Dd]ebug[Dd]raw/DebugDrawBuffer\\.cpp$")
     list(FILTER REGULAR_SOURCE_FILES EXCLUDE REGEX "(^|.*/)Function/Render/[Ii]nterface/[Dd][Xx]12/.*\\.cpp$")
@@ -303,6 +311,7 @@ elseif(APPLE)
     list(FILTER SOURCE_FILES EXCLUDE REGEX "(^|.*/)Function/ShaderLab/ShaderLabCompiler\\.cpp$")
     list(FILTER REGULAR_SOURCE_FILES EXCLUDE REGEX "(^|.*/)Function/ShaderLab/ShaderLabCompiler\\.cpp$")
     list(FILTER REGULAR_SOURCE_FILES EXCLUDE REGEX "${ZENGINE_APPLE_EXCLUDED_PASSES}")
+    list(FILTER REGULAR_SOURCE_FILES EXCLUDE REGEX "${ZENGINE_APPLE_EXCLUDED_VULKAN_TESTS}")
     list(FILTER REGULAR_SOURCE_FILES EXCLUDE REGEX "(^|.*/)Function/Render/Texture/VirtualTexture.*\\.cpp$")
     list(FILTER REGULAR_SOURCE_FILES EXCLUDE REGEX "(^|.*/)Function/Render/[Dd]ebug[Dd]raw/DebugDrawBuffer\\.cpp$")
     list(REMOVE_ITEM SOURCE_FILES
@@ -412,6 +421,31 @@ if(APPLE)
     set_source_files_properties(
         "${CMAKE_CURRENT_SOURCE_DIR}/RegisterRuntime.cpp"
         PROPERTIES LANGUAGE OBJCXX SKIP_PRECOMPILE_HEADERS ON)
+    # Render 的冒烟测试 TU 是真的会 include MetalRHI.h / <Foundation/Foundation.h>
+    # 的（Apple 上要亲手建一个 MetalRHI 才能跑 GPU 用例），但它们同时被下面的
+    # GLOB 收进 ZRuntime 当普通 .cpp 编译 —— 按 C++ 编译时 Foundation 里的
+    # `@class NSString` 会炸成 "expected unqualified-id"。
+    # 这里统一按 Objective-C++ 编译，与各 Test/CMakeLists.txt 单独建测试可执行
+    # 文件时的做法（LANGUAGE OBJCXX）保持一致。
+    set(_zr_apple_objcxx_sources)
+    foreach(_zr_src IN LISTS SOURCE_FILES)
+        if(_zr_src MATCHES "(^|.*/)Function/Render/([Nn]anite/)?Test/.*\\.cpp$")
+            list(APPEND _zr_apple_objcxx_sources "${_zr_src}")
+        endif()
+    endforeach()
+    if(_zr_apple_objcxx_sources)
+        # NOTE: PCH 保留 —— 这些测试 TU 会经 RenderCamera.h 拉到
+        # Core/Math/Vector4.h，而 Vector4.h 的
+        # INSTANTIATE_TEMPLATE_TRANSFER_WITH_DECL 需要 PCH 里那批
+        # Serialize/TransferFunctions 完整类型。丢掉 PCH 就只剩
+        # "unknown type name 'Transfer'"。
+        set_source_files_properties(${_zr_apple_objcxx_sources}
+            PROPERTIES LANGUAGE OBJCXX)
+        list(LENGTH _zr_apple_objcxx_sources _zr_apple_objcxx_count)
+        message(STATUS "Runtime(Apple): ${_zr_apple_objcxx_count} Render test TU(s) compiled as Objective-C++")
+    endif()
+    unset(_zr_apple_objcxx_sources)
+    unset(_zr_apple_objcxx_count)
     set_source_files_properties(${OBJC_SOURCE_FILES} PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
 endif()
 
@@ -1395,6 +1429,17 @@ target_compile_definitions(${TARGET_NAME} PRIVATE ${_zengine_lifetime_def})
 target_compile_definitions(${SHARED_TARGET_NAME} PRIVATE ${_zengine_lifetime_def})
 unset(_zengine_lifetime_def)
 
+# 仓库根路径：Runtime 里有一批冒烟测试 TU（如
+# Function/animation/Test/AnimationPipelineSmokeTest.cpp 的 P8）要用它定位
+# 仓库里**提交过的真实资产字节**。它们各自的独立测试可执行文件是从
+# <dir>/Test/CMakeLists.txt 里拿这个定义的，但同一批文件也会被上面的
+# GLOB 收进 ZRuntime 参与编译 —— 那里没有定义就是硬编译错误
+# "use of undeclared identifier 'ZENGINE_ENGINE_ROOT_DIR'"。
+target_compile_definitions(${TARGET_NAME} PRIVATE "ZENGINE_ENGINE_ROOT_DIR=\"${ENGINE_ROOT_DIR}\"")
+if(TARGET ${SHARED_TARGET_NAME})
+    target_compile_definitions(${SHARED_TARGET_NAME} PRIVATE "ZENGINE_ENGINE_ROOT_DIR=\"${ENGINE_ROOT_DIR}\"")
+endif()
+
 if(WIN32)
     # Ensure shared section for Singleton cross-module sharing (Windows only)
     if(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC" OR (CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC"))
@@ -1452,6 +1497,14 @@ if(IOS)
     if(ZENGINE_IOS_EXPORT_SYMBOLS_FILE)
         target_link_options(${SHARED_TARGET_NAME} PRIVATE "LINKER:-exported_symbols_list,${ZENGINE_IOS_EXPORT_SYMBOLS_FILE}")
     endif()
+    # iOS framework 不编 tinyobjloader（OBJ 文本解析）。
+    # 原因见 RenderResourceBase.cpp 里 tiny_obj_loader.h 附近的注释：它的实现
+    # 大量使用 std::ifstream / std::stringstream，任何构造它们的 TU 都会引用
+    # libc++ 的 VTT/VTable 数据符号，而 Unity 内嵌的 libc++ 不导出这些符号
+    # —— UnityFramework dlopen 本 framework 时 dyld 报
+    # "Symbol not found: __ZTTNSt3__114basic_ifstreamIcNS_11char_traitsIcEEEE"
+    # 并直接终止进程。该 TU 是 reachable 的，-dead_strip 摘不掉，只能整块关掉。
+    target_compile_definitions(${SHARED_TARGET_NAME} PRIVATE ZENGINE_SHARED_NO_TINYOBJ=1)
     # --- Drop local symbols from the symbol table (link-time `-x`) -----------
     # With -exported_symbols_list the 100-or-so C entry points are the only
     # exported symbols; everything else the linker keeps becomes LOCAL, and

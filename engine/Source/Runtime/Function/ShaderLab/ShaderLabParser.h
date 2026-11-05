@@ -1,12 +1,11 @@
 #pragma once
 
 #include "Runtime/Core/Base/Macro.h"
+#include "Runtime/Core/Base/ZFileStream.h"
 #include "ShaderLabAsset.h"
 #include "ShaderLabLexer.h"
 
-#include <fstream>
 #include <memory>
-#include <sstream>
 #include <string>
 
 namespace ZEngine::ShaderLab
@@ -116,16 +115,17 @@ namespace ZEngine::ShaderLab
     // 从文件加载并解析
     inline std::shared_ptr<ShaderLabAsset> ParseShaderLabFromFile(const std::string& file_path)
     {
-        std::ifstream file(file_path);
-        if (!file.is_open())
+        // C FILE* 而不是 std::ifstream：iOS 上 ZRuntimeShared.framework 被
+        // UnityFramework dlopen 时，dyld 解析不到 libc++ 的
+        // std::basic_ifstream VTT/VTable（见 Core/Base/ZFileStream.h）。
+        //
+        // ⚠️ 这里是头文件里的 inline 函数 —— 任何 include 了本头的 TU 都会
+        // 引用那两个符号，所以它必须和 .cpp 里的读文件一起改。
+        std::string source;
+        if (!zcore::ReadWholeFile(file_path, source))
         {
             return nullptr;
         }
-
-        std::stringstream buffer;
-        buffer << file.rdbuf();
-        std::string source = buffer.str();
-        file.close();
 
         ShaderLabParser parser(source);
         if (!parser.Parse())

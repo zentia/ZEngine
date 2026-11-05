@@ -1,13 +1,15 @@
 #include "PlayerSettings.h"
 
 #include "Runtime/Core/Base/Macro.h"
+#include "Runtime/Core/Base/ZFileStream.h"
 #include "Core/Log/LogSystem.h"
 #include "rapidjson/document.h"
-#include "rapidjson/istreamwrapper.h"
+#include "rapidjson/memorystream.h"
 #include "rapidjson/prettywriter.h"
 #include "rapidjson/stringbuffer.h"
 
-#include <fstream>
+#include <cstdio>
+#include <string>
 
 namespace
 {
@@ -82,14 +84,17 @@ bool PlayerSettings::LoadFromFile(const std::filesystem::path& path)
         return false;
     }
 
-    std::ifstream file(path);
-    if (!file.is_open())
+    // C FILE* 而不是 std::ifstream：iOS 上 ZRuntimeShared.framework 被
+    // UnityFramework dlopen 时，dyld 解析不到 libc++ 的
+    // std::basic_ifstream VTT/VTable（见 Core/Base/ZFileStream.h）。
+    std::string text;
+    if (!zcore::ReadWholeFile(path.generic_string(), text))
     {
         return false;
     }
 
     rapidjson::Document document;
-    rapidjson::IStreamWrapper stream(file);
+    rapidjson::MemoryStream stream(text.data(), text.size());
     document.ParseStream(stream);
     if (document.HasParseError() || !document.IsObject())
     {
@@ -166,8 +171,8 @@ bool PlayerSettings::Save(const std::filesystem::path& path) const
     // the product name on the next launch.
     const std::filesystem::path temp_path = path.string() + ".tmp";
     {
-        std::ofstream file(temp_path, std::ios::binary | std::ios::trunc);
-        if (!file.is_open())
+        std::FILE* file = std::fopen(temp_path.generic_string().c_str(), "wb");
+        if (file == nullptr)
         {
             LOG_WARNING(ZProjectInfo, "PlayerSettings: cannot write {}", temp_path.generic_string());
             return false;
@@ -176,7 +181,14 @@ bool PlayerSettings::Save(const std::filesystem::path& path) const
         rapidjson::StringBuffer buffer;
         rapidjson::PrettyWriter<rapidjson::StringBuffer> writer(buffer);
         document.Accept(writer);
-        file << buffer.GetString();
+        const size_t length = buffer.GetSize();
+        const size_t written = std::fwrite(buffer.GetString(), 1, length, file);
+        std::fclose(file);
+        if (written != length)
+        {
+            LOG_WARNING(ZProjectInfo, "PlayerSettings: short write to {}", temp_path.generic_string());
+            return false;
+        }
     }
 
     std::filesystem::rename(temp_path, path, ec);

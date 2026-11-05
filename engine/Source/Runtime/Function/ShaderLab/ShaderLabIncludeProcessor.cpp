@@ -1,11 +1,11 @@
 #include "ShaderLabIncludeProcessor.h"
 
+#include "Runtime/Core/Base/ZFileStream.h"
+
 #include <algorithm>
 #include <cctype>
 #include <cstring>
-#include <fstream>
 #include <set>
-#include <sstream>
 
 namespace ZEngine::ShaderLab
 {
@@ -148,14 +148,12 @@ namespace ZEngine::ShaderLab
 
         std::string ReadWholeFile(const std::filesystem::path& path)
         {
-            std::ifstream file(path, std::ios::in | std::ios::binary);
-            if (!file)
-            {
-                return {};
-            }
-            std::ostringstream buffer;
-            buffer << file.rdbuf();
-            return buffer.str();
+            // C FILE* 而不是 std::ifstream：iOS 上 ZRuntimeShared.framework 被
+            // UnityFramework dlopen 时，dyld 解析不到 libc++ 的
+            // std::basic_ifstream VTT/VTable（见 Core/Base/ZFileStream.h）。
+            std::string text;
+            zcore::ReadWholeFile(path.generic_string(), text);
+            return text;
         }
 
         class IncludeExpander

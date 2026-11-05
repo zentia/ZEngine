@@ -14,9 +14,23 @@
 #define STB_IMAGE_IMPLEMENTATION
 #include <stb_image.h>
 
+#if defined(ZENGINE_SHARED_NO_TINYOBJ) && ZENGINE_SHARED_NO_TINYOBJ
+// ZRuntimeShared（iOS framework）不编 tinyobjloader。
+// 原因：它整个实现（ObjReader::ParseFromFile / LoadObj / StreamReader /
+// MaterialFileReader）大量使用 std::ifstream / std::stringstream，而这两个
+// 类带虚基类，任何构造它们的 TU 都会引用 libc++ 的 VTT/VTable 数据符号：
+//   __ZTTNSt3__114basic_ifstreamIcNS_11char_traitsIcEEEE  ...
+// Unity 内嵌的 libc++ 不导出这些符号，UnityFramework dlopen 本 framework 时
+// dyld 直接报 "Symbol not found ... expected in flat namespace" 并中止进程
+// （这就是本次 iOS 启动失败的根因）。
+// 这个 TU 是 reachable 的（LoadStaticMesh 被贴图/网格加载路径调用），
+// 无法靠 -dead_strip 摘掉，所以只能在共享库里整块关掉 OBJ 文本解析。
+// 编辑器 / 桌面 / ZRuntime 静态库仍保留完整实现。
+#else
 #define TINYOBJLOADER_DISABLE_FAST_FLOAT
 #define TINYOBJLOADER_IMPLEMENTATION
 #include "tiny_obj_loader.h"
+#endif
 
 #include <algorithm>
 #include <cstdlib>
@@ -786,6 +800,16 @@ StaticMeshData RenderResourceBase::LoadStaticMesh(eastl::string filename, AxisAl
 {
     StaticMeshData mesh_data;
 
+#if defined(ZENGINE_SHARED_NO_TINYOBJ) && ZENGINE_SHARED_NO_TINYOBJ
+    // 见文件头部 tiny_obj_loader.h 的说明：共享库里没有编 OBJ 解析器。
+    // 返回空网格而不是 assert，让调用方拿到一份可诊断的日志而不是崩溃。
+    LOG_ERROR(ZRender,
+              "LoadStaticMesh({}): OBJ 文本解析未编入 ZRuntimeShared（iOS framework 用 C FILE* 之外"
+              "的 libc++ iostream 会引入 dyld 解析不到的 VTT 符号）；请在编辑器侧导入为 .zasset 再打包",
+              filename.c_str());
+    (void)bounding_box;
+    return mesh_data;
+#else
     tinyobj::ObjReader reader;
     tinyobj::ObjReaderConfig reader_config;
     reader_config.vertex_color = false;
@@ -964,4 +988,5 @@ StaticMeshData RenderResourceBase::LoadStaticMesh(eastl::string filename, AxisAl
     }
 
     return mesh_data;
+#endif // ZENGINE_SHARED_NO_TINYOBJ
 }

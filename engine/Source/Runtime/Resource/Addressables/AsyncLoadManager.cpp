@@ -4,6 +4,7 @@
 #include "Runtime/BaseClasses/ObjectManager.h"
 #include "Runtime/BaseClasses/TypeManager.h"
 #include "Runtime/Core/Base/Macro.h"
+#include "Runtime/Core/Base/ZFileStream.h"
 #include "Runtime/Core/Serialize/SerializedFile.h"
 #include "Runtime/Core/Thread/ThreadManager.h"
 #include "Runtime/Resource/Asset/AssetManager.h"
@@ -36,15 +37,17 @@ bool ReadWholeFile(const std::filesystem::path& path, eastl::vector<uint8_t>& ou
         return false;
     }
 
-    std::ifstream stream(path, std::ios::binary);
-    if (!stream.is_open())
+    // C FILE* 而不是 std::ifstream：iOS 上 ZRuntimeShared.framework 被
+    // UnityFramework dlopen 时，dyld 解析不到 libc++ 的
+    // std::basic_ifstream VTT/VTable（见 Core/Base/ZFileStream.h）。
+    zcore::ZFileReader stream(path);
+    if (!stream.isOpen())
     {
         return false;
     }
 
     out_bytes.resize(static_cast<size_t>(size));
-    stream.read(reinterpret_cast<char*>(out_bytes.data()), static_cast<std::streamsize>(size));
-    if (stream.bad())
+    if (stream.read(out_bytes.data(), static_cast<size_t>(size)) != static_cast<size_t>(size))
     {
         out_bytes.clear();
         return false;

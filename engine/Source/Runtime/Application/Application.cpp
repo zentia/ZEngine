@@ -791,6 +791,13 @@ bool Application::OpenURL(const std::string& url)
     const auto result = reinterpret_cast<INT_PTR>(
         ShellExecuteA(nullptr, "open", url.c_str(), nullptr, nullptr, SW_SHOWNORMAL));
     return result > 32;
+#elif defined(__APPLE__) && (Z_PLATFORM_IS_IOS == 1)
+    // iOS：`system()` 在 iOS SDK 里被标记为 unavailable（App Store 也不允许
+    // fork/exec），且没有 `open` 这个 CLI。正确做法是 UIApplication
+    // 的 `openURL:options:completionHandler:`，那需要 ObjC 运行时，在 .cpp
+    // 里拿不到。显式返回 false（= 没打开），与 Android / 鸿蒙分支一致。
+    (void)url;
+    return false;
 #elif defined(__APPLE__)
     const std::string command = "open \"" + url + "\"";
     return std::system(command.c_str()) == 0;

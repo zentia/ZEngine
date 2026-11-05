@@ -3,6 +3,7 @@
 
 #include "Runtime/Function/Render/Interface/RHI.h"
 #include "Runtime/Core/Base/Macro.h"
+#include "Runtime/Core/Base/ZFileStream.h"
 #include "Runtime/Function/Render/RenderCamera.h"
 #include "Runtime/Function/Render/RenderSystem.h"
 #include "Runtime/Function/Render/RenderType.h"
@@ -69,22 +70,33 @@ namespace
 #endif
     }
 
+    // 定义在下面；ReadWholeFile 需要先把 path 转成 UTF-8 才能交给 fopen。
+    std::string ToUtf8(const std::filesystem::path& p);
+
     bool ReadWholeFile(const std::filesystem::path& p, std::vector<uint8_t>& out)
     {
-        std::ifstream f(p, std::ios::binary);
-        if (!f)
+        // C FILE* 而不是 std::ifstream：iOS 上 ZRuntimeShared.framework 被
+        // UnityFramework dlopen 时，dyld 解析不到 libc++ 的
+        // std::basic_ifstream VTT/VTable（见 Core/Base/ZFileStream.h）。
+        const std::string path_utf8 = ToUtf8(p);
+        zcore::ZFileReader f(path_utf8);
+        if (!f.isOpen())
         {
             return false;
         }
-        f.seekg(0, std::ios::end);
-        const std::streamoff n = f.tellg();
-        f.seekg(0, std::ios::beg);
+        f.seek(0, SEEK_END);
+        const long n = f.tell();
+        f.seek(0, SEEK_SET);
+        if (n < 0)
+        {
+            return false;
+        }
         out.resize(static_cast<size_t>(n));
         if (n > 0)
         {
-            f.read(reinterpret_cast<char*>(out.data()), n);
+            return f.read(out.data(), static_cast<size_t>(n)) == static_cast<size_t>(n);
         }
-        return static_cast<bool>(f) || n == 0;
+        return true;
     }
 
     // C++20 起 u8string() 返回 std::u8string；日志 / 错误串统一要 UTF-8 的 std::string

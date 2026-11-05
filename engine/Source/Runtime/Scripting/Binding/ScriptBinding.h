@@ -734,9 +734,9 @@ namespace ZScript
     // negative-width rect survives a round trip and still evaluates correctly
     // inside `Contains` / `Overlaps`.
     template <>
-    struct Converter<Rect>
+    struct Converter<Rectf>
     {
-        static pesapi_value ToJs(pesapi_ffi* apis, pesapi_env env, const Rect& v)
+        static pesapi_value ToJs(pesapi_ffi* apis, pesapi_env env, const Rectf& v)
         {
             pesapi_value o = apis->create_object(env);
             apis->set_property(env, o, "x", apis->create_double(env, v.x));
@@ -745,9 +745,9 @@ namespace ZScript
             apis->set_property(env, o, "height", apis->create_double(env, v.height));
             return o;
         }
-        static Rect FromJs(pesapi_ffi* apis, pesapi_env env, pesapi_value v)
+        static Rectf FromJs(pesapi_ffi* apis, pesapi_env env, pesapi_value v)
         {
-            Rect out;
+            Rectf out;
             out.x = static_cast<float>(apis->get_value_double(env, apis->get_property(env, v, "x")));
             out.y = static_cast<float>(apis->get_value_double(env, apis->get_property(env, v, "y")));
             out.width = static_cast<float>(apis->get_value_double(env, apis->get_property(env, v, "width")));

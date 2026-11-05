@@ -247,7 +247,7 @@ public:
     /// 能过脚本边界"，现在有了就该换回 Unity 的形状 —— 字段名从 `z`/`w` 变回
     /// `width`/`height`，从 Unity 搬过来的代码不用改。
     ZFUNCTION()
-    ::Rect GetPixelRect() const;
+    ::Rectf GetPixelRect() const;
 
     // ---- 朝向 ------------------------------------------------------------
     //

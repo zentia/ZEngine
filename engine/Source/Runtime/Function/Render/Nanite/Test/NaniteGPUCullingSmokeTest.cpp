@@ -51,6 +51,7 @@
 // pch 里前置声明过的名字就找不到了。
 #include "CommonPCH/pch.h"
 
+#include "Runtime/Core/Base/ZFileStream.h"
 #include "Runtime/Core/Math/Math.h"
 #include "Runtime/Core/Math/Matrix4.h"
 #include "Runtime/Function/Render/Interface/RHI.h"
@@ -176,14 +177,13 @@ namespace
     // -----------------------------------------------------------------------
     std::string ReadFileText(const std::string& path)
     {
-        std::ifstream file(path, std::ios::binary);
-        if (!file)
-        {
-            return std::string();
-        }
-        std::ostringstream buffer;
-        buffer << file.rdbuf();
-        return buffer.str();
+        // C FILE* 而不是 std::ifstream / std::ostringstream：iOS 上
+        // ZRuntimeShared.framework 被 UnityFramework dlopen 时，dyld 解析不到
+        // libc++ 的 basic_ifstream / basic_stringstream VTT/VTable
+        // （见 Core/Base/ZFileStream.h）。
+        std::string text;
+        zcore::ReadWholeFile(path, text);
+        return text;
     }
 
     // 依次在 text 里找每个 token，且要求下标严格递增 —— 这样"字段顺序"也被钉住了，

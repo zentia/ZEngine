@@ -44,6 +44,7 @@
 //   cmake --build build --target LumenPerFrameBridgeSmokeTest
 // =============================================================================
 
+#include "Runtime/Core/Base/ZFileStream.h"
 #include "Runtime/Function/Render/RenderCommon.h"
 
 #include <cmath>
@@ -112,12 +113,12 @@ namespace
 
     std::string ReadTextFile(const std::string& path)
     {
-        std::ifstream file(path, std::ios::binary);
-        if (!file)
-        {
-            return std::string();
-        }
-        return std::string((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+        // C FILE* 而不是 std::ifstream：iOS 上 ZRuntimeShared.framework 被
+        // UnityFramework dlopen 时，dyld 解析不到 libc++ 的
+        // std::basic_ifstream VTT/VTable（见 Core/Base/ZFileStream.h）。
+        std::string text;
+        zcore::ReadWholeFile(path, text);
+        return text;
     }
 
     bool Contains(const std::string& haystack, const char* needle)

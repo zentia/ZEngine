@@ -1,8 +1,10 @@
 #include "ShaderLabCacheManifest.h"
 
+#include "Runtime/Core/Base/ZFileStream.h"
+
 #include <chrono>
+#include <cstdio>
 #include <cstdlib>
-#include <fstream>
 #include <set>
 
 namespace ZEngine::ShaderLab
@@ -45,19 +47,27 @@ namespace ZEngine::ShaderLab
 
         std::string ReadFileToString(const std::filesystem::path& p, bool* out_opened = nullptr)
         {
-            std::ifstream ifs(p, std::ios::binary);
+            // C FILE* 而不是 std::ifstream：iOS 上 ZRuntimeShared.framework 被
+            // UnityFramework dlopen 时，dyld 解析不到 libc++ 的
+            // std::basic_ifstream VTT/VTable（见 Core/Base/ZFileStream.h）。
+            zcore::ZFileReader ifs(p.generic_string());
             if (out_opened)
             {
-                *out_opened = ifs.is_open();
+                *out_opened = ifs.isOpen();
             }
-            if (!ifs.is_open())
+            if (!ifs.isOpen())
             {
                 return {};
             }
             std::string out;
-            std::string line;
-            while (std::getline(ifs, line))
+            char line_buffer[4096];
+            while (ifs.getline(line_buffer, sizeof(line_buffer)))
             {
+                std::string line(line_buffer);
+                while (!line.empty() && line.back() == '\n')
+                {
+                    line.pop_back();
+                }
                 StripTrailingCR(line);
                 out += line;
                 out += '\n';
@@ -96,8 +106,8 @@ namespace ZEngine::ShaderLab
 
         // Binary so the '\n' we write is the '\n' we get back on every host;
         // the reader strips CR defensively anyway.
-        std::ofstream ofs(manifest, std::ios::binary | std::ios::trunc);
-        if (!ofs.is_open())
+        std::FILE* ofs = std::fopen(manifest.generic_string().c_str(), "wb");
+        if (ofs == nullptr)
         {
             if (out_error)
             {
@@ -128,11 +138,23 @@ namespace ZEngine::ShaderLab
             // That makes the entry permanently stale -- which is the correct
             // outcome: we cannot prove the blob matches its inputs, so we
             // recompile until we can.
-            ofs << mtime << '\t' << dep.generic_string() << '\n';
+            char line[4096];
+            const int line_length =
+                std::snprintf(line, sizeof(line), "%lld\t%s\n", static_cast<long long>(mtime),
+                              dep.generic_string().c_str());
+            if (line_length <= 0 || std::fwrite(line, 1, static_cast<size_t>(line_length), ofs) !=
+                                        static_cast<size_t>(line_length))
+            {
+                std::fclose(ofs);
+                if (out_error)
+                {
+                    *out_error = "write failed: " + manifest.generic_string();
+                }
+                return false;
+            }
             ++written;
         }
-
-        if (!ofs.good())
+        if (std::fclose(ofs) != 0)
         {
             if (out_error)
             {

@@ -13,7 +13,7 @@
 //
 // 与 `Bounds` / `AnimationCurve` 同一套分工（详见 ScriptBounds.h）：
 //
-//   * 值类型 `::Rect` / `::RectInt`（都是 `RectT<T>` 的 using，
+//   * 值类型 `::Rectf` / `::RectInt`（都是 `RectT<T>` 的 using，
 //     `Runtime/Core/Math/Rect.h`）作为**值**跨边界 —— JS 端就是
 //     `{x, y, width, height}` 字面量，.d.ts 里是 `declare interface`，字段可以
 //     直接读写。
@@ -60,116 +60,116 @@ namespace Runtime
 
         /// Unity 的 `new Rect(x, y, width, height)`。
         ZFUNCTION()
-        static ::Rect Create(float x, float y, float width, float height);
+        static ::Rectf Create(float x, float y, float width, float height);
 
         /// Unity 的 `Rect.MinMaxRect(xmin, ymin, xmax, ymax)`：由两条**对角**
         /// 定矩形（顺序不限，内部做 Min/Max）。
         ZFUNCTION()
-        static ::Rect MinMaxRect(float xmin, float ymin, float xmax, float ymax);
+        static ::Rectf MinMaxRect(float xmin, float ymin, float xmax, float ymax);
 
         // ---- 边（归一化后的两条边）------------------------------------------
 
         /// `rect.xMin`：两条竖边里较小的那条。⚠️ width 为负时**不是** `rect.x`。
         ZFUNCTION()
-        static float GetXMin(const ::Rect& r);
+        static float GetXMin(const ::Rectf& r);
         ZFUNCTION()
-        static float GetXMax(const ::Rect& r);
+        static float GetXMax(const ::Rectf& r);
         ZFUNCTION()
-        static float GetYMin(const ::Rect& r);
+        static float GetYMin(const ::Rectf& r);
         ZFUNCTION()
-        static float GetYMax(const ::Rect& r);
+        static float GetYMax(const ::Rectf& r);
 
         /// `rect.min` / `rect.max`：左下角 / 右上角（width 为负时自动交换）。
         ZFUNCTION()
-        static Vector2 GetMin(const ::Rect& r);
+        static Vector2 GetMin(const ::Rectf& r);
         ZFUNCTION()
-        static Vector2 GetMax(const ::Rect& r);
+        static Vector2 GetMax(const ::Rectf& r);
 
         // ---- 派生量 ------------------------------------------------------
 
         /// `rect.size`：**就是** `{width, height}`，Unity 里也是原样返回（可以为负）。
         /// 要"两条边围出来的正尺寸"用 `OrderMinMax` 或直接 `xMax - xMin`。
         ZFUNCTION()
-        static Vector2 GetSize(const ::Rect& r);
+        static Vector2 GetSize(const ::Rectf& r);
 
         /// `rect.position`：**就是** `{x, y}`（不是 `min` —— width 为负时两者不同）。
         ZFUNCTION()
-        static Vector2 GetPosition(const ::Rect& r);
+        static Vector2 GetPosition(const ::Rectf& r);
 
         /// `rect.center`：**几何中心**（按 min/max 算，与 x/y 无关），float。
         ZFUNCTION()
-        static Vector2 GetCenter(const ::Rect& r);
+        static Vector2 GetCenter(const ::Rectf& r);
 
         // ---- 非破坏 setter ------------------------------------------------
 
         /// `rect.xMin = v` 的形式：移动**左**边，右边不动（width 跟着变）。
         ZFUNCTION(Name = "SetXMin")
-        static ::Rect WithXMin(const ::Rect& r, float v);
+        static ::Rectf WithXMin(const ::Rectf& r, float v);
         ZFUNCTION(Name = "SetXMax")
-        static ::Rect WithXMax(const ::Rect& r, float v);
+        static ::Rectf WithXMax(const ::Rectf& r, float v);
         ZFUNCTION(Name = "SetYMin")
-        static ::Rect WithYMin(const ::Rect& r, float v);
+        static ::Rectf WithYMin(const ::Rectf& r, float v);
         ZFUNCTION(Name = "SetYMax")
-        static ::Rect WithYMax(const ::Rect& r, float v);
+        static ::Rectf WithYMax(const ::Rectf& r, float v);
 
         /// `rect.Set(x, y, width, height)` 的非破坏形式。
         ZFUNCTION(Name = "Set")
-        static ::Rect WithLayout(const ::Rect& r, float x, float y, float width, float height);
+        static ::Rectf WithLayout(const ::Rectf& r, float x, float y, float width, float height);
 
         /// `rect.min = ...` / `rect.max = ...`：挪对应的角，对角不动。
         ZFUNCTION(Name = "SetMin")
-        static ::Rect WithMin(const ::Rect& r, const Vector2& min);
+        static ::Rectf WithMin(const ::Rectf& r, const Vector2& min);
         ZFUNCTION(Name = "SetMax")
-        static ::Rect WithMax(const ::Rect& r, const Vector2& max);
+        static ::Rectf WithMax(const ::Rectf& r, const Vector2& max);
 
         /// `rect.size = ...`：改 width / height，**x / y 不动**（从左下往右上长）。
         ZFUNCTION(Name = "SetSize")
-        static ::Rect WithSize(const ::Rect& r, const Vector2& size);
+        static ::Rectf WithSize(const ::Rectf& r, const Vector2& size);
 
         /// `rect.position = ...`：平移（尺寸不变）。
         ZFUNCTION(Name = "SetPosition")
-        static ::Rect WithPosition(const ::Rect& r, const Vector2& position);
+        static ::Rectf WithPosition(const ::Rectf& r, const Vector2& position);
 
         /// `rect.center = ...`：平移，使几何中心落在 `center`（尺寸不变）。
         ZFUNCTION(Name = "SetCenter")
-        static ::Rect WithCenter(const ::Rect& r, const Vector2& center);
+        static ::Rectf WithCenter(const ::Rectf& r, const Vector2& center);
 
         // ---- 查询 --------------------------------------------------------
 
         /// Unity 的 `rect.Contains(point)`。⚠️ **半开区间** `[min, max)` —— 右
         /// 边和上边**不算**在内。这与 `Bounds.Contains`（闭区间）相反。
         ZFUNCTION(Name = "Contains")
-        static bool ContainsPoint(const ::Rect& r, const Vector2& point);
+        static bool ContainsPoint(const ::Rectf& r, const Vector2& point);
 
         /// 分量形式（`rect.Contains(x, y)`）。Unity 没有这个重载 —— 导出是因为
         /// 绑定表按脚本名索引，同名重载后者会覆盖前者，所以分量版只能另起名字。
         ZFUNCTION(Name = "ContainsXY")
-        static bool ContainsXY(const ::Rect& r, float x, float y);
+        static bool ContainsXY(const ::Rectf& r, float x, float y);
 
         /// Unity 的 `rect.Overlaps(other)`。⚠️ 严格不等号：只共享一条边**不算**
         /// 相交（返回 false）。
         ZFUNCTION()
-        static bool Overlaps(const ::Rect& a, const ::Rect& b);
+        static bool Overlaps(const ::Rectf& a, const ::Rectf& b);
 
         // ---- 工具 --------------------------------------------------------
 
         /// Unity 的 `Rect.OrderMinMax(r)`：把负的 width / height 翻正（min/max 不变，
         /// 即"两条边"不动、x/y 挪到 min）。
         ZFUNCTION()
-        static ::Rect OrderMinMax(const ::Rect& r);
+        static ::Rectf OrderMinMax(const ::Rectf& r);
 
         /// Unity 的 `Rect.PointToNormalized(r, p)`：矩形内的点 → 归一化坐标
         /// （左下 `(0,0)`、右上 `(1,1)`）。矩形外**不夹取**，会超出 0..1。
         ZFUNCTION()
-        static Vector2 PointToNormalized(const ::Rect& r, const Vector2& p);
+        static Vector2 PointToNormalized(const ::Rectf& r, const Vector2& p);
 
         /// Unity 的 `Rect.NormalizedToPoint(r, uv)`：归一化坐标 → 矩形内的点。
         /// 这是上面那个的逆（`NormalizedToPoint(r, PointToNormalized(r, p)) == p`）。
         ZFUNCTION()
-        static Vector2 NormalizedToPoint(const ::Rect& r, const Vector2& uv);
+        static Vector2 NormalizedToPoint(const ::Rectf& r, const Vector2& uv);
 
         ZFUNCTION()
-        static eastl::string ToString(const ::Rect& r);
+        static eastl::string ToString(const ::Rectf& r);
     };
 
     /// Unity 的 `UnityEngine.RectInt`（int）静态面。
