@@ -267,6 +267,30 @@ set(CPACK_INSTALL_CMAKE_PROJECTS
 
 但**真实 dispatch 仍未执行**：本机没有 `gh` CLI、`GITHUB_TOKEN` / `GH_TOKEN` / `GITHUB_PAT` 全未设置、`~/.config/gh/hosts.yml` 不存在；匿名 `GET /repos/zentia/ZEngine/actions/workflows` 返回 0 个 workflow，匿名 `POST .../packaged_player_e2e.yml/dispatches` 返回 `HTTP 403`——认证后才可见 / 可触发。要跑一次需在 Actions 页面手动 dispatch，或提供具备 `actions:write` 的 token。在此之前 runner 的 DX12 / WARP 结论一律不算已验证，push / PR 门不放开。
 
+### 首次真实 runner 运行（2026-11-05 10:09）
+
+用户在 Actions 页面触发后拿到第一段失败日志：`./build_windows.bat debug` 在 configure 阶段报
+`CMake Error at CMakeLists.txt:3 (project): Generator Visual Studio 17 2022 could not find any instance of Visual Studio.`
+日志里同时有 `[INFO] Found Visual Studio` —— 这是**假绿**：`zbuild.py::check_requirements()` 当时只检查
+`C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe` 文件存在，不验证 VS2022 实例或 MSVC 工具链。
+
+根因：`windows-latest` 在 2026 年已迁移到 Windows Server 2025 / **Visual Studio 2026** 镜像
+（`windows-2025-vs2026`），而 `presets/windows.json` 的 `windows_visual_studio` 预设固定
+`generator: "Visual Studio 17 2022"`，CMake 4.4.5 因此找不到任何 17.x 实例。`windows-2022` 镜像仍预装
+VS2022 Enterprise 17.14 + MSVC C++ 工作负载。
+
+修复（本轮）：
+- `packaged_player_e2e.yml` 与 `build_windows.yml` 的 `runs-on` 由 `windows-latest` 改为 `windows-2022`；
+- 主链新增 `Verify Visual Studio 2022 toolchain` 步骤，用 vswhere 打印全部实例并在缺 17.x 时 fail fast；
+- `zbuild.py` 的 VS 检查改为查询 `[17.0,18.0)` + `VC.Tools.x86.x64`，打印真实版本，查不到给明确警告
+  （仍是警告，不阻断 Ninja / 其它 preset）。本机实测输出
+  `Found Visual Studio 2022 with MSVC C++ tools: Visual Studio Professional 2022`，`check_requirements()` 返回 `True`；
+- 两个 workflow 的 YAML 已用 PyYAML 真解析验证（`windows-2022` / 6 steps / 诊断步骤 13 行 pwsh）。
+
+**runner 的 DX12 / WARP 仍未验证**：这次连编译都没走到。修复需推送后再 dispatch 一次才能判断，
+push / PR 门继续关着。另外 `smoke_tests.yml`、`smoke_tests_windows_vulkan.yml`、`agentkit*.yml` 仍用
+`windows-latest`，但它们不固定 VS generator，是否受影响需各自实跑确认。
+
 ## 剩余边界
 
 - **缺陷 #7 / #9 已修**（第三轮）。剩余的是下面这些，不是发布布局本身的缺口。

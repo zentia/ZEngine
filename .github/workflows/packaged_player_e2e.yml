@@ -28,9 +28,13 @@ name: Packaged player E2E (Windows)
 #   现在 61 个文件 / 53 DLL / 3 bundle，本地 20/20 全绿。
 #   CPack 也已收敛到同一 component：ZIP 55 文件（骨架）/ 61 文件（含项目），
 #   解压后直接启动可跑 OnUpdate；改回 ALL 会因中文文档名无法转 CP437 而打包失败。
-#   本 workflow 已在默认分支（2026-11-05 推送），但尚未在 runner 上真实触发过：
-#   本机没有 gh CLI / GitHub token，匿名 dispatch 返回 403。需要在 Actions 页面
-#   手动触发，或提供具备 actions:write 的 token。见 doc/PACKAGED_PLAYER_E2E.md。
+#   本 workflow 已在默认分支（2026-11-05 推送），并在 runner 上真实跑过一次：
+#   第一步 `./build_windows.bat debug` 即失败于 `CMake Error at CMakeLists.txt:3
+#   (project): Generator Visual Studio 17 2022 could not find any instance of
+#   Visual Studio.`。根因是 windows-latest 已迁到 Windows Server 2025 / VS2026
+#   镜像，而 preset 固定 VS2022；已 pin runs-on: windows-2022 并加 VS 实例诊断。
+#   修复后仍需再 dispatch 一次才能判断 runner 的 DX12 / WARP。
+#   （本机无 gh CLI / token，匿名 dispatch 返回 403；触发需在 Actions 页面手动。）
 #
 # 注意：build_windows.bat 默认只构建 ZEditor，ZGame 依赖的 ZPlayer 库必须
 # 单独构建，否则链接期找不到 PlayerShell 的符号。
@@ -49,12 +53,38 @@ on:
 
 jobs:
   packaged-player:
-    runs-on: windows-latest
+    # 2026-11-05 首次真实 dispatch 失败于 `CMake Error at CMakeLists.txt:3
+    # (project): Generator Visual Studio 17 2022 could not find any instance of
+    # Visual Studio.`：windows-latest 已迁到 Windows Server 2025 / VS2026 镜像，
+    # 而 presets/windows.json 的 windows_visual_studio 预设固定 generator
+    # "Visual Studio 17 2022"。windows-2022 仍预装 VS2022 Enterprise + MSVC
+    # C++ 工作负载。不要再改回浮动的 windows-latest。
+    runs-on: windows-2022
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
+
+      # Fail fast with actual evidence if the image ever drifts again.
+      # zbuild.py's old "Found Visual Studio" only checked that vswhere.exe
+      # exists -- a VS2026-only image passes that check and still has no VS2022.
+      - name: Verify Visual Studio 2022 toolchain
+        shell: pwsh
+        run: |
+          $installer = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          if (-not (Test-Path $installer)) { throw "vswhere.exe not found at $installer" }
+          $raw = & $installer -all -prerelease -format json -nologo
+          if (-not $raw) { throw "vswhere returned no instances" }
+          $instances = $raw | ConvertFrom-Json
+          $instances | Select-Object displayName, installationVersion, installationPath |
+            Format-Table -AutoSize | Out-String | Write-Output
+          $vs2022 = $instances | Where-Object {
+            $_.installationVersion -like "17.*" -and $_.installationPath
+          }
+          if (-not $vs2022) {
+            throw "No Visual Studio 2022 instance found; windows_visual_studio preset needs generator 'Visual Studio 17 2022'. Keep runs-on: windows-2022."
+          }
 
       - name: Build ZEditor (Debug, DX12 only)
         run: ./build_windows.bat debug

@@ -8,7 +8,12 @@ on:
 
 jobs:
   build:
-    runs-on: windows-latest
+    # build_windows.bat uses the windows_visual_studio preset, which pins
+    # generator "Visual Studio 17 2022". windows-latest moved to the Windows
+    # Server 2025 / VS2026 image in 2026 and CMake fails at project() with
+    # "could not find any instance of Visual Studio". windows-2022 still ships
+    # VS2022 Enterprise with the MSVC C++ workload.
+    runs-on: windows-2022
     timeout-minutes: 120
     strategy:
       matrix:

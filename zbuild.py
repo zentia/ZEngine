@@ -162,12 +162,38 @@ class BuildSystem:
         
         # Check compiler
         if self.is_windows:
-            # Check for Visual Studio
+            # Old check only tested whether the *Installer helper* exists. That
+            # is a false green: a VS2026-only image still ships vswhere.exe,
+            # while the windows_visual_studio preset pins generator
+            # "Visual Studio 17 2022" and CMake then fails at project() with
+            # "could not find any instance of Visual Studio".
+            # 2026-11-05 CI failure: windows-latest now points at the Windows
+            # Server 2025 / VS2026 image; workflows must pin runs-on: windows-2022.
+            # This stays a WARNING (not a hard failure) so Ninja / other presets
+            # keep working on machines without a VS2022 instance.
             vs_where = Path(r"C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe")
+            vs2022 = None
             if vs_where.exists():
-                print_info("Found Visual Studio")
+                try:
+                    probe = subprocess.run(
+                        [str(vs_where), "-version", "[17.0,18.0)", "-products", "*",
+                         "-requires", "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
+                         "-property", "displayName", "-nologo"],
+                        capture_output=True, text=True, timeout=15,
+                    )
+                    if probe.returncode == 0 and probe.stdout.strip():
+                        vs2022 = probe.stdout.strip().splitlines()[0]
+                except (OSError, subprocess.TimeoutExpired):
+                    pass
+            if vs2022:
+                print_info(f"Found Visual Studio 2022 with MSVC C++ tools: {vs2022}")
             else:
-                print_warning("Visual Studio may not be installed")
+                print_warning(
+                    "No Visual Studio 2022 instance with MSVC C++ tools found. "
+                    "Generator 'Visual Studio 17 2022' (windows_visual_studio preset) "
+                    "will fail: GitHub Actions windows-latest now ships VS2026 -- "
+                    "pin runs-on: windows-2022."
+                )
         elif self.is_linux or self.is_macos:
             clang = self._check_command("clang++", "--version")
             if clang:
