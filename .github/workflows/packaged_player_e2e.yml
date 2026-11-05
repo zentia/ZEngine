@@ -28,8 +28,9 @@ name: Packaged player E2E (Windows)
 #   现在 61 个文件 / 53 DLL / 3 bundle，本地 20/20 全绿。
 #   CPack 也已收敛到同一 component：ZIP 55 文件（骨架）/ 61 文件（含项目），
 #   解压后直接启动可跑 OnUpdate；改回 ALL 会因中文文档名无法转 CP437 而打包失败。
-#   本 workflow 尚未在 runner 上真实触发过：文件未上 origin/main，且本机没有
-#   gh CLI / GitHub token 能调 workflow_dispatch。见 doc/PACKAGED_PLAYER_E2E.md。
+#   本 workflow 已在默认分支（2026-11-05 推送），但尚未在 runner 上真实触发过：
+#   本机没有 gh CLI / GitHub token，匿名 dispatch 返回 403。需要在 Actions 页面
+#   手动触发，或提供具备 actions:write 的 token。见 doc/PACKAGED_PLAYER_E2E.md。
 #
 # 注意：build_windows.bat 默认只构建 ZEditor，ZGame 依赖的 ZPlayer 库必须
 # 单独构建，否则链接期找不到 PlayerShell 的符号。
