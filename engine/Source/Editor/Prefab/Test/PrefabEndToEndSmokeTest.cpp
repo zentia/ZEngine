@@ -59,6 +59,13 @@
 //      only it used leave the cooked scene; the cooked scene loads with the
 //      overridden values and binds no instance. Plus StripObjectsFromGraph on a
 //      hand-written graph: external renumbering and dangling-reference nulling
+//   P26 the Inspector authoring loop as ONE chain: edit a field through
+//      SyncFieldOverride -> per-row Apply -> Apply All (source .prefab written
+//      with stable fileIDs, the other instance merged) -> Level::save -> reopen
+//      via LoadObjectGraph -> both instances rebound with the applied values,
+//      the un-applied override still revertable. On native builds it also runs
+//      the full Level::load(url) path (PhysicsScene included), which used to be
+//      the unverified item in PrefabSystem_Design.md's acceptance notes.
 //
 // Standalone main(); links ZRuntime plus the Editor/Prefab TUs (which are not
 // in libZRuntime). Run headless on the web build with:
@@ -95,6 +102,7 @@
 #include "Runtime/Function/Framework/Level/Level.h"
 #include "Runtime/Function/Framework/World/WorldManager.h"
 #include "Runtime/Function/Particle/ParticleManager.h"
+#include "Runtime/Function/Physics/PhysicsManager.h"
 #include "Runtime/Function/Render/RenderSystem.h"
 #include "Runtime/Function/Framework/Component/Transform/Transform.h"
 #include "Runtime/RegisterRuntime.h"
@@ -3161,6 +3169,191 @@ static void scenario_P25_plain_structure_undo_after_apply()
     std::filesystem::remove(path, ec);
 }
 
+// ---- P26: the authoring loop the Inspector actually drives -----------------------
+//
+// P17 covers the override MODEL and P7 covers a scene round trip, but neither
+// connects the two: nothing drives "Inspector edits a field -> hit Apply ->
+// save the scene -> reopen it" as one continuous chain. P26 closes that gap.
+// It calls the same entry points as ZSlateInspectorWindow.cpp (766/879:
+// SyncFieldOverride after a field commit; 3426/3377: the per-row Apply and
+// Apply All buttons), then Level::save, then a real reopen.
+static void scenario_P26_inspector_apply_scene_reopen()
+{
+    std::fprintf(stderr, "[P26] Inspector edit -> Apply -> Level::save -> reopen\n");
+    namespace M = PrefabOverrideModel;
+    std::error_code ec;
+    const std::filesystem::path prefab = "p26_source.prefab";
+    const std::filesystem::path scene = "p26_level.scene";
+    const std::filesystem::path fresh = "p26_source_fresh.prefab";
+    std::filesystem::remove(prefab, ec);
+    std::filesystem::remove(scene, ec);
+    std::filesystem::remove(fresh, ec);
+
+    ObjectManager* om = GET_SYSTEM(ObjectManager);
+    GameObject* root = MakeGameObject(om, "P26Root");
+    GameObject* child = MakeGameObject(om, "P26Child");
+    if (root == nullptr || child == nullptr)
+    {
+        Check(false, "P26", "authoring failed");
+        return;
+    }
+    TransformOf(child)->SetParent(TransformOf(root), false);
+    Check(PrefabUtility::SaveAsPrefabAsset(root, prefab), "P26", "saving the source prefab failed");
+    const std::vector<std::string> ids_before = FileIDsOf(prefab);
+
+    PrefabSceneBinding::Install();
+    Level level;
+    PrefabInstance* a = PrefabSceneBinding::InstantiateIntoLevel(level, prefab);
+    PrefabInstance* b = PrefabSceneBinding::InstantiateIntoLevel(level, prefab);
+    if (a == nullptr || b == nullptr)
+    {
+        Check(false, "P26", "InstantiateIntoLevel failed");
+        PrefabSceneBinding::Uninstall();
+        return;
+    }
+    Transform* ta = TransformOf(a->GetRootGameObject());
+    Transform* tb = TransformOf(b->GetRootGameObject());
+    if (ta == nullptr || tb == nullptr)
+    {
+        Check(false, "P26", "instance roots need a Transform");
+        PrefabSceneBinding::Uninstall();
+        return;
+    }
+
+    // ---- 1. Inspector field commit (SyncFieldOverride, the real Inspector entry) ----
+    ta->SetLocalScale(Vector3(5.0f, 6.0f, 1.0f));
+    Check(M::SyncFieldOverride(a, ta, "m_LocalScale") == 2, "P26/edit",
+          "editing scale.x/.y should record two leaf overrides");
+    tb->SetLocalScale(Vector3(1.0f, 1.0f, 9.0f));
+    Check(M::SyncFieldOverride(b, tb, "m_LocalScale") == 1, "P26/edit",
+          "the second instance keeps its own override");
+
+    const std::vector<M::OverrideRow> rows = M::ListOverrides(a);
+    Check(rows.size() == 2, "P26/rows", "the Inspector should list 2 override rows");
+    bool all_applicable = !rows.empty();
+    for (const M::OverrideRow& r : rows)
+        all_applicable = all_applicable && r.can_apply && r.kind == M::OverrideRow::Kind::Property;
+    Check(all_applicable, "P26/rows", "every property row must expose the Apply button");
+
+    // ---- 2. the per-row "Apply" button, fed by the row itself ----
+    const M::OverrideRow* xrow = nullptr;
+    for (const M::OverrideRow& r : rows)
+        if (r.property_path == eastl::string("m_LocalScale.x"))
+            xrow = &r;
+    Check(xrow != nullptr, "P26/applyrow", "the m_LocalScale.x row is missing");
+    if (xrow == nullptr)
+    {
+        PrefabSceneBinding::Uninstall();
+        return;
+    }
+    const M::ApplyReport one = M::ApplyField(&level, a, static_cast<Object*>(xrow->target), xrow->property_path);
+    Check(one.applied == 1 && one.saved, "P26/applyrow", "single-row Apply did not write the source");
+    Check(a->GetModifications().size() == 1, "P26/applyrow", "Apply must remove only the applied override");
+    Check(Near(tb->GetLocalScale().x, 5.0f) && Near(tb->GetLocalScale().z, 9.0f), "P26/applyrow",
+          "the other instance must pick up the new source value and keep its own override");
+
+    // ---- 3. the "Apply All" button ----
+    const M::ApplyReport all = M::ApplyAll(&level, a);
+    Check(all.applied == 1 && all.saved, "P26/applyall", "Apply All did not commit the remaining override");
+    Check(a->GetModifications().empty(), "P26/applyall", "Apply All must clear the override list");
+    Check(Near(tb->GetLocalScale().y, 6.0f) && b->GetModifications().size() == 1, "P26/applyall",
+          "the other instance must merge the new source scale and keep its own override");
+
+    // ---- 4. the source file on disk really changed, fileIDs unchanged ----
+    Check(FileIDsOf(prefab) == ids_before, "P26/disk", "Apply renumbered the source fileIDs");
+    std::filesystem::copy_file(prefab, fresh, std::filesystem::copy_options::overwrite_existing, ec);
+    {
+        std::vector<GameObject*> gos;
+        PrefabAsset* disk = PrefabUtility::LoadPrefabAsset(fresh, &gos);
+        Transform* dtc = disk != nullptr ? TransformOf(disk->GetRootGameObject()) : nullptr;
+        Check(dtc != nullptr && Near(dtc->GetLocalScale().x, 5.0f) && Near(dtc->GetLocalScale().y, 6.0f),
+              "P26/disk", "the .prefab on disk does not carry the applied scale");
+    }
+
+    // ---- 5. save the scene ----
+    level.setLevelResUrl(AbsoluteUrl(scene));
+    Check(level.save(), "P26/save", "Level::save failed");
+    Check(!level.IsDirty(), "P26/save", "a successful save must clear the dirty flag");
+    Check(ReadText(scene).find("PrefabInstance") != std::string::npos, "P26/save",
+          "the scene does not carry the PrefabInstances");
+
+    // ---- 6. reopen through the object graph (native + web tracks) ----
+    Level reopened;
+    Check(LoadLevel(reopened, scene, true), "P26/reopen", "reading the saved scene back failed");
+    {
+        const std::vector<PrefabInstance*> bound = PrefabSceneBinding::GetInstances(reopened);
+        Check(bound.size() == 2, "P26/reopen", "both PrefabInstances must be rebound after reopen");
+        PrefabInstance* a_back = nullptr;
+        PrefabInstance* b_back = nullptr;
+        for (PrefabInstance* inst : bound)
+        {
+            Transform* tc = TransformOf(inst->GetRootGameObject());
+            if (tc != nullptr && Near(tc->GetLocalScale().z, 9.0f))
+                b_back = inst;
+            else
+                a_back = inst;
+        }
+        Check(a_back != nullptr && b_back != nullptr, "P26/reopen", "could not identify the two instances");
+        if (a_back != nullptr)
+        {
+            Transform* tc = TransformOf(a_back->GetRootGameObject());
+            Check(tc != nullptr && Near(tc->GetLocalScale().x, 5.0f) && Near(tc->GetLocalScale().y, 6.0f),
+                  "P26/reopen", "the applied scale did not survive the scene round trip");
+            Check(a_back->GetModifications().empty(), "P26/reopen",
+                  "an applied instance must reopen with an empty override list");
+            Check(!a_back->GetSourcePrefab().IsNull(), "P26/reopen", "the source prefab link was lost");
+        }
+        if (b_back != nullptr)
+        {
+            Transform* tc = TransformOf(b_back->GetRootGameObject());
+            Check(tc != nullptr && Near(tc->GetLocalScale().x, 5.0f) && Near(tc->GetLocalScale().y, 6.0f) &&
+                      Near(tc->GetLocalScale().z, 9.0f),
+                  "P26/reopen", "the other instance's merged + overridden scale did not survive");
+            Check(b_back->GetModifications().size() == 1, "P26/reopen",
+                  "the other instance's own override was lost on reopen");
+            Check(PrefabUtilityEditor::Revert(b_back) == 1, "P26/reopen",
+                  "Revert after reopen must still reach the source prefab");
+            Check(tc != nullptr && Near(tc->GetLocalScale().z, 1.0f), "P26/reopen",
+                  "Revert after reopen did not pull the source scale.z");
+        }
+    }
+    reopened.Unload();
+
+    // ---- 7. the FULL Level::load(url) path, physics scene included ----
+    // doc/PrefabSystem_Design.md used to list this as unverified: a headless
+    // test had no PhysicsManager, so load() bailed at CreatePhysicsScene.
+    // main() now registers it on native builds; the Emscripten track has no
+    // Jolt job system and keeps using the object-graph reopen above.
+#if !defined(__EMSCRIPTEN__)
+    Level full;
+    const bool full_loaded = full.load(AbsoluteUrl(scene));
+    Check(full_loaded, "P26/full", "Level::load(url) failed even with PhysicsManager registered");
+    if (full_loaded)
+    {
+        const std::vector<PrefabInstance*> bound = PrefabSceneBinding::GetInstances(full);
+        Check(bound.size() == 2, "P26/full", "Level::load did not rebind the PrefabInstances");
+        bool applied_scale_found = false;
+        for (PrefabInstance* inst : bound)
+        {
+            Transform* tc = TransformOf(inst->GetRootGameObject());
+            applied_scale_found = applied_scale_found ||
+                                  (tc != nullptr && Near(tc->GetLocalScale().x, 5.0f) && Near(tc->GetLocalScale().y, 6.0f));
+        }
+        Check(applied_scale_found, "P26/full", "the applied scale is missing after Level::load(url)");
+        full.Unload();
+    }
+#else
+    std::fprintf(stderr, "  [P26/full] skipped on Emscripten: no Jolt job system, so Level::load(url)\n"
+                         "             cannot create a PhysicsScene; the object-graph reopen above is the\n"
+                         "             supported headless path.\n");
+#endif
+
+    PrefabSceneBinding::Uninstall();
+    std::filesystem::remove(prefab, ec);
+    std::filesystem::remove(scene, ec);
+    std::filesystem::remove(fresh, ec);
+}
+
 int main()
 {
     std::fprintf(stderr, "ZEngine prefab end-to-end smoke test\n====================================\n");
@@ -3169,6 +3362,12 @@ int main()
     // Prefab load / save go through GET_SYSTEM(AssetManager); RegisterCore() alone
     // does not provide one (RegisterPlatform() does in the real app).
     REGISTER_SYSTEM_AS(RuntimeAssetManager, AssetManager);
+    // P26 exercises the full Level::load(url), which needs PhysicsManager to
+    // create a PhysicsScene. Emscripten has no Jolt job system, so the web
+    // track keeps using LoadObjectGraph(..., false) only.
+#if !defined(__EMSCRIPTEN__)
+    REGISTER_SYSTEM(PhysicsManager);
+#endif
     if (!SystemRegistry::GetInstance().InitializeAll(false) || GET_SYSTEM(AssetManager) == nullptr ||
         GET_SYSTEM(ObjectManager) == nullptr)
     {
@@ -3201,12 +3400,16 @@ int main()
     scenario_P23_motor_controller_lifetime();
     scenario_P24_plain_structural_apply();
     scenario_P25_plain_structure_undo_after_apply();
+    scenario_P26_inspector_apply_scene_reopen();
 
     std::error_code ec;
     for (const auto& p : {kPrefabPath, kAppliedPath, kSceneBinaryPath, kSceneYamlPath, kLevelYamlPath, kLevelDeletedPath,
                           kLevelBinaryPath, kLazyPrefabPath, kYamlPrefabPath, kYamlLevelPath,
                           kYamlLevelBinaryPath, kLazyYamlPrefabPath, kCookSourcePath})
         std::filesystem::remove(p, ec);
+    // P26 owns its own fixtures; clean them here too in case a scenario bailed early.
+    for (const char* p : {"p26_source.prefab", "p26_level.scene", "p26_source_fresh.prefab"})
+        std::filesystem::remove(std::filesystem::path(p), ec);
 
     std::filesystem::remove_all("cooked", ec);
     SystemRegistry::GetInstance().ShutdownAll();

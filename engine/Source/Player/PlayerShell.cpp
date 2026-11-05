@@ -14,6 +14,7 @@
 
 #include "CommonPCH/pch.h"
 
+#include "Runtime/Application/Application.h"
 #include "Runtime/AssetBundle/AssetBundleManager.h"
 #include "Runtime/Core/Base/CrashHandler.h"
 #include "Runtime/Core/Base/SystemRegistry.h"
@@ -25,6 +26,7 @@
 #include "Runtime/Platform/Encoding/EncodingUtils.h"
 #include "Runtime/Project/ProjectInfo.h"
 #include "Runtime/RegisterRuntime.h"
+#include "Runtime/Scripting/ScriptRegistry.h"
 
 namespace
 {
@@ -97,6 +99,70 @@ namespace zengine::player
         }
     }
 
+    void ApplyStartupConsoleCommands(const std::vector<std::string>& commands)
+    {
+        if (commands.empty())
+        {
+            return;
+        }
+        ConsoleManager* console = GET_SYSTEM(ConsoleManager);
+        if (console == nullptr)
+        {
+            LOG_ERROR(ZEngine, "--cvar: ConsoleManager is not running; {} startup command(s) ignored",
+                      commands.size());
+            return;
+        }
+        // Same order as ZEditor::applyStartupConsoleVariables(): file first,
+        // command line second, so a --cvar always wins over the ini.
+        for (const std::string& command : commands)
+        {
+            if (!console->ExecuteString(command))
+            {
+                LOG_ERROR(ZEngine, "--cvar: '{}' was not applied", command);
+            }
+        }
+    }
+
+    bool PreparePackagedRuntime(const std::filesystem::path& working_dir)
+    {
+        // PR-PAK1 follow-up (defects #7 + #9). START_SYSTEM() initializes
+        // ParticleManager / RenderSystem / ScriptRegistry, and those read the
+        // engine-global configs, component JSON and script_registry.json
+        // through FileSystem::loadAssetJson(). That reader now prefers a
+        // mounted bundle -- but MountBuild() needs AssetManager to parse the
+        // .zasset manifest, so it CANNOT run before START_SYSTEM(); by the time
+        // it ran below, every global config had already been looked up (and,
+        // off the source tree, logged as missing).
+        //
+        // Mount the raw .zbundle files here WITHOUT a manifest: every bundle of
+        // a build lives in one Bundles/ directory, so MountDirectory() opens all
+        // of them and TryReadAssetBytes() can answer any early reader. The later
+        // MountBuild() loads the manifest for dependency metadata and is
+        // idempotent (MountBundleInternal() returns true for a mounted name).
+        auto* bundles = GET_SYSTEM(AssetBundleManager);
+        if (bundles == nullptr)
+        {
+            return false;
+        }
+
+        std::filesystem::path bundles_dir;
+        std::filesystem::path manifest_path;
+        if (!bundles->FindPackagedBuild(working_dir / "Build", bundles_dir, manifest_path))
+        {
+            return false;  // source-tree launch: no packaged content, nothing to prepare
+        }
+
+        const int mounted = bundles->MountDirectory(bundles_dir);  // no manifest yet
+        LOG_INFO(ZEngine, "ZPlayer: early-mounted {} bundle(s) before system startup", mounted);
+
+        // A packaged player carries NO .ts sources and NO compiled .js mirror;
+        // the registry JSON is shipped metadata and the modules live in
+        // scripts.zbundle. Without this, ScriptRegistry::rescan() clears the
+        // entire table during START_SYSTEM(). The editor never calls here.
+        ScriptRegistry::SetPackagedPlayerMode(true);
+        return true;
+    }
+
     void MountPackagedContent()
     {
         auto* bundles = GET_SYSTEM(AssetBundleManager);
@@ -118,6 +184,17 @@ namespace zengine::player
 
     bool OpenStartupLevel(const char* level_override)
     {
+        // A standalone player is ALWAYS in play mode. Today `g_isPlaying` is
+        // only set by the editor's Play button and by unit tests, while the
+        // edit-mode whitelist `g_editorTickComponentTypes` is populated only
+        // by ZEditor. Neither exists in a packaged player, so
+        // GameObject::shouldComponentTick() returned false for EVERY component:
+        // the render loop kept drawing frames but no Update / OnUpdate / physics
+        // behaviour ever ran. Seen 2026-11-05 while proving that a bundled
+        // TypeScriptComponent actually ticks. `g_isEditor` stays false here --
+        // see Application.h: only the editor sets it.
+        g_isPlaying = true;
+
         auto* game_engine = GET_SYSTEM(GameEngine);
         if (game_engine == nullptr)
         {
@@ -248,6 +325,13 @@ extern "C" ZPlayerResult ZPlayer_Boot(const ZPlayerBootDesc* desc)
         LOG_ERROR(ZEngine,
                   "ZPlayer: CommandSystem is not registered -- ProjectInfo will have no project");
     }
+
+    // Must precede START_SYSTEM(): ParticleManager / RenderSystem /
+    // ScriptRegistry read JSON assets during their Initialize(), and those
+    // reads now prefer a bundle. See PreparePackagedRuntime() for why this
+    // cannot be the full MountBuild() (the manifest needs an initialized
+    // AssetManager).
+    zengine::player::PreparePackagedRuntime(working_dir);
 
     START_SYSTEM();
 

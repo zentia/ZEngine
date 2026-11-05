@@ -10,6 +10,7 @@
 
 #include <cstdio>
 #include <filesystem>
+#include <string>
 
 struct WriteData;
 class FileSystemHandler;
@@ -28,28 +29,35 @@ public:
     std::vector<std::filesystem::path> GetFiles(const std::filesystem::path& directory);
 
     /**
+     * @brief Read an authored TEXT asset, preferring a mounted .zbundle.
+     *
+     * PR-PAK1 follow-up: every JSON/YAML loader in this header used to be a
+     * plain fopen(), so a packaged player could only find global configs,
+     * materials and skeletons by falling back to the developer's source tree.
+     * SerializedFile (binary .zasset) and AssetManager::ReadObjectsFromYaml()
+     * already ask AssetBundleManager first; this is the missing third reader.
+     * Bundle wins over disk by design (AGENTS.md 2.24, rule 3). Implemented
+     * out-of-line in FileSystem.cpp so this widely-included template header
+     * does not have to pull in AssetBundleManager.h.
+     *
+     * Returns false only when NO mounted bundle has the asset AND the file
+     * cannot be opened. An empty file / empty bundle entry is a valid read.
+     */
+    static bool ReadAssetText(const std::filesystem::path& asset_path, std::string& out_text);
+
+    /**
      * @brief Load asset from JSON file
      */
     template<typename AssetType>
     AssetType* loadAssetJson(const std::filesystem::path& asset_path) const
     {
-        // read json file to string
-        FILE* f = fopen(asset_path.string().c_str(), "rb");
-        if (!f)
+        // read json file to string (mounted bundle first, then disk)
+        std::string json_str;
+        if (!ReadAssetText(asset_path, json_str))
         {
             LOG_ERROR(ZFileSystem, "open file: {} failed!", asset_path.string());
             return nullptr;
         }
-        fseek(f, 0, SEEK_END);
-        long fsz = ftell(f);
-        std::string json_str;
-        if (fsz > 0)
-        {
-            json_str.resize(static_cast<size_t>(fsz));
-            fseek(f, 0, SEEK_SET);
-            fread(json_str.data(), 1, static_cast<size_t>(fsz), f);
-        }
-        fclose(f);
 
         // parse to json object and read to runtime res object
         //
@@ -80,22 +88,12 @@ public:
     template<typename T, typename... Args>
     T* loadAssetJson(const std::filesystem::path& asset_path, Args&&... args)
     {
-        FILE* f = fopen(asset_path.string().c_str(), "rb");
-        if (!f)
+        std::string json_str;
+        if (!ReadAssetText(asset_path, json_str))
         {
             LOG_ERROR(ZFileSystem, "open file: {} failed!", asset_path.string());
             return nullptr;
         }
-        fseek(f, 0, SEEK_END);
-        long fsz = ftell(f);
-        std::string json_str;
-        if (fsz > 0)
-        {
-            json_str.resize(static_cast<size_t>(fsz));
-            fseek(f, 0, SEEK_SET);
-            fread(json_str.data(), 1, static_cast<size_t>(fsz), f);
-        }
-        fclose(f);
 
         try
         {
@@ -118,22 +116,12 @@ public:
     template<typename T, typename... Args>
     bool LoadAssetByJson(T* obj, const std::filesystem::path& assetPath, Args&&... args)
     {
-        FILE* f = fopen(assetPath.string().c_str(), "rb");
-        if (!f)
+        std::string buffer;
+        if (!ReadAssetText(assetPath, buffer))
         {
             LOG_ERROR(ZFileSystem, "open file: {} failed!", assetPath.string());
             return false;
         }
-        fseek(f, 0, SEEK_END);
-        long fsz = ftell(f);
-        std::string buffer;
-        if (fsz > 0)
-        {
-            buffer.resize(static_cast<size_t>(fsz));
-            fseek(f, 0, SEEK_SET);
-            fread(buffer.data(), 1, static_cast<size_t>(fsz), f);
-        }
-        fclose(f);
 
         JSONRead reader(buffer.c_str(), TransferInstructionFlags::kNoTransferInstructionFlags);
         JSONUtility::DeserializedFromJSONRead(reader, *obj);
@@ -175,24 +163,12 @@ public:
     template<typename T, typename... Args>
     bool LoadAssetByYaml(T* obj, const std::filesystem::path& asset_path, Args&&... args)
     {
-        FILE* f = fopen(asset_path.string().c_str(), "rb");
-        if (!f)
+        std::string buffer;
+        if (!ReadAssetText(asset_path, buffer))
         {
             LOG_ERROR(ZFileSystem, "open file {} failed!", asset_path.string());
             return false;
         }
-
-        fseek(f, 0, SEEK_END);
-        const long file_size = ftell(f);
-        fseek(f, 0, SEEK_SET);
-        std::string buffer;
-        if (file_size > 0)
-        {
-            buffer.resize(static_cast<size_t>(file_size));
-            const size_t read_bytes = fread(buffer.data(), 1, static_cast<size_t>(file_size), f);
-            buffer.resize(read_bytes);
-        }
-        fclose(f);
 
         try
         {

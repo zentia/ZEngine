@@ -1,6 +1,7 @@
 #include "ScriptRegistry.h"
 
 #include "Runtime/Core/Base/EngineSystem.h"
+#include "Runtime/File/FileSystem.h"
 #include "Runtime/Platform/Encoding/EncodingUtils.h"
 #include "Runtime/Project/ProjectInfo.h"
 #include "Core/Log/LogSystem.h"
@@ -15,6 +16,18 @@
 #include <cstdint>
 #include <cstdio>
 #include <regex>
+
+bool ScriptRegistry::s_PackagedPlayerMode = false;
+
+void ScriptRegistry::SetPackagedPlayerMode(bool enabled)
+{
+    s_PackagedPlayerMode = enabled;
+}
+
+bool ScriptRegistry::IsPackagedPlayerMode()
+{
+    return s_PackagedPlayerMode;
+}
 
 namespace
 {
@@ -312,6 +325,19 @@ std::filesystem::path ScriptRegistry::GetRegistryFilePath() const
 
 void ScriptRegistry::rescan()
 {
+    // PR-PAK1 follow-up (defect #9). In a packaged player the registry was
+    // loaded from shipped metadata (see LoadFromDisk) and the entries point at
+    // compiled modules inside scripts.zbundle. There is deliberately no
+    // Scripts/ tree and no Intermediate/Scripts/*.js mirror. Running the disk
+    // reconciliation here would (a) clear m_ByGuid because Scripts/ is absent
+    // and (b) clear every m_CompiledRelPath in pass 4, so the module id needed
+    // by ScriptEnv::LoadModuleInternal() is gone and "no ScriptAsset for guid"
+    // is the only outcome. Editor keeps the full scan + HMR path below.
+    if (s_PackagedPlayerMode)
+    {
+        return;
+    }
+
     if (m_ProjectRoot.empty() || m_ScriptsRoot.empty())
     {
         return;
@@ -735,24 +761,23 @@ bool ScriptRegistry::LoadFromDisk()
     {
         return false;
     }
-    std::error_code ec;
-    if (!std::filesystem::exists(m_RegistryFile, ec))
-    {
-        return false;
-    }
 
-    FILE* f = fopen(m_RegistryFile.string().c_str(), "rb");
-    if (!f)
+    // PR-PAK1 follow-up (defect #9): an installed player has NO loose
+    // AssetRegistry/script_registry.json -- AssetBundleBuilder ships it inside
+    // the shared bundle as metadata. Use the same mounted-bundle-first reader
+    // as every other JSON asset; in the editor no bundle is mounted, so this
+    // is just the old fopen path. Deliberately NOT gated on
+    // std::filesystem::exists(): in a packaged install the file legitimately
+    // does not exist on disk at all.
+    std::string registry_json;
+    if (!FileSystem::ReadAssetText(m_RegistryFile, registry_json))
     {
         LOG_WARNING(ZScriptRegistry, "Cannot open registry file: {}", m_RegistryFile.generic_string());
         return false;
     }
 
-    char readBuffer[65536];
-    rapidjson::FileReadStream is(f, readBuffer, sizeof(readBuffer));
     rapidjson::Document doc;
-    doc.ParseStream(is);
-    fclose(f);
+    doc.Parse(registry_json.c_str());
     if (doc.HasParseError() || !doc.IsObject())
     {
         LOG_WARNING(ZScriptRegistry,

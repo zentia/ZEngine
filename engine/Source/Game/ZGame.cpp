@@ -5,10 +5,13 @@
 // RegisterGameRuntime() 注册（比 RegisterRuntime 多一个 GameEngine），
 // 主循环跑在 GameEngine::Run() 上。
 //
-// 用法：ZGame -p <path-to-.zproject> [--rhi dx12|vulkan]
+// 用法：ZGame -p <path-to-.zproject> [--rhi dx12|vulkan] [--cvar <assignment|command>]...
+//       `--cvar "exec.after 120 quit"` 是无人值守验证的标准退出方式。
 // =============================================================================
 
 #include <filesystem>
+#include <string>
+#include <vector>
 
 #ifdef _WIN32
     #include <ZAppShell/AppMain.h>  // CommandLine (wide argv, owns its memory)
@@ -33,6 +36,10 @@ namespace
         // ConsoleManager::ResolveStartupVariablesFile); wins over ZENGINE_CVAR_FILE.
         std::string cvar_file;
         bool has_cvar_file {false};
+        // `--cvar <assignment|console command>` (repeatable). ZEditor has had
+        // this since its startup-cvar work; the player needs it too so an
+        // unattended run can drive the VM and quit on its own after N frames.
+        std::vector<std::string> startup_cvars;
     };
 
     // Startup cvar application, packaged-content mounting and startup-level
@@ -92,6 +99,12 @@ namespace
                 ++i;
                 continue;
             }
+            if (arg == L"--cvar" && i + 1 < argc)
+            {
+                options.startup_cvars.push_back(WideToUtf8(argv[i + 1]));
+                ++i;
+                continue;
+            }
             if (arg == L"--cvar-file" && i + 1 < argc)
             {
                 options.cvar_file = WideToUtf8(argv[i + 1]);
@@ -135,6 +148,12 @@ namespace
             if ((arg == "--level" || arg == "-l") && i + 1 < argc)
             {
                 options.level_override = argv[i + 1];
+                ++i;
+                continue;
+            }
+            if (arg == "--cvar" && i + 1 < argc)
+            {
+                options.startup_cvars.emplace_back(argv[i + 1]);
                 ++i;
                 continue;
             }
@@ -211,8 +230,14 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int)
 
     // 游戏层：Runtime 全部系统 + GameEngine（后者会接管关卡里的角色）。
     RegisterGameRuntime(options.preferred_rhi);
+    // Must precede START_SYSTEM(): ParticleManager / RenderSystem /
+    // ScriptRegistry read JSON assets during their Initialize(), and those
+    // reads now prefer a mounted bundle. The full MountBuild() below still
+    // runs afterwards to load the manifest's dependency metadata.
+    zengine::player::PreparePackagedRuntime(working_dir);
     START_SYSTEM();
     zengine::player::ApplyStartupConsoleVariables(options.cvar_file.c_str(), options.has_cvar_file);
+    zengine::player::ApplyStartupConsoleCommands(options.startup_cvars);
 
     // Packaged content has to be mounted before anything opens an asset.
     zengine::player::MountPackagedContent();
@@ -279,8 +304,14 @@ int main(int argc, char** argv)
     }
 
     RegisterGameRuntime(options.preferred_rhi);
+    // Must precede START_SYSTEM(): ParticleManager / RenderSystem /
+    // ScriptRegistry read JSON assets during their Initialize(), and those
+    // reads now prefer a mounted bundle. The full MountBuild() below still
+    // runs afterwards to load the manifest's dependency metadata.
+    zengine::player::PreparePackagedRuntime(working_dir);
     START_SYSTEM();
     zengine::player::ApplyStartupConsoleVariables(options.cvar_file.c_str(), options.has_cvar_file);
+    zengine::player::ApplyStartupConsoleCommands(options.startup_cvars);
 
     // Packaged content has to be mounted before anything opens an asset.
     zengine::player::MountPackagedContent();

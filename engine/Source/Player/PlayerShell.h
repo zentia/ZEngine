@@ -180,15 +180,34 @@ ZPLAYER_API const char* ZPlayer_GetWritableDir(void);
 // AssetBundleManager / GameEngine，纯 C 宿主用不到。
 // =============================================================================
 #ifdef __cplusplus
+#include <filesystem>
+#include <string>
+#include <vector>
+
 namespace zengine::player
 {
     /// 应用启动 cvar 文件。必须在 START_SYSTEM() 之后 —— 所有 cvar 注册完才
     /// 加载得进去。cvar_file 为空表示用默认路径。
     void ApplyStartupConsoleVariables(const char* cvar_file, bool has_cvar_file);
 
+    /// 应用命令行 `--cvar <assignment|console command>`（可重复）。必须在
+    /// ApplyStartupConsoleVariables() 之后：文件先、命令行后，与 ZEditor 的
+    /// UE 顺序一致。ExecuteString 同时接受 `name=value` 与普通控制台命令，
+    /// 所以无人值守验证可以 `--cvar "exec.after 120 quit"` 让 player 自己退出，
+    /// 而不用外部 taskkill（那样日志来不及 flush，也拿不到真实退出码）。
+    void ApplyStartupConsoleCommands(const std::vector<std::string>& commands);
+
     /// 挂载 <project>/Build/<Platform>/Bundles 下的 .zbundle。
     /// 必须在打开启动关卡之前：关卡本身也是资源，晚挂载会让它按空目录解析。
     void MountPackagedContent();
+
+    /// START_SYSTEM() **之前** 的发布态准备：把 raw .zbundle 挂上（不读
+    /// manifest），并让 ScriptRegistry 进入「清单是包内元数据」模式。
+    /// 返回 true 表示找到了 packaged build；源码树启动返回 false。
+    /// 桌面 ZGame 的两个 main 分支与移动端 ZPlayer_Boot 都必须调用，否则
+    /// ParticleManager / RenderSystem / ScriptRegistry 在 Initialize() 里
+    /// 读 JSON 时包还没挂，会退回磁盘（发布目录里没有）而报缺失。
+    bool PreparePackagedRuntime(const std::filesystem::path& working_dir);
 
     /// 解析并打开启动关卡：level_override 优先，其次 .zproject 的 startup_level。
     /// 没配关卡不算失败（GameEngine 照常起来，只是没有角色可接管）。

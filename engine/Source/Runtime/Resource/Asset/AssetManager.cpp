@@ -1212,22 +1212,49 @@ bool AssetManager::ReadObjectsFromYaml(const std::filesystem::path& path, std::v
 {
     out.clear();
 
-    FILE* f = fopen(path.string().c_str(), "rb");
-    if (!f)
-    {
-        LOG_ERROR(ZAsset, "failed to open yaml asset for reading {}", path.generic_string());
-        return false;
-    }
-    fseek(f, 0, SEEK_END);
-    long fsz = ftell(f);
+    // PR-PAK1 follow-up: YAML levels used to bypass the bundle hook entirely.
+    // SerializedFile::InitializeRead() serves binary .zasset from a mounted
+    // .zbundle, but Level::load() -> ReadObjectsFromYaml() was a plain fopen,
+    // so a packaged player with no Assets/ tree could NEVER load a .scene --
+    // on a dev machine it silently read the source tree instead (GetFullPath
+    // resolves against the engine root first), which made every packaging
+    // smoke test look green. Ask the same registry before touching the disk.
+    // Bundle wins over disk by design (AGENTS.md 2.24, rule 3).
     std::string text;
-    if (fsz > 0)
+    bool from_bundle = false;
+    if (auto* bundles = GET_SYSTEM(AssetBundleManager))
     {
-        text.resize(static_cast<size_t>(fsz));
-        fseek(f, 0, SEEK_SET);
-        fread(text.data(), 1, static_cast<size_t>(fsz), f);
+        std::vector<uint8_t> bundle_bytes;
+        if (bundles->TryReadAssetBytes(path, bundle_bytes))
+        {
+            if (!bundle_bytes.empty())
+            {
+                text.assign(reinterpret_cast<const char*>(bundle_bytes.data()), bundle_bytes.size());
+            }
+            from_bundle = true;
+            LOG_INFO(ZPak, "ReadObjectsFromYaml: '{}' served from a mounted bundle ({} bytes)",
+                     path.generic_string(), bundle_bytes.size());
+        }
     }
-    fclose(f);
+
+    if (!from_bundle)
+    {
+        FILE* f = fopen(path.string().c_str(), "rb");
+        if (!f)
+        {
+            LOG_ERROR(ZAsset, "failed to open yaml asset for reading {}", path.generic_string());
+            return false;
+        }
+        fseek(f, 0, SEEK_END);
+        long fsz = ftell(f);
+        if (fsz > 0)
+        {
+            text.resize(static_cast<size_t>(fsz));
+            fseek(f, 0, SEEK_SET);
+            fread(text.data(), 1, static_cast<size_t>(fsz), f);
+        }
+        fclose(f);
+    }
 
     // Same reader hook as the binary ReadObject path: map an external
     // (guid/path, pathID) reference back to a runtime InstanceID (lazily).

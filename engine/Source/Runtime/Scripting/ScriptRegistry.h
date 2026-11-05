@@ -122,6 +122,18 @@ public:
     /// Editor tick: Flush debounced JSON when the quiet window elapsed.
     void TickDeferredSave();
 
+    // ---- Packaged-player mode (PR-PAK1, defect #9) ------------------------
+    //
+    // A packaged player ships the registry JSON as metadata inside a .zbundle
+    // and carries NO .ts source tree and NO Intermediate/Scripts/*.js mirror:
+    // the compiled modules themselves live in scripts.zbundle. In that layout
+    // rescan() sees an empty Scripts/ folder, clears the whole table and wipes
+    // m_CompiledRelPath, so TypeScriptComponent can no longer resolve a GUID.
+    // The player shell sets this once BEFORE START_SYSTEM(); the editor never
+    // does, so its cold scan + HMR behaviour is unchanged.
+    static void SetPackagedPlayerMode(bool enabled);
+    static bool IsPackagedPlayerMode();
+
 private:
     bool LoadFromDisk();
     bool SaveToDisk() const;
@@ -175,4 +187,6 @@ private:
     std::filesystem::path m_ScriptsRoot;
     std::filesystem::path m_IntermediateScriptsRoot;
     std::filesystem::path m_RegistryFile;
+
+    static bool s_PackagedPlayerMode;
 };

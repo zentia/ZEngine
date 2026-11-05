@@ -13,6 +13,7 @@
 #include "Runtime/Core/Base/Macro.h"
 #include "Runtime/Core/Memory/MemoryManager.h"
 #include "Runtime/Project/ProjectInfo.h"
+#include "Runtime/Resource/Config/ConfigManager.h"
 #include "Runtime/Resource/Asset/AssetManager.h"
 
 #include <algorithm>
@@ -148,14 +149,6 @@ AssetBundleBuildResult AssetBundleBuilder::Build(const AssetBundleBuildOptions& 
         return result;
     }
 
-    const std::filesystem::path content_root = project_info->GetProjectContent();
-    std::error_code ec;
-    if (content_root.empty() || !std::filesystem::exists(content_root, ec))
-    {
-        result.error = "project content directory does not exist: " + content_root.generic_string();
-        return result;
-    }
-
     // The whole dependency walk is AssetRegistry's job, and AssetRegistry only
     // exists behind the editor asset manager. A standalone player has no
     // registry, so a build can only be driven from the editor.
@@ -167,6 +160,25 @@ AssetBundleBuildResult AssetBundleBuilder::Build(const AssetBundleBuildOptions& 
     }
 
     AssetRegistry& registry = editor_asset_mgr->getAssetRegistry();
+
+    // Registry keys are relative to AssetRegistry::GetScanRoot(), which
+    // EditorAssetManager initialises with the PROJECT WORKING DIRECTORY, not
+    // with GetProjectContent(). EditorAssetManager::TryGetPathForGuid resolves
+    // an index entry as `scan_root / key`, and the player's
+    // ResolveExternalAssetPath resolves a relative asset against the project
+    // root the same way. Using GetProjectContent() here prefixed every key with
+    // the content dir a second time ("<project>/asset/asset/level/1-1.scene"),
+    // so almost every asset was skipped and the empty `shared` bundle was still
+    // declared as a dependency -> MountBundle failed on every player launch.
+    std::error_code ec;
+    const std::filesystem::path content_root =
+        registry.GetScanRoot().empty() ? project_info->GetProjectRoot() : registry.GetScanRoot();
+    if (content_root.empty() || !std::filesystem::exists(content_root, ec))
+    {
+        result.error = "project content directory does not exist: " + content_root.generic_string();
+        return result;
+    }
+
     if (registry.isScanning())
     {
         // Packing against a half-built index would silently omit assets, which
@@ -209,7 +221,30 @@ AssetBundleBuildResult AssetBundleBuilder::Build(const AssetBundleBuildOptions& 
         {
             for (const std::string& raw : registry.GetAssetsByType(asset_type))
             {
-                discovered.insert(NormaliseKey(raw));
+                const std::string key = NormaliseKey(raw);
+                // A hydrated AssetRegistry cache can still hold legacy ABSOLUTE
+                // keys (PIE scenes used to be indexed by full path). They are
+                // not registry-relative keys: packing them emits a duplicate
+                // bundle under a mangled name that a player can never address.
+                //
+                // The registry's scan root is the PROJECT root, so it also
+                // indexes Build/ and Intermediate/. Cooked scenes live in
+                // Intermediate/Cooked/<Platform>/ and are LevelRes too: left
+                // unfiltered, every build re-indexes its own output as a new
+                // root, producing `Intermediate_Cooked_Standalone_` * N bundle
+                // names that grow until Windows refuses to open the file
+                // ("cannot open bundle"). Those are build artefacts, never
+                // shippable roots -- cooked scene BYTES still enter a bundle
+                // as a dependency via the normal walk.
+                if (key.empty() || std::filesystem::path(key).is_absolute() ||
+                    key.rfind("Saved/", 0) == 0 ||
+                    key.rfind("Intermediate/", 0) == 0 ||
+                    key.rfind("Build/", 0) == 0)
+                {
+                    LOG_INFO(ZPak, "AssetBundleBuilder: skipped non-content root '{}'", key);
+                    continue;
+                }
+                discovered.insert(key);
             }
         }
         roots.assign(discovered.begin(), discovered.end());
@@ -397,6 +432,110 @@ AssetBundleBuildResult AssetBundleBuilder::Build(const AssetBundleBuildOptions& 
         bundles.erase(AssetBundles::kScriptBundleName);
     }
 
+    // ---- 4c. authored text assets the dependency graph cannot see ---------
+    // PR-PAK1 follow-up (defect #7). Two whole classes of JSON never reached a
+    // bundle, and FileSystem::loadAssetJson() used to be a plain fopen(), so a
+    // dev machine silently read them off the source tree while an installed
+    // player logged "open file ... failed" for every one of them:
+    //
+    //   (a) component references inside .scene / .object.json name their
+    //       *.material.json / *.skeleton.json / *.mesh.json by PATH STRING, not
+    //       by GUID PPtr. AssetRegistry::GetDependencies() only sees the latter,
+    //       so the walk can never reach them.
+    //   (b) engine-global configs (particle/rendering.global.json) are read by
+    //       ConfigManager from the ENGINE asset folder, which is outside the
+    //       project content root the registry scans entirely.
+    //
+    // Both are plain text and small, so ship them in the shared infrastructure
+    // bundle rather than trying to teach the GUID-based walk about strings.
+    std::unordered_set<std::string> already_planned;
+    for (const auto& [name, entries] : bundles)
+    {
+        for (const PlannedEntry& entry : entries)
+        {
+            already_planned.insert(entry.path);
+        }
+    }
+
+    std::size_t text_asset_count = 0;
+    auto addTextAsset = [&](const std::string& key, const std::filesystem::path& file) {
+        if (key.empty() || already_planned.count(key) != 0)
+        {
+            return;
+        }
+        std::error_code file_ec;
+        if (!std::filesystem::is_regular_file(file, file_ec) || file_ec)
+        {
+            return;
+        }
+
+        PlannedEntry entry;
+        entry.path = key;
+        entry.file = file;
+        entry.source = file;
+        // Not a registry asset: there is no GUID/type to stamp, exactly like a
+        // compiled script module. The path is the identity.
+        entry.type = "TextAsset";
+        bundles[kSharedBundleName].push_back(std::move(entry));
+        already_planned.insert(key);
+        ++text_asset_count;
+    };
+
+    {
+        std::error_code scan_ec;
+        if (std::filesystem::is_directory(content_root, scan_ec) && !scan_ec)
+        {
+            for (std::filesystem::recursive_directory_iterator it(content_root, scan_ec), end;
+                 !scan_ec && it != end; it.increment(scan_ec))
+            {
+                if (scan_ec || !it->is_regular_file(scan_ec) || scan_ec ||
+                    it->path().extension() != ".json")
+                {
+                    continue;
+                }
+                std::string key = it->path().lexically_relative(content_root).generic_string();
+                // Build output, cooked copies and editor scratch are not
+                // content. AssetRegistry/ is intentionally KEPT: the script
+                // registry JSON is shipped metadata in a packaged player, and
+                // ScriptRegistry::LoadFromDisk() now reads it from a bundle.
+                if (key.rfind("Build/", 0) == 0 || key.rfind("Intermediate/", 0) == 0 ||
+                    key.rfind("Saved/", 0) == 0)
+                {
+                    continue;
+                }
+                addTextAsset(std::move(key), it->path());
+            }
+        }
+    }
+
+    // Key them EXACTLY as ConfigManager spells the runtime URL
+    // ("asset/global/particle.global.json"), so FileSystem::ReadAssetText's
+    // absolute-vs-relative suffix match in AssetBundle::FindEntry hits.
+    if (auto* config = GET_SYSTEM(ConfigManager); config != nullptr)
+    {
+        const std::filesystem::path global_dir = config->GetAssetFolder() / "global";
+        std::error_code scan_ec;
+        if (std::filesystem::is_directory(global_dir, scan_ec) && !scan_ec)
+        {
+            for (std::filesystem::recursive_directory_iterator it(global_dir, scan_ec), end;
+                 !scan_ec && it != end; it.increment(scan_ec))
+            {
+                if (scan_ec || !it->is_regular_file(scan_ec) || scan_ec)
+                {
+                    continue;
+                }
+                const std::string rel = it->path().lexically_relative(global_dir).generic_string();
+                addTextAsset("asset/global/" + rel, it->path());
+            }
+        }
+    }
+
+    if (text_asset_count > 0)
+    {
+        LOG_INFO(ZPak, "AssetBundleBuilder: {} authored text asset(s) added to '{}'",
+                 text_asset_count, kSharedBundleName);
+    }
+
     // ---- 5. write (incrementally) ------------------------------------------
     // A bundle is rewritten only when its FINGERPRINT changed: the content hash
     // of every entry plus everything that decides how entries become bytes
@@ -440,6 +579,13 @@ AssetBundleBuildResult AssetBundleBuilder::Build(const AssetBundleBuildOptions& 
     infos.reserve(bundles.size());
     std::unordered_map<std::string, std::string> fingerprints;
     const bool has_scripts = bundles.find(AssetBundles::kScriptBundleName) != bundles.end();
+    // `shared_assets` is what the dependency graph *wanted* to share. Every
+    // entry can still be dropped by addAsset() when its source is unreadable,
+    // leaving no shared.zbundle on disk. Declaring that dependency anyway is a
+    // hard failure in MountBundle ("needs missing bundle 'shared'"), so gate on
+    // the entries that actually made it into the bundle, not on the wish list.
+    const auto shared_it = bundles.find(kSharedBundleName);
+    const bool has_shared = shared_it != bundles.end() && !shared_it->second.empty();
 
     // Sorted: the fingerprints below do not depend on iteration order, but the
     // log does, and a build whose "changed" set differs run to run is
@@ -465,7 +611,15 @@ AssetBundleBuildResult AssetBundleBuilder::Build(const AssetBundleBuildOptions& 
         // when none of its own bytes changed, because the dependency list is
         // part of what the manifest records for it.
         std::vector<std::string> dependencies;
-        if (name != kSharedBundleName && !shared_assets.empty())
+        // `shared` and `scripts` are infrastructure bundles: every root bundle
+        // depends on both, but neither may depend on the other. Letting them
+        // declare each other produces a dependency cycle, and MountBuild then
+        // reports "dependency cycle" and mounts NOTHING (0 bundle(s) mounted)
+        // while the player still boots happily off the source tree -- exactly
+        // the silent failure an end-to-end packaged-player run has to catch.
+        const bool is_infrastructure_bundle =
+            name == kSharedBundleName || name == AssetBundles::kScriptBundleName;
+        if (!is_infrastructure_bundle && has_shared)
         {
             dependencies.emplace_back(kSharedBundleName);
         }
@@ -473,7 +627,7 @@ AssetBundleBuildResult AssetBundleBuilder::Build(const AssetBundleBuildOptions& 
         // declared explicitly: mounting one level has to be enough to run the
         // behaviours hanging off it. (EnsureBundleMountedForAsset would also
         // find them, but only after the first module is already being loaded.)
-        if (name != AssetBundles::kScriptBundleName && has_scripts)
+        if (!is_infrastructure_bundle && has_scripts)
         {
             dependencies.emplace_back(AssetBundles::kScriptBundleName);
         }

@@ -1,0 +1,70 @@
+name: Packaged player E2E (Windows)
+
+# =============================================================================
+# 打包 -> 独立 Player -> 呈现帧 -> 自动退出，一条命令的端到端回归。
+#
+# 为什么单独一份 workflow、而且默认只手动触发
+# --------------------------------------------
+# 这条链要真的启动 ZEditor（打包需要 AssetRegistry，只能在编辑器里跑）和
+# ZGame（DX12 窗口 + 渲染线程）。GitHub-hosted Windows runner 没有可用的 GPU，
+# DX12 可能只能落到 WARP，甚至根本起不来窗口；在确认 runner 具备 DX12 之前
+# 把它挂到每次 push 上，只会制造与代码无关的红灯。所以：
+#
+#   * 现在：workflow_dispatch 手动触发，本地 / 自托管 DX12 runner 上跑。
+#   * 确认 runner 能起 DX12 后：把下面 push 段的注释去掉，它就是一条真正的
+#     回归门禁——任何一步坏了，这个 job 立刻变红。
+#
+# 本地实测（2026-11-05，E:/Engine/ZEngine，VS2022 Debug / DX12）：
+#   16 bundle(s) mounted，0 个 ZPak 错误；在一个没有 asset 源树、没有
+#   Intermediate/ 的隔离项目里，日志明确 `ReadObjectsFromYaml: ... served from
+#   a mounted bundle`、对象图 32 objects，10 帧后 quit，退出码 0，9/9 断言全绿。
+#   注意：曾经有过一次「0 bundle mounted 也照样加载关卡」的假绿，原因是 YAML
+#   读取绕过 bundle 钩子、回退到源码树；脚本现在把「字节来自 bundle」作为硬断言。
+#
+# 注意：build_windows.bat 默认只构建 ZEditor，ZGame 依赖的 ZPlayer 库必须
+# 单独构建，否则链接期找不到 PlayerShell 的符号。
+# =============================================================================
+on:
+  workflow_dispatch:
+    inputs:
+      frames:
+        description: 'Frames to run before the player quits'
+        required: false
+        default: '60'
+  # push:
+  #   branches: [main]
+  # pull_request:
+  #   branches: [main]
+
+jobs:
+  packaged-player:
+    runs-on: windows-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Build ZEditor (Debug, DX12 only)
+        run: ./build_windows.bat debug
+
+      - name: Build ZPlayer + ZGame
+        run: cmake --build build --config Debug --target ZRuntime ZPlayer ZGame --parallel 4
+
+      - name: Packaged player end-to-end
+        run: >
+          python scripts/verify_packaged_player_e2e.py
+          --config debug
+          --rhi dx12
+          --frames ${{ github.event.inputs.frames || '60' }}
+
+      # Stage ZGame.exe + DLLs into a fresh install directory that contains NO
+      # source assets at all (no .scene, no .ts, no .js, no global JSON, no
+      # loose registry JSON). Level, config, component JSON, script registry and
+      # the compiled module must all come from mounted bundles. Local: 18/18.
+      - name: Installed player + script OnUpdate end-to-end
+        run: >
+          python scripts/verify_player_install_e2e.py
+          --config debug
+          --rhi dx12
+          --frames ${{ github.event.inputs.frames || '60' }}

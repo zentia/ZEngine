@@ -1114,6 +1114,16 @@ bool ScriptEnv::LoadModuleInternal(const std::string& module_id, bool cache, pes
     if (auto* bundles = GET_SYSTEM(AssetBundleManager); bundles != nullptr)
     {
         have_source = bundles->TryReadScriptModule(module_id, raw);
+        if (have_source)
+        {
+            // PR-PAK1 follow-up (defect #9): the generic "module loaded from
+            // <Intermediate/Scripts/...js>" line only prints the module's
+            // nominal path, which made an installed player look like it had
+            // read a .js off disk even though no such file exists. State the
+            // actual byte source so a packaged run can assert on it.
+            LOG_INFO(ZPak, "LoadModule('{}'): {} bytes served from a mounted bundle",
+                     module_id, raw.size());
+        }
     }
 
     if (!have_source)

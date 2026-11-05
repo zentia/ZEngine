@@ -1,5 +1,6 @@
 #include "Runtime/File/FileSystem.h"
 
+#include "Runtime/AssetBundle/AssetBundleManager.h"
 #include "Runtime/BaseClasses/Object.h"
 #include "Runtime/BaseClasses/ObjectManager.h"
 #include "Runtime/Core/Base/EngineSystem.h"
@@ -37,6 +38,49 @@ FileSystem::FileSystem()
 {
     m_LocalFileSystem = MemoryManager::CreateObject<OS_FILE_SYSTEM_HANDLER>();
     m_DefaultFileSystem = m_LocalFileSystem;
+}
+
+bool FileSystem::ReadAssetText(const std::filesystem::path& asset_path, std::string& out_text)
+{
+    // PR-PAK1 follow-up (defect #7): the JSON/YAML readers in FileSystem.h are
+    // the last asset readers that used to go straight to fopen(). In an
+    // installed player the engine-global configs (particle/rendering) and the
+    // component-referenced *.material.json / *.skeleton.json only exist inside
+    // a .zbundle, so they were reported as "open file ... failed" -- while a
+    // dev machine silently read the source tree instead. Ask the mounted-bundle
+    // registry first, exactly like SerializedFile::InitializeRead() and
+    // AssetManager::ReadObjectsFromYaml(). In the editor no bundle is mounted,
+    // so this is a cheap miss and the disk path below stays the normal case.
+    if (auto* bundles = GET_SYSTEM(AssetBundleManager); bundles != nullptr)
+    {
+        std::vector<uint8_t> bytes;
+        if (bundles->TryReadAssetBytes(asset_path, bytes))
+        {
+            out_text.assign(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+            LOG_INFO(ZPak, "FileSystem: '{}' served from a mounted bundle ({} bytes)",
+                     asset_path.generic_string(), bytes.size());
+            return true;
+        }
+    }
+
+    FILE* f = fopen(asset_path.string().c_str(), "rb");
+    if (!f)
+    {
+        return false;
+    }
+
+    fseek(f, 0, SEEK_END);
+    const long size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    out_text.clear();
+    if (size > 0)
+    {
+        out_text.resize(static_cast<size_t>(size));
+        const size_t read_bytes = fread(out_text.data(), 1, static_cast<size_t>(size), f);
+        out_text.resize(read_bytes);
+    }
+    fclose(f);
+    return true;
 }
 
 std::vector<std::filesystem::path> FileSystem::GetFiles(const std::filesystem::path& directory)

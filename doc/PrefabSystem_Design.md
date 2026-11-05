@@ -689,7 +689,21 @@ public:
     undo/redo 永不销毁组件（被摘下的先停靠、回滚时再挂回）；**结构性 Apply 刻意不入撤销栈**——它改写磁盘上的资产，
     而资产编辑不在撤销栈范围内（与 Unity 一致）。
 
-**未验证**：编辑器里真的拖一个 Prefab 进场景、在 Inspector 上改值后 Apply、保存场景再打开（UI 链路本身是第 3 条，未接）。`Level::load(url)` 带物理场景的完整路径未在无头环境跑过（它与 `LoadObjectGraph` 的差别只在建物理场景）。**Inspector 的 ZSlate 渲染**（结构行的按钮、can_apply 的显隐）只过了 `-fsyntax-only`，没有上机看。
+**验证状态（2026-11-05，P26）**：`PrefabEndToEndSmokeTest` 新增 P26，把
+`SyncFieldOverride`（Inspector 字段提交，`ZSlateInspectorWindow.cpp:766/879`）→ 单行
+`ApplyField`（按钮 3426）→ `ApplyAll`（按钮 3377）→ `Level::save()` →
+`LoadObjectGraph` 重开 → 完整 `Level::load(url)` 串成一条链，实测
+**503 checks / 0 failures**（基线 473）。P26 断言：源 `.prefab` 写盘且 fileID 不变、
+另一实例 Merge 后保留自己的覆盖、重开后两个 PrefabInstance 重新绑定且指向活对象、
+已 Apply 的实例覆盖列表为空、未 Apply 的覆盖仍能 Revert 到源值。
+完整 `Level::load(url)` 之所以现在能跑，是测试 `main()` 在原生轨注册了
+`PhysicsManager`（此前 headless 没有它，`LoadObjectGraph(..., true)` 在
+`CreatePhysicsScene` 处直接返回 false）；Emscripten 轨没有 Jolt job system，
+条件编译跳过这一步，只跑对象图重开。
+
+**仍未上机**：ZSlate 的实际按钮渲染与鼠标操作——结构行的按钮、`can_apply` 的
+显隐、蓝色标签依旧只有 `-fsyntax-only`。P26 验证的是 Inspector 调用的那组
+**逻辑入口**，不是像素与交互；这部分仍需一次真实编辑器操作确认。
 
 
 ---
