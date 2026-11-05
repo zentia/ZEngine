@@ -21,6 +21,14 @@ name: Packaged player E2E (Windows)
 #   注意：曾经有过一次「0 bundle mounted 也照样加载关卡」的假绿，原因是 YAML
 #   读取绕过 bundle 钩子、回退到源码树；脚本现在把「字节来自 bundle」作为硬断言。
 #
+# 第四轮（2026-11-05）：安装目录不再由 Python 手工拷贝，而是真的跑
+#   `cmake --install build --config Debug --component ZGamePlayer --prefix <dir>`，
+#   ZENGINE_PLAYER_PROJECT 指向已打包项目。原先的 install 规则产出 1653 个文件、
+#   顶层 0 个 DLL（exe 在根、ZRuntimeShared.dll 在 bin/），Player 根本起不来；
+#   现在 61 个文件 / 53 DLL / 3 bundle，本地 20/20 全绿。
+#   本 workflow 尚未在 runner 上真实触发过：文件未上 origin/main，且本机没有
+#   gh CLI / GitHub token 能调 workflow_dispatch。见 doc/PACKAGED_PLAYER_E2E.md。
+#
 # 注意：build_windows.bat 默认只构建 ZEditor，ZGame 依赖的 ZPlayer 库必须
 # 单独构建，否则链接期找不到 PlayerShell 的符号。
 # =============================================================================
@@ -58,10 +66,13 @@ jobs:
           --rhi dx12
           --frames ${{ github.event.inputs.frames || '60' }}
 
-      # Stage ZGame.exe + DLLs into a fresh install directory that contains NO
-      # source assets at all (no .scene, no .ts, no .js, no global JSON, no
-      # loose registry JSON). Level, config, component JSON, script registry and
-      # the compiled module must all come from mounted bundles. Local: 18/18.
+      # The script now invokes the REAL installer (component ZGamePlayer) and
+      # asserts on its output, so an install-rule regression turns this job red.
+      # The install dir contains NO source assets at all (no .scene, no .ts, no
+      # .js, no global JSON, no loose registry JSON): level, config, component
+      # JSON, script registry and compiled module must all come from bundles.
+      # Requires the configured build tree (build_windows.bat runs configure).
+      # Local: 20/20; --stage-mode copy control: 18/18.
       - name: Installed player + script OnUpdate end-to-end
         run: >
           python scripts/verify_player_install_e2e.py

@@ -648,6 +648,71 @@ else()
   message(STATUS "Packaging: ZGame is not built on this platform; install rules skipped")
 endif()
 
+# =============================================================================
+# PR-PAK1 第三轮：可运行的独立 Player 安装布局（component `ZGamePlayer`）
+# -----------------------------------------------------------------------------
+# 上面的规则是 SDK 时代的布局。实测（2026-11-05, cmake --install --config Debug）
+# 得到 1653 个文件、顶层 0 个 DLL：ZGame.exe 装在 <prefix>/，ZRuntimeShared.dll
+# 却被 Runtime/CMakeLists.txt 装到 <prefix>/bin/，53 个第三方 DLL 一个都没装，
+# 同时整个 engine/asset（含 .scene 游戏内容）和全部公共头都被塞进包里。
+# 这样的 Player 起不来，也和第三轮「零源资产」的安装结论矛盾。
+#
+# 这里新增一个独立 component，产出与 scripts/verify_player_install_e2e.py
+# 同一份布局，且不改动任何既有 SDK 规则（它们保持 Unspecified component）：
+#
+#   cmake --install build --config Debug --component ZGamePlayer --prefix <dir>
+#   ZENGINE_PLAYER_PROJECT=<已 bundle.build 的项目> cmake --install ...
+#
+# 第二个用法把 <项目>/*.zproject 与 Build/Standalone/{manifest,Bundles} 平铺到
+# 安装根，得到完全自包含的目录。环境变量在 install 时求值，因为验证脚本的
+# 项目是运行时生成的，不该为它重新 configure。
+# =============================================================================
+set(ZGAME_PLAYER_COMPONENT "ZGamePlayer")
+
+if(TARGET ZGame)
+  install(TARGETS ZGame RUNTIME DESTINATION .
+          COMPONENT ${ZGAME_PLAYER_COMPONENT})
+  install(FILES "${ENGINE_ROOT_DIR}/${DEPLOY_CONFIG_DIR}/ZEditor.ini"
+          DESTINATION . COMPONENT ${ZGAME_PLAYER_COMPONENT})
+
+  # bin/<Config> 是构建期就齐备的运行时目录（Game/CMakeLists.txt 的
+  # POST_BUILD 会把 ZRuntimeShared.dll 拷到 exe 旁）。configure 时 DLL 可能还
+  # 不存在，所以只能在 install 时用 file(GLOB) 枚举，不能写成 install(FILES)。
+  install(CODE "
+    file(GLOB _zplayer_dlls \"${BINARY_ROOT_DIR}/$<CONFIG>/*.dll\")
+    if(NOT _zplayer_dlls)
+      message(FATAL_ERROR \"ZGamePlayer: no runtime DLLs in ${BINARY_ROOT_DIR}/$<CONFIG> -- build ZGame first\")
+    endif()
+    foreach(_zplayer_dll IN LISTS _zplayer_dlls)
+      file(COPY \"\${_zplayer_dll}\" DESTINATION \"\${CMAKE_INSTALL_PREFIX}\")
+    endforeach()
+    list(LENGTH _zplayer_dlls _zplayer_dll_count)
+    message(STATUS \"ZGamePlayer: \${_zplayer_dll_count} runtime DLL(s) installed\")
+  " COMPONENT ${ZGAME_PLAYER_COMPONENT})
+
+  # 可选：把一个已经 bundle.build 过的项目平铺进安装目录，得到零源资产的
+  # 自包含发布布局。不设置环境变量时只安装 Player 运行时骨架。
+  install(CODE "
+    set(_zplayer_project \"\$ENV{ZENGINE_PLAYER_PROJECT}\")
+    if(NOT _zplayer_project STREQUAL \"\")
+      if(NOT IS_DIRECTORY \"\${_zplayer_project}\")
+        message(FATAL_ERROR \"ZENGINE_PLAYER_PROJECT is not a directory: \${_zplayer_project}\")
+      endif()
+      file(GLOB _zplayer_projects \"\${_zplayer_project}/*.zproject\")
+      foreach(_zplayer_zproject IN LISTS _zplayer_projects)
+        file(COPY \"\${_zplayer_zproject}\" DESTINATION \"\${CMAKE_INSTALL_PREFIX}\")
+      endforeach()
+      if(NOT IS_DIRECTORY \"\${_zplayer_project}/Build/Standalone\")
+        message(FATAL_ERROR \"ZENGINE_PLAYER_PROJECT has no Build/Standalone output: \${_zplayer_project}\")
+      endif()
+      file(MAKE_DIRECTORY \"\${CMAKE_INSTALL_PREFIX}/Build/Standalone\")
+      file(COPY \"\${_zplayer_project}/Build/Standalone/\"
+           DESTINATION \"\${CMAKE_INSTALL_PREFIX}/Build/Standalone\")
+      message(STATUS \"ZGamePlayer: staged packaged project \${_zplayer_project}\")
+    endif()
+  " COMPONENT ${ZGAME_PLAYER_COMPONENT})
+endif()
+
 set(CPACK_PACKAGE_NAME "ZGame")
 set(CPACK_PACKAGE_VENDOR "ZEngine")
 if(NOT CPACK_PACKAGE_VERSION)

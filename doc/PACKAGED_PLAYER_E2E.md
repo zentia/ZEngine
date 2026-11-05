@@ -174,11 +174,68 @@ Quit requested + All systems shut down, EXIT=0
 - 真实 `1-1.scene` 这一轮不再出现 `30 render entities exist but none are visible` 与 `open file ... failed`，但仍有 30 条 `[E] [ZRender]`（DX12 debug layer 的 `closed command list` 24 条、compute shader / CBV 若干），属渲染侧既有欠账；没有像素证据，不据此宣称可见性已修好。
 - `.zbundle` 的 4c 段把项目根下所有 `.json` 都收进 `shared`，包括编辑器元数据；当前打包汇总从 42 asset 涨到 578 asset / ~5 MB（真实项目 `ZGameSmoke`），后续可按类型收窄。
 
+## 第四轮：把脚本 stage 换成正式安装产物（同日续）
+
+### 先纠正一个错误结论
+
+第二轮 / 第三轮都写着「本机没有 `cmake --install` 的 ZGame 规则（全仓 `install()` 只在 3rdparty 里）」——**这是错的**。`engine/CMakeLists.txt:618` 一直有 `install(TARGETS ZGame RUNTIME DESTINATION .)`，`engine/Source/Runtime/CMakeLists.txt:2129` 还有一整套 SDK 安装规则。当时只 grep 了 `engine/Source/Game/CMakeLists.txt` 就下了全仓结论。
+
+实测 `cmake --install build --config Debug --prefix <dir>` 的产物是**不可运行的**：
+
+| 现象 | 实测 |
+|---|---|
+| 顶层 DLL | **0 个**：`ZGame.exe` 在 `<prefix>/`，`ZRuntimeShared.dll` 被 Runtime 的规则装到 `<prefix>/bin/`，53 个第三方 DLL 一个都没装 |
+| 总文件数 | **1653**（含 Runtime 全部公共头、`lib/`、`share/`、`ZEnvironmentCollector/`） |
+| 游戏内容 | 装了 `engine/asset/` 整套，含 **3 个 `.scene`** |
+| 注释 | 仍写着「compiled JS under Intermediate/Scripts is still NOT packed into a bundle」，而 #9 已修 |
+
+所以不是「没有规则」，而是**规则停留在 SDK 时代，且和第三轮「零源资产」的结论直接冲突**。
+
+### 修法：独立 `ZGamePlayer` component
+
+不动任何既有 SDK 规则（它们保持 Unspecified component，其它会话与既有 CPack 用法不受影响），在 `engine/CMakeLists.txt` 新增一段：
+
+- `install(TARGETS ZGame ... COMPONENT ZGamePlayer)` + `install(FILES ZEditor.ini ... COMPONENT ZGamePlayer)`，两者都落在安装根。
+- **DLL 必须在 install 时枚举**：configure 时 `bin/<Config>/*.dll` 可能还不存在，所以不能用 `install(FILES)`；用 `install(CODE)` + `file(GLOB)` 从 `BINARY_ROOT_DIR/$<CONFIG>` 拷全部 53 个 DLL 到 `${CMAKE_INSTALL_PREFIX}`。生成的 `cmake_install.cmake` 里 `$<CONFIG>` 已展开成 Debug / Release / MinSizeRel / RelWithDebInfo 四个分支。
+- `ZENGINE_PLAYER_PROJECT` 环境变量**在 install 时求值**（写成 `\$ENV{...}`），把 `<项目>/*.zproject` 与 `Build/Standalone/{manifest,Bundles}` 平铺进安装根。验证脚本的项目是运行时生成的，不该为它重新 configure。
+- `verify_player_install_e2e.py` 默认改成真的调用这条命令（新增 `--stage-mode copy` 保留手工 stage 作为控制组），并新增两条断言检查 installer 的输出日志。安装规则一旦漂移，回归立刻转红。
+
+用法：
+
+```bash
+# 只装 Player 运行时骨架（55 个文件）
+cmake --install build --config Debug --component ZGamePlayer --prefix <dir>
+
+# 完整自包含发布目录（61 个文件）
+ZENGINE_PLAYER_PROJECT=<已 bundle.build 的项目> \
+  cmake --install build --config Debug --component ZGamePlayer --prefix <dir>
+```
+
+### 验证
+
+| 检查 | 结果 |
+|---|---|
+| `verify_player_install_e2e.py --frames 20`（默认走真实 install） | **20/20** |
+| 控制组 `--stage-mode copy --frames 10` | **18/18**，两条 installer 断言被正确跳过 → 不是恒真 |
+| 原 `verify_packaged_player_e2e.py --frames 10` 回归 | **9/9** |
+| 骨架安装 | 55 文件：exe + ini + 53 DLL；零 `.scene` / `.h`，无 `bin/` 目录 |
+| 完整安装 | 61 文件：骨架 + `ZProbe.zproject` + `Build/Standalone/`（manifest + 3 bundle）；`Build/Standalone/` 无嵌套 |
+| 负向对照 A：不带 `ZENGINE_PLAYER_PROJECT` | 0 个 `.zproject`、0 个 manifest（53 DLL 仍在）→ 项目内容确实只由那段 install 规则提供 |
+| 负向对照 B：在真实 install 目录里藏 `shared.zbundle` | `MUTANT_EXIT=3765269347`、`OnUpdate=0`、`particle.global.json load failed!`；已还原 |
+
+### 如实记录的边界
+
+- **CPack 仍产出旧布局**：`CPACK_COMPONENTS_ALL` 没有改，`cpack -C Debug -G ZIP` 仍会打那 1653 个文件的 SDK 包。正式安装请用 `cmake --install --component ZGamePlayer`；把 CPack 收敛到 Player component 是下一步。
+- `Build/Standalone/AssetBundleBuildCache.json` 是 builder 缓存，随 `Build/` 一起被安装；它在 `Build/` 下不违反零源资产约定，但严格发布可排除。
+- 默认 `cmake --install`（不带 `--component`）仍是旧 SDK 布局，这是刻意保留的兼容行为；不要把它当 Player 发布产物。
+
 ## CI 状态（不是已完成项）
 
-`.github/workflows/packaged_player_e2e.yml` 已提供：构建 ZEditor → 追加构建 `ZRuntime ZPlayer ZGame`（`build_windows.bat` 默认只编 ZEditor；第三轮改到了 `FileSystem.cpp` / `ScriptRegistry.cpp` / `ScriptEnv.cpp`，显式带上 ZRuntime 更稳）→ 跑 `verify_packaged_player_e2e.py`（9 条）→ 跑 `verify_player_install_e2e.py`（零源资产安装 + 脚本 OnUpdate，18 条）。
+`.github/workflows/packaged_player_e2e.yml` 已提供：构建 ZEditor → 追加构建 `ZRuntime ZPlayer ZGame`（`build_windows.bat` 默认只编 ZEditor；第三轮改到了 `FileSystem.cpp` / `ScriptRegistry.cpp` / `ScriptEnv.cpp`，显式带上 ZRuntime 更稳）→ 跑 `verify_packaged_player_e2e.py`（9 条）→ 跑 `verify_player_install_e2e.py`（第四轮起默认走 `cmake --install --component ZGamePlayer` 的真实安装产物 + 脚本 OnUpdate，**20 条**）。`build_windows.bat` 会执行 `zbuild.py configure`，preset 的 `binaryDir` 是 `${sourceDir}/build`，所以 CI 上 `build/cmake_install.cmake` 存在；脚本也提供 `--build-dir` 可覆盖。
 
 **默认只 `workflow_dispatch` 手动触发，没有挂到 push**：GitHub-hosted Windows runner 没有可用 GPU，DX12 能否落 WARP 未验证；在确认之前挂上去只会制造与代码无关的红灯。文件里保留了注释掉的 `push` / `pull_request` 段，确认 runner 具备 DX12 后取消注释即成为真正的回归门禁。**本地已实测全绿，CI runner 上未验证。**
+
+2026-11-05 尝试过一次真实 dispatch，**没能执行，如实登记**：本机没有 `gh` CLI、`GITHUB_TOKEN` / `GH_TOKEN` / `GITHUB_PAT` 全未设置、`~/.config/gh/hosts.yml` 不存在；且 workflow 文件是本会话新建的，尚未出现在 `origin/main`（本地领先 `origin/main` 的提交还没推送），匿名 API 也无法对不存在的 workflow dispatch。要真正跑一次，需先把提交推到默认分支，再在 Actions 页面手动 dispatch（或提供具备 `actions:write` 的 token）。在此之前 runner 的 DX12 / WARP 结论一律不算已验证。
 
 ## 剩余边界
 
@@ -188,5 +245,5 @@ Quit requested + All systems shut down, EXIT=0
 - `AssetRegistry` 本身仍会索引 `Intermediate/` 与 `Build/`（扫描根是项目根）；builder 已过滤，但更彻底的做法是收紧扫描根，避免缓存里持续堆积无效条目。
 - macOS 不构建 ZGame（`AGENTS.md` §2.24 既有缺口）；本闭环目前只在 Windows / DX12 验证。
 - `.zbundle` 的 cook 目前仍只有贴图真正做了平台 cook，其它资产按原字节打包。
-- **exe 脱离源码树已验证**（见「第二轮」），但本机没有 `cmake --install` 的 ZGame 规则（全仓 `install()` 只在 3rdparty 里），当前用脚本等价 stage 出发布布局；要变成正式安装产物需给 `engine/Source/Game/CMakeLists.txt` 补 install 规则。
+- **exe 脱离源码树已验证**（见「第二轮」）。「全仓没有 ZGame 的 `cmake --install` 规则」是第二 / 三轮的**误判**（当时只 grep 了 `engine/Source/Game/CMakeLists.txt`）；`engine/CMakeLists.txt:618` 一直有规则，只是产出错误布局。第四轮已用 `ZGamePlayer` component 收敛成正式安装产物，脚本默认走真实 install；CPack 仍待收敛。
 - **上一节把 `30 render entities exist but none are visible` 归为「与打包链无关」是误判**：在真正隔离的安装目录里，材质 / 骨骼 JSON 全部 `open file failed`，根因是 #7，不是单纯的视锥剔除问题。

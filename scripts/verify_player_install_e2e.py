@@ -36,8 +36,9 @@ Chain (all from a clean generated project, no repository source assets touched):
 
     author .zproject + .scene + .ts + .js + script_registry.json
       -> ZEditor `bundle.build standalone --force`
-      -> stage ONLY exe + DLLs + ini + .zproject + Build/Standalone into a
-         fresh install dir (no game content, no script sources, no global JSON)
+      -> cmake --install --component ZGamePlayer (the REAL installer, not a
+         Python copy helper) puts ONLY exe + DLLs + ini + .zproject +
+         Build/Standalone into a fresh install dir
       -> launch the installed Player there
       -> assert level/global/registry bytes served from bundles,
          TypeScriptComponent bound, OnUpdate ran for N frames, clean shutdown.
@@ -47,6 +48,7 @@ Usage (from the repo root, Windows / DX12)::
     python scripts/verify_player_install_e2e.py
     python scripts/verify_player_install_e2e.py --frames 60
     python scripts/verify_player_install_e2e.py --out C:/Temp/zengine-install-e2e
+    python scripts/verify_player_install_e2e.py --stage-mode copy  # control
 
 Exit codes: 0 passed, 1 assertion failed, 2 prerequisites missing,
 3 pack or player timed out / was killed.
@@ -54,6 +56,7 @@ Exit codes: 0 passed, 1 assertion failed, 2 prerequisites missing,
 
 import argparse
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -190,7 +193,7 @@ def fail(msg, code=1):
     raise Failure(msg, code)
 
 
-def run_process(argv, timeout, label, stdout_path, cwd=None):
+def run_process(argv, timeout, label, stdout_path, cwd=None, env=None):
     log(f"{label}: {' '.join(str(a) for a in argv)}")
     started = time.time()
     # Never use stdout=PIPE for ZEditor/ZGame on Windows: spawned helpers
@@ -203,6 +206,7 @@ def run_process(argv, timeout, label, stdout_path, cwd=None):
                 stderr=subprocess.STDOUT,
                 timeout=timeout,
                 cwd=str(cwd) if cwd else None,
+                env=env,
             )
         except subprocess.TimeoutExpired:
             fail(f"{label} timed out after {timeout}s (process killed)", 3)
@@ -261,35 +265,76 @@ def verify_source_free(install_root):
     return True
 
 
-def stage_install(probe_root, install_root, bin_dir):
-    """Copy a runnable Player into a directory with NO source asset tree."""
-    install_root.mkdir(parents=True, exist_ok=True)
+def stage_install(probe_root, install_root, bin_dir, build_dir, config, mode,
+                  workspace, stamp):
+    """Produce the source-free install, by default via the REAL installer.
+
+    ``cmake`` runs `cmake --install --component ZGamePlayer` with
+    ZENGINE_PLAYER_PROJECT pointing at the freshly packaged project. An install
+    rule that regresses (DLLs in bin/, shipped .scene files, missing ini)
+    therefore turns this verification red instead of being masked by a Python
+    shutil.copy2 helper. ``copy`` keeps the old hand-rolled staging as a
+    control / fallback when no configured build tree is available.
+    """
     exe = bin_dir / "ZGame.exe"
     ini = bin_dir / "ZEditor.ini"
     if not exe.is_file() or not ini.is_file():
         fail(f"missing {exe} or {ini} (build the engine first)", 2)
-
-    shutil.copy2(exe, install_root / exe.name)
-    dlls = sorted(bin_dir.glob("*.dll"))
-    if not dlls:
-        fail(f"no DLLs next to {exe} -- the Player cannot start", 2)
-    for dll in dlls:
-        shutil.copy2(dll, install_root / dll.name)
-    shutil.copy2(ini, install_root / ini.name)
-    shutil.copy2(probe_root / "ZProbe.zproject", install_root / "ZProbe.zproject")
-
     build_src = probe_root / "Build" / "Standalone"
     if not build_src.is_dir():
         fail(f"packaged build missing: {build_src}", 2)
-    shutil.copytree(build_src, install_root / "Build" / "Standalone", dirs_exist_ok=True)
+
+    if mode == "cmake":
+        cmake_install = build_dir / "cmake_install.cmake"
+        if not cmake_install.is_file():
+            fail(f"build tree is not configured: {cmake_install}", 2)
+        env = os.environ.copy()
+        env["ZENGINE_PLAYER_PROJECT"] = str(probe_root)
+        code, stdout = run_process(
+            ["cmake", "--install", str(build_dir),
+             "--config", config.capitalize(),
+             "--component", "ZGamePlayer",
+             "--prefix", str(install_root)],
+            300, "cmake --install", workspace / f"cmake_install_{stamp}.log",
+            env=env,
+        )
+        if code != 0:
+            fail(f"cmake --install exited {code}; output tail:\n"
+                 + "\n".join(stdout.splitlines()[-20:]), 2)
+        dlls = sorted(install_root.glob("*.dll"))
+        for required, label in (
+            (install_root / "ZGame.exe", "ZGame.exe"),
+            (install_root / "ZEditor.ini", "ZEditor.ini"),
+            (install_root / "ZProbe.zproject", "ZProbe.zproject"),
+            (install_root / "Build" / "Standalone" / "ZProbe.manifest.zasset",
+             "packaged manifest"),
+        ):
+            if not required.is_file():
+                fail(f"cmake --install did not produce {label}: {required}", 2)
+    else:
+        install_root.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(exe, install_root / exe.name)
+        dlls = sorted(bin_dir.glob("*.dll"))
+        if not dlls:
+            fail(f"no DLLs next to {exe} -- the Player cannot start", 2)
+        for dll in dlls:
+            shutil.copy2(dll, install_root / dll.name)
+        shutil.copy2(ini, install_root / ini.name)
+        shutil.copy2(probe_root / "ZProbe.zproject", install_root / "ZProbe.zproject")
+        shutil.copytree(build_src, install_root / "Build" / "Standalone",
+                        dirs_exist_ok=True)
+        stdout = ""
+    if not dlls:
+        fail("cmake --install produced no runtime DLLs next to ZGame.exe", 2)
 
     # Hard invariants of the fixture itself. With #7 / #9 fixed, config JSON,
     # the script registry and the compiled module all come from bundles.
     if (install_root / PROBE_SCENE).exists():
         fail(f"install dir must NOT contain the startup level: {install_root / PROBE_SCENE}")
     verify_source_free(install_root)
-    log(f"install dir: {install_root} ({len(dlls)} DLLs, zero source assets)")
-    return install_root
+    log(f"install dir: {install_root} ({len(dlls)} DLLs, zero source assets, "
+        f"mode={mode})")
+    return install_root, stdout
 
 
 def newest_log(directory, prefix):
@@ -311,6 +356,11 @@ def main():
                              "may point outside the repository for full isolation")
     parser.add_argument("--pack-timeout", type=int, default=300)
     parser.add_argument("--run-timeout", type=int, default=240)
+    parser.add_argument("--stage-mode", default="cmake", choices=("cmake", "copy"),
+                        help="cmake: use the real ZGamePlayer install component "
+                             "(default); copy: hand-rolled staging as a control")
+    parser.add_argument("--build-dir", default=None,
+                        help="configured CMake build tree (default: <repo>/build)")
     args = parser.parse_args()
 
     bin_dir = repo / "bin" / args.config.capitalize()
@@ -352,7 +402,10 @@ def main():
     log(f"pack artifacts: {len(bundles)} bundle(s)")
 
     # --------------------------------------------------------------- install --
-    stage_install(probe_root, install_root, bin_dir)
+    build_dir = Path(args.build_dir) if args.build_dir else repo / "build"
+    install_root, install_stdout = stage_install(
+        probe_root, install_root, bin_dir, build_dir, args.config,
+        args.stage_mode, workspace, stamp)
     # Snapshot BEFORE the player runs: the engine creates empty asset/ and
     # Saved/ directories at startup, which must not be mistaken for shipped
     # source assets later.
@@ -382,6 +435,18 @@ def main():
         checks.append((name, bool(condition), detail))
         if not condition:
             log(f"[FAIL] {name}" + (f" -- {detail}" if detail else ""))
+
+    if args.stage_mode == "cmake":
+        check("-- Installing:" in install_stdout and
+              re.search(r"ZGamePlayer: \d+ runtime DLL\(s\) installed",
+                        install_stdout) is not None,
+              "cmake --install produced the Player layout",
+              "the real installer did not stage exe + runtime DLLs")
+        check("ZGamePlayer: staged packaged project" in install_stdout,
+              "cmake --install staged the packaged project",
+              "ZENGINE_PLAYER_PROJECT was ignored by the install component")
+    else:
+        log("stage-mode=copy: skipping the two installer assertions (control run)")
 
     mounted = re.search(r"AssetBundleManager: (\d+) bundle\(s\) mounted", text)
     check(mounted is not None and int(mounted.group(1)) >= 2,
