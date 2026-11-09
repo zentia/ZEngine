@@ -52,6 +52,7 @@ import hashlib
 import json
 import math
 import os
+import subprocess
 import sys
 from typing import Any, Dict, List, Sequence, Tuple
 
@@ -67,6 +68,13 @@ NULL_REF = "{fileID: 0}"
 
 # 场景级文档类（与 unity_scene.py 同口径）
 SCENE_LEVEL_CLASSES = {"29", "104", "157", "196"}
+
+# Blender 可执行文件（OSGame 自编译引擎环境里的 headless 转换器）。
+# 用于 glb -> FBX（原始资产，与现网 235 个 FBX 同一管线）。
+BLENDER_EXE = os.environ.get(
+    "ZENGINE_BLENDER",
+    "D:/build_windows_x64_vc18_Release/bin/Release/blender.exe")
+GLB_TO_FBX_SCRIPT = os.path.join(ROOT, "glb_to_fbx.py")
 
 
 # --------------------------------------------------------------------------
@@ -416,6 +424,151 @@ def write_texture_meta(path: str, guid: str) -> None:
 
 
 # --------------------------------------------------------------------------
+# glb -> FBX（原始资产，与现网 235 个 FBX 同一管线）
+# --------------------------------------------------------------------------
+
+def write_fbx_meta(path: str, guid: str) -> None:
+    """写 ModelImporter 的 .meta（对齐现网 `lubanqiyao_xiantiao3.fbx.meta`）。
+
+    关键字段与现网一致：`meshes.fileIdsGeneration: 2`（Unity 按内容哈希生成
+    mesh fileID）、`bakeAxisConversion: 0`、`useFileScale: 1`、`weldVertices: 1`、
+    `tangentSpace.tangentImportMode: 3`（Unity 导入时算切线）。FBX 是美术源
+    资产，Unity 导入后 mesh 以 `type:3`（sub-asset）+ `fileID:4300000` 被引用。
+    """
+    with open(path, "w", encoding="utf-8", newline="\n") as handle:
+        handle.write(
+            "fileFormatVersion: 2\n"
+            "guid: %s\n"
+            "ModelImporter:\n"
+            "  serializedVersion: 22200\n"
+            "  internalIDToNameTable: []\n"
+            "  externalObjects: {}\n"
+            "  materials:\n"
+            "    materialImportMode: 0\n"
+            "    materialName: 0\n"
+            "    materialSearch: 1\n"
+            "    materialLocation: 1\n"
+            "  animations:\n"
+            "    legacyGenerateAnimations: 4\n"
+            "    bakeSimulation: 0\n"
+            "    resampleCurves: 1\n"
+            "    optimizeGameObjects: 0\n"
+            "    removeConstantScaleCurves: 0\n"
+            "    motionNodeName: \n"
+            "    rigImportErrors: \n"
+            "    rigImportWarnings: \n"
+            "    animationImportErrors: \n"
+            "    animationImportWarnings: \n"
+            "    animationRetargetingWarnings: \n"
+            "    animationDoRetargetingWarnings: 0\n"
+            "    importAnimatedCustomProperties: 0\n"
+            "    importConstraints: 0\n"
+            "    animationCompression: 1\n"
+            "    animationRotationError: 0.5\n"
+            "    animationPositionError: 0.5\n"
+            "    animationScaleError: 0.5\n"
+            "    animationWrapMode: 0\n"
+            "    extraExposedTransformPaths: []\n"
+            "    extraUserProperties: []\n"
+            "    clipAnimations: []\n"
+            "    isReadable: 0\n"
+            "  meshes:\n"
+            "    lODScreenPercentages: []\n"
+            "    globalScale: 1\n"
+            "    meshCompression: 0\n"
+            "    addColliders: 0\n"
+            "    useSRGBMaterialColor: 1\n"
+            "    sortHierarchyByName: 1\n"
+            "    importPhysicalCameras: 1\n"
+            "    importVisibility: 1\n"
+            "    importBlendShapes: 1\n"
+            "    importCameras: 1\n"
+            "    importLights: 1\n"
+            "    nodeNameCollisionStrategy: 1\n"
+            "    fileIdsGeneration: 2\n"
+            "    swapUVChannels: 0\n"
+            "    generateSecondaryUV: 0\n"
+            "    useFileUnits: 1\n"
+            "    keepQuads: 0\n"
+            "    weldVertices: 1\n"
+            "    bakeAxisConversion: 0\n"
+            "    preserveHierarchy: 0\n"
+            "    skinWeightsMode: 0\n"
+            "    maxBonesPerVertex: 4\n"
+            "    minBoneWeight: 0.001\n"
+            "    optimizeBones: 1\n"
+            "    meshOptimizationFlags: -1\n"
+            "    indexFormat: 0\n"
+            "    secondaryUVAngleDistortion: 8\n"
+            "    secondaryUVAreaDistortion: 15.000001\n"
+            "    secondaryUVHardAngle: 88\n"
+            "    secondaryUVMarginMethod: 1\n"
+            "    secondaryUVMinLightmapResolution: 40\n"
+            "    secondaryUVMinObjectScale: 1\n"
+            "    secondaryUVPackMargin: 4\n"
+            "    useFileScale: 1\n"
+            "    strictVertexDataChecks: 0\n"
+            "  tangentSpace:\n"
+            "    normalSmoothAngle: 60\n"
+            "    normalImportMode: 0\n"
+            "    tangentImportMode: 3\n"
+            "    normalCalculationMode: 4\n"
+            "    legacyComputeAllNormalsFromSmoothingGroupsWhenMeshHasBlendShapes: 0\n"
+            "    blendShapeNormalImportMode: 1\n"
+            "    normalSmoothingSource: 0\n"
+            "  referencedClips: []\n"
+            "  importAnimation: 1\n"
+            "  humanDescription:\n"
+            "    serializedVersion: 3\n"
+            "    human: []\n"
+            "    skeleton: []\n"
+            "    armTwist: 0.5\n"
+            "    foreArmTwist: 0.5\n"
+            "    upperLegTwist: 0.5\n"
+            "    legTwist: 0.5\n"
+            "    armStretch: 0.05\n"
+            "    legStretch: 0.05\n"
+            "    feetSpacing: 0\n"
+            "    globalScale: 1\n"
+            "    rootMotionBoneName: \n"
+            "    hasTranslationDoF: 0\n"
+            "    hasExtraRoot: 0\n"
+            "    skeletonHasParents: 1\n"
+            "  lastHumanDescriptionAvatarSource: {instanceID: 0}\n"
+            "  autoGenerateAvatarMappingIfUnspecified: 1\n"
+            "  animationType: 1\n"
+            "  humanoidOversampling: 1\n"
+            "  avatarSetup: 0\n"
+            "  addHumanoidExtraRootOnlyWhenUsingAvatar: 1\n"
+            "  importBlendShapeDeformPercent: 1\n"
+            "  remapMaterialsIfMaterialImportModeIsNone: 0\n"
+            "  additionalBone: 0\n"
+            "  userData: \n"
+            "  assetBundleName: \n"
+            "  assetBundleVariant: \n" % guid)
+
+
+def glb_to_fbx(glb_path: str, fbx_path: str, blender_exe: str | None = None) -> None:
+    """用 Blender headless 把单个 glb 转成 FBX（局部坐标，不摆 anchor）。
+
+    调用 `glb_to_fbx.py`（bpy 脚本），`import_scene.gltf` -> `export_scene.fbx`。
+    顶点保持 glb 局部坐标，摆放交给 Unity 场景 Transform。返回 None；失败抛
+    RuntimeError（带 Blender stderr 尾行）。
+    """
+    exe = blender_exe or BLENDER_EXE
+    if not os.path.isfile(exe):
+        raise FileNotFoundError(
+            "blender not found at %s（用 ZENGINE_BLENDER 环境变量指定）" % exe)
+    os.makedirs(os.path.dirname(fbx_path), exist_ok=True)
+    cmd = [exe, "--background", "--python", GLB_TO_FBX_SCRIPT, "--",
+           glb_path, fbx_path]
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode != 0 or not os.path.isfile(fbx_path):
+        tail = (proc.stderr or "").strip().splitlines()[-5:]
+        raise RuntimeError("glb->fbx failed for %s: %s" % (glb_path, " / ".join(tail)))
+
+
+# --------------------------------------------------------------------------
 # 场景文档写出
 # --------------------------------------------------------------------------
 
@@ -478,7 +631,9 @@ class SceneWriter:
             "",
         ]))
 
-    def mesh_filter(self, mf_id: int, go_id: int, guid: str) -> None:
+    def mesh_filter(self, mf_id: int, go_id: int, guid: str,
+                    ref_type: int = 2) -> None:
+        # ref_type: 2 = 独立 .asset；3 = FBX sub-asset（现网原始资产）
         self.add(33, mf_id, "\n".join([
             "MeshFilter:",
             "  m_ObjectHideFlags: 0",
@@ -486,7 +641,8 @@ class SceneWriter:
             "  m_PrefabInstance: " + NULL_REF,
             "  m_PrefabAsset: " + NULL_REF,
             "  m_GameObject: {fileID: %d}" % go_id,
-            "  m_Mesh: {fileID: %d, guid: %s, type: 2}" % (MESH_MAIN_FILEID, guid),
+            "  m_Mesh: {fileID: %d, guid: %s, type: %d}"
+            % (MESH_MAIN_FILEID, guid, ref_type),
             "",
         ]))
 
@@ -627,6 +783,23 @@ def header_from_template(template_path: str | None) -> str:
     return header
 
 
+def _extract_texture(asset: Dict[str, Any], manifest_root: str,
+                     asset_out_dir: str) -> None:
+    """抽出 glb 内嵌 PNG 贴图 + TextureImporter .meta（GUID 派生）。"""
+    asset_id = asset["asset_id"]
+    glb_path = os.path.join(manifest_root, asset["mesh"])
+    data = external_mesh.read_bytes(glb_path)
+    try:
+        png = external_mesh.glb_embedded_texture(data)
+        tex_path = os.path.join(asset_out_dir, asset_id + ".png")
+        with open(tex_path, "wb") as handle:
+            handle.write(png)
+        tex_guid = hashlib.sha256(("tex:" + asset_id).encode("utf-8")).hexdigest()[:32]
+        write_texture_meta(tex_path + ".meta", tex_guid)
+    except (ValueError, KeyError):
+        pass
+
+
 def bake_asset(asset: Dict[str, Any], manifest_root: str,
                asset_out_dir: str, guids: Dict[str, Dict[str, str]]) -> str:
     """把一个 glb 烘焙成 .asset Mesh + .meta，返回 (asset_guid)。"""
@@ -652,25 +825,35 @@ def bake_asset(asset: Dict[str, Any], manifest_root: str,
     asset_path = os.path.join(asset_out_dir, asset_id + ".asset")
     meta_path = asset_path + ".meta"
 
-    # 材质 GUID 从 guids 的 materials 表拿不到时，用 mesh 名对应 decoration 的
-    # 资产 GUID；这里 Mesh 资产复用现网 decoration_<proxy> 的 GUID 更稳。
-    # 但 glb 是独立资产，应分配独立 GUID —— 用 asset_id 的 sha256 派生，稳定可复现。
     guid = hashlib.sha256(("mesh:" + asset_id).encode("utf-8")).hexdigest()[:32]
     write_mesh_asset(asset_path, asset_id, positions, normals, uvs, indices)
     write_mesh_meta(meta_path, guid)
 
-    # 贴图：抽出内嵌 PNG 并写 meta（GUID 同样派生）
-    try:
-        png = external_mesh.glb_embedded_texture(data)
-        tex_path = os.path.join(asset_out_dir, asset_id + ".png")
-        with open(tex_path, "wb") as handle:
-            handle.write(png)
-        tex_guid = hashlib.sha256(("tex:" + asset_id).encode("utf-8")).hexdigest()[:32]
-        write_texture_meta(tex_path + ".meta", tex_guid)
-    except (ValueError, KeyError):
-        # glb 无内嵌贴图（代理资产）时跳过，材质用纯色
-        pass
+    _extract_texture(asset, manifest_root, asset_out_dir)
 
+    return guid
+
+
+def bake_fbx(asset: Dict[str, Any], manifest_root: str,
+             asset_out_dir: str) -> str:
+    """把一个 glb 转成 FBX 原始资产 + ModelImporter .meta，返回 FBX GUID。
+
+    FBX 保持 glb 局部坐标（不摆 anchor，不烘 pivot），是「可复用原始资产」，
+    与现网 235 个 FBX 同一管线。Unity 导入后 mesh 以 type:3 + fileID:4300000
+    被引用。贴图仍由调用方单独抽 PNG（FBX 不内嵌贴图字节）。
+    """
+    asset_id = asset["asset_id"]
+    glb_rel = asset["mesh"]
+    glb_path = os.path.join(manifest_root, glb_rel)
+    if not os.path.isfile(glb_path):
+        raise FileNotFoundError("missing glb: %s" % glb_path)
+
+    os.makedirs(asset_out_dir, exist_ok=True)
+    fbx_path = os.path.join(asset_out_dir, asset_id + ".fbx")
+    glb_to_fbx(glb_path, fbx_path)
+
+    guid = hashlib.sha256(("fbx:" + asset_id).encode("utf-8")).hexdigest()[:32]
+    write_fbx_meta(fbx_path + ".meta", guid)
     return guid
 
 
@@ -695,7 +878,8 @@ def quaternion_look(pitch_deg: float, yaw_deg: float,
 def build_restored_scene(profile: Dict[str, Any], manifest: Dict[str, Any],
                          guids: Dict[str, Dict[str, str]],
                          manifest_root: str, asset_out_dir: str,
-                         out_path: str, template_path: str | None) -> None:
+                         out_path: str, template_path: str | None,
+                         use_fbx: bool = False) -> None:
     # 确定要烘焙哪些资产：output.reuse_asset_ids 为空 -> 烘焙全部 4 个 glb
     assets = manifest["assets"]
     placements = manifest["placements"]
@@ -708,11 +892,19 @@ def build_restored_scene(profile: Dict[str, Any], manifest: Dict[str, Any],
         selected_ids = [a["asset_id"] for a in assets]
 
     # 烘焙选中资产，得到 asset_id -> mesh guid
+    # use_fbx=True 时转 FBX（原始资产，type:3 引用）；否则烘焙 .asset（type:2）
     mesh_guid: Dict[str, str] = {}
     for asset_id in selected_ids:
-        guid = bake_asset(asset_by_id[asset_id], manifest_root,
-                          asset_out_dir, guids)
+        asset = asset_by_id[asset_id]
+        if use_fbx:
+            guid = bake_fbx(asset, manifest_root, asset_out_dir)
+            # FBX 模式仍抽出贴图 PNG（材质侧用）
+            _extract_texture(asset, manifest_root, asset_out_dir)
+        else:
+            guid = bake_asset(asset, manifest_root, asset_out_dir, guids)
         mesh_guid[asset_id] = guid
+
+    ref_type = 3 if use_fbx else 2
 
     # 材质 GUID：优先 guids.materials 表，回退派生
     material_guids = guids.get("materials", {})
@@ -751,7 +943,7 @@ def build_restored_scene(profile: Dict[str, Any], manifest: Dict[str, Any],
 
         writer.gameobject(go_id, instance_id, [t_id, mf_id, mr_id])
         writer.transform(t_id, go_id, root_t, [], anchor, quat, s)
-        writer.mesh_filter(mf_id, go_id, mesh_guid[asset_id])
+        writer.mesh_filter(mf_id, go_id, mesh_guid[asset_id], ref_type)
         writer.mesh_renderer(mr_id, go_id, mat_guid)
         child_transforms.append(t_id)
         placed_count += 1
@@ -804,6 +996,9 @@ def main() -> None:
     parser.add_argument("--out", default="", help="输出 .unity 路径")
     parser.add_argument("--template", default=os.path.join(
         ROOT, "build", "scene_template.unity"))
+    parser.add_argument("--to-fbx", action="store_true",
+                        help="把 glb 转成 FBX 原始资产（type:3 引用），"
+                             "对齐现网 235 个 FBX 的管线；默认烘焙 .asset（type:2）")
     args = parser.parse_args()
 
     with open(args.profile, "r", encoding="utf-8") as handle:
@@ -816,9 +1011,12 @@ def main() -> None:
         ROOT, "build", "restored_scenes", profile_id + ".unity")
 
     build_restored_scene(profile, manifest, guids, os.path.dirname(args.manifest),
-                         args.asset_dir, out_path, args.template)
+                         args.asset_dir, out_path, args.template,
+                         use_fbx=args.to_fbx)
     print("wrote scene -> %s" % out_path)
     print("baked assets -> %s" % args.asset_dir)
+    if args.to_fbx:
+        print("mode: FBX (type:3, 原始资产，对齐现网管线)")
 
 
 if __name__ == "__main__":

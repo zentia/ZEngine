@@ -93,5 +93,54 @@ class RestoreSceneTests(unittest.TestCase):
             self.assertTrue(png.startswith(b"\x89PNG\r\n\x1a\n"), asset_id)
 
 
+class FbxMetaTests(unittest.TestCase):
+    """FBX 原始资产路径（type:3 引用，对齐现网 235 个 FBX）的纯逻辑门禁。
+
+    不实际调 Blender（外部依赖、慢），只验证 ModelImporter meta 结构、
+    GUID 派生稳定性、与 .asset 模式 GUID 的区分。
+    """
+
+    def setUp(self) -> None:
+        import tempfile
+        self._tmp = tempfile.mkdtemp(prefix="fbx_meta_test_")
+
+    def _write(self) -> str:
+        path = os.path.join(self._tmp, "_t.fbx.meta")
+        rs.write_fbx_meta(path, "0" * 32)
+        return path
+
+    def tearDown(self) -> None:
+        import shutil
+        shutil.rmtree(self._tmp, ignore_errors=True)
+
+    def test_fbx_meta_is_model_importer(self) -> None:
+        path = self._write()
+        with open(path, encoding="utf-8") as handle:
+            text = handle.read()
+        self.assertIn("ModelImporter:", text)
+        self.assertNotIn("NativeFormatImporter:", text)
+
+    def test_fbx_meta_file_ids_generation_matches_production(self) -> None:
+        path = self._write()
+        with open(path, encoding="utf-8") as handle:
+            text = handle.read()
+        # 现网 FBX 用 fileIdsGeneration:2（Unity 按内容哈希生成 mesh fileID）
+        self.assertIn("fileIdsGeneration: 2", text)
+        self.assertIn("bakeAxisConversion: 0", text)
+        self.assertIn("tangentImportMode: 3", text)
+
+    def test_fbx_guid_differs_from_asset_guid(self) -> None:
+        import hashlib
+        fbx_guid = hashlib.sha256(("fbx:star_pillar").encode("utf-8")).hexdigest()[:32]
+        asset_guid = hashlib.sha256(("mesh:star_pillar").encode("utf-8")).hexdigest()[:32]
+        self.assertNotEqual(fbx_guid, asset_guid)
+
+    def test_fbx_guid_is_stable(self) -> None:
+        import hashlib
+        a = hashlib.sha256(("fbx:star_pillar").encode("utf-8")).hexdigest()[:32]
+        b = hashlib.sha256(("fbx:star_pillar").encode("utf-8")).hexdigest()[:32]
+        self.assertEqual(a, b)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

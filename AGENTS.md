@@ -5360,11 +5360,11 @@ r=20..23、近水平旋转，仍有一条带子斜插天空。根因与既有「
 - 未动 `board-spec.json` 冻结几何、未动任何 Unity 资产、未动 `ResSceneCfg` / `ResPersonaliseChessboardDataBin`。
 
 ### OSGame 棋盘线 · P0+：拼现有资产出场景（restore_scene.py，2026-11-09）
-- 用户确认「先拼现有资产 + 直接烘焙 glb 进场景」。**纠正前提**：用户问「能否用 FBX」——实测 OSGame 现网 `Assets/ZEngineChessboard/Meshes/` 全是 `.asset`（`!u!43 Mesh`），`find *.fbx` 为 0，无 FBX 先例；FBX 会破坏 glb 字节级 sha 锁契约链，故放弃。
-- 新增 `integration/chessboard/restore_scene.py`：把 4 个混元 glb（star_pillar/halo_ring/moon_orrery/star_lantern）烘焙成**明文非压缩** `.asset` Mesh（`m_MeshCompression:0`）+ 抽出内嵌 PNG + 按 manifest `world = anchor + rotY*scale*(local-pivot_offset)` 摆放成 `.unity`（局部网格 + Transform 摆放，资产可复用）。
-- ⚠️ **Unity 明文 Mesh 顶点布局（从现网 `SM_TV_006@N2C.asset` 反推核对）**：固定 64 字节 stride / 16 float32，`[px,py,pz, nx,ny,nz, r,g,b,a, u,v, tx,ty,tz,tw]`；`m_Channels` 固定 14 行（Unity 内部 VertexAttribute 数组），有效槽 channel 0=position(off 0,dim 3)、1=normal(12,3)、2=color(24,4)、4=uv0(40,2)、6=tangent(48,4)，其余 dimension:0 占位；`m_IndexBuffer` 独立存 uint16 索引，`_typelessdata` 只存顶点 64B×N；`m_MeshOptimizationFlags:-1`（非压缩）、`m_UVInfo:0`。
-- ⚠️ **现有 `decoration_*.asset` 是压缩网格**（`m_MeshCompression:2`，顶点量化进 `m_CompressedMesh` blob），且生成脚本已丢失（全仓无 `m_CompressedMesh` 写出代码）——这是曾走过但没沉淀的路，本模块改走明文路径规避。
-- 材质引用现网已有 `zboard_*.mat`（GUID 从 `build/asset_guids.json` 读，placements 的 `material` 字段已指向）；贴图复用 `external_mesh.glb_embedded_texture`。Mesh GUID 用 `sha256("mesh:"+asset_id)` 派生（稳定可复现，非随机）。
-- 新增 `verify/test_restore_scene.py`（7 tests：顶点/索引数据量逐字节匹配、14 channel、非压缩、材质引用、placement 覆盖 4 资产、内嵌贴图）。实测 7/7 + scene_ir 23/23 + `--check` 0 error。
-- 用法：`python restore_scene.py --profile scene-ir/restore-profile.example.json --out build/restored_scenes/<id>.unity`。产物 `build/restored_assets/*.{asset,png,meta}` + `build/restored_scenes/*.unity`。
-- 【待验证】明文 `.asset` 能否被 OSGame 稳定 Editor 打开（格式从现网非压缩范本反推，未在 Unity 实测加载）；烘焙产物部署到 `Assets/ZEngineChessboard/` 的跨盘 step 未执行。
+- 用户确认「先拼现有资产 + 直接烘焙 glb 进场景」。**两阶段纠正**：① 我一度误判「无 FBX 先例」（只查了导出镜像 `ZEngineChessboard/Meshes/` 全是 `.asset`）；用户纠正——**原始资产走 FBX，`.asset` 是导出产物**。实测 `Art_Prefabs/` 有 235 个 `.fbx`，`ART_OS_AC10_HD.prefab` 里 `m_Mesh` 全 `type:3`（FBX sub-asset）+ `fileID:4300000`；`.asset` 是 `type:2`。② 落地 `restore_scene.py`：默认 `.asset` 明文烘焙，`--to-fbx` 切 FBX 原始资产。
+- ⚠️ **Unity 网格引用 type 语义**：`m_Mesh: {fileID, guid, type}` 里 `type:2` = 独立 `.asset`；`type:3` = 模型文件（FBX）sub-asset。`fileID:4300000` 是两者共用的 main mesh fileID。
+- **FBX 模式**：`glb_to_fbx.py`（Blender headless bpy：`import_scene.gltf→export_scene.fbx`，本机 `D:/build_windows_x64_vc18_Release/bin/Release/blender.exe` 5.4.0）+ `write_fbx_meta()`（ModelImporter，逐字段对齐现网 `lubanqiyao_xiantiao3.fbx.meta`，关键 `fileIdsGeneration:2`/`bakeAxisConversion:0`/`tangentImportMode:3`）。FBX 读回顶点/面数与 glb 逐项一致（20918/30030）。GUID 用 `sha256("fbx:"+asset_id)` 派生（与 `.asset` 的 `sha256("mesh:"+...)` 区分）。
+- **.asset 明文烘焙（默认）**：`m_MeshCompression:0`，固定 64 字节 stride / 16 float32 `[px,py,pz, nx,ny,nz, r,g,b,a, u,v, tx,ty,tz,tw]`；`m_Channels` 固定 14 行（有效槽 channel 0=position off0 dim3、1=normal off12 dim3、2=color off24 dim4、4=uv0 off40 dim2、6=tangent off48 dim4）；`m_IndexBuffer` 独立 uint16；`m_MeshOptimizationFlags:-1`。
+- 材质引用现网 `zboard_*.mat`（GUID 从 `build/asset_guids.json`）；贴图复用 `external_mesh.glb_embedded_texture`。
+- 新增 `verify/test_restore_scene.py`（11 tests：7 网格 + 4 FBX meta）。实测 11/11 + scene_ir 23/23 + `--check` 0 error。
+- 用法：`python restore_scene.py --profile scene-ir/restore-profile.example.json [--to-fbx] --out build/restored_scenes/<id>.unity`。
+- 【待验证】FBX 坐标轴（Blender `axis_forward=-Z/axis_up=Y`）在 Unity ModelImporter `bakeAxisConversion:0` 下是否正确对齐——Blender↔FBX 闭环读回一致，但 Unity 实测导入未做；部署到 `Assets/` 跨盘 step 未执行。
