@@ -1,0 +1,84 @@
+{
+  "schema": "zengine.chessboard.ceremony/v1",
+  "name": "AC90 棋盘演出契约",
+  "frozen": true,
+  "note": "现网棋盘皮肤在局内会经历这 6 类演出（参考 BV1UdYj61ExH：入场动画 / 回合胜利 / 回合失败 / 连续胜利 / 升级播报 / 互动彩蛋）。棋盘只负责表现，绝不判定胜负、连胜数或等级：这些状态一律由宿主在 payload 里传入。同一份事件 id / payload 字段供 Web、Unity、Blender 三端消费，视觉包只定调配色与文案，不改事件语义。",
+  "transport": {
+    "rule": "事件 id 与 payload 字段名三端一致；棋盘不得自行推断胜利/失败/连胜/升级，也不得伪造回合数据。",
+    "web": "window.__zengineStarry.ceremony.dispatch(id, payload)；页面另支持 ?event=<id>、控件下拉与棋盘点击彩蛋。",
+    "unity": "契约已冻结，运行时绑定（ZChessboardCeremony.Play）留给项目侧接入，本线不实现游戏逻辑。",
+    "blender": "只消费 palette 做离线灯光/材质定调，不播放时间轴动画。"
+  },
+  "channels": ["banner", "camera", "particles", "light", "easter_egg"],
+  "palette_source": "web/worlds.json 的 defaults.scenery.ceremony；12 个画境可在 overrides.scenery.ceremony 覆盖，缺省回落到本文件的 palette_defaults。",
+  "palette_defaults": {
+    "accent": "#e8b96a",
+    "win": "#ffd88a",
+    "lose": "#8fb0ca",
+    "streak": "#ffb45c",
+    "level": "#b9e6ff",
+    "egg": "#d2a8ff"
+  },
+  "events": [
+    {
+      "id": "entrance",
+      "label_zh": "入场动画",
+      "label_en": "ENTRANCE",
+      "duration_ms": 2200,
+      "channels": ["camera", "banner", "particles", "light"],
+      "payload": [],
+      "sample_payload": {},
+      "hint": "镜头由场景生成时登记的地标自动派生：相机沿克制短弧环绕，注视点对准真实地标坐标（建筑 / 桥 / 河面 / 山峰 / 树丛 / 棋盘），按权重选站点、按类型套机位语言；方格亮起、灯光渐明，最后落回棋盘默认机位；页面加载完成自动播一次。"
+    },
+    {
+      "id": "round_win",
+      "label_zh": "回合胜利",
+      "label_en": "ROUND WON",
+      "duration_ms": 1900,
+      "channels": ["banner", "particles", "light"],
+      "payload": ["round"],
+      "sample_payload": { "round": 5 },
+      "hint": "暖金上扬粒子 + 横幅；round 由宿主给出。"
+    },
+    {
+      "id": "round_lose",
+      "label_zh": "回合失败",
+      "label_en": "ROUND LOST",
+      "duration_ms": 1900,
+      "channels": ["banner", "light"],
+      "payload": ["round"],
+      "sample_payload": { "round": 5 },
+      "hint": "冷色沉降、灯光压暗；不惩罚玩家、不改变棋盘几何。"
+    },
+    {
+      "id": "win_streak",
+      "label_zh": "连续胜利",
+      "label_en": "WIN STREAK",
+      "duration_ms": 2400,
+      "channels": ["banner", "particles", "light"],
+      "payload": ["streak"],
+      "sample_payload": { "streak": 3 },
+      "hint": "连胜数必须由宿主传入；棋盘不累加、不推断。"
+    },
+    {
+      "id": "level_up",
+      "label_zh": "升级播报",
+      "label_en": "LEVEL UP",
+      "duration_ms": 2400,
+      "channels": ["banner", "camera", "light"],
+      "payload": ["level"],
+      "sample_payload": { "level": 8 },
+      "hint": "等级由宿主传入；镜头轻微上抬、光圈扩散。"
+    },
+    {
+      "id": "easter_egg",
+      "label_zh": "互动彩蛋",
+      "label_en": "EASTER EGG",
+      "duration_ms": 2600,
+      "channels": ["banner", "particles", "easter_egg"],
+      "payload": ["hint"],
+      "sample_payload": { "hint": "你在棋盘角落发现了一枚星屑" },
+      "hint": "点击左下/右上两个棋手占位，或按 E 键触发；文案由宿主给出。"
+    }
+  ]
+}

@@ -1,0 +1,135 @@
+{
+  "schema": "zengine.chessboard.spec/v1",
+  "name": "AC90_Neutral",
+  "skin_hint": "AC90",
+  "description": "冻结的核心几何契约 + 可变的风格槽位。核心区（连续台面/包边/功能锚点/逻辑网格）固定；周围装饰物与风格化几何由 style-pack.json 决定，AI 可自由替换。",
+  "target": {
+    "branch": "trunk",
+    "unity_version": "2022.3.5f1",
+    "project_root": "G:/OSGame/Client_proj/Project",
+    "scripts_root": "G:/OSGame/Client_proj/Program/GameScripts/Assets",
+    "note": "Assets/Scenes/pvp 下配置的是 .unity 场景，不是 prefab。SceneTools 的输入是场景里名为 Artist 的根节点（SceneTools.cs:26 ART_NODE），序列化后才产出 SceneExport/Artist/*_Artist.asset 供运行时加载。本生成器直接产出高配 HD 场景。"
+  },
+  "scene": {
+    "path": "Assets/Scenes/pvp/ART_OS_AC90_HD.unity",
+    "quality": "HD",
+    "artist_root": "Artist",
+    "field_node": "SceneMesh",
+    "template": "Assets/Scenes/pvp/ART_OS_AC10_HD.unity",
+    "note": "只产高配 HD 场景。High/Mid/Low 由项目既有自动降配流程（ArtTools/4.场景工具/--->HD转高中低配，或 FastAutoOptimization）从 HD 生成后由美术手调，本线不管；配置表（ResSceneCfg / ResPersonaliseChessboardDataBin）也不动。template 指向现成 HD 场景：unity_scene.py 默认只继承它开头的 4 个场景级文档（OcclusionCullingSettings / RenderSettings / LightmapSettings / NavMeshSettings，含完整 GI 与 LightingSettings），棋盘对象全部自己写，产物 86 文档 / 0 PrefabInstance。不能整份继承：AC10 的 31 个 PrefabInstance 里有 11 个 m_SourcePrefab GUID 在 trunk 不存在，稳定 Editor 实测打开会刷 Missing Prefab Asset 并报 Problem detected while opening the Scene file，且旧美术会被 SceneExportChecker 收进打包产物。--full-template 保留完整继承（仅诊断用），--no-template 用内置 HEADER。"
+  },
+  "unity": {
+    "material_template": "Assets/CustomResources/OSG_Default.mat",
+    "color_properties": ["_AlbedoColor", "_Color", "_BaseColor"],
+    "note": "trunk 用 OSGameForwardRenderer（自定义 SRP）；Shader.Find(\"Universal Render Pipeline/Lit\") 会失败并回退内置 Standard，在自定义 SRP 下渲染成黑色。必须克隆工程默认材质（其 shader GUID=a3ef84c3...），只覆盖颜色属性。"
+  },
+  "coordinate_system": {
+    "authoring": "three.js Y-up / right-handed / 1 unit = 1 metre",
+    "unity_conversion": "consumer flips X, negates normal.x, reverses triangle winding, flips uv.y",
+    "flip_when_not_host": true,
+    "note": "Project8ArtField.ShowAndSetFieldTransform 会把 fieldRoot 绕 Y 转 180 度，几何尽量中心对称。"
+  },
+
+  "core_contract": {
+    "fixed": true,
+    "visual_kind": "continuous_slab",
+    "logical_grid_is_visual": false,
+    "required_elements": ["square_outline", "player_seats"],
+    "square_outline": {
+      "fixed_parts": ["core_slab", "frame_*"],
+      "note": "最外面一个方格：一整块连续台面 + 四段包边描边。概念草图里只有这一圈白色方格是必须的，台面本身仍与地面共面、不是 56 个独立格子块。"
+    },
+    "player_seats": {
+      "count": 2,
+      "corners": ["south_west", "north_east"],
+      "fixed_parts": ["anchor_seat_home", "anchor_seat_guest"],
+      "note": "两个棋手占位固定在左下角（-x, +z）与右上角（+x, -z）对角，与现网河豚车站等皮肤一致。冻结的只有位置与占地半径；桌椅、灯箱等具体造型属于概念图输出，不进核心契约。"
+    },
+    "note": "2026-11-06 用户纠正：棋盘的形式就是「一个方格 + 两个棋手的占位」。原概念草图里的中线、两个半圆、中圈同心圆、外侧小圆圈都不是必须元素，一律不冻结；台面纹样、中央徽记与周围装饰全部按 12 张概念图（web/worlds.json 的 board.marks / style-pack.json）输出，默认不绘制。7x8 只是 GridUtil 的逻辑落点坐标，永远不是可见几何。sky@* 是渲染层天穹几何，不属于棋盘本体。AI 不得改动本节；要改风格请换 style-pack.json / worlds.json。",
+    "fixed_parts": ["core_slab", "frame_*", "anchor_*", "sky@*"],
+    "variable_parts": ["decoration_*", "interactable_*", "cell_marks", "sky_panorama", "surface_marks"]
+  },
+
+  "grid": {
+    "source": "G:/OSGame/Client_proj/Tools/ProtobufDatabin/Core/Basic/J局内/W.玩法模板参数表.xlsx 行4 (模板ID=4, 标准玩法, 交错矩形); CrossRectangleUtil.cs:19-45",
+    "layout": "cross_rectangle",
+    "columns": 7,
+    "rows": 8,
+    "cell_width_m": 2.15,
+    "cell_height_m": 1.8,
+    "center_offset_m": [-5.912, 0.0, -6.3],
+    "stagger_odd_rows_m": 1.075,
+    "shape": "chamfer",
+    "shape_variants": ["rect", "chamfer", "hex"],
+    "chamfer_ratio": 0.07,
+    "detail": 3,
+    "margin_m": 0.55,
+    "thickness_m": 0.24,
+    "top_y_m": 0.0,
+    "slab_color": [0.58, 0.59, 0.63, 1.0],
+    "cell_marks": "none",
+    "cell_marks_variants": ["none", "engraved"],
+    "cell_mark_width_m": 0.018,
+    "cell_mark_color": [0.72, 0.68, 0.55, 1.0]
+  },
+
+  "frame": {
+    "width_m": 0.62,
+    "height_m": 0.26,
+    "corner": "miter",
+    "color": [0.45, 0.42, 0.38, 1.0],
+    "trim_color": [0.72, 0.58, 0.35, 1.0],
+    "trim_width_m": 0.07
+  },
+
+  "anchors": {
+    "note": "恰好两个棋手占位，左下角与右上角对角，跨皮肤位置稳定。圆形代理只冻结「位置 + 占地」，具体桌椅由概念图输出；原第三个 info_plinth 已按用户纠正移除，不再是核心元素。",
+    "items": [
+      { "id": "seat_home",  "corner": "south_west", "position": [-10.2, 0.0, 9.0],  "radius_m": 1.9, "height_m": 0.16, "color": [0.42, 0.46, 0.52, 1.0] },
+      { "id": "seat_guest", "corner": "north_east", "position": [10.2, 0.0, -9.0], "radius_m": 1.9, "height_m": 0.16, "color": [0.42, 0.46, 0.52, 1.0] }
+    ]
+  },
+
+  "decoration_zones": {
+    "note": "只约束『允许放东西的空间 + 每档预算』，不约束放什么。AI 生成 style-pack 时在这些槽内自由布置主题装饰物；槽外一律拒绝。corner_sw / corner_ne 两个角槽 reserved_by 给左下 / 右上的棋手占位，max_items=0，风格包不得占用；其余装饰按概念图输出。",
+    "items": [
+      { "id": "corner_nw", "center": [-10.2, -9.0], "half": [2.8, 2.8], "max_items": 8 },
+      { "id": "corner_ne", "center": [10.2, -9.0],  "half": [2.8, 2.8], "max_items": 0, "reserved_by": "player_seat:seat_guest" },
+      { "id": "corner_sw", "center": [-10.2, 9.0],  "half": [2.8, 2.8], "max_items": 0, "reserved_by": "player_seat:seat_home" },
+      { "id": "corner_se", "center": [10.2, 9.0],   "half": [2.8, 2.8], "max_items": 8 },
+      { "id": "edge_n", "center": [0.0, -9.7], "half": [6.2, 1.5], "max_items": 6 },
+      { "id": "edge_s", "center": [0.0, 9.7],  "half": [6.2, 1.5], "max_items": 6 },
+      { "id": "edge_w", "center": [-11.0, 0.0], "half": [1.5, 6.2], "max_items": 6 },
+      { "id": "edge_e", "center": [11.0, 0.0],  "half": [1.5, 6.2], "max_items": 6 }
+    ]
+  },
+
+  "sky": {
+    "mode": "procedural",
+    "panorama_texture": null,
+    "radius_m": 62.0,
+    "segments": 32,
+    "rings": 16,
+    "top_color": [0.055, 0.075, 0.13, 1.0],
+    "horizon_color": [0.26, 0.29, 0.36, 1.0],
+    "bottom_color": [0.10, 0.11, 0.14, 1.0],
+    "stars": 420,
+    "star_seed": 20261105,
+    "stars_web_only": true,
+    "note": "本段只冻结「几何天穹球」的程序化参数；AI 生成的天空盒贴图 / 颜色 / 雾 / 后处理 / Volume 在 visual-pack.json，两份契约互不覆盖。spec.sky.mode=procedural 与 visual.skybox.mode=panorama 并存是刻意的：前者管几何，后者管渲染层。"
+  },
+  "lighting": {
+    "directional_color": [1.0, 0.94, 0.84, 1.0],
+    "directional_intensity": 1.15,
+    "directional_euler": [48.0, -32.0, 0.0],
+    "ambient_color": [0.38, 0.42, 0.50, 1.0],
+    "ambient_intensity": 0.65
+  },
+  "lods": {
+    "HD":   { "rank": 0, "sky_segments": 32, "star_scale": 1.0, "max_decorations": 40 },
+    "High": { "rank": 1, "sky_segments": 24, "star_scale": 0.7, "max_decorations": 26 },
+    "Mid":  { "rank": 2, "sky_segments": 16, "star_scale": 0.45, "max_decorations": 16 },
+    "Low":  { "rank": 3, "sky_segments": 12, "star_scale": 0.2, "max_decorations": 8 },
+    "note": "四档后缀是项目画质约定（SystemSetting.cs:168-170）。ZBRD 仍保留四档几何，但交付的 .unity 场景只消费 HD 档部件；High/Mid/Low 场景由项目自动降配工具从 HD 生成后手调，不由本线产出。max_decorations 是风格包预算上限，不是固定数量。"
+  }
+}

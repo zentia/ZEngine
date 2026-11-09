@@ -1,0 +1,310 @@
+{
+  "schema": "zengine.chessboard.external-mesh-manifest/v1",
+  "generated_by": "external_mesh.py",
+  "contract_schema": "zengine.chessboard.external-mesh/v1",
+  "asset_format": "glb",
+  "unity_cache_format": "ZBRD v1 (single part)",
+  "coordinate_system": "glTF Y-up right-handed; world = anchor + rotY * scale * (local - pivot_offset); proxy assets use pivot_offset [0,0,0] and are already anchor-relative",
+  "assets": [
+    {
+      "asset_id": "star_pillar",
+      "label": "星象灯柱",
+      "status": "asset_ready",
+      "asset_origin": "hunyuan_3d",
+      "mesh": "assets/external_meshes/star_pillar.glb",
+      "mesh_sha256": "2e0b4a45476da2dd819a546a7e16a2c6bfc0bedcb2c84bf021df970d81dfbbeb",
+      "cache": "assets/external_meshes/star_pillar.zbrd",
+      "cache_sha256": "5632cf065e99936101275f0cb95c8405be6c2d2a899f648d7991c969481d8a2f",
+      "texture": "assets/external_meshes/star_pillar.png",
+      "texture_sha256": "22a7b6dcc8b12e030231cd3b4627b64adf869cd8f872d6156d90b333bdfa3c33",
+      "bytes": 2492572,
+      "triangles": 30030,
+      "bounds": {
+        "min": [
+          -0.27389100193977356,
+          3.1562777057614984e-08,
+          -0.28399202667102047
+        ],
+        "max": [
+          0.27669501304626465,
+          1.0632001407431206,
+          0.26691404995773427
+        ]
+      },
+      "pivot_offset": [
+        0.001402,
+        0.0,
+        -0.008539
+      ]
+    },
+    {
+      "asset_id": "halo_ring",
+      "label": "悬浮星象圆环",
+      "status": "asset_ready",
+      "asset_origin": "hunyuan_3d",
+      "mesh": "assets/external_meshes/halo_ring.glb",
+      "mesh_sha256": "4c61161daeb6a8e94542c354dd621201beca16390d94679ac1df246121022d1e",
+      "cache": "assets/external_meshes/halo_ring.zbrd",
+      "cache_sha256": "dc38ded629d439b87426a304647d0aa58c11e5da2598a355387ca8a6540ab1c1",
+      "texture": "assets/external_meshes/halo_ring.png",
+      "texture_sha256": "fea16849ccc2548171ca226cac394366cb915911064f5e3e19cedeab96b66dff",
+      "bytes": 2371252,
+      "triangles": 30000,
+      "bounds": {
+        "min": [
+          -0.5624510049819946,
+          -2.4948693725782608e-08,
+          -0.2381680261717205
+        ],
+        "max": [
+          0.570360004901886,
+          1.1212641055611088,
+          0.21556503197344776
+        ]
+      },
+      "pivot_offset": [
+        0.003954,
+        0.560632,
+        -0.011301
+      ]
+    },
+    {
+      "asset_id": "moon_orrery",
+      "label": "月相星象仪",
+      "status": "asset_ready",
+      "asset_origin": "hunyuan_3d",
+      "mesh": "assets/external_meshes/moon_orrery.glb",
+      "mesh_sha256": "e38dc42282cf80044b22a0702a13e8980f4910a5213e0dd42f91e34fff7aad9e",
+      "cache": "assets/external_meshes/moon_orrery.zbrd",
+      "cache_sha256": "fd06672d48ad9a86845cf9c5b8fdc7dc4d7f292f168db50409dcadc754b88d3b",
+      "texture": "assets/external_meshes/moon_orrery.png",
+      "texture_sha256": "a1750a32d8c4e2b67be3c05b182f934f7d5be3555bfa12541846f4b7b06192d5",
+      "bytes": 2771748,
+      "triangles": 29954,
+      "bounds": {
+        "min": [
+          -0.4990519881248474,
+          2.0877082968202455e-08,
+          -0.23937903539889963
+        ],
+        "max": [
+          0.4956589937210083,
+          1.0927270932128401,
+          0.22911602390711597
+        ]
+      },
+      "pivot_offset": [
+        -0.001696,
+        0.546364,
+        -0.005132
+      ]
+    },
+    {
+      "asset_id": "star_lantern",
+      "label": "可点击星灯",
+      "status": "asset_ready",
+      "asset_origin": "hunyuan_3d",
+      "mesh": "assets/external_meshes/star_lantern.glb",
+      "mesh_sha256": "3c285ac8d05cf18f30a841d699a9859bf2acc4e4622ea9006e8db8423726c85d",
+      "cache": "assets/external_meshes/star_lantern.zbrd",
+      "cache_sha256": "76b17d97980bd41af6d6a65ed00bdb90f13db43fbcbcedec04ab5f0310fb51e5",
+      "texture": "assets/external_meshes/star_lantern.png",
+      "texture_sha256": "b9208d2cbe3eb9753c3d26acad3a37ad0a407186eb944d877cd35228d623ae34",
+      "bytes": 2278752,
+      "triangles": 30076,
+      "bounds": {
+        "min": [
+          -0.4664590060710907,
+          9.429304396922037e-10,
+          -0.33397803824766087
+        ],
+        "max": [
+          0.4637719988822937,
+          1.0069321562164522,
+          0.3355530512418619
+        ]
+      },
+      "pivot_offset": [
+        -0.001344,
+        0.503466,
+        0.000788
+      ]
+    }
+  ],
+  "placements": [
+    {
+      "asset_id": "star_pillar",
+      "instance_id": "deco_nw",
+      "proxy_part": "decoration_deco_nw",
+      "zone": "corner_nw",
+      "anchor": [
+        -10.4,
+        0.0,
+        -9.2
+      ],
+      "rotation_y_deg": 0.0,
+      "scale": 2.2987,
+      "material": "zboard_deco_nw",
+      "tag": "",
+      "asset_ready": true,
+      "world_bounds": {
+        "min": [
+          -11.032816023558958,
+          7.255335562233957e-08,
+          -9.833183872408673
+        ],
+        "max": [
+          -9.767183950910551,
+          2.4439781635262117,
+          -8.566816074062155
+        ]
+      }
+    },
+    {
+      "asset_id": "star_pillar",
+      "instance_id": "deco_se",
+      "proxy_part": "decoration_deco_se",
+      "zone": "corner_se",
+      "anchor": [
+        10.4,
+        0.0,
+        9.2
+      ],
+      "rotation_y_deg": 0.0,
+      "scale": 2.2987,
+      "material": "zboard_deco_se",
+      "tag": "",
+      "asset_ready": true,
+      "world_bounds": {
+        "min": [
+          9.767183976441043,
+          7.255335562233957e-08,
+          8.566816127591325
+        ],
+        "max": [
+          11.03281604908945,
+          2.4439781635262117,
+          9.833183925937844
+        ]
+      }
+    },
+    {
+      "asset_id": "halo_ring",
+      "instance_id": "deco_n",
+      "proxy_part": "decoration_deco_n",
+      "zone": "edge_n",
+      "anchor": [
+        0.0,
+        1.8,
+        -9.6
+      ],
+      "rotation_y_deg": 0.0,
+      "scale": 2.2069,
+      "material": "zboard_deco_n",
+      "tag": "",
+      "asset_ready": true,
+      "world_bounds": {
+        "min": [
+          -1.249999205494764,
+          0.5627411841407277,
+          -10.100672840058369
+        ],
+        "max": [
+          1.2500014122179721,
+          3.037258993762811,
+          -9.099329354037797
+        ]
+      }
+    },
+    {
+      "asset_id": "moon_orrery",
+      "instance_id": "orb_s",
+      "proxy_part": "decoration_orb_s",
+      "zone": "edge_s",
+      "anchor": [
+        0.0,
+        0.6,
+        9.6
+      ],
+      "rotation_y_deg": 0.0,
+      "scale": 1.0982,
+      "material": "zboard_orb_s",
+      "tag": "",
+      "asset_ready": true,
+      "world_bounds": {
+        "min": [
+          -0.5461963461587075,
+          -1.6921872787567516e-05,
+          9.342749905724927
+        ],
+        "max": [
+          0.5461952541044113,
+          1.2000159489663411,
+          9.857251179854794
+        ]
+      }
+    },
+    {
+      "asset_id": "star_lantern",
+      "instance_id": "lantern_w",
+      "proxy_part": "interactable_lantern_w",
+      "zone": "edge_w",
+      "anchor": [
+        -11.0,
+        1.2,
+        0.0
+      ],
+      "rotation_y_deg": 90.0,
+      "scale": 1.1825,
+      "material": "zboard_lantern_w",
+      "tag": "ZChessboard.Lantern.West",
+      "asset_ready": true,
+      "world_bounds": {
+        "min": [
+          -11.39586084022786,
+          0.6046514561150151,
+          -0.5499996686783124
+        ],
+        "max": [
+          -10.604140326906498,
+          1.7953487297259547,
+          0.5499984946790648
+        ]
+      }
+    },
+    {
+      "asset_id": "star_lantern",
+      "instance_id": "lantern_e",
+      "proxy_part": "interactable_lantern_e",
+      "zone": "edge_e",
+      "anchor": [
+        11.0,
+        1.2,
+        0.0
+      ],
+      "rotation_y_deg": 90.0,
+      "scale": 1.1825,
+      "material": "zboard_lantern_e",
+      "tag": "ZChessboard.Lantern.East",
+      "asset_ready": true,
+      "world_bounds": {
+        "min": [
+          10.60413915977214,
+          0.6046514561150151,
+          -0.5499996686783124
+        ],
+        "max": [
+          11.395859673093502,
+          1.7953487297259547,
+          0.5499984946790648
+        ]
+      }
+    }
+  ],
+  "summary": {
+    "assets": 4,
+    "asset_ready": 4,
+    "placements": 6,
+    "consumed": 6
+  }
+}

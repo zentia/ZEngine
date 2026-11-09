@@ -1,0 +1,498 @@
+{
+  "schema": "zengine.chessboard.manifest/v1",
+  "name": "AC90_Neutral",
+  "skin_hint": "AC90",
+  "target_branch": "trunk",
+  "scene": {
+    "path": "Assets/Scenes/pvp/ART_OS_AC90_HD.unity",
+    "quality": "HD",
+    "artist_root": "Artist",
+    "field_node": "SceneMesh",
+    "template": "Assets/Scenes/pvp/ART_OS_AC10_HD.unity",
+    "note": "只产高配 HD 场景。High/Mid/Low 由项目既有自动降配流程（ArtTools/4.场景工具/--->HD转高中低配，或 FastAutoOptimization）从 HD 生成后由美术手调，本线不管；配置表（ResSceneCfg / ResPersonaliseChessboardDataBin）也不动。template 指向现成 HD 场景：unity_scene.py 默认只继承它开头的 4 个场景级文档（OcclusionCullingSettings / RenderSettings / LightmapSettings / NavMeshSettings，含完整 GI 与 LightingSettings），棋盘对象全部自己写，产物 86 文档 / 0 PrefabInstance。不能整份继承：AC10 的 31 个 PrefabInstance 里有 11 个 m_SourcePrefab GUID 在 trunk 不存在，稳定 Editor 实测打开会刷 Missing Prefab Asset 并报 Problem detected while opening the Scene file，且旧美术会被 SceneExportChecker 收进打包产物。--full-template 保留完整继承（仅诊断用），--no-template 用内置 HEADER。"
+  },
+  "delivered_lod": "HD",
+  "scene_parts": 14,
+  "core_contract": {
+    "fixed": true,
+    "visual_kind": "continuous_slab",
+    "logical_grid_is_visual": false,
+    "required_elements": [
+      "square_outline",
+      "player_seats"
+    ],
+    "square_outline": {
+      "fixed_parts": [
+        "core_slab",
+        "frame_*"
+      ],
+      "note": "最外面一个方格：一整块连续台面 + 四段包边描边。概念草图里只有这一圈白色方格是必须的，台面本身仍与地面共面、不是 56 个独立格子块。"
+    },
+    "player_seats": {
+      "count": 2,
+      "corners": [
+        "south_west",
+        "north_east"
+      ],
+      "fixed_parts": [
+        "anchor_seat_home",
+        "anchor_seat_guest"
+      ],
+      "note": "两个棋手占位固定在左下角（-x, +z）与右上角（+x, -z）对角，与现网河豚车站等皮肤一致。冻结的只有位置与占地半径；桌椅、灯箱等具体造型属于概念图输出，不进核心契约。"
+    },
+    "note": "2026-11-06 用户纠正：棋盘的形式就是「一个方格 + 两个棋手的占位」。原概念草图里的中线、两个半圆、中圈同心圆、外侧小圆圈都不是必须元素，一律不冻结；台面纹样、中央徽记与周围装饰全部按 12 张概念图（web/worlds.json 的 board.marks / style-pack.json）输出，默认不绘制。7x8 只是 GridUtil 的逻辑落点坐标，永远不是可见几何。sky@* 是渲染层天穹几何，不属于棋盘本体。AI 不得改动本节；要改风格请换 style-pack.json / worlds.json。",
+    "fixed_parts": [
+      "core_slab",
+      "frame_*",
+      "anchor_*",
+      "sky@*"
+    ],
+    "variable_parts": [
+      "decoration_*",
+      "interactable_*",
+      "cell_marks",
+      "sky_panorama",
+      "surface_marks"
+    ]
+  },
+  "grid": {
+    "layout": "cross_rectangle",
+    "columns": 7,
+    "rows": 8,
+    "cell_width_m": 2.15,
+    "cell_height_m": 1.8,
+    "shape": "chamfer",
+    "visual_kind": "continuous_slab",
+    "logical_grid_is_visual": false,
+    "cell_marks": "none",
+    "logical_bounds_xz": [
+      -8.062,
+      8.062999999999999,
+      -7.2,
+      7.2
+    ]
+  },
+  "frame": {
+    "width_m": 0.62,
+    "height_m": 0.26,
+    "corner": "miter",
+    "color": [
+      0.45,
+      0.42,
+      0.38,
+      1.0
+    ],
+    "trim_color": [
+      0.72,
+      0.58,
+      0.35,
+      1.0
+    ],
+    "trim_width_m": 0.07
+  },
+  "anchors": [
+    {
+      "id": "seat_home",
+      "position": [
+        -10.2,
+        0.0,
+        9.0
+      ]
+    },
+    {
+      "id": "seat_guest",
+      "position": [
+        10.2,
+        0.0,
+        -9.0
+      ]
+    }
+  ],
+  "decoration_zones": [
+    {
+      "id": "corner_nw",
+      "center": [
+        -10.2,
+        -9.0
+      ],
+      "half": [
+        2.8,
+        2.8
+      ],
+      "max_items": 8
+    },
+    {
+      "id": "corner_ne",
+      "center": [
+        10.2,
+        -9.0
+      ],
+      "half": [
+        2.8,
+        2.8
+      ],
+      "max_items": 0,
+      "reserved_by": "player_seat:seat_guest"
+    },
+    {
+      "id": "corner_sw",
+      "center": [
+        -10.2,
+        9.0
+      ],
+      "half": [
+        2.8,
+        2.8
+      ],
+      "max_items": 0,
+      "reserved_by": "player_seat:seat_home"
+    },
+    {
+      "id": "corner_se",
+      "center": [
+        10.2,
+        9.0
+      ],
+      "half": [
+        2.8,
+        2.8
+      ],
+      "max_items": 8
+    },
+    {
+      "id": "edge_n",
+      "center": [
+        0.0,
+        -9.7
+      ],
+      "half": [
+        6.2,
+        1.5
+      ],
+      "max_items": 6
+    },
+    {
+      "id": "edge_s",
+      "center": [
+        0.0,
+        9.7
+      ],
+      "half": [
+        6.2,
+        1.5
+      ],
+      "max_items": 6
+    },
+    {
+      "id": "edge_w",
+      "center": [
+        -11.0,
+        0.0
+      ],
+      "half": [
+        1.5,
+        6.2
+      ],
+      "max_items": 6
+    },
+    {
+      "id": "edge_e",
+      "center": [
+        11.0,
+        0.0
+      ],
+      "half": [
+        1.5,
+        6.2
+      ],
+      "max_items": 6
+    }
+  ],
+  "style_pack": {
+    "schema": "zengine.chessboard.style-pack/v1",
+    "name": "星海棋亭 Starlit Pavilion",
+    "generated_by": "zengine-ai-multimodal/text-to-image",
+    "status": "AI_GENERATED —— 由 assets/concept.jpg 抽取主题，可整包替换；ZBRD 代理几何保持不变，等混元 3D 资产就绪后再替换单体网格",
+    "decorations": 4,
+    "interactables": 2
+  },
+  "core_parts": [
+    "core_slab",
+    "frame_0",
+    "frame_1",
+    "frame_2",
+    "frame_3",
+    "anchor_seat_home",
+    "anchor_seat_guest",
+    "sky@HD",
+    "sky@High",
+    "sky@Mid",
+    "sky@Low"
+  ],
+  "variable_parts": [
+    "decoration_deco_nw",
+    "decoration_deco_se",
+    "decoration_deco_n",
+    "decoration_orb_s",
+    "interactable_lantern_w",
+    "interactable_lantern_e"
+  ],
+  "parts": 17,
+  "kinds": {
+    "grid": 1,
+    "frame": 6,
+    "sky": 4,
+    "decoration": 4,
+    "interactable": 2
+  },
+  "interactables": [
+    {
+      "id": "interactable_lantern_w",
+      "tag": "ZChessboard.Lantern.West",
+      "hint": "西侧可点击星灯：暖金铜环 + 青绿宝石 + 冷蓝星尘，点击触发星轨高亮"
+    },
+    {
+      "id": "interactable_lantern_e",
+      "tag": "ZChessboard.Lantern.East",
+      "hint": "东侧可点击星灯，与西侧共用同一份单体资产"
+    }
+  ],
+  "root_prefix": "P_ART_OS_AC90",
+  "unity": {
+    "material_template": "Assets/CustomResources/OSG_Default.mat",
+    "color_properties": [
+      "_AlbedoColor",
+      "_Color",
+      "_BaseColor"
+    ],
+    "note": "trunk 用 OSGameForwardRenderer（自定义 SRP）；Shader.Find(\"Universal Render Pipeline/Lit\") 会失败并回退内置 Standard，在自定义 SRP 下渲染成黑色。必须克隆工程默认材质（其 shader GUID=a3ef84c3...），只覆盖颜色属性。"
+  },
+  "lighting": {
+    "directional_color": [
+      1.0,
+      0.94,
+      0.84,
+      1.0
+    ],
+    "directional_intensity": 1.15,
+    "directional_euler": [
+      48.0,
+      -32.0,
+      0.0
+    ],
+    "ambient_color": [
+      0.38,
+      0.42,
+      0.5,
+      1.0
+    ],
+    "ambient_intensity": 0.65
+  },
+  "sky": {
+    "mode": "procedural",
+    "top_color": [
+      0.055,
+      0.075,
+      0.13,
+      1.0
+    ],
+    "horizon_color": [
+      0.26,
+      0.29,
+      0.36,
+      1.0
+    ],
+    "bottom_color": [
+      0.1,
+      0.11,
+      0.14,
+      1.0
+    ],
+    "radius_m": 62.0
+  },
+  "lods": {
+    "HD": {
+      "parts": 14,
+      "vertices": 7884,
+      "star_scale": 1.0,
+      "decorations": 6,
+      "max_decorations": 40
+    },
+    "High": {
+      "parts": 12,
+      "vertices": 6228,
+      "star_scale": 0.7,
+      "decorations": 4,
+      "max_decorations": 26
+    },
+    "Mid": {
+      "parts": 11,
+      "vertices": 4644,
+      "star_scale": 0.45,
+      "decorations": 3,
+      "max_decorations": 16
+    },
+    "Low": {
+      "parts": 10,
+      "vertices": 4140,
+      "star_scale": 0.2,
+      "decorations": 2,
+      "max_decorations": 8
+    }
+  },
+  "zbrd_bytes": 380238,
+  "sha256": "86bbd81085e0c7f98668a86db3c45c48f8ca017e05164b04029b848fff4635b5",
+  "external_mesh": {
+    "schema": "zengine.chessboard.external-mesh/v1",
+    "asset_format": "glb",
+    "frozen": true,
+    "assets": 4,
+    "instances": 6,
+    "consumed": 6,
+    "statuses": {
+      "asset_ready": 4
+    },
+    "consumer": "glb + sha256 + anchor (unity / blender / web)"
+  },
+  "visual": {
+    "schema": "zengine.chessboard.visual-pack/v1",
+    "name": "星海棋亭 Starlit Pavilion",
+    "generated_by": "zengine-ai-multimodal/text-to-image",
+    "status": "AI_GENERATED —— 由 AI 概念图抽取，可整包替换；几何冻结契约在 board-spec.json 中不受影响",
+    "concept_image": "assets/concept.jpg",
+    "concept_sha256": "5925fa0b3d1e3deee899a55898eec996cce7984cacd736b95831417a0e5481db",
+    "skybox_mode": "panorama",
+    "panorama_image": "assets/sky_panorama.jpg",
+    "panorama_sha256": "c327ebed913ec1dbfcd15497641a6991367dc298bf28591b8e1359c070aaf92e",
+    "sky_colors": {
+      "top_color": [
+        0.02,
+        0.055,
+        0.105,
+        1.0
+      ],
+      "horizon_color": [
+        0.1,
+        0.24,
+        0.29,
+        1.0
+      ],
+      "bottom_color": [
+        0.03,
+        0.06,
+        0.09,
+        1.0
+      ]
+    },
+    "fog": {
+      "enabled": 1,
+      "color": [
+        0.07,
+        0.17,
+        0.22,
+        1.0
+      ],
+      "mode": 3,
+      "density": 0.006,
+      "linear_start": 0.0,
+      "linear_end": 300.0
+    },
+    "post_processing": {
+      "exposure_value": 0.15,
+      "tonemap_mode": 3,
+      "bloom": {
+        "enabled": 1,
+        "threshold": 1.35,
+        "soft_knee": 0.72,
+        "intensity": 0.55,
+        "diffusion": 0.82,
+        "firefly_removal_strength": 1,
+        "clamp": 65472,
+        "tint": [
+          0.88,
+          0.94,
+          0.92,
+          1.0
+        ]
+      },
+      "color_grading": {
+        "white_balance_temperature": 6200,
+        "white_balance_tint": -4,
+        "global_saturation": [
+          1.02,
+          1.0,
+          1.06,
+          1.0
+        ],
+        "global_contrast": [
+          1.02,
+          1.02,
+          1.04,
+          1.0
+        ],
+        "global_gamma": [
+          1.0,
+          1.0,
+          1.0,
+          1.0
+        ],
+        "global_gain": [
+          1.0,
+          1.0,
+          1.04,
+          1.0
+        ],
+        "global_offset": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "blue_correction": 0.5,
+        "expand_gamut": 1,
+        "tone_curve_type": 3
+      }
+    },
+    "materials": [
+      "anchor_info_plinth",
+      "anchor_seat_guest",
+      "anchor_seat_home",
+      "core_slab",
+      "frame",
+      "sky_gradient",
+      "zboard_deco_n",
+      "zboard_deco_nw",
+      "zboard_deco_se",
+      "zboard_lantern_e",
+      "zboard_lantern_w",
+      "zboard_orb_s"
+    ],
+    "volume": {
+      "enabled": true,
+      "script_guid": "8b58b33c8d7842a44a07b29f9b2fea73",
+      "weight": 1.0
+    },
+    "lighting": {
+      "directional_color": [
+        1.0,
+        0.86,
+        0.64,
+        1.0
+      ],
+      "directional_intensity": 1.12,
+      "ambient_color": [
+        0.26,
+        0.36,
+        0.42,
+        1.0
+      ],
+      "ambient_intensity": 0.62,
+      "subtractive_shadow_color": [
+        0.16,
+        0.22,
+        0.3,
+        1.0
+      ]
+    }
+  }
+}
