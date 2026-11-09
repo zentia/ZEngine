@@ -13,6 +13,10 @@
 // head to read is one query on one handle, and it is the platform's own answer to
 // "is this an SSD".
 #include <winioctl.h>
+// Incompatible-program detection is name-only: one process snapshot and one
+// enumeration of active driver services. Neither opens a process nor a service.
+#include <tlhelp32.h>
+#include <winsvc.h>
 
 #include <d3d11.h>
 // Only for the adapter enumeration and the feature-level constants: d3d11.dll is
@@ -731,6 +735,141 @@ constexpr std::uint32_t GpuResetsScanDeadlineMilliseconds = 600;
 // most recent events: an incomplete scan can understate the count, never invent
 // one. Stays `known = false` when neither channel could be read, because "could
 // not look" must not become "nothing happened".
+// "Incompatible program" list. Keep this in sync with the game's own
+// compatibility check: a name that exists only here produces a report that
+// disagrees with the dialog the player sees, which is worse than no report.
+// Process Monitor ships as Procmon.exe and (on x64) extracts Procmon64.exe;
+// its kernel driver registers as PROCMONxx (PROCMON23, PROCMON24, ...).
+const char* const IncompatibleProcessNames[] = {
+    "procmon.exe", "procmon64.exe", "procmon64a.exe"
+};
+
+std::string AsciiLower(std::string value)
+{
+    for (char& character : value)
+    {
+        if (character >= 'A' && character <= 'Z')
+        {
+            character = static_cast<char>(character - 'A' + 'a');
+        }
+    }
+    return value;
+}
+
+std::string JoinDetected(const std::vector<std::string>& values)
+{
+    std::string joined;
+    for (const auto& value : values)
+    {
+        if (!joined.empty()) joined += ", ";
+        joined += value;
+    }
+    return joined;
+}
+
+std::string JsonStringArray(const std::vector<std::string>& values)
+{
+    std::ostringstream stream;
+    stream << "[";
+    for (std::size_t index = 0; index < values.size(); ++index)
+    {
+        stream << (index == 0 ? "" : ", ") << JsonString(values[index]);
+    }
+    stream << "]";
+    return stream.str();
+}
+
+IncompatibleProgramScan ScanIncompatibleProgramsLive()
+{
+    IncompatibleProgramScan scan;
+
+    // Process names only. No OpenProcess, no module walk, no window enumeration:
+    // a per-launch check has to stay read-only and cheap.
+    const HANDLE snapshot = ::CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snapshot != INVALID_HANDLE_VALUE)
+    {
+        PROCESSENTRY32W entry{};
+        entry.dwSize = sizeof(entry);
+        if (::Process32FirstW(snapshot, &entry))
+        {
+            scan.processSnapshotKnown = true;
+            do
+            {
+                const std::string exeName = diagnosis::WideToUtf8(entry.szExeFile);
+                if (IsIncompatibleProcessName(exeName))
+                {
+                    scan.detected.push_back("process " + exeName);
+                }
+            } while (::Process32NextW(snapshot, &entry));
+        }
+        ::CloseHandle(snapshot);
+    }
+
+    // ProcMon's driver can stay loaded after its window is closed, and a
+    // renamed procmon.exe still registers as PROCMONxx. Enumerating active
+    // driver services through the SCM is one read-only RPC; no service is
+    // opened, started, stopped or modified.
+    const SC_HANDLE scm = ::OpenSCManagerW(nullptr, nullptr, SC_MANAGER_ENUMERATE_SERVICE);
+    if (scm)
+    {
+        DWORD needed = 0;
+        DWORD returned = 0;
+        DWORD resume = 0;
+        const BOOL probed = ::EnumServicesStatusExW(scm, SC_ENUM_PROCESS_INFO,
+            SERVICE_DRIVER, SERVICE_ACTIVE, nullptr, 0, &needed, &returned, &resume, nullptr);
+        if (probed)
+        {
+            // No active driver services at all: the question was asked and the
+            // answer is "none". An unanswered question must not look like this.
+            scan.driverServicesKnown = true;
+        }
+        else if (::GetLastError() == ERROR_MORE_DATA && needed != 0)
+        {
+            std::vector<BYTE> buffer(needed);
+            DWORD bufferSize = needed;
+            for (;;)
+            {
+                DWORD bytesNeeded = 0;
+                DWORD count = 0;
+                const BOOL ok = ::EnumServicesStatusExW(scm, SC_ENUM_PROCESS_INFO,
+                    SERVICE_DRIVER, SERVICE_ACTIVE, buffer.data(),
+                    bufferSize, &bytesNeeded, &count, &resume, nullptr);
+                // ERROR_MORE_DATA still returns `count` usable records, so
+                // consume them before deciding whether to grow the buffer.
+                const auto* records =
+                    reinterpret_cast<const ENUM_SERVICE_STATUS_PROCESSW*>(buffer.data());
+                for (DWORD index = 0; index < count; ++index)
+                {
+                    if (records[index].lpServiceName == nullptr) continue;
+                    const std::string name = diagnosis::WideToUtf8(records[index].lpServiceName);
+                    if (IsIncompatibleDriverServiceName(name))
+                    {
+                        scan.detected.push_back("driver service " + name);
+                    }
+                }
+                if (ok)
+                {
+                    scan.driverServicesKnown = true;
+                    break;
+                }
+                if (::GetLastError() != ERROR_MORE_DATA || count == 0) break;
+                if (bytesNeeded > bufferSize)
+                {
+                    buffer.resize(bytesNeeded);
+                    bufferSize = bytesNeeded;
+                }
+            }
+        }
+        ::CloseServiceHandle(scm);
+    }
+
+    // A process hit and a driver hit for the same program are normal; show each
+    // name once so the player-facing sentence stays readable.
+    std::sort(scan.detected.begin(), scan.detected.end());
+    scan.detected.erase(std::unique(scan.detected.begin(), scan.detected.end()), scan.detected.end());
+    return scan;
+}
+
 void ScanRecentGpuDriverResets(PreflightInputs& inputs)
 {
     const UtcTicks now = diagnosis::CurrentUtcTime();
@@ -833,6 +972,19 @@ PreflightInputs CollectPreflightInputs(const std::filesystem::path& gameDirector
     catch (const std::exception&)
     {
         inputs.direct3d11 = Direct3D11Probe{};
+    }
+
+    // One process snapshot plus one SCM enumeration: both are cheap and
+    // read-only, and the game may refuse to start over what they find, so they
+    // run before the event-log walk that can eat the rest of the budget.
+    // A failed scan leaves the known flags false (fail-open), never a finding.
+    try
+    {
+        inputs.incompatiblePrograms = ScanIncompatibleProgramsLive();
+    }
+    catch (const std::exception&)
+    {
+        inputs.incompatiblePrograms = IncompatibleProgramScan{};
     }
 
     // Deliberately last: it is the one part of the collection that can be slow on
@@ -951,6 +1103,12 @@ diagnosis::UserAction ActionFor(const std::string& findingCode)
     if (findingCode == "VC_RUNTIME_MISSING")
     {
         return {"INSTALL_VC_REDIST", "安装 Microsoft Visual C++ 2015-2022 运行库（x64）后重启电脑。"};
+    }
+    if (findingCode == "INCOMPATIBLE_PROGRAM_DETECTED")
+    {
+        // The driver can outlive the ProcMon window, hence the reboot hint.
+        return {"CLOSE_INCOMPATIBLE_PROGRAM",
+                "关闭 Process Monitor (ProcMon) 等不兼容程序，然后重新启动游戏；如果仍然提示，请重启电脑。"};
     }
     if (findingCode == "WINDOWS_X64_REQUIRED")
     {
@@ -1356,6 +1514,19 @@ void AppendAdvisoryFindings(PreflightResult& result, const PreflightInputs& inpu
             std::to_string(inputs.gpuTdrCount) + " resets, latest at " +
             diagnosis::FormatUtcIso8601(inputs.gpuTdrLatestAt)});
     }
+
+    // "Incompatible program ProcMon detected, please close it and restart" is
+    // the game's own compatibility check. Report the same fact here so the
+    // conclusion file no longer says Pass while the game refuses to launch.
+    // Advisory on purpose: this tool never blocks a launch, and a false
+    // positive here would be worse than a missing line in a report.
+    if (!inputs.incompatiblePrograms.detected.empty())
+    {
+        const std::string names = JoinDetected(inputs.incompatiblePrograms.detected);
+        result.findings.push_back({"INCOMPATIBLE_PROGRAM_DETECTED", "system",
+            "检测到游戏不兼容的程序正在运行：" + names + "。请关闭这些程序后重新启动游戏。",
+            names});
+    }
 }
 
 bool IsBlocking(const std::string& findingCode)
@@ -1415,6 +1586,35 @@ void PrintPreflightUsage()
 }
 
 } // namespace
+
+bool IsIncompatibleProcessName(const std::string& exeName)
+{
+    const std::string lower = AsciiLower(exeName);
+    for (const char* name : IncompatibleProcessNames)
+    {
+        if (lower == name) return true;
+    }
+    return false;
+}
+
+bool IsIncompatibleDriverServiceName(const std::string& serviceName)
+{
+    // PROCMON, PROCMON23, PROCMON24, ... : a versioned driver service name.
+    // The bare prefix is accepted too, so a build that drops the digits is
+    // still caught; anything with a non-digit suffix is not ProcMon.
+    const std::string lower = AsciiLower(serviceName);
+    const char prefix[] = "procmon";
+    const std::size_t prefixLength = sizeof(prefix) - 1;
+    if (lower.size() < prefixLength || lower.compare(0, prefixLength, prefix) != 0)
+    {
+        return false;
+    }
+    for (std::size_t index = prefixLength; index < lower.size(); ++index)
+    {
+        if (lower[index] < '0' || lower[index] > '9') return false;
+    }
+    return true;
+}
 
 std::uint32_t ParseFeatureLevelName(const std::string& name)
 {
@@ -1837,6 +2037,15 @@ PreflightResult EvaluatePreflight(
     AppendBlockingFindings(result, inputs, requirements);
     AppendAdvisoryFindings(result, inputs, requirements);
 
+    // A scan that could not look is not a clean machine. The note stops a
+    // support engineer from reading a Pass as "ProcMon was checked and absent".
+    if (!inputs.incompatiblePrograms.processSnapshotKnown ||
+        !inputs.incompatiblePrograms.driverServicesKnown)
+    {
+        result.notes.push_back(
+            "incompatible program scan incomplete; a clean result does not rule out an incompatible program");
+    }
+
     std::size_t blocking = 0;
     for (const auto& finding : result.findings)
     {
@@ -1969,6 +2178,10 @@ std::string BuildPreflightJson(
            << "},\n"
            << "    \"runtime\": {\"vcRuntimePresent\": " << BoolText(inputs.vcRuntimePresent)
            << ", \"vcRuntimeKnown\": " << BoolText(inputs.vcRuntimeKnown) << "},\n"
+           << "    \"incompatibleProgramScan\": {\"processSnapshotKnown\": "
+           << BoolText(inputs.incompatiblePrograms.processSnapshotKnown)
+           << ", \"driverServicesKnown\": " << BoolText(inputs.incompatiblePrograms.driverServicesKnown)
+           << ", \"detected\": " << JsonStringArray(inputs.incompatiblePrograms.detected) << "},\n"
            << "    \"reboot\": {\"pending\": " << BoolText(inputs.rebootPending)
            << ", \"known\": " << BoolText(inputs.rebootPendingKnown) << "},\n"
            << "    \"gpuDriverResets\": {\"known\": " << BoolText(inputs.gpuTdrKnown)

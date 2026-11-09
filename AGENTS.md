@@ -10,14 +10,374 @@ inherits the knowledge.
 
 ---
 
+## 0. Product identity (decided 2026-11-05)
+
+**ZEngine is no longer a standalone game engine.** It is a *capability provider
+that ships as plugins into other software*. Five responsibilities: (1) plugin
+for game engines (Unity / Godot / Unreal), (2) plugin for DCC tools (3ds Max /
+Blender / Maya / Substance Painter), (3) AI-native plugin (MCP-callable,
+inference-backed), (4) frontier tech (3DGS, 2D-to-3D), (5) built-in showcase
+effects (ocean waves, unlimited lights).
+
+**Hard architectural consequence: capability slicing, NOT engine embedding.**
+Do not `dlopen` the whole `ZRuntime` into a host — that produces two RHI
+devices, two main loops, two window systems and two asset managers fighting
+for control. The unit of delivery is a *capability*, not the engine.
+
+| Layer | Rule |
+|---|---|
+| L2 Core | std-only C++, no host headers, no main loop, no window, no RHI device ownership |
+| L3 Bridge | one thin shell per host; bindings generated from reflection metadata, not hand-written N times |
+| L1 Presentation | Tier A (borrow host device, in-process) / B (separate process + shared texture) / C (data-only write-back) |
+
+**Precedents already in the tree — reuse, do not reinvent:**
+- `Runtime/ZEngineApi/ZEngineToolApi.h`: the narrow C ABI seam (`const char*` /
+  `int`, nothing with an allocator, exception, `std::string` or `Object*`
+  crossing the boundary). `ZRuntime_ToolInit()` starts *only*
+  Log/Type/FileSystem/Object/Asset and explicitly NOT
+  Application/WindowSystem/RHI/Scripting/ProjectInfo — this IS capability
+  slicing, already shipped.
+- `Player/PlayerShell.h`: host-driven lifecycle, `native_window` owned by the
+  host, engine does not own the main loop.
+- `engine/Libraries/GPUSpine` and `GPUParticle`: std-only core + adapter, the
+  same code shared with the Unity side ("one submodule = one copy of the code",
+  §2.44). `doc/GPU_SPINE_INTERCHANGE_FORMAT.md` is the "spec first, code second"
+  template.
+- `Runtime/ExportRuntime.h` (`EXPORT_RUNTIME`), `ZHeaderTool` (reflection ->
+  `zengine.d.ts`; extend it to emit C# / Python / GDScript / TS bindings from
+  the same metadata), `RHI::supports*` ("ask before you record", §2.43).
+
+**Specs (规格先行, read before implementing):**
+`doc/plugin/ZHOST_ABI_SPEC.md`, `doc/plugin/EFFECT_PACKAGE_SPEC.md`.
+`ZHOST_ABI_SPEC.md §14` is the source of truth for what is actually shipped.
+**P0 landed (2026-11-05)**: `Runtime/Host/ZHostABI.h` + `ZHostPlugin.cpp` —
+a std-only C ABI skeleton (GUID registry, lifecycle, version negotiation,
+capability query, render-event dispatch) compiled into `ZRuntimeShared.dll`.
+`ZENGINE_BUILD_HOST_ABI_SMOKE_TEST=ON` builds the A1/A2 test (63 checks) and
+a Python ctypes host probe (20 checks); both pass.
+`EFFECT_PACKAGE_SPEC.md` is mostly still a draft, but its §8 (additive
+overlay contract) now has working code + offline verification (see below).
+
+**A3 / Unity host line (2026-11-05):** `integration/unity/` now holds the UPM
+package `com.zengine.host`, the L3 native bridge `ZEngineHost.dll` (built from
+`ZHostPlugin.cpp` + `ZUnityBridge.cpp`, **not** linked against `ZRuntime`) and a
+dotnet C# P/Invoke probe. `CommandBuffer.IssuePluginEventAndData` takes
+`ZRender_GetEventAndDataFunc()` directly: Unity's `UnityRenderingEventAndData`
+is the same `void(int, void*)`. `data` is the `ZHandle`. See
+`doc/plugin/UNITY_HOST_A3.md`.
+
+A3-render also landed: `ZUnityPluginInterface.h` re-declares the minimum
+Unity 2023.1 SDK ABI (**no Unity headers copied**, §1) and locks onto
+`IUnityGraphicsD3D12v7` only — v2..v6 have different vtable slots, so a
+miss is a clean Tier C downgrade, never a guess. `GetDevice` is captured on
+the first render event (render-thread constraint), `CommandRecordingState`
+supplies Unity's current command list, and the draw command is injected via
+`ZUnityBridge_SetDrawCallback`. `ZTexture_*` handle borrowing landed in the
+generic ABI. A WARP D3D12 offline harness (fake `IUnityInterfaces` + real
+device) verifies the draw by reading back a pixel: 20 checks / 0 failures.
+The Unity-render-thread trigger still needs a real Unity 2023.1 editor (not
+installed here); **do not claim it passed**.
+
+A3-overlay landed (`EFFECT_PACKAGE_SPEC.md` §8): the generic ABI gained
+`ZEffectDispatchDesc` / `ZEffectBackendVTable` / `ZEffect_Dispatch`. The
+std-only core validates live handles, forbids **any input aliasing the
+output**, and only forwards the host's command list — it never owns a GPU
+resource. The Unity L3 bridge installs `ZHost.EffectBackend`, deep-copies
+`effect_id` into a one-shot queue and dispatches from the render event. A
+WARP harness (`ZUnityOverlaySmokeTest`, 22 checks / 0 failures) reads back
+pixels to prove the effect wrote only to an independent output RT while the
+borrowed host colour texture stayed byte-for-byte unchanged. **The real
+Unity composite pass and effect-package loading are still unimplemented.**
+
+**A4 / Blender host line (2026-11-05):** `integration/blender/zengine_host/`
+is a Python add-on (manifest + `bl_info`) implementing Tier C data write-back.
+`zpls.py` (ZPLS read/write + community `.splat` Translator + extension
+dispatch), `zply.py` (official 3DGS / coloured-point-cloud `.ply` Translator)
+and `proxy_mesh.py` (quaternion billboard / point proxy) are stdlib-only: no
+`bpy`, no GPU, no native DLL. `operators.py` writes a mesh + vertex-colour
+material via `bpy.data`; `zhost_ctypes.py` calls `ZPluginLoad` for capability
+negotiation **only when a DLL exists**, otherwise degrading to `python-only`.
+Offline verification: **80** unittest checks / 0 failures
+(`integration/blender/verify/`), including "forced DLL missing still imports"
+and native Tier C / `startup_audit_bits == 0`. Real import inside Blender is
+**not verified** (no `bpy` on this machine). See `doc/plugin/BLENDER_HOST_A4.md`.
+
+**3DGS PLY field conventions (do not "simplify"):** verified against
+`D:/blender/source/blender/io/ply/importer/ply_import_gsplat.cc` +
+`IO_gsplat.hh`. `opacity` is logit, `scale_*` is log-scale (**ZPLS also stores
+log-scale, so the translator copies it verbatim** — do not `exp`/`log` twice),
+`rot_0..3` is wxyz while `ZSplatRecord.rotation` is xyzw, `f_rest_*` and ZPLS
+`sh_rest` are splat-major × channel-major, and `f_dc_*` converts to display
+colour via `0.5 + SH_C0 * f_dc` **without clamping** (clamping breaks
+`.ply -> ZPLS -> .ply` round-trip). ZPLS caps SH at degree 3 (0/9/24/45
+`f_rest`); Blender's degree 4 (72) is a hard error, never a silent truncation.
+`.ply` write-back emits only the official 3DGS dialect; the point-cloud
+profile is import-only. See `doc/plugin/BLENDER_HOST_A4.md §8` and
+`EFFECT_PACKAGE_SPEC.md §4.2`.
+
+**OSGame 棋盘皮肤生成线 (2026-11-05, target=trunk):** `integration/chessboard/`
+是「冻结 core spec + 可变 style pack → 一份共享几何 → 双端消费」，**不要**在 three.js 和 Unity 各写
+一套棋盘几何公式。`board-spec.json` 是唯一真源；`zboard.py` 生成 `.zbrd`
+(ZBRD v1, float32 二进制)；`web/zbrd.mjs` 与
+`unity/ZChessboardGenerator.cs` 只解析字节。three.js 是 Y-up 右手系，
+Unity 侧必须统一做 `x→-x` / `normal.x→-normal.x` / `uv.y→1-uv.y` /
+反转三角形绕序。格子数值来自 `G:/OSGame/Client_proj/Tools/ProtobufDatabin/
+Core/Basic/J局内/W.玩法模板参数表.xlsx` 行 4 与 `CrossRectangleUtil.cs:19-45`：
+7×8、2.15×1.8 m、奇数行左移 1.075 m、中心偏移 (-5.912, -6.3)；**不要按 8×8
+估算**。**交付物形态（2026-11-05 用户纠正，已查证）：**
+`Project/Assets/Scenes/pvp/` 配的是 **`.unity` 场景族** `ART_OS_ACxx_{HD,High,Mid,Low}.unity`
+（另有 `_HD_Master` 母版、`_PC_HD*` PC 派生），不是 prefab。
+`SceneTools.cs:26 ART_NODE="Artist"` 说明场景序列化的输入是 `.unity` 场景里名为
+`Artist` 的根节点（不是 prefab）；`SGameTools/场景序列化/输出美术节点` 才产出
+运行时加载的 `SceneExport/Artist/*_Artist.asset` + `*_core.bytessv`
+（`TinySceneObjCreateComponent.lua:71/94`）——两者是「编辑器源 vs 打包产物」。
+High/Mid/Low 由项目自动降配流程（`ArtTools/4.场景工具/--->HD转高中低配`
+`AutomaticBakeTool.cs`，或 `FastAutoOptimization`）从 HD 生成后美术手调。
+**本线只产一个高配 HD 场景，配置表（`ResSceneCfg` /
+`ResPersonaliseChessboardDataBin`）不动。**
+`tools/deploy_to_trunk.py` 默认 dry-run，不自动改 G 盘工程。**Windows 上
+`python -m http.server` 会把 `.mjs` 返回成 `text/plain`，ES module 被严格
+MIME 检查拒绝**，宣发页必须用 `tools/serve.py`。本机无头 Edge 可验证
+DOM/WebGL 像素，但 `Page.captureScreenshot` 抓不到合成层（空白图不代表没渲染）。
+**两个在 trunk 实测踩到的坑（2026-11-05）：** ① trunk 用
+`OSGameForwardRenderer`（自定义 SRP），`Shader.Find("Universal Render Pipeline/Lit")`
+返回 null → 回退内置 `Standard`，棋盘在 Scene 视图全黑。必须克隆
+`Assets/CustomResources/OSG_Default.mat`（shader GUID `a3ef84c3...`）再只覆盖
+`_AlbedoColor` / `_Color` / `_BaseColor`；不要自己 `new Material(shader)`。
+② `Project8ArtField.cs:38/41/60` 的 `fieldRoot` / `directionalLight` /
+`sceneBackGround` 类型是 **GameObject**，用 `SerializedObject` 赋值时传
+`Transform` 或 `Light` 会被静默拒绝，prefab 落成 `{fileID: 0}`，运行时报
+`InitScene artField not ready`。几何一致 ≠ 视觉一致：three.js 的天穹渐变
+shader / 星空 Points / 灯光是网页渲染层，Unity 侧要用项目自己的材质与天空盒。
+**几何分层修正（2026-11-05，用户实测截图纠正）：** 早期版本把 `GridUtil`
+的 7×8 **逻辑落点**当成可见几何，生成 56 个独立 cell 方块，与现网 7 套皮肤
+全都不像。现网核心区是**一整块连续台面**（纹样/徽记靠贴图或浅浮雕），
+只有周围装饰物与风格化几何不确定。现在 `board-spec.json` 只冻结
+`core_contract`（`visual_kind=continuous_slab` / `logical_grid_is_visual=false`）、
+台面轮廓、包边、`anchors`、`decoration_zones`、`lods.*.max_decorations`；
+`style-pack.json`（`zengine.chessboard.style-pack/v1`）由 AI/人工整包替换，
+只能在 `decoration_zones` 槽内放 `decoration_*` / `interactable_*`，且不得含
+`grid` / `core_contract` / `anchors` / `decoration_zones`。`zboard.py --style`
+加载风格包、`--no-style` 只出 12 个冻结核心部件；当前构建 18 parts
+(12 core + 6 variable)。`external_mesh`（混元单体装饰）的引用契约
+`external_mesh_contract/v1` 已于 2026-11-06 冻结（见文末「第 2 步」），
+三端消费在「第 3 步」打通、`star_pillar` 的混元 3D 接管在「第 4 步」完成；
+style item 上出现内联 `external_mesh` 字段仍会被 `validate_style_pack` 拒绝。
+Unity `VerifyCoreContract`
+会拦住任何 `cell_*` 可见格子或缺少 `core_slab` 的旧 ZBRD。离线门禁：
+`verify/test_board.py`、`verify/test_zbrd_js.mjs`（含 `scene.quality==HD` 门禁）；
+`deploy_to_trunk.py` 部署并逐字节比对 **6** 个文件（含 style-pack.json 与
+`ART_OS_AC90_HD.unity`）。早期 trunk 曾残留旧 56-cell 版本的 mesh/material，
+`ReportStaleAssets` 只报告不删除；**2026-11-05 20:40 复核已清理干净**：
+`Meshes/` 15 个 / `Materials/` 12 个，stale 0、`cell_*` 0，跑场景序列化前
+无需再清理。`Meshes/` 里没有 `sky_High/Mid/Low.asset` 是正常的 —— 本线只
+交付 HD，低配由项目自动降配流程派生。
+**生成器改为产场景（2026-11-05）：** `board-spec.json` 新增 `scene` 段
+（`path=Assets/Scenes/pvp/ART_OS_AC90_HD.unity` / `quality=HD` /
+`artist_root=Artist` / `field_node=SceneMesh` / `template=null`），manifest 带
+`delivered_lod=HD` 与 `scene_parts`；`ZChessboardGenerator.cs` 里曾实现的
+Editor 内生成（现为无菜单的 `GenerateInEditorUnsafe()`，仅参考）只消费
+`lod_mask & 1` 的部件，把棋盘几何**直接建进场景**的 `SceneMesh` 下，新建空场景搭
+`Artist / SceneMesh / Light_Group / RenderSettingGroup` 并用
+`EditorSceneManager.SaveScene` 存成 HD 场景。`template` 可填现成 `_HD.unity`
+以继承 RenderSettings/Volume，此时 `Artist` 根会被整体替换，残留引用需人工检查；
+默认 `null` 时环境/后处理/天空盒由美术在场景里补。`Project8ArtField` 挂在
+`SceneMesh` 上、`fieldRoot` 指向自身、`sceneBackGround` 留空（现网 HD 场景同构）。
+**Unity trunk「闪退且无 dump」根因（2026-11-05 实测，连崩 2 次）：**
+`Editor.log` 显示 `SaveAsPrefabAsset` → `RefreshInternalV2` →
+`Prefab file async load enable true` → 导入 `P_ART_OS_AC90.prefab` 后
+`Graphics device is null.` + `Fatal Error!`（从非主线程）→
+`Exiting without the bug reporter. Application will terminate with return code 0`。
+这是 Unity **主动 exit(0)** 而非 native crash，所以不会写 `.dmp`；OSGame 定制引擎
+开了 prefab 异步导入，worker 线程初始化渲染资源时 graphics device 不可用。
+同一菜单回调里连续 `DeleteAsset`/`CreateAsset` 还触发十几次 refresh 与
+`sortedQueueGuids entry size does not match` 告警。**修复：生成器绝不创建
+prefab 资产（不 `SaveAsPrefabAsset`、不 `DeleteAsset`、不 `AssetDatabase.Refresh`），
+几何直接进场景；mesh/material 用 `StartAssetEditing/StopAssetEditing` 合并成一次
+refresh 并复用已有资产 + `EditorUtility.SetDirty`；加 `step N/5` 分步日志便于定位。**
+**但第 3 次仍崩（同日）：** `Editor.log` 停在 `step 3/5`（资产已就绪）到
+`step 4/5`（场景已保存）之间，`Files imported locally: 12` 已完成。查定制引擎
+源码坐实机制：`Runtime/GfxDevice/GfxDevice.cpp:189-195` 在 `GFX_TLS_DEVICE` 下
+`GetGfxDevice()` 发现本线程 `g_ThreadedGfxDevice == NULL` 就
+`FatalErrorMsg("Graphics device is null.")`；`Editor/Platform/Windows/
+EditorUtility.cpp:1136-1140` 因非主线程取消弹窗 → `Exiting without the bug
+reporter ... return code 0`。**即任何 worker 线程碰渲染 API 都会让 Editor
+主动 exit(0)，与 C# 异常无关；菜单回调里的 AssetDB 导入 / `NewScene` 都是触发源。**
+Editor 本身图形设备正常（Direct3D 11.1 / RTX 5080 / BatchMode=0）。
+**最终方案：彻底离线生成。** `integration/chessboard/unity_scene.py` 只做纯文本
+I/O，读 trunk 已落地的 15 个 `.asset` / 12 个 `.mat` 的 `.meta` GUID，写出
+`build/ART_OS_AC90_HD.unity`（83 个 YAML 文档，引用 `4300000`/`2100000` 主对象，
+`Project8ArtField` 用 `m_Script guid=603043be3babbf44188404cd589ac0c7,
+fileID=-365591601`），`verify()` 校验 fileID 闭合 / GUID 可解析 / 层级 / 15 个 HD
+部件 / 无 `!u!1001` prefab instance。`tools/deploy_to_trunk.py` 部署 **6** 个文件，
+把 `.unity` 直接放进 `Assets/Scenes/pvp/`；`ZChessboardGenerator.cs` 的菜单降级为
+`ZEngine/Chessboard Diagnostics (read-only)`，Editor 内生成逻辑保留为
+`GenerateInEditorUnsafe()` 但无菜单。**用户不要在 Unity 里跑生成菜单；先关 Editor
+→ 部署 → 重开工程按常规启动流程导入。**
+门禁：`verify/test_board.py` 57 tests、`verify/test_zbrd_js.mjs` 14 checks。
+**第 4 次崩溃（同日）：双击打开离线生成的 `ART_OS_AC90_HD.unity` 也闪退。**
+`Editor.log` 里 `Opening scene 'Assets/Scenes/pvp/ART_OS_AC90_HD.unity'`
+的**下一行**就是 `Graphics device is null.` → exit(0)，全程没有生成菜单、
+没有 AssetDB 写入 ⇒ 这已不是 ZEngine 脚本能规避的路径。对比现网
+`ART_OS_AC10_HD.unity`：`!u!20 Camera` 有 1 个、`!u!1001 PrefabInstance` 31 个、
+1494 个文档；离线场景原本 0 个 Camera。已在 `unity_scene.py` 补
+`Main Camera`（挂 `RenderSettingGroup` 下，`!u!20`，86 文档）并加门禁断言。
+**对照实验结果（用户 2026-11-05 回复）：现成 AC10 等场景能正常打开，只有
+AC90 崩，补 Camera 后重试仍崩。** 第 5 次会话日志（19:51，5069 行）坐实不是
+YAML 内容错：`2396: Start importing Assets/Scenes/pvp/ART_OS_AC90_HD.unity ...
+-> artifact 'ee29198c...' in 0.005505 seconds` 说明场景资产已被 AssetDB 正常导入；
+本次会话**没有导入任何 `ZEngineChessboard` 资产**（0 次提及），27 个 mesh/mat
+都有 `.meta`，GUID 缓存与磁盘一致 ⇒ 「新资产未导入」假说排除。崩溃时序：
+`5063 BallanceWorkerCount - Create new worker!!` → `5064 Starting new worker id: 0`
+（`Project/Logs/AssetImportWorker0.log`）→ `5065 Opening scene` →
+`5066 Graphics device is null.` → `5069 exit(0)`。
+**引擎缺陷坐实（G:/OSGame/unity-engine-source）：**
+`Runtime/GfxDevice/GfxDevice.cpp:135-138` 的 `GFX_TLS_DEVICE` 让
+`g_ThreadedGfxDevice` 成为 TLS；`:189-195` 的 `GetGfxDevice()` 见 TLS 为 NULL
+即 `FatalErrorMsg`，而 `:213-221` 的 `GetUncheckedGfxDevice()` 本来就有
+`g_ThreadedGfxDevice ? ... : *g_MainGfxDevice` 的安全回退。
+全源码只有 `threaded/GfxDeviceWorker.cpp:356`、`GfxShaderCompileWorker.cpp:83`、
+`GfxDeviceClient.cpp:5303`、`d3d12/:6028`、`vulkan/:5171` 会调
+`SetThreadedGfxDevice()` ⇒ **任何其它线程（场景加载/导入 worker）碰
+`GetGfxDevice()` 必崩，属误用 `GetGfxDevice()` 的引擎侧 bug**。
+项目 `ProjectSettings/EditorSettings.asset:28/57/58` 明确开着
+`m_AsyncShaderCompilation: 1` / `m_DesiredImportWorkerCountOverride: 1` /
+`m_StandbyImportWorkerCountOverride: 1`，日志 `:186-191` 对应
+`SetDesiredWorkerCount 1`，`:2395` 还有 `Prefab file async load enable true`。
+⇒ AC90 是工程里唯一新增的 `.unity`，打开它要走「首次加载 + 依赖解析 +
+worker 分发」，现网场景资源早已预热，所以只有它触发。
+**更正一个错误的规避建议（不要再试）：** 让 `EditorSettings.asset` 的
+`m_DesiredImportWorkerCountOverride` / `m_StandbyImportWorkerCountOverride`
+改成 0 **不是「0 个 worker」**。引擎
+`Editor/Mono/Inspector/EditorSettingsInspector.cs:848-850` 写明 0 = 取消项目覆盖、
+改用 per-user 自动值。用户实测改 0 后日志变成 `SetDesiredWorkerCount 4`、
+`SetStandbyWorkerCount 2`、`desiredWorkers: 4`，反而启动 **2 个** worker
+（`AssetImportWorker0/1.log` 都只有常规启动内容，无 fatal），照样
+`Graphics device is null.` ⇒ import worker 数量与崩溃无关。`m_AsyncShaderCompilation`
+同理救不了。**这条方向已排除。**
+
+**母版模式已实现（2026-11-05）：** `board-spec.json` 的 `scene.template` 设为
+`Assets/Scenes/pvp/ART_OS_AC10_HD.unity`，`build/scene_template.unity` 缓存现网
+场景全文（1494 docs / 14 根 / 31 PrefabInstance / 445 MonoBehaviour / 真实
+`m_LightingDataAsset` 与 `m_LightingSettings`）。`unity_scene.py` 的
+`apply_template()` 保留全部文档，只做：① 原 Artist 改名
+`Artist_AC10_Reference` 并 `m_IsActive: 0`（**不删文档** —— 现网有 6 个
+PrefabInstance 的 modifications 引用子树内 `254680459` / `351891918`，删了会悬空）；
+② `SceneRoots.m_Roots` 追加 ZEngine 新根；③ 末尾追加 15 个 HD part 的文档。
+新增文档 fileID 用 `[2000000000, 2000100000)` —— **必须加上界**，现网场景有
+19 位 fileID（PrefabInstance / SceneRoots），只用 `>= 2e9` 会把母版文档误判成
+新增文档。`verify()` 母版模式下只对新增文档做 fileID 闭合/GUID 检查（母版的
+prefab modifications 引用的是 prefab 资产内部 fileID，本就不在场景里声明）。
+`--no-template` 可退回 86 docs 独立场景。产物 1537 docs / 15 HD parts / sha256 `95afd1512409d709`；但完整母版模式
+随后被降级为**仅诊断用**（`--full-template`），原因见下。
+
+**根因确认（用户 2026-11-05 20:38）：闪退是用户自己改的另一个 GPUParticle
+定制引擎分支导致的。** 换用项目自带的 `G:/OSGame/Client_proj/UnityEngine`
+（稳定 Editor `2022.3.5f1 (497d8f943752)`）后一切正常，AC90 能
+`Loaded scene`（Deserialize 55ms / Integration 571ms）。⇒ 之前所有
+「离线 YAML / 母版 / Camera / worker 数量 / Library 缓存」的排查方向都不是
+根因；现网 `ART_OS_AC10_HD.unity` 也崩只是因为当时正跑在那个坏 Editor 上
+（AC10 sha256 `5E065198...` 与模板缓存逐字节一致，从未被 ZEngine 改动）。
+先前观察到的旁证 `Class with persistent type id 0x6B1D4F37 has not been
+registered` = `Modules/GPUSpine/GPUSpineRenderer.cpp:18` 的
+`kClassIDGPUSpineRenderer`，也指向这个 GPUParticle/GPUSpine 集成分支。
+`EditorSettings.asset` 已恢复原值（三个 1）。
+
+**默认模式收窄为「只继承场景级 4 文档」（同日）：** 稳定 Editor 打开完整母版版
+AC90 虽能加载，但报 `Problem detected while opening the Scene file` +
+9 条 `Prefab instance problem. Missing Prefab Asset`。查证 AC10 的 23 个
+`m_SourcePrefab` GUID 里有 **11 个在 trunk 的 818363 个 `.meta` 里不存在**；
+完整继承还会把 AC10 旧美术带进 `SceneExportChecker`。崩溃根因既已确认与场景
+结构无关，就不需要整份继承。现在 `unity_scene.py` 默认用
+`header_from_template()` 只取 `!u!29/104/157/196` 四个文档作 HEADER
+（补齐 `m_LightmapEditorSettings` / `m_LightingDataAsset` /
+`m_LightingSettings`），棋盘对象全部自己写 ⇒ **86 docs / 0 PrefabInstance /
+1 Camera / 1 个 `Artist` 根 / 15 HD parts / sha256 `fd43fa98a122dcc8`**。
+`verify()` 非完整母版模式下跳过场景级文档再做 GUID 校验（继承来的
+LightingDataAsset GUID 不属于棋盘资产）。门禁 61 tests / 14 checks / 0 lint error。
+
+**下一步（需稳定 Editor 里人工完成）：** ① 打开 AC90 确认 Console 无
+`Missing Prefab Asset` / `Problem detected`、15 个部件与 `Project8ArtField`
+字段正确、材质不是全黑（trunk 自定义 SRP 须用 `OSG_Default.mat` 的 shader）；
+② 美术补 Volume / 天空盒 / 后处理与皮肤材质；③ 跑
+`SGameTools/场景序列化/输出美术节点` 产 `SceneExport/Artist/*_Artist.asset`
++ `*_core.bytessv`，再过 `SceneExportChecker`；④ High/Mid/Low 走项目自动降配，
+配置表不动；⑤ 当时 `style-pack.json` 仍是 PLACEHOLDER、`external_mesh` 未实现
+（2026-11-06「第 2 步」已替换为星海棋亭主题包并冻结契约，见文末）。
+（trunk 旧 `cell_*` 残留已复核为 0，无需清理。）
+**离线 YAML 的实机渲染效果仍待验证（本机无 Unity）。**
+
+**ZPLS spec fix:** `EFFECT_PACKAGE_SPEC.md §4.2` had three contradictory byte
+layouts (header `reserved[2]`=40B but labelled 32, record `padding[1]`=60B
+but labelled 64, magic `0x53504C5A` LE-spells `ZLPS`). Now `reserved[1]` /
+`padding[2]` / `0x534C505A` (literal `b"ZPLS"`), locked by module-level
+asserts in `zpls.py`. Do not "restore" the original constants.
+
+**A6 / generated bindings (2026-11-05):** `ZHeaderTool.py bindings` parses
+`engine/Source/Runtime/Host/ZHostABI.h` as the **single source of truth** into
+a JSON IR, then emits C#, Python(ctypes), TypeScript, GDScript and MCP tool
+schema (7 checked-in generated files). `ZHostABI.cs`, `zhost_ctypes.py` and
+`zhost_ctypes_probe.py` are now host-specific glue only — **never hand-edit a
+general ABI declaration or a `*.generated.*` / `zhost_abi_generated.py` file**.
+The IR computes x64 struct layout itself (176 / 72 / 96 ...), so generated
+`Expected*Size` constants are derived, not guessed. CTest gates:
+`ZHostAbiBindingsCheck` (byte-identical regeneration) and
+`ZHostAbiBindingsUnitTests` (19 checks, parameter counts identical across all
+five languages). Drift returns exit 1 (verified with a deliberately stale
+file). `ZEffect_GetParamSchema` is still unimplemented, so the effect-parameter
+half of A6 remains open. See `doc/plugin/BINDINGS_A6.md`.
+ZHeaderTool's pre-existing `test_zht.CodegenTests` has 4 unrelated failures;
+A6's CTest gate deliberately uses `-p test_abi_bindings.py` to avoid them —
+do not claim those 4 pass.
+
+**Blender source:** `D:/blender` is a full Blender 5.0.4 alpha source tree with
+**no `blender.exe` and no `bpy` on this machine**. Use it as a read-only
+reference (e.g. `source/blender/makesrna/intern/rna_define.cc` for the
+"one metadata set -> many generated bindings" precedent). Real in-Blender
+import still requires a built Blender; do not claim it passed.
+
+**§2.1 `.meta` scope:** the no-`.meta` rule applies to ZEngine's own asset
+system (`Assets/`, `Scripts/`, `Shaders/`). Third-party host packages under
+`integration/` follow their host's rules. The Unity package currently ships no
+`.meta` and configures `PluginImporter` via an Editor menu instead.
+
+**Root `.gitignore:312` has `*~`**, which silently swallows any path ending in
+`~` — including Unity's mandatory `Samples~` folder (same trap as `Tests~` in
+§2.44). `integration/unity/.gitignore` re-includes
+`com.zengine.host/Samples~/`. New UPM packages must do the same; **do not**
+rename the folder, UPM requires the trailing `~`.
+
+**Rollout:** P0 specs -> P1 two validation lines (Unity/D3D12 in-process render,
+Blender/Python data + AI) -> P2 UE + Godot -> P3 3ds Max / Maya / Substance.
+
+**Priority re-ranking (not deletion):** `doc/PHASE1_FOUNDATION_PLAN.md` and
+`PHASE2_PLAN.md` are historical engine-building plans, **not the current
+roadmap** — do not start new work from them without an explicit decision.
+Keep investing in the RHI backends, RenderGraph, bindless, shader compile/cache,
+reflection + codegen, ZSlate abstractions, `.zasset`/serialization,
+`AssetImporter`, MegaLights. Deprioritise *new* investment in Player/packaging,
+runtime Addressables, deeper Nanite/Lumen/WorldPartition/LWC layers and the
+remaining TS editor-shell phases — the host already owns those. Our
+differentiation is frontier effects + cross-host visual consistency + AI
+discoverability/verifiability.
+
+---
+
 ## 1. Reference codebases (read-only)
 
-- `../unity2023.1/` — Unity engine source. Reference for high-level
-  Editor/Runtime API surface and tooling UX.
+- `G:/OSGame/unity-engine-source/` — **user-specified primary Unity
+  reference** (2022.3.5f1, `2022.3/release`; `UnitySourceInfo.txt:1-6`),
+  the OSGame customized source. Use this for asset pipeline / importer /
+  mesh write-back questions. Its `IUnityGraphicsD3D12v7` GUID
+  (`Runtime/PluginInterface/Headers/IUnityGraphicsD3D12.h:94`) is identical
+  to `integration/unity/native/ZUnityPluginInterface.h:51-52`, so A3's
+  v7-only rule holds on this tree too.
+- `../unity2023.1/` — 2023.1 Unity engine source; the reference used by the
+  A3 design notes for Editor/Runtime API surface and tooling UX.
 - `../UnrealEngine/`  — Unreal Engine source. Reference for low-level
   systems (asset registry, reflection, hot-reload, packaging).
-- ZEngine's own implementations should look at both, but **ZEngine is not a
-  fork** — copy ideas, not files.
+- ZEngine's own implementations should look at all of these, but **ZEngine is
+  not a fork** — copy ideas, not files.
 
 ## 2. Hard project conventions
 
@@ -2988,6 +3348,20 @@ ZEngine 的 `ParticlePass` 与 Unity 侧共用同一份发射 / 曲线 / 拼包�
   unchecked，随机器依赖溢出 wrap。）
 - 本仓库根 `.gitignore:312` 的 `*~` 会静默吞掉任何 `Tests~` 目录 —— GPUParticle
   的测试就这么丢过一次（`git add -f` 才进来）。新库的 `Tests~` 要留意。
+- **RateAndBurst（`mode=3`）= 双窗口，不是新单窗口排班**（2026-11-05 落地）。起因：恒速流 +
+  1 个 time=0 单次 Burst 同时存活时，存活粒子是**两段不连续的环形区间**，单 `ParticleGpuWindow
+  {first,count}` 装不下 ⇒ 拆两个窗口、适配器发两次 draw。关键不变式（下次别推翻）：
+  Burst 批固定占环形缓冲前 `burstCount` 个槽位 `[0,n)`，rate 流从 `n` 起接续、`spawnTime =
+  rateOrdinal/rate`（不能复用 `序号/rate`，用 `ParticleGpuMakeSpawnAt`）；容量 `capacity >=
+  ceil(rate·life) + n + 2` 保证 rate 流在 Burst 存活期不绕回覆盖 `[0,n)`；**shader 零改动**——
+  两次 draw 同 `capacity`、只改 `_ParticleParams.x`；**重新激活走完整重启**（`ParticleGpuEmitterReset`）
+  而非软重触发，因为 Burst 位置固定、软重触发会让 `emitted` 回退破坏 `Advance()` 的增量上传。
+  只支持「1 个、单次、time=0」的 Burst 叠加（实测 `Client_proj` 里 rate+Burst 的 96.9% time=0、
+  98.4% 单次，覆盖绝大多数）；循环/延迟/多 Burst 与 rate 叠加仍只保留 rate。
+  ⚠️ **跨仓库一致性**：核心改动落在**共享子模块** `GPUParticle` 的工作副本里（Unity 侧是
+  `G:\OSGame\unity-engine-source\External\GPUParticle`，ZEngine 侧是 `engine/Libraries/GPUParticle`），
+  必须先在子模块里提交推送、再两侧各更新 submodule 指针（照本段上面那条）。Unity 侧适配器
+  （`GPUParticleSystem` / 转换器 / `ParticleGpu.hlsl` 之外的 shader 无改动）是 Unity 独有、不进子模块。
 
 ## 3. Build / test invocations
 
@@ -3181,6 +3555,18 @@ constant. It packages **game logs** together with the environment report:
   on the GUI form plus a confirm dialog, and a CLI stdout warning. Details and
   the `isTargetGame` field of `events-redacted.json` (schemaVersion 2) live in
   `engine/tools/ZEnvironmentCollector/README.md` §1.8.1.
+
+**Preflight now covers third-party incompatible programs, but only as advice.**
+`--preflight` takes a name-only process snapshot (`CreateToolhelp32Snapshot`)
+and enumerates active driver services (`EnumServicesStatusExW`) for Sysinternals
+Process Monitor (`procmon*.exe`, `PROCMONxx`). A hit becomes
+`INCOMPATIBLE_PROGRAM_DETECTED` / `CLOSE_INCOMPATIBLE_PROGRAM` as an **Advise**
+finding, never `BelowMinimum`: the tool never blocks a launch, and the game's
+own anti-cheat check still owns the "Incompatible program ... detected" dialog.
+Both scans carry known flags (a failed scan leaves the report Pass with a note,
+never a false all-clear) and land in `environment.incompatibleProgramScan` in
+the JSON. Keep the name list in sync with the game's own list: the report is
+only useful if it agrees with that dialog. See README.md.
 
 ### 6.1 Why the collector links ZRuntimeShared, and what it must not start
 
@@ -4034,3 +4420,779 @@ GPUSpine 0.35 / Jolt 0.21 / mimalloc 0.10 / **PuertsCore 0.01**（MB）。
 - **动一个被广泛包含的头文件前先确认它不在 PCH 里**：`PhysicsScene.h` 若被 ZEnginePCH
   预编译，两个 target 看到不同宏就是 ODR 事故。当时是靠 grep 确认它只在 .cpp 里被直接
   include 才敢加 `ZENGINE_SHARED_NO_PHYSICS` 接缝的。
+
+---
+
+## OSGame 棋盘线 · AI 视觉层（2026-11-05）
+
+用户明确纠正：AI 生成范围不只是几何风格包，**天空盒 / 后处理 / 材质 / Volume 也必须
+由 AI 生成**。真源因此拆成三份、互不覆盖：`board-spec.json`（冻结核心几何）、
+`style-pack.json`（外围装饰）、`visual-pack.json`
+（`zengine.chessboard.visual-pack/v1`，四组视觉参数）。冻结 spec 一律不动。
+
+- AI 素材：`assets/concept.jpg` 与 `assets/sky_panorama.jpg`。云端文生图返回的
+  是 **JPEG 不是 PNG**（存成 .png 会骗过尺寸解析），且是 1024×1024 而非 2:1；
+  后者经确定性「裁上部 64% → LANCZOS 到 2048×1024 → 128px 左右接缝混合」处理，
+  是全景**风格图**而非严格相机投影，契约里如实写 `projection_fidelity`。
+  visual-pack 记录 sha256，门禁逐字节校验，不能伪造。
+- Unity 落地全部是离线纯文本（`unity_scene.py`，不碰 Editor API）：
+  ① `!u!104 RenderSettings` 覆写雾 / 环境光；② `RenderSettingGroup` 下新增
+  `ZEngineVolume`，复用现网 AC10 的 `RenderSettingsVolume` MonoBehaviour 结构
+  （脚本 GUID `8b58b33c8d7842a44a07b29f9b2fea73`，可在
+  `Program/GameScripts/Packages/Graphics/com.tencent.tmgp.yarp/Runtime/RenderSettings/RenderSettingsVolume.cs.meta`
+  解析），只覆写白名单参数，并把 `UserDefinedBounds` / `Root` / `m_GameObject`
+  等指向 AC10 的 fileID 清零后重指本地 ID —— 否则会重新引入 Missing；
+  ③ 12 个 `.mat` 只改 `_Color` / `_BaseColor`，GUID 与 shader 不变（不要动
+  `_AlbedoColor`，它是白色 tint，改了会把颜色乘暗）；④ `sky_gradient.mat` 的
+  `_MainTex` / `_AlbedoMap` 绑定 AI 全景贴图（固定 GUID 由
+  `assets/texture_importer.meta.tpl` + sha256 生成）。现网 `m_SkyboxMaterial`
+  本来就是 `{fileID: 0}`，项目靠天穹球而非 Unity skybox material，别去改它。
+- 交付场景 **89 文档 / 0 PrefabInstance / 1 Camera / 1 Artist / 15 HD parts**
+  （原 86 + Volume 的 GO/Transform/MonoBehaviour）；`--no-visual` 退回纯几何场景。
+- 部署清单从 6 个文件变为 **23**（+visual-pack.json、12 个 .mat、2 张 jpg、2 个 .meta）。
+  `deploy_to_trunk.py` 仍默认 dry-run、不自动写 G 盘；先关稳定 Editor 再 `--apply`。
+- 门禁：`verify/test_board.py` **78 tests**、`verify/test_zbrd_js.mjs` **20 checks**。
+  `web/app.js` 同步消费 visual-pack 的天空色 / 材质色 / 灯光 / 曝光（缺失时降级）。
+- High/Mid/Low 与自动降配：用户明确「先不管」；配置表不动。
+
+**Blender 交付（2026-11-06，用户要求「美术会在 blender 里面调」）**：本机只有
+`D:/blender/source`（源码），**没有 `blender.exe` / `bpy`**，无法直接写二进制
+`.blend`。因此 `integration/chessboard/blender_export.py`（纯 stdlib）产出 3 个文件
+到 `build/blender/`，并部署到 `Assets/ZEngineChessboard/Blender/`：
+① `AC90_board.glb`（glTF 2.0，15 个 HD 部件各是独立 Mesh/Node，材质颜色由
+visual-pack 做 sRGB→linear，节点 extras 带 zengine_part/kind/tag/lod_mask）；
+② `build_ac90.py`（bpy 脚本，导入 GLB + World 环境贴图 / 太阳光 / 相机 /
+色彩管理 / Compositor Glare 后 `save_as_mainfile` 成 `AC90.blend`，内嵌 AI 参数，
+兼容 Blender 3.x/4.x 字段差异用 `set_if` 兜底）；
+③ `sky_panorama.jpg`。美术 Run Script 一次即得到可编辑 `.blend`。
+**坐标不要再手动旋转**：GLB 保持 glTF 的 Y-up，Blender 的 glTF importer 自动
+转 Z-up；只有 Unity 侧才需要 `x→-x` + 反转绕序（Unity 是左手系）。
+**幂等坑**：内存 `Part` 是 double、`board.zbrd` 解码后是 float32，两个入口会
+写出字节不同的 GLB ⇒ `export_all` 统一先 `decode(encode(parts))` 量化。
+**产物污染坑**：自动导出只挂在 `zboard.py --variants` 的正式构建（默认 `--out`、
+无 `--no-style` / `--set`），否则测试里的临时构建会覆盖交付 GLB。
+**材质补丁坑**：trunk 部署过 AI 颜色后 `_Color` 与期望值完全相同，
+`patch_material` 不能靠「文本是否变化」判断白名单属性存在与否，必须先查属性
+再覆写。部署清单 23 → **26** 个文件。
+
+---
+
+## OSGame 棋盘线 · 第 2 步：主题风格包 + 混元 3D 契约冻结（2026-11-06）
+
+用户指令「做第 2 步，等 blender 编译好之后，我就部署」：**部署由用户自己做，
+本仓库不得自动 `--apply`**。第 2 步 = 主题风格包 + 单体参考图 +
+`external_mesh_contract/v1` 冻结，**不是**现在就跑混元 3D。
+
+- `style-pack.json` 从 PLACEHOLDER 换成 **「星海棋亭 Starlit Pavilion」**
+  （`status=AI_GENERATED`），`derived_from` 指向 `assets/concept.jpg` 与
+  `visual-pack.json`；`palette` / `frame_style.color` / 6 个装饰的 `color`
+  逐值对齐 visual-pack（新增门禁断言），**不另立第二套调色板**。
+- **刻意保留 6 个 primitive 代理几何与全部 id**（`deco_nw/deco_se/deco_n/
+  orb_s/lantern_w/lantern_e`）、`params` / `position` / `min_lod` / `tag`：
+  材质名 `zboard_<id>`、12 个 `.mat`、15 个 mesh `.asset` 的 GUID 全部不变，
+  已部署资产不会与 ZBRD 漂移。第 2 步只改颜色 ⇒ ZBRD / manifest 重新构建，
+  **场景 `.unity`（sha256 `52bfa2c98d96c3bd`）与 GLB（311736 bytes）逐字节不变**。
+  真正替换几何要等第 3 步 glb 消费打通。
+- 4 张单物体参考图在 `assets/style_refs/`，全部是 1024×1024 **JPEG**
+  （右下角有云端自动加的「AI 生成」水印，送图生 3D 前建议裁掉右下 ~12%，
+  原始文件与 sha256 不改）：`star_pillar.jpg` / `halo_ring.jpg` /
+  `moon_orrery.jpg` / `star_lantern.jpg`。第 3 张曾因
+  `concurrent slot limit exceeded (2) for dimension hy-image-v3` 反复失败，
+  换了时段重试成功；失败时按 `status: pending` 如实落地，**禁止伪造结果**。
+- `external_mesh_contract/v1`（`zboard.py:validate_external_mesh_contract`）：
+  `frozen=true` / `asset_format=glb` / `reference_root=package_root`。
+  **glb 是独立单体资产，按 `instances[].anchor` 摆放，不烘进 ZBRD 共享几何**；
+  anchor 必须等于对应 style item 的 `position`，`zone` / `proxy_primitive` /
+  `theme_asset` 必须一致，6 个 style item 必须被恰好覆盖一次；参考图与
+  `asset_ready` 的 mesh 都要有 sha256 且逐字节校验，路径只能是包内相对路径
+  （`package_relative()` 拒绝绝对路径 / `..`）。状态机
+  `pending → reference_ready → asset_ready`，当前 4 个都是 `reference_ready`。
+  **消费侧仍 `NOT_IMPLEMENTED`**：style item 上出现 `external_mesh` 依旧被
+  `validate_style_pack` 明确拒绝；manifest 新增 `external_mesh` 摘要段
+  （`consumer: not_implemented`）。
+- 4 张参考图由 `deploy_to_trunk.py` 按**包内相对路径镜像**到
+  `Assets/ZEngineChessboard/assets/style_refs/`，保证 trunk 里 style-pack 的
+  `reference_image` 也能解析；它们是美术素材、无运行时引用，Unity 自行生成
+  `.meta`。部署清单 26 → **30** 个文件（7 张 .jpg / 2 个 .jpg.meta）。
+- 门禁：`verify/test_board.py` **90 tests**、`verify/test_zbrd_js.mjs`
+  **27 checks**、`zboard.py --check` / `unity_scene.py --check` /
+  `blender_export.py --check` / `external_mesh.py --check` 全 OK、
+  error 级 lint 0。
+  `deploy_to_trunk.py --verify-only` 当前为
+  `15 missing / 5 stale of 41 files`，属于用户部署前的正常状态。
+- 下一步（需用户授权后再做）：接混元图生 3D；**3D 文件 URL 仅 24 小时
+  有效，生成后必须立刻落盘并写 sha256**。消费链路见下一节。
+
+---
+
+## OSGame 棋盘线 · 第 3 步：glb + sha256 + 锚点三端消费（2026-11-06）
+
+用户指令「打通 glb + sha256 + 锚点三端消费」。真源只有一份：
+`external_mesh.py` 读 `style-pack.json` 的 `external_mesh_contract/v1`，
+逐字节校验 glb，产出 `build/external_mesh.manifest.json`（每实例的
+`anchor / rotation_y_deg / scale / pivot_offset / world_bounds`）。
+Unity / Blender / Web 都只消费这份清单，**不要在三端各写一套锚点公式**。
+
+- 统一公式：`world = anchor + rotY(rotation_y_deg) * scale * (local - pivot_offset)`。
+  代理资产的局部坐标已经是「锚点相对」，`pivot_offset` 恒为 `[0,0,0]`；
+  混元资产若原点不在底面中心，用 `pivot_offset` 归位，三端都会照做。
+  `world_bounds` 由 Python 按此式算出并写进清单，**JS / Blender / Unity
+  的门禁都拿它当对拍基准**（实测 6 个实例与 ZBRD 世界包围盒误差 0）。
+- 4 个代理资产（`star_pillar` / `halo_ring` / `moon_orrery` /
+  `star_lantern`，`asset_origin=proxy_zbrd`，828 三角形 / 95424 字节）是
+  **用 ZBRD primitive 在局部坐标重出的真 glb**，`status=asset_ready`。
+  混元就绪后：覆盖 `assets/external_meshes/<id>.glb`，把 `mesh_sha256` /
+  `cache_sha256` 改成新值、`asset_origin=hunyuan_3d`，再跑
+  `zboard.py --variants` + `unity_scene.py`；`external_mesh.py --check`
+  会拦住任何哈希漂移，管线本身不变。
+- **Unity 没有 glTF 运行库**（`Project/Packages` 与 GameScripts 里都没有
+  GLTFast / UnityGLTF），所以 `external_mesh.py` 把 glb 离线转成
+  `<id>.zbrd`（ZBRD v1 单部件，`cache_sha256` 锁定）。运行时
+  `ZExternalMeshBinder.cs` 先真读 glb 算 SHA256 校验，再读缓存建 Mesh，
+  按锚点摆放，成功后 `SetActive(false)` 关掉同名 `decoration_*` /
+  `interactable_*` 代理；任何一步失败都**保留代理**，绝不空场景。
+  材质直接复用代理的 AI `.mat`，避免两端调色分叉。
+- 清单 / glb / zbrd 走 **StreamingAssets**（`Assets/StreamingAssets/
+  ZEngineChessboard/`），不用 TextAsset GUID，也不需要 Unity 导入 glb；
+  运行时用 `Path.Combine(Application.streamingAssetsPath, ...)` 直接读。
+- **踩坑（2026-11-06 用户截图：Missing (Mono Script)）**：trunk 的
+  `Program/GameScripts/Assets/**` **不是** Unity 直接编译的源码目录，它由
+  外部编译器产出 `Assets/Plugins/GameScripts/Scripts.dll`（`Scripts.dll.meta`
+  的 GUID 是 `603043be3babbf44188404cd589ac0c7`，`Project8ArtField` 的
+  `m_Script` 就是它 + 类型 fileID）。因此 `.cs` 旁边的 `.meta` GUID
+  **在场景里永远解析不到**，写进 `m_Script` 必定 Missing。
+  **正确做法（用户 2026-11-06 指定，不要运行时做）：场景里只放纯空节点
+  `ExternalMeshRoot`（无 `!u!114`），由 `ZExternalMeshEditor.cs` 的菜单
+  `ZEngine/棋盘/挂载外部网格消费端` 在编辑期 `Undo.AddComponent` +
+  `EditorSceneManager.SaveScene`，让 **Unity 自己**把 `m_Script` 序列化成
+  `Scripts.dll` 的 GUID + 类型 fileID。**不要**再用
+  `RuntimeInitializeOnLoadMethod` 去运行时找对象（已删除，JS/Python 门禁
+  都会拒绝它回来）。菜单脚本用反射找 `ZEngine.Chessboard.ZExternalMeshBinder`，
+  所以不依赖 Editor 程序集引用；类型不在 `Scripts.dll` 里时会弹窗提示先跑
+  `GameScriptBuilder/ForceRebuildAll`。
+  `unity_scene.verify` 会把旧 GUID `2391662872…` 当回归门禁直接拒绝，
+  放行 `Scripts.dll` 的 `603043be…`（场景被 Unity 保存后会出现），
+  且不再部署 `ZExternalMeshBinder.cs.meta`（G 盘残留的那份可手动删）。
+  `deploy_to_trunk.py` 新增 `--force-scene`：检测到 ExternalMeshRoot 上已有
+  `Scripts.dll` 引用时，`--verify-only` 报 `LOCAL_EDIT`、`--apply` 不覆盖场景，
+  避免把美术/程序在 Unity 里挂好的组件冲掉；要重灌场景显式加 `--force-scene`。
+- Blender：`build_ac90.py` 嵌入 `EXTERNAL` 表（= 清单的 asset_ready 子集），
+  `import_external_meshes()` 先校验 glb sha256 再 `import_scene.gltf`，
+  位置换算 `(x, y, z) -> (x, -z, y)`、`rotation_euler.z = +rotation_y_deg`，
+  代理设 `hide_render=True` + `display_type="WIRE"` 方便美术替换。
+  glb 会按包内相对路径 stage 到 `build/assets/external_meshes/`，
+  trunk 里 `Blender/..` 与 `assets/` 同级，脚本不用改路径。
+- Web：`web/external_mesh.mjs`（纯逻辑，可在 Node 里测）+ `app.js`
+  用 `GLTFLoader` 加载，先 `crypto.subtle` 校验 sha256，失败保留代理；
+  交互物的外部网格会接管 `state.interactive`（递归 raycast）。
+  **`three/addons/` 必须写进 `index.html` 的 importmap**（three 0.160）。
+- 部署清单 30 → **41** 个文件（+4 glb +4 zbrd +清单 +1 运行时脚本
+  +1 菜单脚本，无 `.cs.meta`）。
+  `external_mesh.py --write-proxies` 会重写 `style-pack.json`（json.dump
+  统一格式化），改完必须重跑 `zboard.py --variants` 让清单/Blender 同步。
+  场景因此少一个 `!u!114`，文档数 92 → **91**，sha256
+  `9984b515c9e8df7c`。
+- 门禁负例：篡改 glb 一个字节 → Python `verify` / Node `verifySha256` 都拒绝；
+  `pivot_offset` 非 0 / 缺 `asset_origin` / `asset_ready` 缺 cache 配对
+  都会被 `validate_external_mesh_contract` 拒绝。
+
+---
+
+## OSGame 棋盘线 · 第 4 步：混元 3D 图生 3D 接管 star_pillar（2026-11-06）
+
+`star_pillar` 从 `proxy_zbrd` 换成 **`hunyuan_3d`**，其余 3 个仍是代理。
+接管入口是新增的 `python external_mesh.py --import-glb <asset_id> --source <glb>
+[--height <m>]`（`--write-proxies` 的逆操作）：**glb 字节一个都不改**
+（`mesh_sha256` = 上游下载值 `60cf8395…`），尺寸/原点差异只写进契约；
+不要用外部工具烘节点变换或重采样，否则「与上游产物逐字节一致」的意义就没了。
+
+- 混元官方 CLI 只有文生 3D：`tools/hunyuan3d.py` 复用 `buddy-cloud.py` 的
+  签名/代理/轮询，把 body 换成 `ImageBase64`（`SubmitHunyuanTo3DProJob` 支持），
+  `--face-count` 走 `FaceCount`。**产物 URL 24 小时失效，生成后立刻落盘**。
+  身份用 `connect_cloud_service` 拿到的 `BUDDY_CLOUD_TOKEN`（`$env:` 传入，
+  不要回显）。
+- 实测数据（别再用索引数当三角面数）：`POSITION` = 20,918 顶点，
+  索引 = 90,090 → **真三角面 30,030**（=`--face-count 30000`，吻合）。
+  早期把 `len(deindexed_positions)//3 = 90090` 当成面数是错的。
+  1 材质（`doubleSided` + `KHR_materials_specular.specularFactor=0` +
+  `metallicFactor=0`）+ 1 张 **4096² PNG baseColor（19.4 MB）**。
+- **混元 glb 是 Z-up**：`nodes[0].rotation = [0.7071,0,0,0.7071]`（+90°X），
+  原始 POSITION 的 `z ∈ [-1.063, 0]`。`external_mesh.glb_triangles` 会走
+  `_node_matrix` 把节点变换乘进去，所以 `glb_bounds` / pivot 都在**变换之后**
+  的 Y-up 局部空间；不要自己再转一次，也不要假设 glb 没节点变换。
+- `pivot_offset = [0.001402, 0, -0.008539]`（bbox 的 XZ 中心 + 底面），
+  `instances[].scale = 2.2987`（高度归一到代理的 2.444 m）。世界包围盒
+  `x/z ±0.633 / y 0..2.444`，落在 `corner_nw|se` 槽内。
+  **混元资产的宽高比和代理不同**（0.55/1.06 vs 0.68/2.44），没法既对高度又对
+  直径，所以门禁从「世界包围盒 == 代理包围盒」放宽成「底面中心落在锚点 +
+  站在地面 + 高度在代理 ±15%」；`asset_origin=proxy_zbrd` 的资产仍逐值相等。
+- **ZBRD v1 只收三角形汤**（`zboard.encode` 强制 `index_count == vertex_count`），
+  所以 30k 面资产的缓存放大到 **90,090 顶点 / 3.09 MB**。要共享顶点得改格式
+  （Unity / Blender / Web 三个解析器一起改），本步没做。
+- **贴图三端不一致，已强制对齐**：Unity（ZBRD 缓存 + `zboard_<id>.mat`）与
+  Blender（缓存）都不读贴图；Web 用 `GLTFLoader` 会保留 `material.map`，
+  于是多乘一层贴图色。`web/app.js` 现在显式 `child.material.map = null`。
+  要真正用上贴图，必须先把 baseColor 抽成独立贴图文件并让 Unity 的
+  `.mat` 绑定，三端一起接，**不要只让 Web 单独好看**。
+- 19.4 MB 贴图仍留在 glb 里（字节保真优先）：Unity `Start()` 会整份读 20.29 MB
+  算 sha256，web 还要 decode 4096²。若要瘦身，在 `import_asset` 里加
+  `--texture-size` 重打包（改 sha 后要重跑 `--check` + `zboard.py --variants`），
+  这是已知待办，不是遗漏。
+- 门禁：`python -m unittest discover -s verify` **90 tests OK**、
+  `node verify/test_zbrd_js.mjs` 全绿、`external_mesh.py --check` 4 assets /
+  6 placements / 30,798 triangles / 20,379,220 bytes。
+
+### 第 4 步续 · 贴图降采样 + 批量换完剩余 3 个（2026-11-06）
+
+`external_mesh.py` 新增 `--texture-size`（PIL 降采样内嵌贴图并重打包 glb，
+只重排 BIN chunk、几何/材质/节点全不动）、`--diameter`（归一化 XZ 直径）、
+`--pivot-center`（体心 pivot）、`--resize-texture`（对已接管资产重出贴图）。
+`resize_glb_images()` 是核心：`_downscale_image` 用 PIL `Resampling.LANCZOS`，
+任何一张贴图没被缩小就返回原字节（sha256 不变）。
+
+- 4 个资产已**全部换成混元 3D**（`hunyuan_3d`）：`star_pillar`（灯柱，底面
+  pivot）、`halo_ring`（环，`--diameter 2.5 --pivot-center`）、`moon_orrery`
+  （星象仪，`--height 1.2 --pivot-center`）、`star_lantern`（灯笼，
+  `--diameter 1.1 --pivot-center`）。**悬浮物锚点在物体中心，必须 `--pivot-center`**
+  （体心），地面物才用默认底面 pivot——这是「底面 pivot vs 体心 pivot」的
+  关键分界，门禁已按 pivot[1] 是否等于局部底面来区分语义校验。
+- 贴图 4096² → **1024**：每个 glb 从 18~24 MB 降到 2.2~2.6 MB，4 个资产合计
+  `external_mesh.py --check` 输出 **120,060 triangles / 9,914,324 bytes**
+  （原 20.38 MB）。原始 4096 下载副本（`*.hunyuan.glb`）在降采样接管后即删，
+  参考图仍在 `assets/style_refs/`，可按需重新生成。
+- 门禁：90 tests OK / 27 JS checks OK；非代理资产的不变式从「站在地面」放宽成
+  「XZ 中心在锚点 + 底面 pivot 站地面 / 体心 pivot 中心在锚点」。
+- **待办（非本步）**：① ZBRD v1 三角形汤仍把每个 30k 面资产放大成 90k 顶点 /
+  3.09 MB 缓存（4 个 = 12 MB）；② 贴图仍未真用（三端对齐为纯色，`web/app.js`
+  `map=null`）；③ 混元生成物朝向/比例需 Web/Unity 视觉确认（本机无 Unity）。
+
+### 第 4 步再续 · Web 端 GLTFLoader 贴图解码挂起（2026-11-06 实测）
+
+宣发页 `web/app.js` 用 `GLTFLoader.parseAsync` 加载混元 glb 时**卡死**（loading
+一直不消失、深色屏、控制台无报错）。定位：混元 glb 内嵌贴图（`image/png` +
+`bufferView`，无 uri）会让 GLTFLoader 走 `ImageBitmapLoader`（Chromium 支持
+`createImageBitmap` 时用它，不是 `TextureLoader`）→ `fetch(blobURL)` +
+`createImageBitmap`，解码 PNG 的 Promise 一直不 settle（异步挂起，不是同步死循环，
+所以页面不冻结、无异常可抛）。而本页本来就用代理材质（`map=null`）、贴图毫无用处。
+
+**修复**：`web/app.js` 移除 `GLTFLoader` 依赖，改 `parseExternalGlb()` 轻量解析——
+按 accessor 直接读 `POSITION/NORMAL/TEXCOORD_0/indices`（componentType 5123/5126，
+紧凑布局走 TypedArray 视图，有 stride 才逐元素），构建 `BufferGeometry` + 把
+`nodes[0]` 的 TRS（混元是 `rotation=[+90°X]`）套到 mesh 上，**完全不碰贴图**。
+几何读取与 `external_mesh.py` 的 `glb_triangles` 逐字节一致（Node 对照：
+POSITION 20918 / indices 90090 / UV 20918）。glb 结构本身合法（accessor/Png/JSON
+都验过），问题只在浏览器贴图解码这一环。
+
+**教训**：外部 glb 只要带内嵌贴图，就别在 Web 端走 GLTFLoader 的完整贴图加载；
+要么像这里自写几何解析，要么接受 GLTFLoader 但 hook 掉 `loadImageSource`。若将来
+真要三端用贴图，得先把 baseColor 抽成独立文件 + 三端各接一套，而不是只靠
+glb 内嵌贴图。
+
+---
+
+## OSGame 棋盘线 · 宣发页「不报错但不显示」修复 + Web 视觉确认（2026-11-06）
+
+三个独立原因叠加，按发现顺序（前两个都让画面发黑，别再混为一谈）：
+
+1. **整屏欠曝（灯光单位）**：`index.html` 锁 `three@0.160.0`，r155+ 默认
+   `useLegacyLights=false`，Directional/Ambient 强度按 lux 解释，同一数值比
+   Unity / 旧语义暗 π 倍。无头 Edge 同会话 A/B：中心台面 `[16,27,13]` →
+   `[52,75,44]`。**不要用 `renderer.useLegacyLights=true`** —— 已废弃，
+   getter/setter 都会打告警，且真机上可能仍黑屏。正确迁移是消费 JSON 强度时
+   ×π（`web/app.js` 的 `LUX_SCALE`）；实测必须 `dir×π + amb×π` 才与 legacy
+   参考值逐字节一致，只乘一个灯不够。
+2. **彻底不显示（DOM 遮罩，用户看到的真正原因）**：`style.css` 的
+   `#error { display:flex }` 压过 UA 的 `[hidden]{display:none}`，空的全屏
+   `z-index:40` 不透明层把 canvas / HUD / controls 全盖住。修复
+   `[hidden] { display:none !important; }`。**教训：`gl.readPixels` 只看 WebGL
+   缓冲，看不到上层 DOM** ——「像素正常但人眼看不到」必须查
+   `getComputedStyle` + `document.elementFromPoint`；DevTools 里
+   `<div hidden>` 旁的 `flex` 徽章就是线索。查渲染别只信帧缓冲。
+3. **标题重复**：style-pack 与 visual-pack 同名，拼接时去重（`stat` 仍标注
+   AI 视觉层，信息不丢）。
+
+**Web 视觉确认**（第 4 步续挂起的待办③，本机无 Unity）：无头 Edge 抓帧缓冲 ——
+不要用 `Page.captureScreenshot`（抓不到合成层），在页面内 `render()` 后同任务
+`gl.readPixels` → 翻转 Y → 2D canvas → `toDataURL`，产物 `build/_pw/shot.png`。
+结论：核心契约正确（一整块连续台面 + 暖金包边，不是 56 格；深蓝夜空 + 星点；
+6 个 glb 外部实例全部挂载可见）；台面无纹样属已知待办②（`map=null`）；
+**混元 3D 资产相对台面明显偏小、呈矮柱/团块，看不出「星象灯柱 / 悬浮圆环」
+的体量感，朝向与比例仍需人工确认**。门禁 90 tests / 27 JS checks 全绿。
+
+---
+
+## OSGame 棋盘线 · 混元 glb 朝向修复（2026-11-06）
+
+上一节的「偏小」不是比例配错，是**躺倒**：无头实测 6 个外部资产全部 Y/Z
+互换，Web 包围盒高度只有 manifest `world_bounds` 的 40~67%。
+
+根因：4 个混元 glb 的 `nodes[0]` 恒为 `rotation=[0.7071,0,0,0.7071]`
+（+90°X，Z-up→Y-up）。`web/app.js` 的 `parseExternalGlb` 原本把它设在
+mesh 的 `quaternion` 上；而 `parseExternalGlb` **返回的就是那个 Mesh 本身**
+（不是外面再包一层 Group），消费端 `applyTransform` 的
+`object.rotation.set(0, rotY, 0)` 直接把该四元数覆盖，轴向修正丢失。
+
+修复：用 `matrix.compose(translation, quaternion, scale)` 组成节点矩阵后
+`geometry.applyMatrix4(matrix)` **烘进顶点**（three.js 同步变换 normal），
+mesh transform 保持单位，再由 `applyTransform` 自由设置
+position/rotation/scale。与 Python `glb_triangles`（`_apply_point` /
+`_normal_matrix`）、Unity ZBRD 缓存、Blender glTF importer 口径一致。
+修复后 6 个实例三轴尺寸与 manifest `world_bounds` 逐项相等（heightRatio=1）。
+
+**比例结论**：`--import-glb --height 2.444` 归一化后灯柱世界高 2.444 m、
+台面约 16×15 m，契约比例本就如此；之前显得小是躺倒的视觉假象。若仍要更醒目，
+应调 `--height` / `--diameter` 目标并重跑 `--variants`（会连带刷新 manifest
+`world_bounds` 与 Unity 缓存），**不要只在 Web 端放大**，否则三端立刻分叉。
+`test_zbrd_js.mjs` 已加静态断言（必须有 `geometry.applyMatrix4` /
+`matrix.compose`，禁止 `mesh.quaternion.fromArray`）防回退。
+
+---
+
+## OSGame 棋盘线 · ZBRD v1 外部缓存改为索引网格（2026-11-06）
+
+第 4 步续的待办①：4 个 Unity 缓存各 3.24 MB（共 12.9 MB），因为
+`glb_to_zbrd` 把 glb 去索引展开成「三角形汤」——每个 30k 面资产变成 90k 顶点。
+
+**根因不是格式约束**：ZBRD v1 头里 `vertex_count` / `index_count` 本来就分开
+存，Web `parseZBRD` 只校验 `indices[i] < vertexCount`，Unity
+`ZExternalMeshBinder.ReadZbrd` 直接 `SetTriangles(indices, 0)`，都支持共享顶点。
+是 `zboard.encode` 一条自加的 `ic != vc` 校验把**所有**部件锁成了汤。
+（核心棋盘几何仍是汤：`MeshBuilder.add_tri` 每面 append 3 个顶点；本次不动它，
+收益小且会改 `board.zbrd` 的 sha。）
+
+**改动**：
+- `zboard.encode` 校验放宽为 `ic % 3 == 0` 且 `0 <= i < vc`；格式说明补注。
+- `external_mesh.py` 新增 `glb_indexed()`：保留 glb 的
+  `POSITION/NORMAL/TEXCOORD_0` + `indices`，节点矩阵（+90°X）仍烘进顶点/法线
+  （与 `glb_triangles` 同口径），`glb_to_zbrd` 改用它；`glb_triangles` 保留给
+  bounds / 面数 / 对拍。
+- 新增 `external_mesh.py --refresh-caches`：按现有 glb 重派生缓存并回写
+  `cache_sha256`，**glb 字节与 `mesh_sha256` 一律不动**，专供格式升级。
+- `ZExternalMeshBinder.cs` 的 `indexFormat` 判断从 `indexCount > 65000` 改成
+  `vertexCount > 65535`：索引格式取决于**最大索引值**而不是索引条数；三角形汤
+  时代两者恰好都过线，改索引网格后按旧判法会把 2 万顶点仍当 UInt32。
+
+**结果**：4 个缓存 20,918~22,055 顶点 / ~90k 索引、各 0.98~1.02 MB，
+合计约 4.0 MB（原 12.9 MB，约 1/3）。glb sha / pivot / scale / 包围盒 /
+三角面数（120060）全部不变。门禁 **91 tests / 29 checks** 全绿，新增两条断言：
+Python 比对 glb accessor 顶点数与 bounds，JS 用 `parseZBRD` 读缓存断言
+`vertexCount < indexCount`（同时保证 Web 解析器能吃 `indexCount != vertexCount`）。
+**部署提醒**：4 个 `.zbrd` + `ZExternalMeshBinder.cs` + `style-pack.json`（新
+`cache_sha256`）必须一起更新，否则 Unity 端 sha 校验会失败；
+`--verify-only` 当前 0 missing / 8 stale of 41 files，属用户部署前的正常状态。
+
+---
+
+## OSGame 棋盘线 · 三端 baseColor 贴图打通（2026-11-06）
+
+待办②。4 个混元 glb 各内嵌 1 张 1024² PNG（1.35~1.80 MB，UV 展开图：
+青蓝底 + 金色星纹 / 发光格栅）。此前 Web 主动 `map = null`、Unity 用代理
+纯色材质，只有 Blender 的 glTF importer 隐式消费，三端口径不齐。
+
+**沿用既定路径**（不要再改回 GLTFLoader）：把内嵌 PNG 抽成**独立文件** +
+sha256，三端各接一套。`web/app.js` 曾因 GLTFLoader 的 ImageBitmapLoader
+解码挂起而改成自写几何解析，这条路不能回退。
+
+- 数据层：`external_mesh.py` 新增 `glb_embedded_texture()` /
+  `extract_textures()`（CLI `--extract-textures`），把
+  `assets/external_meshes/<asset_id>.png` 与 `texture` / `texture_sha256`
+  写进契约；`_install_asset`（`--import-glb` / `--resize-texture`）自动重抽；
+  `verify()` **逐字节比对独立 PNG 与 glb 内嵌字节**，不同步即报错。
+  `build_manifest` 与 `deploy_to_trunk.py` 同步带上贴图。
+- Web：`fetch` 独立 PNG → 校验 sha → Blob URL → `TextureLoader.loadAsync`，
+  `colorSpace=SRGBColorSpace`、`flipY=false`（glTF V 向下），`map=texture`
+  且 baseColorFactor 设白。加载失败降级为代理纯色，几何照常显示。
+- Unity：`ZExternalAssetEntry` 加两字段；`LoadTexture` 用
+  `ImageConversion.LoadImage` 解码 + sha 校验；**克隆代理材质**（不碰
+  sharedMaterial，也不 `new Material(shader)` —— 自定义 SRP 下会返回 null），
+  按 `_BaseMap/_MainTex/_AlbedoMap/_BaseColorMap` 探测贴图槽、
+  `_BaseColor/_Color/_AlbedoColor` 设白。`ReadZbrd` 里 `v = 1 - v`：
+  glTF UV 左上原点、Unity 左下原点，不翻会上下颠倒。
+- Blender：`BPY_TEMPLATE` 的 `import_external_meshes()` 校验 sha 后
+  `bpy.data.images.load()` 换掉 importer 的 `TEX_IMAGE` 节点 image
+  （importer 已把 UV 转成 Blender 约定，换图无需改 UV）；贴图与 glb 同路径
+  stage 到 `build/assets/external_meshes/`，`verify_outputs` 校验 staged sha。
+
+**三端一致的调色约定**：`baseColor = texture × baseColorFactor`，factor 恒为
+白色；代理纯色只在贴图缺失时作降级。别在某一端再乘一遍纯色。
+
+验证：Python **92 tests** / JS **30 checks** 全绿、lint 0 error；Web 无头实测
+6 个实例全部 `map=true / srgb / flipY=false / 1024² / color=(1,1,1)`、零
+console 错误，帧缓冲截图 `build/_pw/shot_textured.png` 可见金色星纹。
+**Unity / Blender 实机未验证**（本机无 Unity / bpy）；Blender 侧只做到生成
+脚本的 marker + staged 字节校验，Unity 侧只做到静态检查。
+部署清单 41 → **45 files**（+4 PNG），`--verify-only` 当前 4 missing /
+8 stale；`style-pack.json` 的 texture 字段、`ZExternalMeshBinder.cs`、
+manifest 必须一起更新。**台面纹样贴图是另一条线，本次没做**（台面仍是纯色）。
+
+---
+
+## OSGame 棋盘线 · 拆成两页：数据验证页 vs 沉浸式宣发页（2026-11-06）
+
+用户对比 `1.png`（现网 Web 页）与 `2.png`（painting3d 走进星夜）后要求：
+「拆成两页，要往 2.png 走，天空盒保持一致是完全没有问题的，`3.png`
+地面保持一致也完全没问题，中间空出一块地作为棋盘就可以了」。
+
+**差距的根因不是渲染 bug**：`web/app.js:6-7` 注释写明只参考 starry-night 的
+「架构」（WebGLRenderer + ShaderMaterial 天穹 + Points 星空 + 拖拽环视），没搬美术；
+验证页是 48° 俯视的物件检视视角 + HUD / 控制面板，且 `visual-pack.json` 的
+panorama / bloom / fog / color grading 在 Web 端几乎没消费。前几轮修的是**正确性**
+（灯光 ×π、`[hidden]` 遮罩、glb 朝向、三角形汤、三端贴图），并没有缩小视觉差距。
+
+**现在的两页**（互相有链接，`app.js` / `style.css` 的验证逻辑零改动）：
+- `web/index.html` + `app.js` + `style.css`：三端数据一致性预览（LOD / 变体 /
+  glb+sha / 清单统计），保持工具定位；只加了 1 行导航链接与 favicon 占位。
+- `web/starry.html` + `starry.css` + `starry.js`：沉浸式宣发页，独立 importmap /
+  独立样式 / 独立脚本，不复用验证页的任何 DOM id。
+
+**沉浸式页怎么保同源**（拆页不能变成「另起一套」）：
+- 天空 = `visual-pack.json` 里 sha 锁定的 `assets/sky_panorama.jpg`（2048×1024，
+  与 Unity `sky_gradient.mat` / Blender World 同一张）：`fetch` → `verifySha256`
+  → Blob URL → `TextureLoader`；贴天穹球，本页不构建任何 ZBRD 部件（含 `sky@*`）。
+  全景图不是严格等距柱状投影：把 texture v 压到地平线以上约 45° 的天空带
+  （`clamp(0.02 + (uv.y - 0.5) * 3.9, 0.02, 1)`），否则新月跑到天顶、相机仰视
+  时根本看不到；地平线以下用深色「海面」圆盘遮住，避免全景图底部的暖色被
+  拉成一大片。
+- 棋盘 = **画进地形贴图的一块区域**（详见本节末尾「用户纠正」），不是独立 3D
+  台面。区域轮廓取 `build/board.zbrd` HD 档 `core_slab` 顶面顶点的 XZ 凸包
+  （`convexHullXZ`），锚点半径与逻辑边界取自 ZBRD / manifest，不另写棋盘公式。
+- 单体装饰 = `assets/external_meshes/*.zbrd`（Unity 也在读的**索引网格缓存**）
+  + 同一份独立 baseColor PNG，锚点公式仍走 `external_mesh.mjs` 的
+  `applyTransform`。验证页读 glb、宣发页读由同一 glb 派生的 cache，两边都校验
+  sha256。`texture.flipY = false`（glTF V 向下）、`color = white` 不二次乘色；
+  这些星灯 / 灯柱 / 圆环立在被划出的区域外沿，对应 4.png 里篮球架 / 长椅 /
+  球车那种「站在场地边上的场景物件」。
+- 灯光 / fog / bloom / exposure 全从 `visual-pack.json` 读：`LUX_SCALE = Math.PI`
+  （不要 `useLegacyLights`）、`FogExp2(0.006)`、`UnrealBloomPass` +
+  `EffectComposer`/`OutputPass` + ACES。addons 走动态 `import()`，CDN 拿不到时
+  降级为 `renderer.render` 直出，场景照样可见。
+- 地面按 `3.png` 程序化生成：圆形星夜岛（`ISLAND_R=56`）+ canvas 笔触贴图 +
+  蜿蜒小路 ribbon + 蓝色树丛 / 柏树 / 屋舍亮窗 / 白色笔触（都用 InstancedMesh），
+  `CLEAR_R=18` 内不放任何装饰物和路径，留给棋盘区域。地面与外部单体底部同在
+  y=0；不再有共面实体台面，也就没有之前俯瞰时的 z-fighting 摩尔纹（那个
+  `islandGroup.position.y = -0.30` 的补偿已随实体台面一起删除）。
+- 相机两套预设：沉浸（targetY=6 / radius=32 / elevation=-5° / fov=66，天空占约
+  2/3）与俯瞰（elevation=62° / radius=82，对应 3.png），平滑插值；拖动环视、
+  滚轮推进、方向键漫游、自动巡游、点击发光物件出 inspect 面板。
+- `starry.css` 保留 `[hidden] { display:none !important; }`（`style.css` 踩过的坑：
+  作者 `display:flex` 压过 UA `[hidden]`，空的全屏 `#error` 会盖住 canvas）。
+
+**验证**：`tools/serve.py` 起服务（Windows 上 `python -m http.server` 仍会把 `.mjs`
+发成 `text/plain`），无头 Edge + `build/_pw/starry_probe.cjs` 在**同一任务内**
+render + `gl.readPixels`（跨任务读前缓冲只会得到黑帧），帧缓冲截图
+`build/_pw/starry.png` / `starry_overview.png`。实测：`#error` computed display
+`none`、中心最上层 CANVAS、天空贴图 2048×1024 srgb、6/6 外部实例、4 张
+baseColor、**0 个实体台面网格**、6 个装饰网格、15 个岛面网格、bloom/fog 生效、
+28 draw calls / 209446 三角形、**console errors 0**（只有 readPixels 触发的驱动
+性能 warning）。门禁：Python **92 tests OK**、JS **33 checks / 0 failures**（新增
+3 条：两页独立且互链、全景图与共享资产复用、棋盘画进地形而非叠台面）。
+`deploy_to_trunk.py` 不含 `web/` 文件，拆页不产生 Unity trunk 部署 drift。
+**Unity / Blender 实机仍未验证**（本机无 Unity / bpy）。
+
+### 用户纠正（同日）：棋盘必须融合在场景里，不能盖上去
+
+用户给 `4.png`（游戏内「万象学园篮球场」）与当前沉浸式页俯瞰截图后明确：
+「这个中间的棋盘去掉吧，棋盘应该是融合在场景里面的，而不是单独的一块，
+也是以当前地形为基调，在此基础上画出一块区域作为棋盘，而不是把一个棋盘
+盖上去」。
+
+`4.png` 坐实了现网形态：**一整片与周围共面的连续地面**，靠白色场地线 /
+半场圆 / 中圈徽记划出区域，篮球架 / 长椅 / 球车直接立在场地边沿，没有一块
+凸起的台面。此前把 ZBRD `core_slab` + 金色包边渲染成浮在笔触夜地上的绿色
+方块，是「把棋盘盖上去」，方向错了。
+
+改法（`web/starry.js`，验证页 `app.js` 一字未动 —— 它是数据验证工具，展示
+ZBRD 实体几何是对的）：
+- `loadBoardRegion()` 只**解析** ZBRD：取 HD 档 `core_slab` 的 XZ 凸包作轮廓、
+  `anchor_*` 的中心/半径、`manifest.grid.logical_bounds_xz` 作逻辑边界；
+  **一个 ZBRD mesh 都不建**（`boardSlabMeshes: 0`）。`makeGeometry` 只剩给
+  外部 glb 缓存用。天穹球部件也不再需要「跳过」，因为根本不遍历建 mesh。
+- `boardProjection()`: `CircleGeometry` 的 uv=(x/2R+.5, y/2R+.5)，绕 X 转
+  -90° 后 z=-y，CanvasTexture 默认 flipY ⇒ **画布像素 = centre + (x,z)·size/(2R)**；
+  这样 ZBRD 世界米坐标直接落到地面贴图，不用另写一套棋盘公式。
+- `paintBoardBase()` 在笔触**之前**铺一层径向羽化的淡暖色（clip 到轮廓），
+  `paintBoardLines()` 在笔触**之后**画 4.png 那套场地线：手绘抖动的外框、
+  逻辑边界虚线、半场线、两个半圆、中圈同心圆 + 八芒星 + 新月、锚点浅刻圆，
+  末尾再压 150 条笔触让线像长在夜色里。**笔触必须连续穿过区域**
+  （原来的 `r < 0.30 && random() < 0.94` 挖空中央已删）——这是「同一片地面」
+  而不是「贴花」的关键。
+- 底色 / 线的 alpha 都压得很低；不要退回纯色填充块或发光粗金框。
+- 俯瞰截图 `build/_pw/starry_overview.png` 现在是笔触地面上淡淡的一块场地线
+  区域，沉浸截图 `build/_pw/starry.png` 地面连续延伸到前景，没有中间方块。
+
+**长期约定**：沉浸式 / 宣发侧表达棋盘时，一律「以地形为基调画区域」；
+ZBRD 只提供轮廓 / 锚点 / 逻辑边界，不渲染成独立几何。三端同源靠的是**同一份
+轮廓数据**，不是把同一块台面搬到每个场景里。台面纹样贴图（真·表面贴图）是
+另一条线，本次用地面场地线替代，仍未做。
+
+---
+
+## OSGame 棋盘线 · 宣发页拖拽手感 + 装饰物场景化（2026-11-06）
+
+用户同一句里报了两个问题：「鼠标轻微拖拽一下，就旋转的力度会很大，
+装饰物也不匹配，就场景物件」。
+
+### 拖拽「力度很大」是重复累加 bug，不只是灵敏度系数
+
+`bindEvents()` 里 `dx/dy` 是**相对按下点的累积位移**，但旧代码在每个
+`pointermove` 里执行 `cam.azimuth -= dx * 0.004` / `cam.elevation += dy * 0.08`
+「再减一次」完整位移 ⇒ 轻轻拖 40px、发 8 个 move 事件，累计减的是
+(5+10+…+40)×0.004 ≈ 2.2 rad ≈ 126°，且 elevation 瞬间撞到 ±86° 限位。
+同一个错误也让 `dragging.moved += |dx|+|dy|` 把位移累加，点击判定
+`moved < 5` 几像素就失效，点不中物件。**别只调系数，必须改成绝对映射**：
+
+```js
+// pointerdown 记下角度；pointermove 用「按下时角度 + 视口归一化位移」
+dragging = { x, y, azimuth: cam.azimuth, elevation: cam.elevation, moved: 0 };
+cam.azimuth = dragging.azimuth - (dx / innerWidth) * (100 * DEG);
+cam.elevation = clamp(dragging.elevation + (dy / innerHeight) * 55, -14, 86);
+dragging.moved = Math.max(dragging.moved, Math.abs(dx) + Math.abs(dy));
+```
+
+拖过整个视口宽 ≈ 100°、高 ≈ 55°，分辨率无关。无头实测 **40px → 2.78°**
+（`build/_pw/starry_probe.cjs` 用 `page.mouse` 模拟 + `__zengineStarry.view()`
+前后对比），旧写法同条件会到几十度。
+
+### 装饰物 → 场景物件
+
+围在棋盘四周的 6 个混元金色单体（星灯 / 灯柱 / 圆环 / 月相仪）在星夜
+村庄里仍像「棋盘摆件」，与 4.png 场地边上的篮球架 / 长椅 / 球车那种
+**场景物件**不是一类。沉浸式页默认不再陈列它们：常量
+`USE_EXTERNAL_PROPS = false`，`loadExternalMeshes()` 及 sha / 锚点 / 贴图
+校验代码**全部保留**，改 `true` 即可在同一页切回来验收；验证页 `app.js`、
+Unity、Blender 仍照常消费这批资产，三端同源没有删掉，只是宣发页不承担
+资产陈列职责。
+
+替代物是 `buildSceneProps()`：与树丛 / 屋舍同一套冷蓝石质材质，沿 `PATHS`
+（地面 ribbon 与石灯共用同一份曲线坐标）散布 ~18 盏矮石灯 + 16 个矮石座，
+灯芯用 >1 的 HDR 暖色让 bloom 抓到。石灯可点击，inspect 读
+`userData.hint` 显示**场景化描述**，不再回退到 `board.manifest.json` 里
+「点击触发星轨高亮 / 共用同一份单体资产」那种数据验证页语言。
+
+实测：`boardMeshes 0` / `sceneProps 55` / `useExternalProps false`、
+三角形 209446 → **30752**（不再加载 6×30k 面 glb）、`console errors 0`。
+门禁：Python **92 tests OK**、JS **34 checks / 0 failures**（新增一条锁住
+「绝对映射 + `dragging.moved = Math.max` + 场景物件默认陈列 + `data.hint`」）。
+截图 `build/_pw/starry.png` / `starry_overview.png` 已更新。
+
+---
+
+## OSGame 棋盘线 · 12 画境视觉包与可切换场景（2026-11-06）
+
+用户指着 painting3d 合集问「这是一个合集，你可以都生成吗？」，选定
+「两者都要（先出 12 套视觉包定调，再据此生成 12 个可切换的 3D 场景）」
++「分批高完成度（本轮先做 3~4 个到星夜页水平，后续继续直到 12 个齐）」。
+
+### 真源与边界
+
+- 合集真源是站点 `data/manifest.json`（首页 meta 写 11 个是旧数据）；直接
+  urllib 取要带 `User-Agent: Mozilla/5.0`，否则 403；实际 **12** 个世界。
+- 只引用标题 / 作者 / 年代 / 画派色彩作元数据；场景全部是程序化几何 +
+  canvas 笔触重画，不复制原站模型、贴图、代码或原作构图。
+- **几何仍只有一份**：`build/board.zbrd` 的 `core_slab` 顶面凸包 + anchors
+  + `board.manifest.json` 逻辑边界。`web/worlds.json` 的 `overrides`
+  只允许 `sky/ground/board/scenery/lighting` 五个键，不得改轮廓；
+  每个世界都必须 `boardSlabMeshes === 0`。
+
+### 数据契约
+
+`web/worlds.json`（`zengine.chessboard.world-pack/v1`）= `defaults` + 每个
+世界的 `overrides`；`web/world-pack.mjs` 做深合并，**数组整体替换**（逐项
+合并会让 7 色调色板被旧世界的值垫在后面），`resolveWorldPack` 对未知
+`?world=` 回退 `default`。12 套各自持有天空 / 地面笔触 / 场地线 / 场景
+物件 / 灯光 / bloom / exposure / fog。切换走 `?world=<id>` 或 HUD 下拉，
+**重载整页**（贴图与 InstancedMesh 都是按包一次性生成的，现场拆不干净），
+URL 可直接分享某一画境。
+
+### 落地（同日已补齐「12 个齐」）
+
+- **12 个全部 high**：`starry` 内建于 `starry.js`（sha 锁定同源全景），
+  其余 11 套在 `web/world-scenery.mjs`：首批 `wheat` / `sunrise` / `pond`，
+  第二批 `cafe` / `bedroom` / `garden` / `argenteuil` / `villeneuve` /
+  `marly` / `victoire` / `gauguin`。每套都是 InstancedMesh + 程序化几何 +
+  该世界调色板，物件避开 `CLEAR_R` 与相机轨道，中央仍只留画进地形的
+  棋盘区域。公共零件 `strokesOnGround` / `grove` / `boats` / `cottages` /
+  `glowOrbs` / `interactives` 抽在文件后半段；树干与树冠、旗杆与旗面、
+  屋顶与墙身一律共用位置表，否则会散出悬浮球。
+- `worlds.json` 里 8 个 `tier: tone` 已升 `high` 并绑定各自 preset；
+  `generic` 分支只作兼容保留，运行时已不再走通用树丛。
+- 11 个非星夜天空由 `web/world-sky.mjs` 在 2:1 canvas 上程序化生成，
+  不往仓库塞 11 张外部贴图，离线可复现。
+- 第二批截图复核又修了两处构图：圣维克多山的远山不能拿
+  `sky.fog.color` 直接当材质（午后光照把它洗成白色尖锥），要先
+  `multiplyScalar(0.55)` 压暗、再把锥体压扁拉宽；阿尔勒卧室的家具
+  撒到 r≈50 就只剩几个白点，必须压到内环 r≈21..24 并放大，才有房间
+  围合感。
+
+### 四个实测坑（都是看截图才发现的，别只跑断言）
+
+1. **球面 UV 水平拉伸**：`buildSky()` 把球面 v 压约 3.9 倍，低仰角相机只看
+   到画布 y≈0.3..1.0。画布里画正圆日轮 → 屏幕上横椭圆；水平细椭圆云 →
+   屏幕上一条线；三段渐变之间还会出现硬地平线。修法：
+   `ctx.scale(SUN_X_SQUEEZE = 0.28, 1)` + 云改竖向椭圆 + gradient stop
+   0.42 / 0.72 铺满低仰角可见区。`mix()` 必须返回 `#rrggbb`
+   （`rgba()` 只解析 hex），返回 `rgb(...)` 会让整片天空变黑。
+2. **白昼浮尘**：星夜 `opacity 0.8` 的 AdditiveBlending 星尘在没有星空的
+   世界里被 bloom 放大成「白昼下雪」；改为
+   `dustOpacity = 0.25 + 0.55 * sky.stars` + `dust.visible = sky.stars > 0.05`，
+   星夜仍是 0.8、无星空世界直接不渲染（`toggle-stars` 控的是整个
+   `fxGroup`，语义不变；星空 Points 本身已由 `star_opacity` 关掉）。
+3. **云不能用描边椭圆**：`ctx.stroke()` 的椭圆贴到球面上是一圈圈空心线圈，
+   看着像泡泡而不是云；改成 `ctx.scale(rx / ry, 1)` + `createRadialGradient`
+   的实心柔斑，屏幕上是柔和的横向云团。
+4. **相机轨道贴脸物件 + 悬浮树冠**：沉浸式相机在半径 32 的轨道上环视，
+   `annulus()` 若把 3m 树干 / 10m 柏树撒在 r≈32 附近，会贴着镜头占掉
+   半个画面（麦田页实测出现棕色巨柱）；现在 `CAMERA_ORBIT_R = 32` /
+   `CAMERA_CLEARANCE = 8` 强制避开轨道带。另：橄榄树树冠与树干原本各调
+   一次 `annulus()` 取随机位置 ⇒ 绿球悬空且挡住棋盘区域；必须共用同一份
+   `oliveTrees` 位置表，并把树冠半径收到 0.75..1.25。
+
+### 概念图（同日已补齐，12/12 asset_ready）
+
+云端文生图第一次失败（`invalid or expired JWT token` / 单任务上限）时
+**没有伪造结果**，11 个世界先保持 `prompt_only` + 程序化天空缩略图降级；
+同日重试 `image_gen` 成功：11 张 PNG 落在 `assets/worlds/<id>.png`，
+sha256 同时写进 `worlds.json` 与 `assets/worlds/manifest.json`
+（`zengine.chessboard.world-concept/v1`），`status` 全改 `asset_ready`；
+`starry-night` 仍用 sha 锁定的 `assets/concept.jpg`。
+
+**并发生成撞车坑**：一次并行 4 个 `image_gen` 请求里，两组不同 prompt
+拿到字节完全相同的图（同 sha）⇒ 批量生成后必须逐张算 sha256 去重，
+重复的**串行**重生成（本轮 `mont-sainte-victoire` / `villeneuve-bridge`
+各补一张）。`prompt_only` 降级分支仍保留，未来缺图不会留死链。
+概念图只作视觉定调，棋盘轮廓仍只来自 `build/board.zbrd`。
+
+### 门禁
+
+`verify/test_zbrd_js.mjs` **41 checks**（视觉层白名单、深合并 / 12 套
+调色板指纹、12 个 high 各自唯一 preset、12 张概念图 sha + manifest 对拍、
+URL 切换不重建几何、天空 UV 补偿、白昼浮尘 / 相机轨道避让、
+Pages 构建必须收齐所有本地 `.mjs` 模块）；Python 92 tests 不变。
+`build/_pw/worlds_probe.cjs` 逐个加载 12 个 `?world=`，实测 12/12 ok、
+地面签名 12/12 不同、console errors 0，保存 12 个 high 的沉浸 / 俯瞰
+共 24 张截图。`tools/serve.py` 必须显式声明 `.mjs/.jpg/.jpeg/.png` MIME
+（Windows `mimetypes` 会把 `.mjs` 当 `text/plain`，ES module 被严格
+MIME 检查拒绝）。
+
+---
+
+## OSGame 棋盘线 · 发布到 `zentia.github.io`（2026-11-06）
+
+用户要「把 `?world=port-marly-flood` 这个页面发到
+https://zentia.github.io/，仓库现有东西都不要了」。
+
+- **不要改源码路径**。`starry.js` 里 `BUILD = "../build/"`、
+  `fetchJSON("../visual-pack.json")` / `"./worlds.json"`、
+  `applyWorldHud` 的 `"../" + concept.image` 都相对 `web/` 写死。
+  发布产物保留 `web/ + ../build/ + ../assets/` 原层级，一个路径都不改；
+  根 `index.html` 只做 `location.replace("web/starry.html?world=...")`。
+- `tools/build_pages.py` 生成 `pages/`（30 文件 / 21.8 MB）：只带 starry 页
+  真正 fetch 的契约、ZBRD、贴图与 11 张概念图；不发布验证页 / Unity /
+  Blender / 探针截图。写 `.nojekyll` 防 Jekyll。
+- **`.mjs` 一律复制成 `.js` 并重写 import**：GitHub Pages 对 `.mjs` 的
+  Content-Type 不稳定，ES module 有严格 MIME 检查；本地 `tools/serve.py`
+  靠显式 MIME 绕开，线上不能指望。产物里不允许残留任何 `.mjs`。
+  根入口默认 `port-marly-flood`，`/?world=<id>` 可透传任意画境；
+  `starry.html` 里「返回数据验证页」链接在产物中换成默认画境，避免 404。
+- 验证：`build/_pw/pages_probe.cjs` 用**最普通的**
+  `python -m http.server --directory pages`（不带自定义 MIME）跑根跳转 +
+  12 个画境，检查概念图 `naturalWidth`、404 与 console error；实测全过。
+- 目标仓库 `zentia/zentia.github.io` 默认分支是 **`master`**（用
+  `git ls-remote --symref` 查的，不是 `main`）。
+- **实际发布源是 `gh-pages` 分支，不是 `master`**。原仓库是 Hugo 站 +
+  `.github/workflows/deploy.yml`，构建产物推到 `gh-pages`；实测线上首页与
+  `raw.githubusercontent.com/.../gh-pages/index.html` 逐字节相同，只 push
+  `master` 时线上仍是旧 Hugo 页（`/web/starry.html` 404）。⇒ 发布必须
+  **同一份产物同时提交到 `master` 与 `gh-pages`**（各自清空旧文件后
+  commit + 普通 push，不需要 force）。删掉 `deploy.yml` 后不会再有 Actions
+  把 `gh-pages` 覆盖回 Hugo 产物。
+- 清空旧文件 + push 是破坏性远程操作，需用户确认。旧内容仍留在 git 历史里。
+- 线上回归：`PAGES_BASE_URL=https://zentia.github.io node
+  build/_pw/pages_probe.cjs`（探针支持 `PAGES_BASE_URL` 跳过本地 server），
+  实测 12/12 ok、0 个 404 / console error。
+- three.js 仍由 `starry.html` 的 importmap 指向 `unpkg.com`；Pages 是
+  HTTPS、CDN 支持 CORS，但完全离线的自托管尚未做（本机没有 three 包）。
+- **移动端（用户反馈「拖拽容易触发刷新、竖屏体验差」）**：`starry.css` 加
+  `overscroll-behavior:none` + `#stage canvas {touch-action:none}`、竖屏底部
+  控件条与 `env(safe-area-inset-*)`；`starry.js` 加非 passive `touchmove
+  preventDefault`、`gesturestart` 拦截、`pointercancel` 清理、双指 pinch，
+  并由 `viewportTuning()` 在竖屏放宽 FOV(66→85.8)/radius、调小拖拽 sweep
+  与点击阈值。改完**同样要双分支发布**，只重建本地 `pages/` 线上不生效。
+  已发布 `master 9e7ea24` / `gh-pages 82a8a89`。
+- **线上 probe 两个假失败（别当线上故障修）**：① 连续切 12 个画境时上一页
+  仍在传输的概念图被导航取消，Chrome 报 `net::ERR_ABORTED`；必须从
+  `requestfailed` 过滤掉（404 由 response 监听兜住），否则线上误报 7 个
+  FAIL 而 `bad responses` 是 none。② 跑完 12 个 WebGL 页后横竖屏 resize
+  会延迟，用 `waitForFunction(fov<80)` 等构图回落，别用固定
+  `waitForTimeout(400)`。本地回归快，这两个坑只在线上暴露。
+
+---
+
+## OSGame 棋盘线 · 核心契约收敛为「一个方格 + 两个棋手占位」（2026-11-06 用户纠正）
+
+用户给两张图：概念草图（最外方格 + 中线 / 两个半圆 / 中圈同心圆 / 外侧小圆）
+与现网「河豚车站」皮肤（一整块连续台面 + 左下 / 右上两个棋手座位区）。
+裁定：**只有最外面的方格和两个棋手占位是必须元素，其余全部按概念图输出。**
+
+- `board-spec.json` 新增 `core_contract.required_elements`
+  （`square_outline` / `player_seats`）、`square_outline`、`player_seats`；
+  冻结部件 = `core_slab` + `frame_*`（方格）+ `anchor_seat_home`（左下
+  `[-10.2,0,9.0]`）/ `anchor_seat_guest`（右上 `[10.2,0,-9.0]`，radius 1.9m）。
+  `anchors.items` 3→2，删掉 `info_plinth`；`corner_sw` / `corner_ne` 两个
+  `decoration_zones` 槽加 `reserved_by` + `max_items=0`，`validate_style_pack`
+  拒绝任何风格包装饰占用。`validate_spec` 强制 2 个占位且 x/z 符号均相反。
+  台面中心其实在原点 —— `center_offset_m=[-5.912,0,-6.3]` 正好把 7×8 逻辑
+  网格中心抵消掉，别按「台面偏在左下」去调 anchors。
+- **草图纹样不再硬编码**：`web/worlds.json` 的 `defaults.board.marks=[]`，
+  `paintBoardLines` 里 `center_line` / `half_circles` / `center_emblem`
+  只有概念图在 `overrides.board.marks` 显式声明才画；八芒星、新月、
+  逻辑边界虚线、压线笔触已删。占位圆由 ZBRD 的 `anchor_*` 包围盒驱动，
+  画成淡填充 + 双圈 + 朝向中心的短刻线。
+- 数量连锁（改契约时全部要同步）：**17 parts = 11 core + 6 variable**、
+  HD `scene_parts=14`、Blender glTF 14 mesh / 11 mat、`boardAnchors=2`；
+  `test_board.py` 92 tests、`test_zbrd_js.mjs` 44 checks、
+  `build/_pw/{worlds,pages}_probe.cjs` 的 `boardAnchors===2`。
+  `web/app.js` 的 `coreCount` 按前缀动态统计，无需改。
+- **`visual-pack.json` 仍保留 `anchor_info_plinth` 材质键（刻意）**：
+  `validate_visual_materials` 要求视觉包材质集合与 trunk 已落地 12 个
+  `.mat` 的 GUID 集合完全一致，删键会让 `unity_scene.py` / 部署清单漂移；
+  该材质已无 ZBRD 部件引用、不参与渲染，等人工清理 trunk 资产时再删。
+  `build/materials/` 与 `asset_guids.json` 因此都保持 12 项。
+
+---
+
+## OSGame 棋盘线 · 六类局内演出（2026-11-06，参考 BV1UdYj61ExH）
+
+用户指出视频里棋盘皮肤都有：入场动画 / 回合胜利 / 回合失败 / 连续胜利 /
+升级播报 / 互动彩蛋。本线按「**宿主派发事件、棋盘只负责表现**」落地：棋盘
+绝不判定胜负、连胜数、等级，这些状态一律由 payload 传入。
+
+- 唯一真源 `ceremony.json`（schema `zengine.chessboard.ceremony/v1`、
+  `frozen=true`）：6 个 event id、duration_ms、payload 字段、palette_defaults、
+  transport 约定（Web / Unity / Blender 同 id 同 payload）。**Unity 运行时绑定
+  与游戏逻辑未实现**，此处只冻结契约，别宣称已接入项目侧。
+- Web 参考实现：`web/board-ceremony.mjs` 是纯 DOM（不依赖 three），负责横幅、
+  文案、时长、事件历史；`web/starry.js` 只把事件映射成一段短暂氛围脉冲
+  （临时 `camera.fov` / `bloom.strength` / dust 转速），**从不写回 `cam` /
+  `tween`**，所以拖拽、视角、像素指纹回归都不受扰动。
+- 触发入口：`#ceremony-select`、`?event=<id>`（根 `index.html` 也透传）、
+  `window.__zengineStarry.ceremony.dispatch(id, payload)`；互动彩蛋还能点
+  左下/右上棋手占位（`y=0` 平面求交，坐标取 ZBRD anchors）或按 `E` 键。
+- **加载完成的自动入场只显示横幅**（`payload.auto` 时跳过 3D 脉冲）：无头
+  探针在 `loading.done` 后立刻取像素与拖拽基线，任何 fov/bloom 抖动都会污染
+  回归。手动重播或 `?event=` 才是完整演出。
+- 配色在 `web/worlds.json` 的 `defaults.scenery.ceremony`，12 画境可用
+  `overrides.scenery.ceremony` 覆盖；与 `ceremony.json` 的 `palette_defaults`
+  由门禁对拍。
+- 门禁链：`test_zbrd_js.mjs` **45 checks**（新增 `board ceremony freezes 6
+  host-dispatched events`）、`test_board.py` 92 tests、`pages_probe.cjs` 逐一
+  dispatch 6 个事件验 DOM / `#ceremony.show` / `pointer-events:none`、
+  `worlds_probe.cjs` 验 `probe.ceremony.events===6 && last==="entrance"`。
+- 新增第 6 个本地模块后，`build_pages.py` 的 `MODULES` 与 `starry.js` import
+  数量断言 **5→6** 必须同步；`ceremony.json` / `web/board-ceremony.js` 进
+  `required`。根跳转 `?event=` 透传别漏。
+- 横屏 390 高时新增下拉把 `#controls` 撑出视口 → 横屏媒体查询加
+  `max-height: calc(100vh - 86px); overflow-y:auto` 并压缩两个 select。
+- 明亮画境（马尔利港 / 阿尔让特伊的浅灰天空）下横幅文字对比度不足 →
+  `#ceremony::before` 用**大范围低 alpha** 径向暗衬；小范围高 alpha 会在
+  天空上留下一块硬边椭圆污渍。

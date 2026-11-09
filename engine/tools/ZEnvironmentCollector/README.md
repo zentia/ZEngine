@@ -1,18 +1,12 @@
 # Windows Environment Check
 
-`ZEnvironmentCollector` 是独立的 Windows x64 环境检查与采集工具：不启动游戏客户端，收集硬件与系统信息、检查 DLL 构建配置，并在隔离子进程里验证 `GameCore.dll` 能否加载。一个 exe，图形界面和命令行都在里面——调用方看下面，玩家看文末。实现与构建说明见 `BUILD.md`。
-
 ## Launcher 用法
-
-launcher 只在游戏拉起前跑这一条：
 
 ```powershell
 ZEnvironmentCollector.exe -batchmode --preflight [--game-dir <游戏目录>] [--game-exe <exe名>] [--min-spec <min-spec.json路径>] [--budget-seconds N] [--output-dir <目录>] [--quiet]
 ```
 
 `-batchmode` 沿用 Unity/UE 的写法：不开窗口，结论写进输出目录、进度与错误写 stdout，退出码交给调用方。**一次只允许一个实例**，第二个直接退出（`31`）。默认最多 3 秒（`--budget-seconds` 1–30），到点按 `Inconclusive` 结束。只读取机器状态：不扫盘、不加载游戏 DLL、不写注册表、不提权。
-
-> 其它入口（同样带 `-batchmode` 的 `--collect` / `--diagnose` / `--gpu-selection`）是给支持人员和 CI 用的，参数见 `--help`；launcher 不需要它们。
 
 ### 退出码
 
@@ -22,7 +16,7 @@ ZEnvironmentCollector.exe -batchmode --preflight [--game-dir <游戏目录>] [--
 | `30` | 工具内部错误 |
 | `31` | 已有实例在运行，本次未执行 |
 
-### 读结论
+### 结论
 
 `OSGamePreflight.json` 里 launcher 只需四个键：`verdict` / `confidence` / `userMessage` / `actions`。诊断报告共用同一套键，`"mode":"preflight"` 用来区分；`findings` 是同一批结论的明细，每项带 `code` / `layer` / `zh` / `evidence`。
 
@@ -36,6 +30,79 @@ ZEnvironmentCollector.exe -batchmode --preflight [--game-dir <游戏目录>] [--
 | `Inconclusive` | 没跑完（超时或探针失败） | 「本次环境检查没有跑完，未得出结论。可以直接启动游戏。」（`PREFLIGHT_INCOMPLETE`） |
 
 `actions` 只列工具认为玩家能自己做的那几步（如 `INSTALL_VC_REDIST` 装 VC++ 运行库、`ENABLE_SYSTEM_MANAGED_PAGE_FILE` 把页面文件交回系统管理、`UPGRADE_OS` 换 64 位系统），按 code 去重，兜底是 `CONTACT_SUPPORT` 提交环境报告。原样展示 `zh` 即可。
+
+### 不兼容程序（ProcMon）检测
+
+`--preflight` 还会做一次只读扫描：进程名快照（`CreateToolhelp32Snapshot`）加活动驱动服务枚举（`EnumServicesStatusExW`），用来发现游戏拒绝与之同时运行的第三方程序。目前名单覆盖 Sysinternals Process Monitor：`procmon.exe` / `procmon64.exe` / `procmon64a.exe`，以及它注册为 `PROCMONxx`（如 `PROCMON23`）的内核驱动服务——关掉窗口但驱动还留着、或把 exe 改名的情况也能查到。命中时：
+
+- 新增一条 `INCOMPATIBLE_PROGRAM_DETECTED` finding，`zh` 与 `evidence` 里列出具体名字；
+- verdict 变成 `Advise`，`userMessage` 提示关闭程序后重启游戏，`actions` 给出 `CLOSE_INCOMPATIBLE_PROGRAM`；
+- **报告只是提示，工具不阻断启动**。游戏里那句 "Incompatible program ProcMon detected, please close it and restart" 是游戏自己的兼容性检查（反作弊组件）弹的，它不读这个 JSON，也不归本工具管；两处名单要同步改，否则又会出现"报告说没问题、游戏却拒绝启动"。
+
+`environment.incompatibleProgramScan` 段记录 `processSnapshotKnown` / `driverServicesKnown` / `detected`。扫描没跑完时对应 known 为 `false`，此时不产生 finding（fail-open），并往 `notes` 里写一条说明——**Pass 不等于"查过程序且没发现"**。名单在 `Preflight.cpp` 的 `IncompatibleProcessNames` 与 `IsIncompatibleDriverServiceName()`，改动时同步更新下面的表格和 `PreflightTests.cpp`。
+
+### code 对照表
+
+**findings[].code（BelowMinimum，硬要求，工具认为游戏跑不起来）**
+
+| code | layer | actions[].code |
+|---|---|---|
+| `WINDOWS_X64_REQUIRED` | system | `UPGRADE_OS` |
+| `CPU_ISA_UNSUPPORTED` | cpu | `CONTACT_SUPPORT`（兜底） |
+| `PHYSICAL_MEMORY_INSUFFICIENT` | memory | `FREE_MEMORY` |
+| `D3D11_DEVICE_UNAVAILABLE` | gpu | `INSTALL_GPU_DRIVER` |
+| `D3D11_ONLY_SOFTWARE_ADAPTER` | gpu | `INSTALL_GPU_DRIVER` |
+| `D3D_FEATURE_LEVEL_BELOW_MINIMUM` | gpu | `UPGRADE_GPU` |
+
+**findings[].code（Advise，只提示、不阻断）**
+
+| code | layer | actions[].code |
+|---|---|---|
+| `D3D11_NOT_ON_PREFERRED_ADAPTER` | gpu | `SELECT_DISCRETE_GPU` |
+| `GPU_DRIVER_MIXED` | gpu | `UPDATE_GPU_DRIVER` |
+| `GPU_SOFTWARE_RENDERER` | gpu | `INSTALL_GPU_DRIVER` |
+| `GPU_INTEGRATED_SELECTED` | gpu | `SELECT_DISCRETE_GPU` |
+| `GPU_VIDEO_MEMORY_BELOW_MINIMUM` | gpu | `LOWER_GAME_SETTINGS` |
+| `MONITOR_ON_INTEGRATED_GPU` | gpu | `PLUG_MONITOR_INTO_DISCRETE_GPU` |
+| `GPU_DRIVER_RESET_RECENT` | gpu | `INSTALL_GPU_DRIVER` |
+| `MEMORY_AVAILABLE_LOW` | memory | `CLOSE_BACKGROUND_APPS` |
+| `PAGE_FILE_TOO_SMALL` | memory | `ENABLE_SYSTEM_MANAGED_PAGE_FILE` |
+| `VC_RUNTIME_MISSING` | runtime | `INSTALL_VC_REDIST` |
+| `STORAGE_LOW_FREE_SPACE` | storage | `FREE_DISK_SPACE` |
+| `SYSTEM_VOLUME_LOW_FREE_SPACE` | storage | `FREE_SYSTEM_DISK_SPACE` |
+| `GAME_VOLUME_REMOVABLE_OR_REMOTE` | storage | `REINSTALL_ON_LOCAL_DISK` |
+| `GAME_VOLUME_NOT_NTFS` | storage | `REINSTALL_ON_LOCAL_DISK` |
+| `GAME_VOLUME_SPINNING_DISK` | storage | `REINSTALL_ON_SSD` |
+| `GAME_PATH_NON_ASCII` | storage | `REINSTALL_TO_ASCII_PATH` |
+| `WINDOWS_INSIDER_PREVIEW` | system | `LEAVE_INSIDER` |
+| `REBOOT_PENDING` | system | `RESTART_COMPUTER` |
+| `UPTIME_VERY_LONG` | system | `RESTART_COMPUTER` |
+| `INCOMPATIBLE_PROGRAM_DETECTED` | system | `CLOSE_INCOMPATIBLE_PROGRAM` |
+
+**actions[].code（玩家能自己做的那一步，按 code 去重）**：共 20 个，含义列只是给读文档的人看的概要，实际展示用报告里的 `zh`（文案会调，以 code 为准）；`CONTACT_SUPPORT` 是兜底，保证 `actions` 至少有一项。
+
+| actions[].code | 含义 |
+|---|---|
+| `UPDATE_GPU_DRIVER` | 把两张显卡的驱动更新到同一版本 |
+| `SELECT_DISCRETE_GPU` | 在显卡面板里指定游戏用独立显卡 |
+| `INSTALL_GPU_DRIVER` | 装显卡官方驱动并重启 |
+| `LOWER_GAME_SETTINGS` | 调低画质/分辨率（显存不足） |
+| `PLUG_MONITOR_INTO_DISCRETE_GPU` | 显示器改接独立显卡输出口 |
+| `FREE_DISK_SPACE` | 清理游戏所在盘，至少留 2 GB |
+| `FREE_SYSTEM_DISK_SPACE` | 清理系统盘，至少留 2 GB |
+| `UPGRADE_GPU` | 显卡功能级别不够，换显卡或升级驱动 |
+| `RESTART_COMPUTER` | 重启电脑（待重启更新/开机过久） |
+| `REINSTALL_ON_LOCAL_DISK` | 重装到本地固定磁盘的 NTFS 分区 |
+| `REINSTALL_TO_ASCII_PATH` | 重装到纯英文数字路径 |
+| `REINSTALL_ON_SSD` | 把游戏挪到 SSD |
+| `LEAVE_INSIDER` | 退出 Windows 预览体验计划 |
+| `FREE_MEMORY` | 关掉占内存的程序或加内存 |
+| `CLOSE_BACKGROUND_APPS` | 关掉浏览器/录屏/下载等占内存的程序 |
+| `ENABLE_SYSTEM_MANAGED_PAGE_FILE` | 页面文件交回系统管理 |
+| `INSTALL_VC_REDIST` | 装 VC++ 2015-2022 运行库（x64）并重启 |
+| `UPGRADE_OS` | 换 64 位 Windows |
+| `CLOSE_INCOMPATIBLE_PROGRAM` | 关闭 Process Monitor 等不兼容程序并重启游戏 |
+| `CONTACT_SUPPORT` | 提交环境报告联系客服（兜底） |
 
 launcher 不等工具跑完，而是边跑边轮询输出目录，所以报告文件**先写临时文件、再 `MoveFileEx` 改名发布**：读者只会看到"旧的完整文件"或"新的完整文件"。
 

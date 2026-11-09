@@ -114,6 +114,27 @@ std::string FeatureLevelName(std::uint32_t value);
 // HRESULTs land in the report the way support reads them, not the way C++ does.
 std::string HexText(std::uint32_t value);
 
+// Programs the game's own compatibility check refuses to run alongside
+// ("Incompatible program ProcMon detected, please close it and restart").
+// The game owns the blocking decision; the preflight only reports what it saw,
+// so the conclusion file no longer says Pass while the game refuses to start.
+// Detection is name based on purpose: no process memory reads, no window
+// hooks, no registry writes and no filesystem walk.
+struct IncompatibleProgramScan
+{
+    // Human-readable hits, e.g. "process procmon64.exe" or
+    // "driver service PROCMON23". Empty means "nothing matched" only when
+    // both known flags below are true.
+    std::vector<std::string> detected;
+    bool processSnapshotKnown = false;
+    bool driverServicesKnown = false;
+};
+
+// Pure list membership, exposed so the incompatible-program list is tested
+// without a running ProcMon. Matching is ASCII case-insensitive.
+bool IsIncompatibleProcessName(const std::string& exeName);
+bool IsIncompatibleDriverServiceName(const std::string& serviceName);
+
 // calls so the rules can be regression-tested with a synthetic machine: a CI
 // agent has no GPU, and a rule that cannot be tested is a rule nobody trusts.
 struct PreflightInputs
@@ -209,6 +230,13 @@ struct PreflightInputs
     diagnosis::UtcTicks gpuTdrLatestAt = 0;
 
     Direct3D11Probe direct3d11;
+
+    // Third-party programs the game refuses to run alongside (currently
+    // Sysinternals Process Monitor). Advisory only: this tool never blocks a
+    // launch, and the game's own compatibility check remains the authority.
+    // A failed scan leaves the known flags false, so "could not look" never
+    // reads as "nothing running".
+    IncompatibleProgramScan incompatiblePrograms;
 };
 
 struct PreflightReportContext

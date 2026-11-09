@@ -71,6 +71,10 @@ preflight::PreflightInputs HealthyInputs()
     inputs.direct3d11.onPreferredAdapter = true;
     inputs.direct3d11.featureLevel = preflight::ParseFeatureLevelName("11_1");
     inputs.direct3d11.adapterName = "NVIDIA GeForce RTX 5080";
+    // A healthy machine also had both incompatible-program scans complete with
+    // nothing found: "could not look" is not the same state as "nothing there".
+    inputs.incompatiblePrograms.processSnapshotKnown = true;
+    inputs.incompatiblePrograms.driverServicesKnown = true;
     return inputs;
 }
 
@@ -847,6 +851,78 @@ int main()
                   "a bare number is not a feature level");
         }
 
+        // ---- incompatible programs (ProcMon) ----
+        {
+            Check(preflight::IsIncompatibleProcessName("procmon.exe"),
+                  "the 32-bit ProcMon exe is on the list");
+            Check(preflight::IsIncompatibleProcessName("PROCMON64.EXE"),
+                  "process names match case-insensitively");
+            Check(preflight::IsIncompatibleProcessName("procmon64a.exe"),
+                  "the ARM64 build is on the list too");
+            Check(!preflight::IsIncompatibleProcessName("procmon_helper.exe"),
+                  "a similarly named helper is not ProcMon");
+            Check(!preflight::IsIncompatibleProcessName("notepad.exe"),
+                  "an unrelated process is not on the list");
+            Check(preflight::IsIncompatibleDriverServiceName("PROCMON23"),
+                  "a versioned ProcMon driver service is on the list");
+            Check(preflight::IsIncompatibleDriverServiceName("procmon"),
+                  "the bare driver name is accepted too");
+            Check(!preflight::IsIncompatibleDriverServiceName("PROCMON23X"),
+                  "a non-numeric suffix is not a ProcMon driver");
+            Check(!preflight::IsIncompatibleDriverServiceName("SomeDriver"),
+                  "an unrelated driver service is not on the list");
+        }
+        {
+            // A running ProcMon shows up both as a process and as its driver
+            // service: one finding, one action, and both names in the message.
+            auto inputs = HealthyInputs();
+            inputs.incompatiblePrograms.detected.push_back("process procmon64.exe");
+            inputs.incompatiblePrograms.detected.push_back("driver service PROCMON23");
+            const auto result = Evaluate(inputs);
+            Check(result.verdict == preflight::PreflightVerdict::Advise,
+                  "an incompatible program advises, it never blocks");
+            Check(HasFinding(result, "INCOMPATIBLE_PROGRAM_DETECTED"),
+                  "the incompatible-program finding is emitted");
+            bool closeAction = false;
+            for (const auto& action : result.actions)
+            {
+                if (action.code == "CLOSE_INCOMPATIBLE_PROGRAM") closeAction = true;
+            }
+            Check(closeAction, "the player is told to close the program and restart");
+            Check(result.userMessageZh.find("procmon64.exe") != std::string::npos,
+                  "the message names the process that was found");
+            Check(result.userMessageZh.find("PROCMON23") != std::string::npos,
+                  "the message names the driver that was found");
+
+            preflight::PreflightReportContext context;
+            const std::string json = preflight::BuildPreflightJson(result, inputs, context);
+            Check(json.find("incompatibleProgramScan") != std::string::npos,
+                  "the report carries the scan section");
+            Check(json.find("process procmon64.exe") != std::string::npos,
+                  "the report carries the detected names");
+            Check(json.find("INCOMPATIBLE_PROGRAM_DETECTED") != std::string::npos,
+                  "the finding code is in the report");
+            Check(json.find("CLOSE_INCOMPATIBLE_PROGRAM") != std::string::npos,
+                  "the action code is in the report");
+        }
+        {
+            // A scan that could not look is not a clean machine: no finding,
+            // but a note so a Pass is not read as "ProcMon was checked".
+            auto inputs = HealthyInputs();
+            inputs.incompatiblePrograms.processSnapshotKnown = false;
+            const auto result = Evaluate(inputs);
+            Check(result.verdict == preflight::PreflightVerdict::Pass,
+                  "a failed scan does not invent a problem");
+            Check(!HasFinding(result, "INCOMPATIBLE_PROGRAM_DETECTED"),
+                  "a failed scan emits no incompatible-program finding");
+            bool noted = false;
+            for (const auto& note : result.notes)
+            {
+                if (note.find("incompatible program scan incomplete") != std::string::npos) noted = true;
+            }
+            Check(noted, "the report notes that the scan did not finish");
+        }
+
         // ---- the launcher contract ----
         {
             preflight::PreflightReportContext context;
@@ -967,6 +1043,8 @@ int main()
                 content.assign(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
             }
             Check(content.find("\"mode\": \"preflight\"") != std::string::npos, "the report is a preflight report");
+            Check(content.find("incompatibleProgramScan") != std::string::npos,
+                  "a real run reports the incompatible-program scan");
             const bool knownVerdict =
                 content.find("\"verdict\": \"Pass\"") != std::string::npos ||
                 content.find("\"verdict\": \"Advise\"") != std::string::npos ||
@@ -984,7 +1062,7 @@ int main()
             std::filesystem::remove_all(directory);
         }
 
-        std::cout << "PASS preflight verdicts, advisory rules, fail-open timeout, single instance, launcher contract\n";
+        std::cout << "PASS preflight verdicts, advisory rules, incompatible programs, fail-open timeout, single instance, launcher contract\n";
         return 0;
     }
     catch (const std::exception& e) { std::cerr << e.what() << '\n'; return 1; }
