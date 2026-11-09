@@ -5358,3 +5358,13 @@ r=20..23、近水平旋转，仍有一条带子斜插天空。根因与既有「
 - `--check` 默认把已知旧版镜像当 warning（0 errors / 4 warnings），`--strict` 才失败；`--refresh-sources` 显式刷新 sha 锁，绝不自动改写镜像记录。
 - 门禁实测：`python verify/test_board.py` 92 tests OK；`node verify/test_zbrd_js.mjs` 49 checks / 0 failures；`python scene-ir/verify_scene_ir.py --check` 0 errors；`--self-test` 15/15；`python verify/test_scene_ir.py` 11 tests OK。
 - 未动 `board-spec.json` 冻结几何、未动任何 Unity 资产、未动 `ResSceneCfg` / `ResPersonaliseChessboardDataBin`。
+
+### OSGame 棋盘线 · P0+：拼现有资产出场景（restore_scene.py，2026-11-09）
+- 用户确认「先拼现有资产 + 直接烘焙 glb 进场景」。**纠正前提**：用户问「能否用 FBX」——实测 OSGame 现网 `Assets/ZEngineChessboard/Meshes/` 全是 `.asset`（`!u!43 Mesh`），`find *.fbx` 为 0，无 FBX 先例；FBX 会破坏 glb 字节级 sha 锁契约链，故放弃。
+- 新增 `integration/chessboard/restore_scene.py`：把 4 个混元 glb（star_pillar/halo_ring/moon_orrery/star_lantern）烘焙成**明文非压缩** `.asset` Mesh（`m_MeshCompression:0`）+ 抽出内嵌 PNG + 按 manifest `world = anchor + rotY*scale*(local-pivot_offset)` 摆放成 `.unity`（局部网格 + Transform 摆放，资产可复用）。
+- ⚠️ **Unity 明文 Mesh 顶点布局（从现网 `SM_TV_006@N2C.asset` 反推核对）**：固定 64 字节 stride / 16 float32，`[px,py,pz, nx,ny,nz, r,g,b,a, u,v, tx,ty,tz,tw]`；`m_Channels` 固定 14 行（Unity 内部 VertexAttribute 数组），有效槽 channel 0=position(off 0,dim 3)、1=normal(12,3)、2=color(24,4)、4=uv0(40,2)、6=tangent(48,4)，其余 dimension:0 占位；`m_IndexBuffer` 独立存 uint16 索引，`_typelessdata` 只存顶点 64B×N；`m_MeshOptimizationFlags:-1`（非压缩）、`m_UVInfo:0`。
+- ⚠️ **现有 `decoration_*.asset` 是压缩网格**（`m_MeshCompression:2`，顶点量化进 `m_CompressedMesh` blob），且生成脚本已丢失（全仓无 `m_CompressedMesh` 写出代码）——这是曾走过但没沉淀的路，本模块改走明文路径规避。
+- 材质引用现网已有 `zboard_*.mat`（GUID 从 `build/asset_guids.json` 读，placements 的 `material` 字段已指向）；贴图复用 `external_mesh.glb_embedded_texture`。Mesh GUID 用 `sha256("mesh:"+asset_id)` 派生（稳定可复现，非随机）。
+- 新增 `verify/test_restore_scene.py`（7 tests：顶点/索引数据量逐字节匹配、14 channel、非压缩、材质引用、placement 覆盖 4 资产、内嵌贴图）。实测 7/7 + scene_ir 23/23 + `--check` 0 error。
+- 用法：`python restore_scene.py --profile scene-ir/restore-profile.example.json --out build/restored_scenes/<id>.unity`。产物 `build/restored_assets/*.{asset,png,meta}` + `build/restored_scenes/*.unity`。
+- 【待验证】明文 `.asset` 能否被 OSGame 稳定 Editor 打开（格式从现网非压缩范本反推，未在 Unity 实测加载）；烘焙产物部署到 `Assets/ZEngineChessboard/` 的跨盘 step 未执行。
