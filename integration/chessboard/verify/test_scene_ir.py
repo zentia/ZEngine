@@ -110,10 +110,24 @@ class SceneIRContractTests(unittest.TestCase):
         self.assertIn("unknown_03", {node["id"] for node in self.example["nodes"]})
 
     def test_empty_capture_profiles_is_warning_not_error(self) -> None:
-        report = v.run_check(v.EXAMPLE_PATH, strict=False)
-        self.assertEqual(report["errors"], [])
-        self.assertTrue(any("capture_profiles" in item for item in report["warnings"]))
-        self.assertIn("未配置 capture_profiles", " ".join(report["warnings"]))
+        import copy as _copy
+        doc = _copy.deepcopy(self.example)
+        doc["source"]["capture_profiles"] = []
+        errors, warnings = v.validate_ir(doc, self.contract, self.schema, self.asset_ids)
+        self.assertEqual(errors, [])
+        self.assertTrue(any("capture_profiles" in item for item in warnings),
+                        f"空 profile 应告警：{warnings}")
+        self.assertIn("未配置 capture_profiles", " ".join(warnings))
+
+    def test_example_now_carries_default_camera(self) -> None:
+        camera = self.example["source"]["camera"]
+        self.assertEqual(camera["fov"], 31.0)
+        self.assertEqual(camera["orthographic"], False)
+        self.assertEqual(camera["position"], [0.0, 22.46, -19.64])
+        self.assertEqual(camera["pitch_deg"], 50.0)
+        self.assertTrue(camera["locked"])
+        profiles = self.example["source"]["capture_profiles"]
+        self.assertEqual(profiles[0]["role"], "both")
 
     def test_filled_capture_profiles_pass(self) -> None:
         errors, warnings = v.validate_ir(self.filled, self.contract, self.schema, self.asset_ids)

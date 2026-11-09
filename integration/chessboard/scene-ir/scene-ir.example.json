@@ -2,18 +2,38 @@
   "schema": "zengine.scene-ir/v1",
   "source": {
     "image_sha256": "5925fa0b3d1e3deee899a55898eec996cce7984cacd736b95831417a0e5481db",
-    "views": 0,
+    "views": 1,
     "camera": {
-      "fov": null,
-      "pitch_deg": null,
-      "roll_deg": null,
-      "position": null,
-      "target": null,
-      "locked": null,
-      "orthographic": null
+      "fov": 31.0,
+      "pitch_deg": 50.0,
+      "roll_deg": 0.0,
+      "position": [0.0, 22.46, -19.64],
+      "target": [0.0, 0.0, -0.794],
+      "locked": true,
+      "orthographic": false
     },
-    "capture_profiles": [],
-    "note": "机位 / 多角度 / 验收基准帧为 per-scene 可配置项，本样本留空，后续按每个场景补 capture_profiles。相机参数未提供时保持 null，校验器只告警不报错。"
+    "capture_profiles": [
+      {
+        "id": "ac10_default_cam",
+        "role": "both",
+        "views": [
+          {
+            "image_sha256": "5925fa0b3d1e3deee899a55898eec996cce7984cacd736b95831417a0e5481db",
+            "fov": 31.0,
+            "pitch_deg": 50.0,
+            "roll_deg": 0.0,
+            "position": [0.0, 22.46, -19.64],
+            "target": [0.0, 0.0, -0.794],
+            "orthographic": false
+          }
+        ],
+        "acceptance": {
+          "baseline_image_sha256": "5925fa0b3d1e3deee899a55898eec996cce7984cacd736b95831417a0e5481db",
+          "tolerance": { "iou": 0.9, "pixel_delta": 0.05 }
+        }
+      }
+    ],
+    "note": "机位参数取自 G:/OSGame/Client_proj/Project/Assets/Scenes/pvp/ART_OS_AC10_HD.unity 的 Camera 组件：fov=31（垂直，透视）、position=(0,22.46,-19.64)、四元数(0.4226513,0,0,0.9062924) 解出绕 X 轴 50° 俯角、target≈(0,0,-0.794)。金铲铲截图仅作为还原参照，baseline_image_sha256 暂用占位，待还原后替换。"
   },
   "units": "meter",
   "coordinate_system": "glTF Y-up right-handed",
