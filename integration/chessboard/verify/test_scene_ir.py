@@ -151,5 +151,58 @@ class SceneIRContractTests(unittest.TestCase):
         self.assertEqual(errors, [], f"source 不带 camera 应合法：{errors}")
 
 
+class RestoreProfileTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.schema = v.load_json(v.RESTORE_SCHEMA_PATH)
+        cls.example = v.load_json(v.RESTORE_EXAMPLE_PATH)
+
+    def test_example_is_valid_shape(self) -> None:
+        errors, _ = v.validate_restore_profile(self.example, self.schema)
+        self.assertEqual(errors, [], json.dumps(errors, ensure_ascii=False))
+
+    def test_check_restore_profile_reports_warnings(self) -> None:
+        report = v.check_restore_profile(v.RESTORE_EXAMPLE_PATH)
+        self.assertTrue(report["ok"])
+        self.assertEqual(report["error_count"], 0)
+        warnings = " ".join(report["warnings"])
+        self.assertIn("identity_status=unknown", warnings)
+        self.assertIn("多角度截图不足", warnings)
+        self.assertIn("size_anchors", warnings)
+        self.assertIn("baseline", warnings)
+
+    def test_schema_const_and_required(self) -> None:
+        self.assertEqual(self.schema["properties"]["schema"]["const"], "zengine.restore-profile/v1")
+        self.assertIn("skin", self.schema["required"])
+        self.assertIn("id", self.schema["required"])
+
+    def test_skin_identity_status_enum(self) -> None:
+        import copy as _copy
+        doc = _copy.deepcopy(self.example)
+        doc["skin"]["identity_status"] = "bogus"
+        errors, _ = v.validate_restore_profile(doc, self.schema)
+        self.assertTrue(any("enum" in e for e in errors), f"非法 identity_status 应被拦：{errors}")
+
+    def test_view_requires_sha256(self) -> None:
+        import copy as _copy
+        doc = _copy.deepcopy(self.example)
+        doc["views"] = [{"id": "front", "image_sha256": "not-a-sha"}]
+        errors, _ = v.validate_restore_profile(doc, self.schema)
+        self.assertTrue(any("image_sha256" in e for e in errors), f"非法 sha 应被拦：{errors}")
+
+    def test_size_anchor_kind_enum(self) -> None:
+        import copy as _copy
+        doc = _copy.deepcopy(self.example)
+        doc["reference"]["size_anchors"] = [{"id": "a", "kind": "nope", "value": 1.0, "unit": "meter"}]
+        errors, _ = v.validate_restore_profile(doc, self.schema)
+        self.assertTrue(any("enum" in e for e in errors), f"非法 anchor kind 应被拦：{errors}")
+
+    def test_camera_reuses_optional_nullable_shape(self) -> None:
+        cam = self.example["camera"]
+        self.assertEqual(cam["fov"], 31.0)
+        self.assertEqual(cam["position"], [0.0, 22.46, -19.64])
+        self.assertEqual(cam["pitch_deg"], 50.0)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -1,0 +1,160 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://zengine.local/schema/restore-profile/v1.json",
+  "title": "ZEngine Restore Profile v1",
+  "description": "场景还原输入配置（美术可编辑）。美术通过本地 Web 配置页填写并导出本结构；生成器据此做 L1 分解 / L2 资产 / L3 装配 / L4 对拍。与 scene-ir.json 分工：本文件是「输入口径」，scene-ir.json 是「分解结果」。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "id", "skin"],
+  "properties": {
+    "schema": { "const": "zengine.restore-profile/v1" },
+    "id": { "type": "string", "pattern": "^[a-z][a-z0-9_-]*$" },
+    "name": { "type": "string" },
+    "skin": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "identity_status"],
+      "properties": {
+        "name": { "type": "string" },
+        "identity_status": { "enum": ["known", "unknown", "to_confirm"] },
+        "source_game": { "enum": ["jcc", "osgame", "other"] },
+        "known_alias": { "type": "array", "items": { "type": "string" } },
+        "note": { "type": "string" }
+      }
+    },
+    "reference": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "scene_template": { "type": "string" },
+        "scene_note": { "type": "string" },
+        "units": { "const": "meter" },
+        "size_anchors": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "kind", "value", "unit"],
+            "properties": {
+              "id": { "type": "string" },
+              "kind": { "enum": ["board_edge", "cell_pitch", "object_height", "custom"] },
+              "value": { "type": "number" },
+              "unit": { "const": "meter" },
+              "note": { "type": "string" }
+            }
+          }
+        },
+        "logical_grid": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "columns": { "type": "integer", "minimum": 1 },
+            "rows": { "type": "integer", "minimum": 1 },
+            "note": { "type": "string" }
+          }
+        }
+      }
+    },
+    "views": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "image_sha256"],
+        "properties": {
+          "id": { "type": "string" },
+          "angle": { "enum": ["front", "back", "left", "right", "top", "perspective", "custom"] },
+          "image_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+          "note": { "type": "string" }
+        }
+      }
+    },
+    "camera": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "fov": { "type": ["number", "null"] },
+        "pitch_deg": { "type": ["number", "null"] },
+        "roll_deg": { "type": ["number", "null"] },
+        "position": { "type": ["array", "null"], "minItems": 3, "maxItems": 3, "items": { "type": "number" } },
+        "target": { "type": ["array", "null"], "minItems": 3, "maxItems": 3, "items": { "type": "number" } },
+        "locked": { "type": ["boolean", "null"] },
+        "orthographic": { "type": ["boolean", "null"] },
+        "note": { "type": "string" }
+      }
+    },
+    "baseline": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "image_sha256": { "type": "string" },
+        "tolerance": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "iou": { "type": "number", "minimum": 0.0, "maximum": 1.0 },
+            "pixel_delta": { "type": "number", "minimum": 0.0 }
+          }
+        },
+        "note": { "type": "string" }
+      }
+    },
+    "appearance": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "materials": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "target"],
+            "properties": {
+              "id": { "type": "string" },
+              "target": { "type": "string" },
+              "color_hex": { "type": "string", "pattern": "^#[0-9a-fA-F]{6}$" },
+              "reference_image_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+              "note": { "type": "string" }
+            }
+          }
+        },
+        "lighting": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "time_of_day": { "enum": ["day", "night", "dusk", "custom"] },
+            "emissive_sources": { "type": "array", "items": { "type": "string" } },
+            "color_temp_k": { "type": ["number", "null"] },
+            "note": { "type": "string" }
+          }
+        },
+        "effects": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id"],
+            "properties": {
+              "id": { "type": "string" },
+              "kind": { "enum": ["glow", "particle", "flow", "shimmer", "custom"] },
+              "animated": { "type": "boolean" },
+              "note": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+    "output": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "target_form": { "enum": ["look_alike", "same_skin_osgame_structure", "custom"] },
+        "reuse_existing_assets": { "type": "boolean" },
+        "reuse_asset_ids": { "type": "array", "items": { "type": "string" } },
+        "delivered_lod": { "enum": ["HD", "High", "Mid", "Low"] },
+        "note": { "type": "string" }
+      }
+    },
+    "notes": { "type": "string" }
+  }
+}

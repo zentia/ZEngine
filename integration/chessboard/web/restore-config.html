@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>场景还原输入配置 · ZEngine</title>
+<style>
+  :root {
+    --bg: #f5f4ef;
+    --surface: #ffffff;
+    --border: #d3d1c7;
+    --text: #2c2c2a;
+    --muted: #5f5e5a;
+    --accent: #185fa5;
+    --accent-bg: #e6f1fb;
+    --warn: #854f0b;
+    --warn-bg: #faeeda;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif; background: var(--bg); color: var(--text); line-height: 1.6; }
+  .wrap { max-width: 980px; margin: 0 auto; padding: 24px 20px 80px; }
+  h1 { font-size: 18px; font-weight: 600; margin: 0 0 4px; }
+  h2 { font-size: 14px; font-weight: 600; margin: 28px 0 8px; padding-bottom: 6px; border-bottom: 1px solid var(--border); }
+  .sub { color: var(--muted); font-size: 13px; margin: 0 0 20px; }
+  fieldset { border: 1px solid var(--border); border-radius: 10px; background: var(--surface); padding: 16px; margin: 0 0 16px; }
+  legend { font-size: 13px; font-weight: 600; padding: 0 8px; color: var(--accent); }
+  label { display: block; font-size: 13px; color: var(--muted); margin: 10px 0 3px; }
+  label b { color: var(--text); font-weight: 500; }
+  input[type=text], input[type=number], select, textarea {
+    width: 100%; padding: 7px 9px; font-size: 13px; border: 1px solid var(--border);
+    border-radius: 6px; background: #fff; color: var(--text); font-family: inherit;
+  }
+  input[type=number] { width: 160px; }
+  textarea { min-height: 56px; resize: vertical; }
+  .row { display: flex; gap: 12px; flex-wrap: wrap; }
+  .row > div { flex: 1; min-width: 180px; }
+  .btn { display: inline-block; padding: 8px 18px; font-size: 13px; border-radius: 6px; border: 1px solid var(--border); background: #fff; color: var(--text); cursor: pointer; margin-right: 8px; }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .hint { font-size: 12px; color: var(--muted); margin-top: 3px; }
+  .warn-banner { background: var(--warn-bg); border: 1px solid var(--warn); color: var(--warn); border-radius: 8px; padding: 10px 14px; font-size: 13px; margin: 12px 0; }
+  .warn-banner ul { margin: 4px 0 0 18px; padding: 0; }
+  .thumb { width: 64px; height: 64px; object-fit: cover; border-radius: 6px; border: 1px solid var(--border); margin-right: 8px; vertical-align: middle; }
+  .view-item, .mat-item, .anchor-item, .fx-item { display: flex; align-items: center; gap: 8px; margin: 6px 0; flex-wrap: wrap; }
+  .view-item input, .mat-item input, .anchor-item input { flex: 1; min-width: 140px; }
+  .rm { color: #a32d2d; cursor: pointer; border: 1px solid #f09595; border-radius: 5px; padding: 2px 8px; font-size: 12px; background: #fcebeb; }
+  #json-preview { width: 100%; height: 420px; font-family: ui-monospace, "Cascadia Code", Consolas, monospace; font-size: 12px; border: 1px solid var(--border); border-radius: 8px; padding: 12px; background: #1f1e1a; color: #e8e6dd; }
+  .toolbar { position: sticky; top: 0; background: var(--bg); padding: 10px 0; border-bottom: 1px solid var(--border); z-index: 5; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="toolbar">
+    <h1>场景还原输入配置</h1>
+    <p class="sub">美术填写本页 → 导出 restore-profile.json → 喂给场景生成器（L1 分解 → L2 资产 → L3 装配 → L4 对拍）。</p>
+  </div>
+
+  <div id="warnings" class="warn-banner" hidden></div>
+
+  <h2>皮肤身份</h2>
+  <fieldset>
+    <label><b>皮肤名称</b></label>
+    <input type="text" id="skin-name" placeholder="例如：长安舞榭 / 红枫棋盘 …">
+    <div class="row">
+      <div>
+        <label><b>身份状态</b></label>
+        <select id="skin-status">
+          <option value="unknown">未知（后续补）</option>
+          <option value="to_confirm">待确认</option>
+          <option value="known">已知</option>
+        </select>
+      </div>
+      <div>
+        <label><b>来源游戏</b></label>
+        <select id="skin-game">
+          <option value="jcc">金铲铲</option>
+          <option value="osgame">王者万象棋</option>
+          <option value="other">其它</option>
+        </select>
+      </div>
+    </div>
+    <label><b>已知别名 / 关键词</b>（逗号分隔）</label>
+    <input type="text" id="skin-alias" placeholder="别名1, 别名2">
+  </fieldset>
+
+  <h2>参考场景与尺度</h2>
+  <fieldset>
+    <label><b>参考场景模板</b></label>
+    <input type="text" id="ref-scene" value="G:/OSGame/Client_proj/Project/Assets/Scenes/pvp/ART_OS_AC10_HD.unity">
+    <div class="row">
+      <div>
+        <label><b>逻辑网格列数</b></label>
+        <input type="number" id="grid-cols" value="7" min="1">
+      </div>
+      <div>
+        <label><b>逻辑网格行数</b></label>
+        <input type="number" id="grid-rows" value="8" min="1">
+      </div>
+    </div>
+    <label><b>尺寸锚点</b>（把截图坐标锚定到真实米制）</label>
+    <div id="anchor-list"></div>
+    <button type="button" class="btn" id="add-anchor">+ 加一个尺寸锚点</button>
+    <p class="hint">kind：board_edge 棋盘边长 / cell_pitch 格距 / object_height 物体高度 / custom 自定义。不填也可复用 OSGame 7×8 逻辑格作标尺。</p>
+  </fieldset>
+
+  <h2>多角度截图</h2>
+  <fieldset>
+    <p class="hint">上传同一棋盘的不同角度截图，自动计算 sha256 写进配置；被遮挡的背面靠多角度补齐。</p>
+    <div id="view-list"></div>
+    <button type="button" class="btn" id="add-view">+ 加一张截图</button>
+  </fieldset>
+
+  <h2>机位参数</h2>
+  <fieldset>
+    <div class="row">
+      <div><label><b>fov（垂直，度）</b></label><input type="number" id="cam-fov" value="31"></div>
+      <div><label><b>俯角 pitch（度）</b></label><input type="number" id="cam-pitch" value="50"></div>
+      <div><label><b>roll（度）</b></label><input type="number" id="cam-roll" value="0"></div>
+    </div>
+    <div class="row">
+      <div><label><b>position x,y,z</b></label><input type="text" id="cam-pos" value="0, 22.46, -19.64"></div>
+      <div><label><b>target x,y,z</b></label><input type="text" id="cam-target" value="0, 0, -0.794"></div>
+    </div>
+    <div class="row">
+      <div><label><b>锁机位</b></label><select id="cam-locked"><option value="true">是</option><option value="false">否</option></select></div>
+      <div><label><b>正交</b></label><select id="cam-ortho"><option value="false">透视</option><option value="true">正交</option></select></div>
+    </div>
+  </fieldset>
+
+  <h2>验收基准帧</h2>
+  <fieldset>
+    <label><b>基准帧截图</b>（L4 对拍的 ground truth，可选）</label>
+    <input type="file" id="baseline-file" accept="image/*">
+    <div class="row">
+      <div><label><b>IoU 容差</b></label><input type="number" id="tol-iou" value="0.9" step="0.01" min="0" max="1"></div>
+      <div><label><b>像素差异容差</b></label><input type="number" id="tol-pixel" value="0.05" step="0.01" min="0"></div>
+    </div>
+  </fieldset>
+
+  <h2>外观（材质 / 光照 / 特效）</h2>
+  <fieldset>
+    <label><b>材质</b></label>
+    <div id="mat-list"></div>
+    <button type="button" class="btn" id="add-mat">+ 加一个材质</button>
+    <div class="row">
+      <div><label><b>时段</b></label>
+        <select id="light-tod"><option value="day">白天</option><option value="night">夜晚</option><option value="dusk">黄昏</option><option value="custom">自定义</option></select>
+      </div>
+      <div><label><b>色温 K</b>（可空）</label><input type="number" id="light-k"></div>
+    </div>
+    <label><b>特效</b></label>
+    <div id="fx-list"></div>
+    <button type="button" class="btn" id="add-fx">+ 加一个特效</button>
+  </fieldset>
+
+  <h2>输出目标</h2>
+  <fieldset>
+    <div class="row">
+      <div>
+        <label><b>目标形态</b></label>
+        <select id="out-form">
+          <option value="look_alike">长得像（截图还原）</option>
+          <option value="same_skin_osgame_structure">同皮肤 OSGame 结构</option>
+          <option value="custom">自定义</option>
+        </select>
+      </div>
+      <div>
+        <label><b>交付 LOD</b></label>
+        <select id="out-lod"><option value="HD">HD</option><option value="High">High</option><option value="Mid">Mid</option><option value="Low">Low</option></select>
+      </div>
+    </div>
+    <label><b>复用现有资产 id</b>（逗号分隔，可空）</label>
+    <input type="text" id="out-reuse" placeholder="star_pillar, halo_ring">
+  </fieldset>
+
+  <div class="toolbar">
+    <button type="button" class="btn primary" id="btn-export">导出 restore-profile.json</button>
+    <button type="button" class="btn" id="btn-import">从 JSON 导入</button>
+    <button type="button" class="btn" id="btn-copy">复制 JSON</button>
+    <span id="status" class="hint"></span>
+  </div>
+
+  <h2>JSON 预览</h2>
+  <textarea id="json-preview" readonly></textarea>
+</div>
+<input type="file" id="import-file" accept="application/json" hidden>
+
+<script src="restore-config.js"></script>
+</body>
+</html>

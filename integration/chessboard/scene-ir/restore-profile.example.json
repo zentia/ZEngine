@@ -1,0 +1,48 @@
+{
+  "schema": "zengine.restore-profile/v1",
+  "id": "jcc-maple-autumn",
+  "name": "金铲铲 · 红枫棋盘（示例）",
+  "skin": {
+    "name": "（待填：这套棋盘皮肤的名称）",
+    "identity_status": "unknown",
+    "source_game": "jcc",
+    "known_alias": [],
+    "note": "用户提供的是金铲铲实机截图，具体皮肤名待补；后续还原目标皮肤。"
+  },
+  "reference": {
+    "scene_template": "G:/OSGame/Client_proj/Project/Assets/Scenes/pvp/ART_OS_AC10_HD.unity",
+    "scene_note": "按用户指定，机位与场景结构参考 ART_OS_AC10_HD。",
+    "units": "meter",
+    "size_anchors": [],
+    "logical_grid": { "columns": 7, "rows": 8, "note": "OSGame 现网 7x8 逻辑落点，可作尺度标尺" }
+  },
+  "views": [],
+  "camera": {
+    "fov": 31.0,
+    "pitch_deg": 50.0,
+    "roll_deg": 0.0,
+    "position": [0.0, 22.46, -19.64],
+    "target": [0.0, 0.0, -0.794],
+    "locked": true,
+    "orthographic": false,
+    "note": "取自 ART_OS_AC10_HD.unity 的 Camera 组件"
+  },
+  "baseline": {
+    "image_sha256": "",
+    "tolerance": { "iou": 0.9, "pixel_delta": 0.05 },
+    "note": "基准帧待金铲铲截图还原后填入 image_sha256"
+  },
+  "appearance": {
+    "materials": [],
+    "lighting": { "time_of_day": "custom", "emissive_sources": [], "color_temp_k": null, "note": "" },
+    "effects": []
+  },
+  "output": {
+    "target_form": "look_alike",
+    "reuse_existing_assets": false,
+    "reuse_asset_ids": [],
+    "delivered_lod": "HD",
+    "note": "先按「长得像」还原，结构对齐 OSGame 新契约（2 anchor）"
+  },
+  "notes": "示例骨架：皮肤名、多角度截图、尺寸锚点、材质/光照/特效待美术补。"
+}

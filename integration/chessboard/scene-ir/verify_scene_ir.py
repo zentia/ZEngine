@@ -10,6 +10,7 @@
 用法：
   python scene-ir/verify_scene_ir.py --check
   python scene-ir/verify_scene_ir.py --ir path/to/scene-ir.json --strict
+  python scene-ir/verify_scene_ir.py --restore path/to/restore-profile.json
   python scene-ir/verify_scene_ir.py --refresh-sources   # 显式刷新 sha 锁
   python scene-ir/verify_scene_ir.py --self-test
   python verify/test_scene_ir.py                       # unittest 门禁
@@ -35,6 +36,8 @@ ROOT = HERE.parent
 CONTRACT_PATH = HERE / "contract.json"
 SCHEMA_PATH = HERE / "scene-ir.schema.json"
 EXAMPLE_PATH = HERE / "scene-ir.example.json"
+RESTORE_SCHEMA_PATH = HERE / "restore-profile.schema.json"
+RESTORE_EXAMPLE_PATH = HERE / "restore-profile.example.json"
 EXTERNAL_MANIFEST_PATH = ROOT / "build" / "external_mesh.manifest.json"
 
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
@@ -371,6 +374,47 @@ def run_check(ir_path: Path, strict: bool) -> dict:
     }
 
 
+def validate_restore_profile(profile: Any, schema: dict | None = None) -> tuple[list[str], list[str]]:
+    """校验 restore-profile（还原输入配置）。仅做形状校验，语义规则另见 check_restore_profile。"""
+    if schema is None:
+        schema = load_json(RESTORE_SCHEMA_PATH)
+    errors: list[str] = validate_shape(profile, schema)
+    warnings: list[str] = []
+    if not isinstance(profile, dict):
+        return errors, warnings
+
+    skin = profile.get("skin", {})
+    if isinstance(skin, dict):
+        if skin.get("identity_status") == "unknown":
+            warnings.append("skin.identity_status=unknown：目标皮肤身份待补，还原仅按截图语义层进行")
+        if skin.get("identity_status") == "to_confirm":
+            warnings.append("skin.identity_status=to_confirm：皮肤名待确认，建议先核实再进入 L2 生成")
+    views = profile.get("views", [])
+    if isinstance(views, list) and len(views) < 2:
+        warnings.append("多角度截图不足 2 张：被遮挡背面无法推断，建议补正面/侧面/背面/俯视")
+    anchors = profile.get("reference", {}).get("size_anchors", []) if isinstance(profile.get("reference"), dict) else []
+    if isinstance(anchors, list) and not anchors:
+        warnings.append("未配置 size_anchors：尺度无法锚定到米制，可复用 OSGame 7x8 逻辑格作标尺")
+    baseline = profile.get("baseline", {})
+    if isinstance(baseline, dict) and not baseline.get("image_sha256"):
+        warnings.append("未配置 baseline.image_sha256：L4 对拍无验收基准帧")
+    return errors, warnings
+
+
+def check_restore_profile(path: Path) -> dict:
+    schema = load_json(RESTORE_SCHEMA_PATH)
+    profile = load_json(path)
+    errors, warnings = validate_restore_profile(profile, schema)
+    return {
+        "ok": not errors,
+        "profile_file": str(path),
+        "error_count": len(errors),
+        "warning_count": len(warnings),
+        "errors": errors,
+        "warnings": warnings,
+    }
+
+
 def refresh_sources() -> dict:
     """显式重算 canonical / derived 的 sha 锁；镜像记录永不自动改写。"""
     contract = load_json(CONTRACT_PATH)
@@ -433,6 +477,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--strict", action="store_true", help="镜像与 canonical 不一致视为失败")
     parser.add_argument("--refresh-sources", action="store_true", help="显式重算真源 sha 锁并写回 contract.json")
     parser.add_argument("--self-test", action="store_true", help="规则变异自检")
+    parser.add_argument("--restore", default="", help="校验 restore-profile 还原输入配置")
     parser.add_argument("--report", default="", help="额外把 JSON 报告写到该路径")
     args = parser.parse_args(argv)
 
@@ -440,6 +485,8 @@ def main(argv: list[str] | None = None) -> int:
         report: dict[str, Any] = refresh_sources()
     elif args.self_test:
         report = self_test()
+    elif args.restore:
+        report = check_restore_profile(Path(args.restore))
     else:
         report = run_check(Path(args.ir), args.strict)
     if args.report:
