@@ -1217,12 +1217,26 @@ function bearingOf(focus) {
   return Math.atan2(focus[0], focus[2]) / DEG;
 }
 
-// 从登记的特色自动生成 5 帧：建立镜头 + 2 个场景地标 + 棋盘 + 落位。
+function angleDelta(a, b) {
+  return ((a - b + 540) % 360) - 180;
+}
+
+// 从登记的特色自动生成 5 帧：建立镜头 -> 绕主锚点 -> 收回棋盘 -> 落位。
+//
+// 相机位置与注视点解耦：updateCamera 按「棋盘中心 + az/radius/el」算稳定
+// 短弧，注视点 look 指向登记地标，在 aimEntranceCamera 里覆盖 lookAt。
+//
+// 注视点沿「主锚点 -> 棋盘中心」同一条射线单调收缩（keeps 1→0），整段只
+// 看一个特色、方向不变；相机从锚点对面走 ≤45° 短弧绕回默认机位。上一版
+// 在多个地标之间切注视点 + 绕 100°，实测摇镜 40~57°，那就是「乱」的来源。
 function deriveEntranceFrames() {
   const registered = (state.features ?? [])
     .filter((item) => item && Array.isArray(item.focus));
   const outline = state.board?.outline ?? [];
-  const boardFocus = outline.length
+  const home = tunedPreset(viewMode);
+  const pivot = [0, home.targetY, 0];
+  const boardFocus = [home.panX, home.targetY, home.panZ];
+  const boardLook = outline.length
     ? [outline.reduce((sum, p) => sum + p[0], 0) / outline.length, 0,
       outline.reduce((sum, p) => sum + p[1], 0) / outline.length]
     : [0, 0, 0];
@@ -1230,46 +1244,36 @@ function deriveEntranceFrames() {
     id: "board", label: "画境棋盘", kind: "board", focus: boardFocus, weight: 0,
   };
 
-  // 权重最高、主体类型不同的两个地标；第三站永远留给 ZBRD 棋盘。
+  // 主锚点 = 权重最高的登记地标，机位语言由它的 kind（+ shot 覆盖）决定。
   const ranked = [...registered].sort((a, b) => (b.weight ?? 1) - (a.weight ?? 1));
-  const picked = [];
-  for (const item of ranked) {
-    if (picked.length >= 2) break;
-    if (picked.some((chosen) => chosen.kind === item.kind)) continue;
-    picked.push(item);
-  }
-  while (picked.length < 2) picked.push(board);
-  const stations = [...picked, board];
+  const main = ranked[0] ?? board;
+  const lang = languageOf(main);
+  const mainBearing = bearingOf(main.focus);
+  const anchorRadius = Math.hypot(main.focus[0], main.focus[2]);
+  const opposite = anchorRadius < 5 ? 0 : angleDelta(mainBearing + 180, 0);
+  const rawSweep = THREE.MathUtils.clamp(opposite, -45, 45);
+  const sweep = Math.abs(rawSweep) < 20
+    ? 20 * (mainBearing >= 0 ? 1 : -1) : rawSweep;
 
-  const main = stations[0];
-  const mainLang = languageOf(main);
-  const sign = bearingOf(main.focus) >= 0 ? 1 : -1;
-  const sweep = THREE.MathUtils.clamp(mainLang.arc * 2.4, 30, 54) * sign;
-  // 焦点沿「中心 -> 地标」方向收一半：方向完全由场景地标决定，同时不让
-  // 相机在 2.2s 里被两个相距很远的地标甩来甩去。
-  const pull = (focus, k) => focus.map((v) => v * k);
-  const frames = [{
-    at: 0, label: "画境远景", subject: "全景",
-    focus: pull(main.focus, 0.2), az: sweep, r: 70, el: 18, fov: 44,
-  }];
-  stations.forEach((item, i) => {
-    const lang = languageOf(item);
-    const bias = THREE.MathUtils.clamp(bearingOf(item.focus) * 0.05, -5, 5);
-    frames.push({
-      at: [0.26, 0.52, 0.74][i],
-      label: item.label, subject: lang.subject,
-      focus: pull(item.focus, 0.5),
-      az: sweep * [0.72, 0.38, 0.12][i] + bias,
-      r: lang.r, el: lang.el, fov: lang.fov,
-    });
-  });
-  const home = tunedPreset(viewMode);
-  frames.push({
-    at: 1, label: "画境展开", subject: "棋盘",
-    focus: [home.panX, home.targetY, home.panZ],
-    az: home.azimuth / DEG, r: home.radius, el: home.elevation, fov: home.fov,
-  });
-  return frames;
+  // keeps 是注视点在主锚点->棋盘射线上的位置，1 = 真实地标坐标（抓到锚点）。
+  const keeps = [1, 0.7, 0.35, 0.1, 0];
+  const looks = keeps.map((keep) => main.focus.map(
+    (v, i) => v * keep + boardLook[i] * (1 - keep)));
+  looks[4] = boardFocus;   // 落位帧注视点回到默认构图
+  const ats = [0, 0.24, 0.48, 0.74, 1];
+  const azs = [1, 0.75, 0.45, 0.15].map((f) => sweep * f);
+  azs.push(home.azimuth / DEG);   // 末帧落回默认方位（弧度 -> 度）
+  const rs = [52, lang.r, lang.r * 0.92, 28, home.radius];
+  const els = [18, lang.el, lang.el * 0.7 + 2, 8, home.elevation];
+  const fovs = [44, lang.fov, lang.fov + 2, 58, home.fov];
+  const labels = ["画境远景", main.label, `${main.label} · 环绕`,
+    "画境棋盘", "画境展开"];
+  const subjects = ["全景", lang.subject, lang.subject, "棋盘", "棋盘"];
+  return ats.map((at, i) => ({
+    at, label: labels[i], subject: subjects[i],
+    focus: pivot, look: looks[i],
+    az: azs[i], r: rs[i], el: els[i], fov: fovs[i],
+  }));
 }
 
 function easeInOutCubic(t) {
@@ -1288,8 +1292,10 @@ function sampleEntranceFrame(frames, t) {
   const s = u * u * (3 - 2 * u);
   const mix = (get) => THREE.MathUtils.lerp(get(a), get(b), s);
   const axis = (k) => (frame) => frame.focus[k];
+  const lookAxis = (k) => (frame) => frame.look[k];
   return {
     focus: [mix(axis(0)), mix(axis(1)), mix(axis(2))],
+    look: [mix(lookAxis(0)), mix(lookAxis(1)), mix(lookAxis(2))],
     az: mix((frame) => frame.az),
     r: mix((frame) => frame.r),
     el: mix((frame) => frame.el),
@@ -1338,8 +1344,7 @@ function buildEntranceFx() {
 
 function driveEntranceOrbit(t) {
   const frame = sampleEntranceFrame(entranceShot.frames, t);
-  // focus 就是 lookAt 目标：镜头绕着当前这处标志物转，而不是绕棋盘中心空转。
-  // 建筑 / 桥 / 河面 / 山峰各有自己的焦点与机位语言，所以 12 个画境轨迹不同。
+  // focus 只决定相机位置（固定绕棋盘中心的稳定短弧），不决定注视点。
   cam.panX = frame.focus[0];
   cam.targetY = frame.focus[1];
   cam.panZ = frame.focus[2];
@@ -1347,6 +1352,18 @@ function driveEntranceOrbit(t) {
   cam.radius = frame.r;
   cam.elevation = frame.el;
   cam.fov = frame.fov;
+  // 真实地标坐标交给 aimEntranceCamera 覆盖 camera.lookAt，镜头才真的对准锚点。
+  entranceShot.look = frame.look;
+}
+
+// 入场第一帧就得对准锚点：startEntranceOrbit 里的 updateCamera 只会
+// lookAt 棋盘中心，不能等下一帧 animate 才纠正（会闪一帧错误朝向）。
+// Camera.lookAt 从 matrixWorld 取 eye，推进快时先同步本帧矩阵。
+function aimEntranceCamera() {
+  if (!entranceShot?.look) return;
+  const [lx, ly, lz] = entranceShot.look;
+  camera.updateMatrixWorld();
+  camera.lookAt(lx, ly, lz);
 }
 
 function driveEntranceFx(t) {
@@ -1435,6 +1452,7 @@ function startEntranceOrbit(event, payload) {
   };
   driveEntranceOrbit(0);
   updateCamera(performance.now());
+  aimEntranceCamera();   // 第一帧就对准锚点，别等 animate
   return true;
 }
 
@@ -1652,6 +1670,8 @@ function animate(time) {
   }
   if (tour && !tween && !entranceShot) cam.azimuth += 0.00012 * 16;
   updateCamera(time);
+  // 入场每帧都对准场景锚点；结束后 entranceShot 清空，构图回到默认 lookAt。
+  aimEntranceCamera();
   // 演出脉冲必须在 updateCamera 之后：它会临时覆盖 camera.fov，但从不写回
   // cam，所以拖拽 / setView / resize 的构图完全不受影响。entrance 不走这里。
   if (ceremonyPulse) {
@@ -1693,6 +1713,7 @@ window.__zengineStarry = {
       ceremony?.stop();
     },
     orbitActive: () => !!entranceShot,
+    look: () => entranceShot?.look ?? null,
     settle: settleEntrance,
   },
   probe() {

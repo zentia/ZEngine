@@ -963,9 +963,22 @@ check("entrance shots derive from registered scenery landmarks", () => {
     && starrySource.includes("function languageOf")
     && starrySource.includes("state.features ?? []")
     && starrySource.includes("state.board?.outline")
-    && starrySource.includes("subject: lang.subject")
+    && starrySource.includes("lang.subject")
     && starrySource.includes("b.weight ?? 1) - (a.weight ?? 1)"),
-  "分镜按 kind 查机位语言、按 weight 选站点、从棋盘轮廓派生棋盘站");
+  "分镜按 kind 查机位语言、按 weight 选主锚点、从棋盘轮廓派生棋盘站");
+  // 镜头必须真的对准锚点：注视点 = 登记地标的原始坐标，不再缩放到中心
+  // 附近当轨道中心（上一版正是这样，导致「抓不到锚点」而且画面乱转）。
+  assert.ok(starrySource.includes("camera.lookAt(lx, ly, lz)")
+    && starrySource.includes("entranceShot.look = frame.look")
+    && starrySource.includes("const keeps = [1, 0.7, 0.35, 0.1, 0]")
+    && starrySource.includes("looks[4] = boardFocus")
+    && starrySource.includes("const pivot = [0, home.targetY, 0]")
+    && starrySource.includes("function angleDelta(")
+    && starrySource.includes("function aimEntranceCamera(")
+    && (starrySource.match(/aimEntranceCamera\(\);/g) ?? []).length >= 2
+    && !starrySource.includes("const pull = (focus, k)")
+    && !starrySource.includes("const near = ranked.slice(1).find"),
+  "注视点沿主锚点射线收缩并对准锚点，第一帧/每帧都要立即对准，不再切多锚点");
   const kinds = new Set([...starrySource.matchAll(/subject: "([^"]+)"/g)]
     .map((m) => m[1]));
   assert.ok(kinds.has("建筑") && kinds.has("河流") && kinds.has("棋盘")
@@ -976,10 +989,11 @@ check("entrance shots derive from registered scenery landmarks", () => {
     && !starrySource.includes("function catmull("),
   "帧间必须用不会过冲的分段 smoothstep");
   assert.ok(starrySource.includes("cam.azimuth = frame.az * DEG")
-    && starrySource.includes("az: home.azimuth / DEG"),
+    && starrySource.includes("home.azimuth / DEG"),
   "分镜表用度、cam.azimuth 用弧度，两处都必须显式换算");
-  assert.ok(starrySource.includes("THREE.MathUtils.clamp(mainLang.arc * 2.4, 30, 54)"),
-  "短弧幅度由地标机位语言决定且不超过 54°");
+  assert.ok(starrySource.includes("angleDelta(mainBearing + 180, 0)")
+    && starrySource.includes("clamp(opposite, -45, 45)"),
+  "相机从主锚点对面起手、只走 45° 短弧绕回默认机位，避免大幅摇镜");
   assert.ok(starrySource.includes("sampleEntranceFrame")
     && starrySource.includes("makeEntranceFrames")
     && starrySource.includes("cam.panX = frame.focus[0]")
