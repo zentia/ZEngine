@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ZEngine · 参数化棋盘宣发预览</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="./style.css">
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<div id="stage"></div>
+
+<div id="loading">
+  <div class="loading-title">正在铺开这片棋盘</div>
+  <div class="loading-sub">连续台面 · 包边 · 天穹 · 外围装饰</div>
+  <div class="loading-bar"><i></i></div>
+</div>
+
+<header id="hud">
+  <div class="brand">ZEngine <span>/</span> 核心冻结 · 风格可变</div>
+  <h1 id="skin-name">载入中</h1>
+  <p id="stat"></p>
+</header>
+
+<aside id="controls">
+  <label>画质档
+    <select id="lod">
+      <option value="HD">HD</option>
+      <option value="High">High</option>
+      <option value="Mid">Mid</option>
+      <option value="Low">Low</option>
+    </select>
+  </label>
+  <label>几何变体
+    <select id="variant"></select>
+  </label>
+  <div class="note" id="lod-note"></div>
+  <a href="./starry.html" style="display:block;margin-top:12px;font-size:11px;letter-spacing:.12em;color:#d8b476;text-decoration:none">走进星夜 · 沉浸式页 →</a>
+</aside>
+
+<div id="inspect" hidden>
+  <div class="inspect-head"><span id="inspect-id"></span><button id="inspect-close" aria-label="关闭">×</button></div>
+  <div class="inspect-tag" id="inspect-tag"></div>
+  <div class="inspect-hint" id="inspect-hint"></div>
+</div>
+
+<footer id="hint">拖动画面环视 · 滚轮缩放 · 点击发光物件</footer>
+<div id="error" hidden></div>
+
+<script type="module" src="./app.js"></script>
+</body>
+</html>

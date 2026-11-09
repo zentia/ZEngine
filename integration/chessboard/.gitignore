@@ -1,0 +1,4 @@
+# 生成的几何产物（用 `python zboard.py --variants` 重新生成）
+build/
+__pycache__/
+*.pyc

@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#06101f">
+<title>ZEngine · 走进星夜 / 星海棋亭沉浸式预览</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="./starry.css">
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<div id="stage"></div>
+
+<div id="loading">
+  <div class="loading-title">正在铺开这片画境</div>
+  <div class="loading-sub" id="loading-sub">天空盒 · 星夜岛 · 棋盘 · 灯光</div>
+  <div class="loading-bar"><i></i></div>
+</div>
+
+<header id="hud">
+  <div class="eyebrow" id="hud-eyebrow">01 / 2026.11 <span>—</span> A STARRY NIGHT</div>
+  <div class="series">IMMERSIVE CHESSBOARD PREVIEW · 12 WORLDS</div>
+  <h1 id="hud-title">星海棋亭</h1>
+  <p class="sub" id="hud-sub">走进星夜 · 沉浸式场景预览</p>
+  <p class="from" id="hud-from">棋盘轮廓 / 天空盒 与 Unity HD 场景同源 · 单体资产在数据验证页验收</p>
+</header>
+
+<a id="thumb" href="../assets/concept.jpg" target="_blank" rel="noopener"
+   title="AI 概念设定图">
+  <img src="../assets/concept.jpg" alt="星海棋亭概念设定图">
+  <span>CONCEPT / 01</span>
+</a>
+
+<aside id="controls">
+  <div class="ctl-title">画境 / 12 WORLDS</div>
+  <select id="world-select" aria-label="选择画境"></select>
+  <div class="ctl-title mt">视角</div>
+  <div class="ctl-row">
+    <button id="view-immersive" class="active">沉浸</button>
+    <button id="view-overview">俯瞰</button>
+  </div>
+  <div class="ctl-title mt">氛围</div>
+  <label class="ctl-check"><input type="checkbox" id="toggle-bloom" checked> 星光辉映</label>
+  <label class="ctl-check"><input type="checkbox" id="toggle-stars" checked> 流动星尘</label>
+  <label class="ctl-check"><input type="checkbox" id="toggle-tour"> 自动巡游</label>
+  <div class="ctl-title mt">局势 / CEREMONY</div>
+  <select id="ceremony-select" aria-label="播放棋盘演出">
+    <option value="">播放演出…</option>
+    <option value="entrance">入场动画</option>
+    <option value="round_win">回合胜利</option>
+    <option value="round_lose">回合失败</option>
+    <option value="win_streak">连续胜利</option>
+    <option value="level_up">升级播报</option>
+    <option value="easter_egg">互动彩蛋</option>
+  </select>
+  <div class="note">拖动环视 · 滚轮推进 · 方向键漫游 · 点击棋手占位 / 按 E 触发彩蛋</div>
+</aside>
+
+<footer id="credits">
+  <div>ZENGINE / CHESSBOARD AC90</div>
+  <div id="credits-line">天空盒 sky_panorama.jpg · 棋盘轮廓 board.zbrd 画进地形 · 场景物件与夜色同调</div>
+  <div><a href="./index.html">返回数据验证页</a> <span>·</span> 拖动以环视</div>
+</footer>
+
+<div id="hint">拖动环视 · 滚轮推进 · 方向键漫游 · 点击发光物件</div>
+<div id="error" hidden></div>
+<div id="ceremony" aria-live="polite">
+  <div class="ceremony-kicker"></div>
+  <div class="ceremony-title"></div>
+  <div class="ceremony-detail"></div>
+  <div class="ceremony-meter"><i></i></div>
+</div>
+<div id="inspect" hidden>
+  <div class="inspect-head"><span id="inspect-id"></span><button id="inspect-close" aria-label="关闭">×</button></div>
+  <div class="inspect-tag" id="inspect-tag"></div>
+  <div class="inspect-hint" id="inspect-hint"></div>
+</div>
+
+<script type="module" src="./starry.js"></script>
+</body>
+</html>

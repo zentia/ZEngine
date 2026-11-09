@@ -1,0 +1,129 @@
+{
+  "schema": "zengine.chessboard.world-concept/v1",
+  "generated_by": "zengine-ai/image_gen",
+  "note": "11 张画境概念设定图由文生图生成，只作视觉定调；棋盘轮廓仍只来自 build/board.zbrd。starry-night 沿用 assets/concept.jpg。",
+  "count": 11,
+  "items": [
+    {
+      "id": "bedroom-arles",
+      "image": "assets/worlds/bedroom-arles.png",
+      "sha256": "a3ce84fef5394f0a81dad568b255bcdef397a3a09ac83d58e731fccfc4e1cbcb",
+      "size_px": [
+        1024,
+        1024
+      ],
+      "prompt": "游戏场景概念设定：淡紫墙色与金黄色木地板构成的安静房间式庭院，一整片连续木纹地板上用浅色线条划出一块倒角矩形作为棋盘区域，与地板共面、没有凸起台座，简朴木椅、红毯与蓝色门窗散在四周，柔和室内天光，厚涂笔触，无文字无人物，游戏美术概念设定图，高清",
+      "source": "image_gen"
+    },
+    {
+      "id": "bridge-argenteuil",
+      "image": "assets/worlds/bridge-argenteuil.png",
+      "sha256": "b8f258bc5cfb3ae3505d41ddf198f27227f9968d467404665e20489fc72c9d76",
+      "size_px": [
+        1024,
+        1024
+      ],
+      "prompt": "游戏场景概念设定：夏日蓝色河面与石拱桥，白帆小船停在岸边，一整片连续河岸地面上用浅白细线划出一块倒角矩形作为棋盘区域，与河岸共面、没有凸起台座，水面碎光与岸边树影交错，印象派短笔触，无文字无人物，游戏美术概念设定图，高清",
+      "source": "image_gen"
+    },
+    {
+      "id": "cafe-terrace",
+      "image": "assets/worlds/cafe-terrace.png",
+      "sha256": "81ac79e490a7106052a470435511c2f02e9399b1bc6365e4b8710aa81e75464e",
+      "size_px": [
+        1024,
+        1024
+      ],
+      "prompt": "游戏场景概念设定：深钴蓝星空下的石板街巷，暖黄色咖啡馆露台的煤气灯把地面染成金黄，一整片连续鹅卵石地面上用浅色粉笔线划出一块倒角矩形作为棋盘区域，与街道共面、没有凸起台座，桌椅与遮阳篷散在四周，梵高式短笔触，无文字无人物，游戏美术概念设定图，高清",
+      "source": "image_gen"
+    },
+    {
+      "id": "garden-sainte-adresse",
+      "image": "assets/worlds/garden-sainte-adresse.png",
+      "sha256": "ed3cefcffc02069e38ee7cc99551b2084406e052ded16e25957aaf8c691ba249",
+      "size_px": [
+        1024,
+        1024
+      ],
+      "prompt": "游戏场景概念设定：海边花园露台，蓝天与浅色海面，红白旗帜在海风里展开，一整片连续碎石地面与花圃上用白色细线划出一块倒角矩形作为棋盘区域，与地面共面、没有凸起台座，向日葵与栏杆散在四周，明快的印象派笔触，无文字无人物，游戏美术概念设定图，高清",
+      "source": "image_gen"
+    },
+    {
+      "id": "gauguin-path",
+      "image": "assets/worlds/gauguin-path.png",
+      "sha256": "f38386a117a718ed37a3f6c61a1d7df395c183f21238d5025eb79799394bbd9b",
+      "size_px": [
+        1024,
+        1024
+      ],
+      "prompt": "游戏场景概念设定：热带岛屿的红土小路穿过浓绿树丛与茅屋，暮色把云染成橙粉，一整片连续红土上用浅米白线划出一块倒角矩形作为棋盘区域，与地面共面、没有凸起台座，阔叶植物与平涂色块，高更式装饰性色彩，无文字无人物，游戏美术概念设定图，高清",
+      "source": "image_gen"
+    },
+    {
+      "id": "impression-sunrise",
+      "image": "assets/worlds/impression-sunrise.png",
+      "sha256": "7c4982714bfda618ca12bb910936f673a7859c63ee29ee55b0a8fe109100b37e",
+      "size_px": [
+        1024,
+        1024
+      ],
+      "prompt": "等距视角游戏棋盘场景概念设定：灰蓝色晨雾港口，橙色太阳低悬、在水面拉出一道碎金倒影，一整片连续水岸地面上用极淡的暖白线划出一块倒角矩形作为棋盘区域，与水岸共面、没有凸起台座，小舟剪影、桅杆与远处吊车在雾里若隐若现，莫奈式松散笔触，风景与棋盘一体，无文字无人物，游戏美术概念设定图，高清",
+      "source": "image_gen"
+    },
+    {
+      "id": "japanese-footbridge",
+      "image": "assets/worlds/japanese-footbridge.png",
+      "sha256": "482f115064e10eafee9b75f1fbb104389092e8758502f3681cb3ef1b0528a3f9",
+      "size_px": [
+        1024,
+        1024
+      ],
+      "prompt": "等距视角游戏棋盘场景概念设定：青绿色睡莲池与池岸连成一整片连续地面，水面上用浅白色细线划出一块倒角矩形作为棋盘区域，与池面共面、没有凸起台座，圆形浮叶、白粉睡莲、青绿拱桥与垂柳环绕，午后柔和阳光穿过叶隙，莫奈式细碎笔触，风景与棋盘一体，无文字无人物，游戏美术概念设定图，高清",
+      "source": "image_gen"
+    },
+    {
+      "id": "mont-sainte-victoire",
+      "image": "assets/worlds/mont-sainte-victoire.png",
+      "sha256": "b6b947a6245116a8d22930cf0d9441a10ec00ad94ae93c7920d2bbf5701bfd67",
+      "size_px": [
+        1024,
+        1024
+      ],
+      "prompt": "游戏场景概念设定：普罗旺斯山麓，赭色田埂、绿色林地与蓝灰色长肩山峰，一整片连续田地上用浅赭白线划出一块倒角矩形作为棋盘区域，与田地共面、没有凸起台座，色块分明、笔触沉稳，塞尚式构造感，无文字无人物，游戏美术概念设定图，高清",
+      "source": "image_gen"
+    },
+    {
+      "id": "port-marly-flood",
+      "image": "assets/worlds/port-marly-flood.png",
+      "sha256": "139818ac0900428512b23d67c1470607496676b8aeb88475b436bccd5b9dbf39",
+      "size_px": [
+        1024,
+        1024
+      ],
+      "prompt": "游戏场景概念设定：洪水漫过临水街道，杏色屋墙与小船倒映在浅灰蓝水面，一整片连续水街地面上用浅白线划出一块倒角矩形作为棋盘区域，与街面共面、没有凸起台座，细密倒影与阴晴云影，西斯莱式笔触，无文字无人物，游戏美术概念设定图，高清",
+      "source": "image_gen"
+    },
+    {
+      "id": "villeneuve-bridge",
+      "image": "assets/worlds/villeneuve-bridge.png",
+      "sha256": "a45d1e8820f34fe1003f11a37d0b7b78b041801054d1c795dd5dd1f29804a9b9",
+      "size_px": [
+        1024,
+        1024
+      ],
+      "prompt": "游戏场景概念设定：柔和灰蓝天空下的河湾与浅色沙岸，石桥头与彼岸房屋安静排列，一整片连续沙地上用浅灰白线划出一块倒角矩形作为棋盘区域，与沙岸共面、没有凸起台座，细碎水光与稀疏树影，西斯莱式克制笔触，无文字无人物，游戏美术概念设定图，高清",
+      "source": "image_gen"
+    },
+    {
+      "id": "wheatfield-cypresses",
+      "image": "assets/worlds/wheatfield-cypresses.png",
+      "sha256": "41d8dd48bfe69c9876834ae89c7fef3e66ab480ce5b551072eb2bfb9fd09e645",
+      "size_px": [
+        1024,
+        1024
+      ],
+      "prompt": "等距视角游戏棋盘场景概念设定：一整片连续金色麦田与石质地面自然融合，麦浪笔触里用浅金刻线划出一块倒角矩形作为棋盘区域，与田地共面、没有凸起台座，银绿色橄榄树、深绿柏树、翻卷的乳白积云、明亮钴蓝天空，午后暖金阳光，厚涂短笔触，风景与棋盘一体，无文字无人物，游戏美术概念设定图，高清",
+      "source": "image_gen"
+    }
+  ]
+}

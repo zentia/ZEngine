@@ -1,0 +1,447 @@
+{
+  "schema": "zengine.chessboard.style-pack/v1",
+  "name": "星海棋亭 Starlit Pavilion",
+  "generated_by": "zengine-ai-multimodal/text-to-image",
+  "status": "AI_GENERATED —— 由 assets/concept.jpg 抽取主题，可整包替换；ZBRD 代理几何保持不变，等混元 3D 资产就绪后再替换单体网格",
+  "note": "外围装饰物与风格化几何是不确定的：本文件由 AI（文生图概念图 -> 主题/装饰清单 -> 单体参考图 -> 本 JSON）或人工填写，board-spec.json 不动。所有装饰必须落在 board-spec.json 的 decoration_zones 槽内，超出会被 validate_style_pack 拒绝。第 2 步刻意保留 6 个 primitive 代理几何与全部 id：核心几何不变、材质名 zboard_<id> 不变、已部署的 15 个 mesh/.mat GUID 不变，避免让三端产物与 ZBRD 漂移；主题的视觉表达由 visual-pack.json（天空/后处理/材质/Volume）与本文件的色板承担，真正的单体模型由 external_mesh_contract 引用。",
+  "derived_from": {
+    "concept_image": "assets/concept.jpg",
+    "concept_sha256": "5925fa0b3d1e3deee899a55898eec996cce7984cacd736b95831417a0e5481db",
+    "concept_theme": "深靛蓝星夜 / 青绿石台 / 暖金描边 / 新月与远山",
+    "visual_pack": "visual-pack.json",
+    "visual_pack_name": "星海棋亭 Starlit Pavilion",
+    "palette_source": "visual-pack.json 的 palette，三色逐值对齐，不另立一套调色板",
+    "reference_images_dir": "assets/style_refs/",
+    "reference_images_note": "4 张单物体参考图，纯白背景、等距三分之四视角，供混元 3D 图生 3D 使用；右下角有云端模型自动加的『AI 生成』水印，送图生 3D 前建议裁掉右下角约 12% 区域（原始文件与 sha256 不改，裁剪产物另存）。"
+  },
+  "palette": {
+    "primary": [
+      0.24,
+      0.38,
+      0.34,
+      1.0
+    ],
+    "accent": [
+      0.94,
+      0.68,
+      0.26,
+      1.0
+    ],
+    "glow": [
+      1.0,
+      0.79,
+      0.38,
+      1.0
+    ]
+  },
+  "frame_style": {
+    "color": [
+      0.62,
+      0.44,
+      0.18,
+      1.0
+    ],
+    "trim_color": [
+      0.94,
+      0.68,
+      0.26,
+      1.0
+    ],
+    "layers": 1,
+    "note": "与 visual-pack.json 的 materials.frame / palette.accent 对齐；Unity 侧实际渲染颜色由 .mat 决定，这里只保证 ZBRD 与 Web 端不出现第二套配色。"
+  },
+  "decorations": [
+    {
+      "id": "deco_nw",
+      "zone": "corner_nw",
+      "primitive": "cylinder",
+      "position": [
+        -10.4,
+        0.0,
+        -9.2
+      ],
+      "rotation_y_deg": 0.0,
+      "params": {
+        "radius": 0.34,
+        "height": 1.9,
+        "segments": 12,
+        "cap": "pyramid"
+      },
+      "color": [
+        0.32,
+        0.42,
+        0.44,
+        1.0
+      ],
+      "min_lod": "HD",
+      "theme_asset": "star_pillar",
+      "hint": "西北角星象灯柱；当前是 cylinder 代理，混元 glb 就绪后按 external_mesh_contract 同位替换"
+    },
+    {
+      "id": "deco_se",
+      "zone": "corner_se",
+      "primitive": "cylinder",
+      "position": [
+        10.4,
+        0.0,
+        9.2
+      ],
+      "rotation_y_deg": 0.0,
+      "params": {
+        "radius": 0.34,
+        "height": 1.9,
+        "segments": 12,
+        "cap": "pyramid"
+      },
+      "color": [
+        0.32,
+        0.42,
+        0.44,
+        1.0
+      ],
+      "min_lod": "HD",
+      "theme_asset": "star_pillar",
+      "hint": "东南角星象灯柱，与西北角同一份单体资产"
+    },
+    {
+      "id": "deco_n",
+      "zone": "edge_n",
+      "primitive": "ring",
+      "position": [
+        0.0,
+        1.8,
+        -9.6
+      ],
+      "rotation_y_deg": 0.0,
+      "params": {
+        "inner": 1.1,
+        "outer": 1.25,
+        "segments": 32
+      },
+      "color": [
+        0.92,
+        0.7,
+        0.3,
+        1.0
+      ],
+      "min_lod": "Mid",
+      "theme_asset": "halo_ring",
+      "hint": "北侧悬浮星象圆环；代理几何是水平 ring，glb 需自带竖直朝向修正"
+    },
+    {
+      "id": "orb_s",
+      "zone": "edge_s",
+      "primitive": "sphere",
+      "position": [
+        0.0,
+        0.6,
+        9.6
+      ],
+      "rotation_y_deg": 0.0,
+      "params": {
+        "radius": 0.6,
+        "segments": 16,
+        "rings": 8
+      },
+      "color": [
+        0.4,
+        0.56,
+        0.66,
+        1.0
+      ],
+      "min_lod": "High",
+      "theme_asset": "moon_orrery",
+      "hint": "南侧月相星象仪；代理几何是 sphere"
+    }
+  ],
+  "interactables": [
+    {
+      "id": "lantern_w",
+      "zone": "edge_w",
+      "primitive": "torus",
+      "position": [
+        -11.0,
+        1.2,
+        0.0
+      ],
+      "rotation_y_deg": 90.0,
+      "params": {
+        "radius": 0.44,
+        "tube": 0.11,
+        "radial_segments": 10,
+        "tubular_segments": 24
+      },
+      "color": [
+        1.0,
+        0.79,
+        0.38,
+        1.0
+      ],
+      "min_lod": "Low",
+      "tag": "ZChessboard.Lantern.West",
+      "theme_asset": "star_lantern",
+      "hint": "西侧可点击星灯：暖金铜环 + 青绿宝石 + 冷蓝星尘，点击触发星轨高亮"
+    },
+    {
+      "id": "lantern_e",
+      "zone": "edge_e",
+      "primitive": "torus",
+      "position": [
+        11.0,
+        1.2,
+        0.0
+      ],
+      "rotation_y_deg": 90.0,
+      "params": {
+        "radius": 0.44,
+        "tube": 0.11,
+        "radial_segments": 10,
+        "tubular_segments": 24
+      },
+      "color": [
+        1.0,
+        0.79,
+        0.38,
+        1.0
+      ],
+      "min_lod": "Low",
+      "tag": "ZChessboard.Lantern.East",
+      "theme_asset": "star_lantern",
+      "hint": "东侧可点击星灯，与西侧共用同一份单体资产"
+    }
+  ],
+  "external_mesh_contract": {
+    "schema": "zengine.chessboard.external-mesh/v1",
+    "frozen": true,
+    "asset_format": "glb",
+    "reference_root": "package_root",
+    "reference_images_deployed": true,
+    "status": "CONTRACT_ACTIVE —— glb + sha256 + 锚点已在 Unity / Blender / Web 三端消费；4 个资产已全部换为混元 3D 图生 3D 产物（asset_origin=hunyuan_3d，贴图已降采样到 1024，glb 2.2~2.6 MB）；接管方式 `python external_mesh.py --import-glb <asset_id> --source <glb> [--height m | --diameter m] [--pivot-center] --texture-size 1024`，原地替换 glb、派生 Unity 缓存并重算 pivot_offset / scale",
+    "placement": "glb 是独立单体资产，按 items[].instances[].anchor 摆放；anchor 必须等于对应 style item 的 position。ZBRD 仍保留 primitive 代理几何与 zboard_<id> 材质名，不把混元网格烘进共享几何。",
+    "consumer_status": "IMPLEMENTED —— Unity（ZExternalMeshBinder）/ Blender（build_ac90.py）/ Web（external_mesh.mjs）都消费 build/external_mesh.manifest.json 的同一份 anchor / rotation / pivot，并逐字节校验 glb sha256；style item 上仍禁止出现 external_mesh 字段，唯一真源是本契约。",
+    "asset_rules": [
+      "单个物体、无场景/地面/人物/文字；本地原点在底面中心，glTF Y-up（Blender importer 自动转 Z-up，不要二次旋转）",
+      "只生成外围装饰与交互物，禁止生成最外方格 / 包边 / 两个棋手占位 / 天穹；corner_sw 与 corner_ne 槽已保留给棋手占位",
+      "混元 3D 产物 URL 仅 24 小时有效：生成后立即落盘 assets/external_meshes/<asset_id>.glb 并写 mesh_sha256",
+      "接管外部 glb 一律走 `python external_mesh.py --import-glb`：不烘节点变换，尺寸/原点差异只写 pivot_offset 与 instances[].scale；贴图用 --texture-size 1024 降采样（默认保留原字节）",
+      "地面物（灯柱/星象仪）用 --height 归一化高度、默认底面 pivot；悬浮物（圆环/灯笼）用 --diameter 归一化直径、--pivot-center 用体心 pivot——锚点=物体中心而非底面",
+      "status 只能走 pending -> reference_ready -> asset_ready；asset_ready 必须同时给出 mesh / mesh_sha256 / asset_origin（proxy_zbrd | hunyuan_3d | handmade），且文件真实存在",
+      "Unity 没有 glTF 运行库：asset_ready 还要产出 cache（ZBRD v1 单部件）与 cache_sha256，由 glb 离线派生；运行时先校验 glb 字节再读缓存",
+      "pivot_offset 是资产局部坐标里「应被视为原点」的点，消费端按 world = anchor + rotY*scale*(local - pivot_offset) 摆放；代理资产恒为 [0,0,0]",
+      "每个 style item 必须被恰好一个 instance 覆盖，并用 theme_asset 指回同一个 asset_id",
+      "Unity 侧只借用宿主设备与场景节点，glb 不引入新的 RHI device / 主循环"
+    ],
+    "items": [
+      {
+        "asset_id": "star_pillar",
+        "label": "星象灯柱",
+        "status": "asset_ready",
+        "reference_image": "assets/style_refs/star_pillar.jpg",
+        "reference_sha256": "d18faffc4b2104d191834c58d5a185758d6de1c931a1fe1fcb6725148bc94b1c",
+        "reference_size_px": [
+          1024,
+          1024
+        ],
+        "reference_prompt": "单体3D资产设计图，青绿石质云纹基座上的中式星象灯柱，顶部一颗镂空暖金球形灯罩，内部暖光透出星形花纹，冷蓝点缀，纯白背景，等距视角，单个完整物体",
+        "mesh": "assets/external_meshes/star_pillar.glb",
+        "mesh_sha256": "2e0b4a45476da2dd819a546a7e16a2c6bfc0bedcb2c84bf021df970d81dfbbeb",
+        "instances": [
+          {
+            "id": "deco_nw",
+            "zone": "corner_nw",
+            "anchor": [
+              -10.4,
+              0.0,
+              -9.2
+            ],
+            "rotation_y_deg": 0.0,
+            "scale": 2.2987,
+            "proxy_primitive": "cylinder"
+          },
+          {
+            "id": "deco_se",
+            "zone": "corner_se",
+            "anchor": [
+              10.4,
+              0.0,
+              9.2
+            ],
+            "rotation_y_deg": 0.0,
+            "scale": 2.2987,
+            "proxy_primitive": "cylinder"
+          }
+        ],
+        "asset_origin": "hunyuan_3d",
+        "cache": "assets/external_meshes/star_pillar.zbrd",
+        "cache_sha256": "5632cf065e99936101275f0cb95c8405be6c2d2a899f648d7991c969481d8a2f",
+        "pivot_offset": [
+          0.001402,
+          0.0,
+          -0.008539
+        ],
+        "texture": "assets/external_meshes/star_pillar.png",
+        "texture_sha256": "22a7b6dcc8b12e030231cd3b4627b64adf869cd8f872d6156d90b333bdfa3c33"
+      },
+      {
+        "asset_id": "halo_ring",
+        "label": "悬浮星象圆环",
+        "status": "asset_ready",
+        "reference_image": "assets/style_refs/halo_ring.jpg",
+        "reference_sha256": "a17f50fb94d78f4ba83f44d7e95e406e75c79dc6d77c987e3be37d06dc8d51f0",
+        "reference_size_px": [
+          1024,
+          1024
+        ],
+        "reference_prompt": "单体3D资产设计图，竖直悬浮的暖金多层圆环，四枚青绿菱形宝石，环内是冷蓝发光星尘，纯白背景，等距视角，单个完整物体",
+        "mesh": "assets/external_meshes/halo_ring.glb",
+        "mesh_sha256": "4c61161daeb6a8e94542c354dd621201beca16390d94679ac1df246121022d1e",
+        "instances": [
+          {
+            "id": "deco_n",
+            "zone": "edge_n",
+            "anchor": [
+              0.0,
+              1.8,
+              -9.6
+            ],
+            "rotation_y_deg": 0.0,
+            "scale": 2.2069,
+            "proxy_primitive": "ring"
+          }
+        ],
+        "asset_origin": "hunyuan_3d",
+        "cache": "assets/external_meshes/halo_ring.zbrd",
+        "cache_sha256": "dc38ded629d439b87426a304647d0aa58c11e5da2598a355387ca8a6540ab1c1",
+        "pivot_offset": [
+          0.003954,
+          0.560632,
+          -0.011301
+        ],
+        "texture": "assets/external_meshes/halo_ring.png",
+        "texture_sha256": "fea16849ccc2548171ca226cac394366cb915911064f5e3e19cedeab96b66dff"
+      },
+      {
+        "asset_id": "moon_orrery",
+        "label": "月相星象仪",
+        "status": "asset_ready",
+        "reference_image": "assets/style_refs/moon_orrery.jpg",
+        "reference_sha256": "5f4f7c4079b7de01f050a5e9174d6d65f53d316741529a4133f168b194191b9c",
+        "reference_size_px": [
+          1024,
+          1024
+        ],
+        "reference_prompt": "单体3D资产设计图，悬浮的月相星象仪：青绿石质小基座托着镂空暖金浑天仪球，球内嵌新月与星点，两道倾斜刻度环，冷蓝自发光，纯白背景，等距视角，单个完整物体",
+        "mesh": "assets/external_meshes/moon_orrery.glb",
+        "mesh_sha256": "e38dc42282cf80044b22a0702a13e8980f4910a5213e0dd42f91e34fff7aad9e",
+        "instances": [
+          {
+            "id": "orb_s",
+            "zone": "edge_s",
+            "anchor": [
+              0.0,
+              0.6,
+              9.6
+            ],
+            "rotation_y_deg": 0.0,
+            "scale": 1.0982,
+            "proxy_primitive": "sphere"
+          }
+        ],
+        "asset_origin": "hunyuan_3d",
+        "cache": "assets/external_meshes/moon_orrery.zbrd",
+        "cache_sha256": "fd06672d48ad9a86845cf9c5b8fdc7dc4d7f292f168db50409dcadc754b88d3b",
+        "pivot_offset": [
+          -0.001696,
+          0.546364,
+          -0.005132
+        ],
+        "texture": "assets/external_meshes/moon_orrery.png",
+        "texture_sha256": "a1750a32d8c4e2b67be3c05b182f934f7d5be3555bfa12541846f4b7b06192d5"
+      },
+      {
+        "asset_id": "star_lantern",
+        "label": "可点击星灯",
+        "status": "asset_ready",
+        "reference_image": "assets/style_refs/star_lantern.jpg",
+        "reference_sha256": "56c68f97a6d53c1b673016711851e47a6757af2f49f9f5705ff37aaf8723c96d",
+        "reference_size_px": [
+          1024,
+          1024
+        ],
+        "reference_prompt": "单体3D资产设计图，可点击交互用的悬浮星灯：暖金铜环镶四枚青绿菱形宝石，环心冷蓝发光星尘，铜铃与流苏，青绿石质小托座，纯白背景，等距视角，单个完整物体",
+        "mesh": "assets/external_meshes/star_lantern.glb",
+        "mesh_sha256": "3c285ac8d05cf18f30a841d699a9859bf2acc4e4622ea9006e8db8423726c85d",
+        "instances": [
+          {
+            "id": "lantern_w",
+            "zone": "edge_w",
+            "anchor": [
+              -11.0,
+              1.2,
+              0.0
+            ],
+            "rotation_y_deg": 90.0,
+            "scale": 1.1825,
+            "proxy_primitive": "torus"
+          },
+          {
+            "id": "lantern_e",
+            "zone": "edge_e",
+            "anchor": [
+              11.0,
+              1.2,
+              0.0
+            ],
+            "rotation_y_deg": 90.0,
+            "scale": 1.1825,
+            "proxy_primitive": "torus"
+          }
+        ],
+        "asset_origin": "hunyuan_3d",
+        "cache": "assets/external_meshes/star_lantern.zbrd",
+        "cache_sha256": "76b17d97980bd41af6d6a65ed00bdb90f13db43fbcbcedec04ab5f0310fb51e5",
+        "pivot_offset": [
+          -0.001344,
+          0.503466,
+          0.000788
+        ],
+        "texture": "assets/external_meshes/star_lantern.png",
+        "texture_sha256": "b9208d2cbe3eb9753c3d26acad3a37ad0a407186eb944d877cd35228d623ae34"
+      }
+    ]
+  },
+  "ai_generation_contract": {
+    "concept_image": "assets/concept.jpg",
+    "concept_sha256": "5925fa0b3d1e3deee899a55898eec996cce7984cacd736b95831417a0e5481db",
+    "expected_fields": [
+      "palette",
+      "frame_style",
+      "decorations[]",
+      "interactables[]",
+      "external_mesh_contract",
+      "theme_asset"
+    ],
+    "free_dimensions": [
+      "装饰物数量",
+      "primitive 类型",
+      "params",
+      "位置(槽内)",
+      "颜色",
+      "min_lod",
+      "tag/hint",
+      "theme_asset 映射",
+      "单体参考图 prompt / 图像"
+    ],
+    "frozen_dimensions": [
+      "最外面一个方格的轮廓",
+      "逻辑网格数值",
+      "包边基本形",
+      "两个棋手占位的位置（左下 / 右上对角）",
+      "decoration_zones 边界",
+      "已落地材质名 zboard_<id>",
+      "external_mesh_contract schema 与 glb 单点引用规则"
+    ],
+    "single_mesh_assets": "混元 3D 图生 3D 只产单体装饰 glb，落盘 assets/meshes/<asset_id>.glb 后把 status 改为 asset_ready 并写 mesh_sha256；按 external_mesh_contract.items[].instances 的 anchor 摆放，不生成棋盘本体、不烘进 ZBRD。参考图右下角『AI 生成』水印需在送图生 3D 前裁掉。",
+    "scene_visual_layer": "天空盒 / 后处理 / 材质 / Volume 由另一个 AI 真源 visual-pack.json 生成，不在本文件里；本文件只负责外围装饰几何与单体资产引用。"
+  }
+}

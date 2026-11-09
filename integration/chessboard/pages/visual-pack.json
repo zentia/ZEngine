@@ -1,0 +1,153 @@
+{
+  "schema": "zengine.chessboard.visual-pack/v1",
+  "name": "星海棋亭 Starlit Pavilion",
+  "generated_by": "zengine-ai-multimodal/text-to-image",
+  "status": "AI_GENERATED —— 由 AI 概念图抽取，可整包替换；几何冻结契约在 board-spec.json 中不受影响",
+  "note": "AI 生成范围 = 天空盒 / 后处理 / 材质 / Volume，外加由概念图派生的调色板与灯光。board-spec.json 只冻结几何与槽位；style-pack.json 只管外围装饰；本文件只管场景视觉层。三者互不覆盖。Unity 侧的 Volume 结构模板来自现网 AC10 的 RenderSettingsVolume（脚本 GUID 可在 trunk 解析），只覆写白名单参数，不新增任何未解析的脚本/贴图引用。",
+
+  "concept": {
+    "prompt": "等距视角游戏棋盘场景概念设定：一整块连续青灰石质台面，倒角矩形轮廓，暖金包边与浅浮雕星象纹样，四周角位立着青金色星象灯柱与悬浮圆环，深蓝夜空、星云与新月，暖金灯光对比冷蓝环境光，中式幻想与轻科幻融合，干净背景，无文字无人物，游戏美术概念设定图，高清",
+    "image": "assets/concept.jpg",
+    "sha256": "5925fa0b3d1e3deee899a55898eec996cce7984cacd736b95831417a0e5481db",
+    "size_px": [1024, 1024],
+    "source_job": "1379431822-1793885830-0032ed5b-d91e-11f1-b35a-5254008f08dc-0",
+    "theme": "深靛蓝星夜 / 青绿石台 / 暖金描边 / 新月与远山",
+    "derivation": "AI 从概念图抽取主色、描金、发光色、天空三色、雾色与灯光冷暖对比，写入 palette / skybox / materials / lighting；后处理参数按同一氛围调节。"
+  },
+
+  "palette": {
+    "primary": [0.24, 0.38, 0.34, 1.0],
+    "accent": [0.94, 0.68, 0.26, 1.0],
+    "glow": [1.0, 0.79, 0.38, 1.0]
+  },
+
+  "skybox": {
+    "mode": "panorama",
+    "projection": "equirectangular_2_1",
+    "panorama_image": "assets/sky_panorama.jpg",
+    "panorama_sha256": "c327ebed913ec1dbfcd15497641a6991367dc298bf28591b8e1359c070aaf92e",
+    "panorama_size_px": [2048, 1024],
+    "source_job": "1379431822-1793886185-d448675f-d91e-11f1-b35a-5254008f08dc-0",
+    "postprocess": [
+      "source was a 1024x1024 JPEG, not a true equirectangular capture",
+      "crop upper 64% (sky + horizon, drop the foreground mountains)",
+      "resize to 2048x1024 with LANCZOS",
+      "blend 128px left/right seam so column 0 equals column 2047"
+    ],
+    "projection_fidelity": "approximate —— AI 文生图产出的是全景风格图，不是严格相机投影；用于天穹球/背景，不做几何测量",
+    "top_color": [0.020, 0.055, 0.105, 1.0],
+    "horizon_color": [0.10, 0.24, 0.29, 1.0],
+    "bottom_color": [0.03, 0.06, 0.09, 1.0],
+    "exposure": 1.0,
+    "rotation_deg": 0.0,
+    "fog": {
+      "enabled": 1,
+      "color": [0.07, 0.17, 0.22, 1.0],
+      "mode": 3,
+      "density": 0.006,
+      "linear_start": 0.0,
+      "linear_end": 300.0
+    }
+  },
+
+  "post_processing": {
+    "exposure_value": 0.15,
+    "tonemap_mode": 3,
+    "color_grading": {
+      "white_balance_temperature": 6200,
+      "white_balance_tint": -4,
+      "global_saturation": [1.02, 1.0, 1.06, 1.0],
+      "global_contrast": [1.02, 1.02, 1.04, 1.0],
+      "global_gamma": [1.0, 1.0, 1.0, 1.0],
+      "global_gain": [1.0, 1.0, 1.04, 1.0],
+      "global_offset": [0.0, 0.0, 0.0, 0.0],
+      "blue_correction": 0.5,
+      "expand_gamut": 1,
+      "tone_curve_type": 3
+    },
+    "bloom": {
+      "enabled": 1,
+      "threshold": 1.35,
+      "soft_knee": 0.72,
+      "intensity": 0.55,
+      "diffusion": 0.82,
+      "firefly_removal_strength": 1,
+      "clamp": 65472,
+      "tint": [0.88, 0.94, 0.92, 1.0]
+    },
+    "lut": { "texture": null, "intensity": 0 }
+  },
+
+  "materials": {
+    "core_slab": { "color": [0.24, 0.38, 0.34, 1.0] },
+    "frame": { "color": [0.62, 0.44, 0.18, 1.0] },
+    "anchor_seat_home": { "color": [0.30, 0.38, 0.40, 1.0] },
+    "anchor_seat_guest": { "color": [0.30, 0.38, 0.40, 1.0] },
+    "anchor_info_plinth": { "color": [0.30, 0.38, 0.40, 1.0] },
+    "sky_gradient": { "color": [0.04, 0.09, 0.16, 1.0] },
+    "zboard_deco_nw": { "color": [0.32, 0.42, 0.44, 1.0] },
+    "zboard_deco_se": { "color": [0.32, 0.42, 0.44, 1.0] },
+    "zboard_deco_n": { "color": [0.92, 0.70, 0.30, 1.0] },
+    "zboard_orb_s": { "color": [0.40, 0.56, 0.66, 1.0] },
+    "zboard_lantern_w": { "color": [1.0, 0.79, 0.38, 1.0] },
+    "zboard_lantern_e": { "color": [1.0, 0.79, 0.38, 1.0] }
+  },
+
+  "volume": {
+    "enabled": true,
+    "is_global": 1,
+    "weight": 1.0,
+    "blend_distance": 1.0,
+    "priority": 0,
+    "script_guid": "8b58b33c8d7842a44a07b29f9b2fea73",
+    "script_file_id": 11500000,
+    "template_source": "build/scene_template.unity",
+    "template_document": "114 &126173803",
+    "external_ref_policy": "把模板里所有指向 AC10 场景对象的 fileID（UserDefinedBounds / Root / m_GameObject）改成 {fileID: 0} 或新分配的本地 ID，避免悬空引用",
+    "override_keys": [
+      "PostEffect.ExposureValue",
+      "PostEffect.TonemapMode",
+      "PostEffect.ColorGrading.*",
+      "PostEffect.EnableBloom",
+      "PostEffect.BloomThreshold",
+      "PostEffect.BloomSoftKnee",
+      "PostEffect.BloomIntensity",
+      "PostEffect.BloomDiffusion",
+      "PostEffect.BloomTint",
+      "isGlobal",
+      "weight",
+      "priority"
+    ]
+  },
+
+  "lighting": {
+    "directional_color": [1.0, 0.86, 0.64, 1.0],
+    "directional_intensity": 1.12,
+    "ambient_color": [0.26, 0.36, 0.42, 1.0],
+    "ambient_intensity": 0.62,
+    "subtractive_shadow_color": [0.16, 0.22, 0.30, 1.0]
+  },
+
+  "ai_generation_contract": {
+    "expected_fields": ["concept", "palette", "skybox", "post_processing", "materials", "volume", "lighting"],
+    "free_dimensions": [
+      "concept.prompt / image",
+      "palette 三色",
+      "skybox 全景图 / 三色 / 雾 / 曝光 / 旋转",
+      "post_processing 的曝光 / tonemap / 调色 / bloom / LUT",
+      "materials 每个材质的颜色",
+      "volume 的 isGlobal / weight / priority 与白名单后处理覆写",
+      "lighting 的颜色与强度"
+    ],
+    "frozen_dimensions": [
+      "核心台面轮廓与 7x8 逻辑网格",
+      "anchors / decoration_zones / lods 档位",
+      "scene.path / scene.quality / scene.template",
+      "unity.material_template 的 shader 与材质资产 GUID",
+      "Volume 组件脚本 GUID 与模板结构（不得引用未解析的脚本）",
+      "场景根节点层级与 Project8ArtField 契约",
+      "High/Mid/Low 自动降配与配置表"
+    ],
+    "notes": "materials 的键必须等于 Assets/ZEngineChessboard/Materials 下已落地的材质名；unity_scene.py 会用 asset_guids.json 校验集合相等。改颜色只覆写 .mat 的 m_Colors 白名单属性（_AlbedoColor/_Color/_BaseColor），GUID 与其余字段原样保留，因此不会引入 Missing。"
+  }
+}

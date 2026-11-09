@@ -1,0 +1,141 @@
+:root {
+  --ink: #e8ecf3;
+  --muted: #9aa6b8;
+  --line: rgba(232, 236, 243, 0.16);
+  --panel: rgba(14, 18, 27, 0.72);
+  --accent: #d8b476;
+}
+
+* { box-sizing: border-box; }
+
+/* 作者样式里的 display:flex 会压过 UA 的 [hidden]{display:none}，
+   否则全屏不透明的 #error 会一直盖在 canvas 和 HUD 上面。 */
+[hidden] { display: none !important; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: #0a0e17;
+  color: var(--ink);
+  font-family: "PingFang SC", "Microsoft YaHei", "Noto Sans SC", system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+#stage, #stage canvas { display: block; width: 100%; height: 100%; }
+
+#loading {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  background: #0a0e17;
+  z-index: 30;
+  transition: opacity 0.6s ease;
+}
+#loading.done { opacity: 0; pointer-events: none; }
+.loading-title { font-size: 26px; letter-spacing: 0.32em; font-weight: 300; }
+.loading-sub { font-size: 12px; letter-spacing: 0.22em; color: var(--muted); }
+.loading-bar { width: 180px; height: 1px; background: var(--line); margin-top: 12px; overflow: hidden; }
+.loading-bar i { display: block; width: 36%; height: 100%; background: var(--accent); animation: sweep 1.1s ease-in-out infinite; }
+@keyframes sweep { from { transform: translateX(-100%); } to { transform: translateX(380%); } }
+
+#hud {
+  position: fixed;
+  top: 34px;
+  left: 38px;
+  z-index: 10;
+  pointer-events: none;
+  text-shadow: 0 1px 12px rgba(0, 0, 0, 0.8);
+}
+.brand { font-size: 11px; letter-spacing: 0.28em; color: var(--muted); }
+.brand span { color: var(--accent); margin: 0 6px; }
+#hud h1 { margin: 10px 0 6px; font-size: 30px; font-weight: 300; letter-spacing: 0.08em; }
+#stat { margin: 0; font-size: 12px; line-height: 1.9; color: var(--muted); letter-spacing: 0.05em; }
+
+#controls {
+  position: fixed;
+  top: 34px;
+  right: 38px;
+  z-index: 12;
+  width: 190px;
+  padding: 18px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  backdrop-filter: blur(14px);
+}
+#controls label { display: block; font-size: 11px; letter-spacing: 0.14em; color: var(--muted); margin-bottom: 14px; }
+#controls label:last-of-type { margin-bottom: 0; }
+#controls select {
+  display: block;
+  width: 100%;
+  margin-top: 7px;
+  padding: 7px 8px;
+  color: var(--ink);
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+#controls select option { background: #141a26; }
+.note { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); font-size: 11px; line-height: 1.7; color: var(--muted); }
+
+#inspect {
+  position: fixed;
+  bottom: 76px;
+  left: 38px;
+  z-index: 12;
+  width: 300px;
+  padding: 16px 18px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-left: 2px solid var(--accent);
+  backdrop-filter: blur(14px);
+}
+.inspect-head { display: flex; justify-content: space-between; align-items: center; font-size: 15px; }
+.inspect-head button { background: none; border: 0; color: var(--muted); font-size: 20px; cursor: pointer; line-height: 1; }
+.inspect-tag { margin-top: 8px; font-size: 11px; letter-spacing: 0.1em; color: var(--accent); word-break: break-all; }
+.inspect-hint { margin-top: 8px; font-size: 12px; line-height: 1.7; color: var(--muted); }
+
+#hint {
+  position: fixed;
+  bottom: 30px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 10;
+  font-size: 11px;
+  letter-spacing: 0.22em;
+  color: var(--muted);
+  white-space: nowrap;
+  pointer-events: none;
+  text-shadow: 0 1px 10px #000;
+}
+
+#error {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 40px;
+  background: #0a0e17;
+  color: #ffb4a8;
+  font-size: 14px;
+  line-height: 2;
+  text-align: center;
+  white-space: pre-wrap;
+}
+
+@media (max-width: 720px) {
+  #hud { top: 20px; left: 20px; }
+  #hud h1 { font-size: 22px; }
+  #controls { top: auto; bottom: 66px; right: 16px; width: 150px; padding: 12px; }
+  #inspect { left: 16px; bottom: 66px; width: min(280px, 52vw); }
+  #hint { font-size: 10px; letter-spacing: 0.1em; }
+}
