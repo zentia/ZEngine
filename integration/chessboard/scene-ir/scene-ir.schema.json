@@ -11,19 +11,77 @@
     "source": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["image_sha256", "views", "camera"],
+      "required": ["image_sha256"],
       "properties": {
         "image_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
-        "views": { "type": "integer", "minimum": 1 },
+        "views": { "type": "integer", "minimum": 0 },
         "camera": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["fov", "pitch_deg", "locked", "orthographic"],
           "properties": {
             "fov": { "type": ["number", "null"] },
             "pitch_deg": { "type": ["number", "null"] },
+            "roll_deg": { "type": ["number", "null"] },
+            "position": {
+              "type": ["array", "null"], "minItems": 3, "maxItems": 3,
+              "items": { "type": "number" }
+            },
+            "target": {
+              "type": ["array", "null"], "minItems": 3, "maxItems": 3,
+              "items": { "type": "number" }
+            },
             "locked": { "type": ["boolean", "null"] },
             "orthographic": { "type": ["boolean", "null"] }
+          }
+        },
+        "capture_profiles": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id"],
+            "properties": {
+              "id": { "type": "string" },
+              "role": { "enum": ["reconstruction", "acceptance", "both"] },
+              "views": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["image_sha256"],
+                  "properties": {
+                    "image_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+                    "fov": { "type": ["number", "null"] },
+                    "pitch_deg": { "type": ["number", "null"] },
+                    "roll_deg": { "type": ["number", "null"] },
+                    "position": {
+                      "type": ["array", "null"], "minItems": 3, "maxItems": 3,
+                      "items": { "type": "number" }
+                    },
+                    "target": {
+                      "type": ["array", "null"], "minItems": 3, "maxItems": 3,
+                      "items": { "type": "number" }
+                    },
+                    "orthographic": { "type": ["boolean", "null"] }
+                  }
+                }
+              },
+              "acceptance": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "baseline_image_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+                  "tolerance": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "iou": { "type": "number", "minimum": 0.0, "maximum": 1.0 },
+                      "pixel_delta": { "type": "number", "minimum": 0.0 }
+                    }
+                  }
+                }
+              }
+            }
           }
         },
         "note": { "type": "string" }

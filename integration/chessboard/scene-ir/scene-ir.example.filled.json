@@ -1,0 +1,56 @@
+{
+  "schema": "zengine.scene-ir/v1",
+  "source": {
+    "image_sha256": "5925fa0b3d1e3deee899a55898eec996cce7984cacd736b95831417a0e5481db",
+    "views": 3,
+    "camera": {
+      "fov": 40.0,
+      "pitch_deg": 35.0,
+      "roll_deg": 0.0,
+      "position": [0.0, 20.0, 24.0],
+      "target": [0.0, 0.0, 0.0],
+      "locked": true,
+      "orthographic": false
+    },
+    "capture_profiles": [
+      {
+        "id": "recon_3view",
+        "role": "reconstruction",
+        "views": [
+          { "image_sha256": "5925fa0b3d1e3deee899a55898eec996cce7984cacd736b95831417a0e5481db", "fov": 40.0, "pitch_deg": 35.0, "roll_deg": 0.0, "position": [0.0, 20.0, 24.0], "target": [0.0, 0.0, 0.0], "orthographic": false },
+          { "image_sha256": "5925fa0b3d1e3deee899a55898eec996cce7984cacd736b95831417a0e5481db", "fov": 40.0, "pitch_deg": 35.0, "roll_deg": 120.0, "position": [0.0, 20.0, 24.0], "target": [0.0, 0.0, 0.0], "orthographic": false },
+          { "image_sha256": "5925fa0b3d1e3deee899a55898eec996cce7984cacd736b95831417a0e5481db", "fov": 40.0, "pitch_deg": 35.0, "roll_deg": 240.0, "position": [0.0, 20.0, 24.0], "target": [0.0, 0.0, 0.0], "orthographic": false }
+        ]
+      },
+      {
+        "id": "accept_locked_cam",
+        "role": "acceptance",
+        "views": [
+          { "image_sha256": "5925fa0b3d1e3deee899a55898eec996cce7984cacd736b95831417a0e5481db", "fov": 40.0, "pitch_deg": 35.0, "roll_deg": 0.0, "position": [0.0, 20.0, 24.0], "target": [0.0, 0.0, 0.0], "orthographic": false }
+        ],
+        "acceptance": {
+          "baseline_image_sha256": "5925fa0b3d1e3deee899a55898eec996cce7984cacd736b95831417a0e5481db",
+          "tolerance": { "iou": 0.9, "pixel_delta": 0.05 }
+        }
+      }
+    ],
+    "note": "填好后的样例：3 个重建视角 + 1 个锁机位验收基准帧，容差 iou=0.9 / pixel_delta=0.05。"
+  },
+  "units": "meter",
+  "coordinate_system": "glTF Y-up right-handed",
+  "notes": "仅用于校验 capture_profiles 的完整形态，非真实场景观测。",
+  "nodes": [
+    {
+      "id": "ground_slab",
+      "kind": "ground",
+      "frozen": true,
+      "geometry_ref": "board.zbrd#core_slab",
+      "confidence": 0.93,
+      "provenance": {
+        "origin": "board-spec.json",
+        "source_image_sha256": "5925fa0b3d1e3deee899a55898eec996cce7984cacd736b95831417a0e5481db",
+        "license": "internal"
+      }
+    }
+  ]
+}

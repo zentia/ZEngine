@@ -26,6 +26,7 @@ class SceneIRContractTests(unittest.TestCase):
         cls.contract = v.load_json(v.CONTRACT_PATH)
         cls.schema = v.load_json(v.SCHEMA_PATH)
         cls.example = v.load_json(v.EXAMPLE_PATH)
+        cls.filled = v.load_json(v.HERE.parent / "scene-ir" / "scene-ir.example.filled.json")
         cls.asset_ids, _ = v.external_asset_ids()
 
     def test_contract_structure(self) -> None:
@@ -107,6 +108,33 @@ class SceneIRContractTests(unittest.TestCase):
         kinds = {node["kind"] for node in self.example["nodes"]}
         self.assertTrue({"ground", "prop", "character", "vfx_emitter", "unknown"} <= kinds)
         self.assertIn("unknown_03", {node["id"] for node in self.example["nodes"]})
+
+    def test_empty_capture_profiles_is_warning_not_error(self) -> None:
+        report = v.run_check(v.EXAMPLE_PATH, strict=False)
+        self.assertEqual(report["errors"], [])
+        self.assertTrue(any("capture_profiles" in item for item in report["warnings"]))
+        self.assertIn("未配置 capture_profiles", " ".join(report["warnings"]))
+
+    def test_filled_capture_profiles_pass(self) -> None:
+        errors, warnings = v.validate_ir(self.filled, self.contract, self.schema, self.asset_ids)
+        self.assertEqual(errors, [], json.dumps(errors, ensure_ascii=False))
+        self.assertFalse(any("capture_profiles" in item for item in warnings),
+                         "补全机位后不应再报 capture_profiles 告警")
+
+    def test_capture_profile_role_enum(self) -> None:
+        import copy as _copy
+        doc = _copy.deepcopy(self.filled)
+        doc["source"]["capture_profiles"][0]["role"] = "not_a_role"
+        errors, _ = v.validate_ir(doc, self.contract, self.schema, self.asset_ids)
+        self.assertTrue(any("enum" in item for item in errors),
+                        f"非法 role 应被拦截：{errors}")
+
+    def test_camera_is_optional_in_source(self) -> None:
+        import copy as _copy
+        doc = _copy.deepcopy(self.example)
+        doc["source"].pop("camera", None)
+        errors, _ = v.validate_ir(doc, self.contract, self.schema, self.asset_ids)
+        self.assertEqual(errors, [], f"source 不带 camera 应合法：{errors}")
 
 
 if __name__ == "__main__":

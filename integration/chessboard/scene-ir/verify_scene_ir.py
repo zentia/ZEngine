@@ -236,14 +236,24 @@ def validate_ir(ir: Any, contract: dict, schema: dict,
     if ir.get("coordinate_system") != ir_meta["coordinate_system"]:
         errors.append("IR coordinate_system 与契约不一致")
 
-    source = ir.get("source", {})
+    source = ir.get("source", {}) if isinstance(ir, dict) else {}
     camera = source.get("camera", {}) if isinstance(source, dict) else {}
     if isinstance(camera, dict):
-        missing = [k for k in ("fov", "pitch_deg") if camera.get(k) is None]
+        missing = [k for k in ("fov", "pitch_deg", "position") if camera.get(k) is None]
         if missing:
             warnings.append(f"相机参数缺失 {missing}；L1 反投影前必须补齐，当前不可信")
-    if isinstance(source, dict) and source.get("views", 1) < 2:
-        warnings.append("仅 1 个视角；体量 / 遮挡 / 背面推断欠定，低置信度必须标 unknown")
+    profiles = source.get("capture_profiles", []) if isinstance(source, dict) else []
+    if isinstance(profiles, list) and not profiles:
+        warnings.append("未配置 capture_profiles；机位 / 多角度 / 验收基准帧待后续补齐，可继续但 L4 对拍与 L1 反投影不可信")
+    else:
+        reconstruction = [p for p in profiles if p.get("role") in ("reconstruction", "both")]
+        acceptance = [p for p in profiles if p.get("role") in ("acceptance", "both")]
+        if not reconstruction:
+            warnings.append("capture_profiles 缺 role=reconstruction；L1 反投影无可用视角")
+        if not acceptance:
+            warnings.append("capture_profiles 缺 role=acceptance；L4 对拍无验收基准帧")
+        if isinstance(source, dict) and source.get("views", 0) < 2:
+            warnings.append("视角数 < 2；体量 / 遮挡 / 背面推断欠定，低置信度必须标 unknown")
 
     threshold = float(ir_meta["confidence_unknown_threshold"])
     kinds = set(ir_meta["kinds"])

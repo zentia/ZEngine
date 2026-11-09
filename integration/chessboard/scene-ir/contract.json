@@ -103,7 +103,14 @@
     "kinds": ["ground", "structure", "prop", "character", "vfx_emitter", "camera", "unknown"],
     "lods": ["HD", "High", "Mid", "Low"],
     "confidence_unknown_threshold": 0.5,
-    "required_provenance_fields": ["origin", "source_image_sha256", "license"]
+    "required_provenance_fields": ["origin", "source_image_sha256", "license"],
+    "capture_profile_roles": ["reconstruction", "acceptance", "both"],
+    "per_scene_configurable": [
+      "source.camera (fov / pitch_deg / roll_deg / position / target / locked / orthographic)",
+      "source.capture_profiles[].views (多角度重建视角)",
+      "source.capture_profiles[].acceptance (验收基准帧 + 容差 iou / pixel_delta)"
+    ],
+    "per_scene_configurable_note": "这些参数每个场景各不同，不在契约层写死；缺失时留 null / 空数组，校验器只告警不报错，L1 反投影与 L4 对拍在补齐前不可信。"
   },
   "ai_boundary": {
     "writable_files": ["scene-ir.json"],
