@@ -5367,4 +5367,20 @@ r=20..23、近水平旋转，仍有一条带子斜插天空。根因与既有「
 - 材质引用现网 `zboard_*.mat`（GUID 从 `build/asset_guids.json`）；贴图复用 `external_mesh.glb_embedded_texture`。
 - 新增 `verify/test_restore_scene.py`（11 tests：7 网格 + 4 FBX meta）。实测 11/11 + scene_ir 23/23 + `--check` 0 error。
 - 用法：`python restore_scene.py --profile scene-ir/restore-profile.example.json [--to-fbx] --out build/restored_scenes/<id>.unity`。
-- 【待验证】FBX 坐标轴（Blender `axis_forward=-Z/axis_up=Y`）在 Unity ModelImporter `bakeAxisConversion:0` 下是否正确对齐——Blender↔FBX 闭环读回一致，但 Unity 实测导入未做；部署到 `Assets/` 跨盘 step 未执行。
+- 【已闭环，见下「P0+ 续」】FBX 坐标轴 / Unity 实测导入已完成；结论是 **FBX `type:3` 引用在 Blender 导出的 FBX 上不可用，改回 `.asset` `type:2`**。
+
+### OSGame 棋盘线 · P0+ 续：烘焙产物 Unity 实测闭环 + FBX 引用纠偏（2026-11-09）
+
+用户「把烘焙的 FBX 部署到 Unity 实测导入」→ 手动切 Editor 看导入，依次暴露 4 个问题并修复，最终 `.asset` 场景 mesh 显示正常。**最重要的认知修正**：
+
+- ⚠️ **FBX `type:3` 引用只对「Maya 导出的 FBX」成立**。现网 `m_Mesh: {fileID:4300000, guid, type:3}` 能工作，纯粹因为现网 FBX 是 **Maya** 导出的，Maya 固定给 mesh 分配 Object ID `4300000`。**Blender 导出 FBX 时 mesh 的 Object ID 是随机长整数**（如 glb 里的 `node_0`），Unity 导入后 mesh sub-asset 的 fileID 由 FBX 内部 Object ID 决定、**不等于 4300000**，场景写死 `fileID:4300000` 就解析不到 mesh → `Missing (Mesh)`。
+- ⇒ **结论：AI 生成的资产（glb→Blender→FBX）不能照搬现网的 `type:3` FBX 引用约定**。对「glb 烘焙进场景」这条管线，`.asset`（`type:2`）更可控——fileID 由 `write_mesh_asset` 自己写死 `&4300000`、`.asset.meta` 写 `mainObjectFileID:4300000`，完全不依赖 FBX 内部 ID。`--to-fbx` 仅保留给「有 Maya 导出的原始 FBX」时使用。
+- 依次修的 4 个 bug（每个都值得记）：
+  1. **PNG meta `guid: %s` 字面量**：`write_texture_meta` 末尾 `handle.write("...guid: %s\n...")` 漏 `% guid` → Unity 报 `.meta does not have a valid GUID`。修复：补 `% guid` + 用现网 `concept.jpg.meta` 完整结构重写整个 TextureImporter（`internalIDToNameTable` 含 `first:{89:8900000} second:generatedCubemap`、`flipGreenChannel`、多平台 `platformSettings`、`textureType:0`/`spriteMode:0`/`applyGammaDecoding:1`）。
+  2. **场景缺 `%YAML 1.1` + `%TAG !u! tag:unity3d.com,2011:` 头部**：`header_from_template` 用 `content.split("--- !u!")` 拆分模板，把这两行头部丢进 `blocks[0]`（被 `blocks[1:]` 跳过）→ Unity 报 `File may be corrupted or was serialized with a newer version`。修复：在返回 header 前显式补回。**Unity 的 YAML 序列化器要求场景文件头部必须有这两行**（`.asset` 里 `write_mesh_asset` 本来就写了，场景的 `header_from_template` 漏了）。
+  3. **`cp` 截断**：部署时 `.unity` 被拷成 129 行（`SceneRoots.m_Roots: []` 空），Unity 加载找不到根物体、Hierarchy 空。修复：重新完整 `cp`，校验行数 + 末尾 `m_Roots: [{fileID:100002}]`。**教训：跨盘部署场景/资产文件必须加完整性校验（行数 / YAML 头 / SceneRoots 三处断言）**。
+  4. **Mesh 全 Missing**（上述 FBX Object ID 问题）→ 改回 `.asset` `type:2`。
+- **`.asset` 场景引用完全自洽**：mesh guid = `sha256("mesh:"+asset_id)[:32]`，tex guid = `sha256("tex:"+asset_id)[:32]`；场景 10 个 guid（4 mesh + 6 mat）全命中 OSGame 资产；`zboard_*.mat` 用 `Unlit/Color`（`fileID:4800000`）纯色，贴图槽全 `{fileID:0}`，不依赖贴图。
+- 部署清单：4 `.asset`+`.meta` → `Meshes/`；4 PNG+`.meta` → `assets/external_meshes/`；`jcc-maple-autumn.unity`+`.meta` → `ZEngineChessboard/`（`DefaultImporter` meta，guid `uuid4`）。旧的 `-fbx` 场景已删。
+- 【遗留】① `external_meshes/` 下 4 个 FBX 已无场景引用，待用户确认是否删除；② `.unity.meta` / 场景 guid 目前是部署时 `uuid4` 随机生成，**未纳入 `restore_scene.py` 自动产出**，建议补「生成 `.unity.meta` + 部署完整性校验」。
+- 提交：`restore_scene.py` 两处修复（`write_texture_meta` + `header_from_template`）合一个 commit `3c076822`，已推 `origin/main`（`def6e13b..3c076822`）。
