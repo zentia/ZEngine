@@ -5349,3 +5349,12 @@ r=20..23、近水平旋转，仍有一条带子斜插天空。根因与既有「
   而第 13 画境走原画直出、3D 画布 opacity 0，**反而看不到这个模型**。
   所以「正式接入」对本次需求没有视觉收益，却会动冻结几何契约。
   替代：Web 端局部加载（只在第 13 画境关掉原画时显示），不动三端契约。
+
+
+## OSGame 棋盘线 · P0：Scene IR 契约层落地（2026-11-09）
+- 新增 `integration/chessboard/scene-ir/`：`contract.json`（L0 契约 + 4 份 canonical 真源 sha 锁 + OSGame 镜像声明）、`scene-ir.schema.json`（draft-07 受支持子集）、`scene-ir.example.json`（自检样本）、`verify_scene_ir.py`（纯 stdlib 校验器）；新增 `verify/test_scene_ir.py`（11 tests）。
+- **AI 边界写进契约**：只允许写 `scene-ir.json`；禁止直出 `.unity/.prefab/.mat`、坐标变换实现、改写 `board-spec.json`、把 glb 烘进 ZBRD。确定性 binder 复用 `unity_scene.py` / `ZExternalMeshBinder.cs` / `external_mesh.py`。
+- ⚠️ **镜像漂移不是「版本落后一行」**：`G:/OSGame/Client_proj/Project/Assets/ZEngineChessboard` 部署的是 2026-11-06 核心契约收敛**之前**的旧版（3 anchor 含 `info_plinth`、18 parts、frame 7、zbrd sha `f2ece2e4…`），`Meshes/` `Materials/` 与 `.unity` 全按旧版派生。**直接覆盖 json 会让契约与已落地 Unity 资产失配**，所以 P0 只做「声明单一真源 + sha 锁 + 显式告警」，不覆盖；对齐步骤写在 `contract.json` 的 `mirrors[].align_requires`（重派生 ZBRD / Meshes / .unity + 编辑器实测），属独立 step。
+- `--check` 默认把已知旧版镜像当 warning（0 errors / 4 warnings），`--strict` 才失败；`--refresh-sources` 显式刷新 sha 锁，绝不自动改写镜像记录。
+- 门禁实测：`python verify/test_board.py` 92 tests OK；`node verify/test_zbrd_js.mjs` 49 checks / 0 failures；`python scene-ir/verify_scene_ir.py --check` 0 errors；`--self-test` 15/15；`python verify/test_scene_ir.py` 11 tests OK。
+- 未动 `board-spec.json` 冻结几何、未动任何 Unity 资产、未动 `ResSceneCfg` / `ResPersonaliseChessboardDataBin`。

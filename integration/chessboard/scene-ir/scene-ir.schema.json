@@ -1,0 +1,106 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://zengine.local/schema/scene-ir/v1.json",
+  "title": "ZEngine Scene IR v1",
+  "description": "引擎无关的结构化场景中间表示。AI 只写本 schema 的 JSON 实例；几何变换、格式转换与 Unity 绑定由确定性 binder 完成。形状之外的业务规则（confidence 阈值、unknown 降级、provenance、frozen 拒绝改写、sha 与锚点）由 scene-ir/verify_scene_ir.py 校验。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "source", "units", "coordinate_system", "nodes"],
+  "properties": {
+    "schema": { "const": "zengine.scene-ir/v1" },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["image_sha256", "views", "camera"],
+      "properties": {
+        "image_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "views": { "type": "integer", "minimum": 1 },
+        "camera": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["fov", "pitch_deg", "locked", "orthographic"],
+          "properties": {
+            "fov": { "type": ["number", "null"] },
+            "pitch_deg": { "type": ["number", "null"] },
+            "locked": { "type": ["boolean", "null"] },
+            "orthographic": { "type": ["boolean", "null"] }
+          }
+        },
+        "note": { "type": "string" }
+      }
+    },
+    "units": { "const": "meter" },
+    "coordinate_system": { "const": "glTF Y-up right-handed" },
+    "notes": { "type": "string" },
+    "nodes": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "kind", "confidence"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
+          "kind": {
+            "enum": ["ground", "structure", "prop", "character", "vfx_emitter", "camera", "unknown"]
+          },
+          "label": { "type": "string" },
+          "frozen": { "type": "boolean" },
+          "confidence": { "type": "number", "minimum": 0.0, "maximum": 1.0 },
+          "geometry_ref": { "type": "string" },
+          "asset_id": { "type": "string" },
+          "mesh_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+          "texture_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+          "pivot_offset": {
+            "type": "array", "minItems": 3, "maxItems": 3,
+            "items": { "type": "number" }
+          },
+          "anchor": {
+            "type": "array", "minItems": 3, "maxItems": 3,
+            "items": { "type": "number" }
+          },
+          "rotation_y_deg": { "type": "number" },
+          "scale": { "type": "number", "minimum": 0.0 },
+          "material": { "type": "string" },
+          "tag": { "type": "string" },
+          "lod": { "enum": ["HD", "High", "Mid", "Low"] },
+          "provenance": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["origin", "source_image_sha256", "license"],
+            "properties": {
+              "origin": { "type": "string" },
+              "source_image_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+              "license": { "type": "string" },
+              "job_id": { "type": "string" }
+            }
+          },
+          "reason": { "type": "string" },
+          "bbox_px": {
+            "type": "array", "minItems": 4, "maxItems": 4,
+            "items": { "type": "number" }
+          },
+          "rig": {
+            "type": "object",
+            "required": ["skeleton"],
+            "properties": { "skeleton": { "type": "string" } }
+          },
+          "animation_slots": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "emitter": {
+            "type": "object",
+            "required": ["type"],
+            "properties": { "type": { "type": "string" } }
+          },
+          "timeline": {
+            "type": "object",
+            "required": ["duration_s"],
+            "properties": { "duration_s": { "type": "number", "minimum": 0.0 } }
+          }
+        }
+      }
+    }
+  }
+}

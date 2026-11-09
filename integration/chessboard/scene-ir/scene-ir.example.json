@@ -1,0 +1,87 @@
+{
+  "schema": "zengine.scene-ir/v1",
+  "source": {
+    "image_sha256": "5925fa0b3d1e3deee899a55898eec996cce7984cacd736b95831417a0e5481db",
+    "views": 1,
+    "camera": {
+      "fov": null,
+      "pitch_deg": null,
+      "locked": null,
+      "orthographic": null
+    },
+    "note": "相机参数未提供，保持 null；L1 反投影前必须补齐，校验器只告警不报错。"
+  },
+  "units": "meter",
+  "coordinate_system": "glTF Y-up right-handed",
+  "notes": "P0 schema 自检样本。ground / prop 字段取自 board-spec.json 与 build/external_mesh.manifest.json 的真实值；character / vfx_emitter 两个节点仅用于验证 schema 对三类资产的覆盖度，不是来自该概念图的观测（真实 IR 里没有观测证据必须写成 unknown）；unknown_03 演示低置信度降级。本文件不代表任何真实截图已完成场景分解。",
+  "nodes": [
+    {
+      "id": "ground_slab",
+      "kind": "ground",
+      "label": "核心连续台面",
+      "frozen": true,
+      "geometry_ref": "board.zbrd#core_slab",
+      "confidence": 0.93,
+      "provenance": {
+        "origin": "board-spec.json",
+        "source_image_sha256": "5925fa0b3d1e3deee899a55898eec996cce7984cacd736b95831417a0e5481db",
+        "license": "internal"
+      }
+    },
+    {
+      "id": "prop_lantern_w",
+      "kind": "prop",
+      "label": "西北角星象灯柱",
+      "asset_id": "star_pillar",
+      "mesh_sha256": "2e0b4a45476da2dd819a546a7e16a2c6bfc0bedcb2c84bf021df970d81dfbbeb",
+      "pivot_offset": [0.0, 0.0, 0.0],
+      "anchor": [-10.4, 0.0, -9.2],
+      "rotation_y_deg": 0.0,
+      "scale": 2.2987,
+      "material": "zboard_deco_nw",
+      "tag": "ZChessboard.Lantern.West",
+      "lod": "HD",
+      "confidence": 0.72,
+      "provenance": {
+        "origin": "hunyuan_3d",
+        "source_image_sha256": "5925fa0b3d1e3deee899a55898eec996cce7984cacd736b95831417a0e5481db",
+        "license": "internal"
+      }
+    },
+    {
+      "id": "character_lord",
+      "kind": "character",
+      "label": "能力样例（非本图观测）",
+      "rig": { "skeleton": "OSG_Lord_Biped" },
+      "animation_slots": ["idle", "victory"],
+      "lod": "HD",
+      "confidence": 0.55,
+      "provenance": {
+        "origin": "text_prompt:synthetic",
+        "source_image_sha256": "5925fa0b3d1e3deee899a55898eec996cce7984cacd736b95831417a0e5481db",
+        "license": "internal"
+      }
+    },
+    {
+      "id": "vfx_sparkle",
+      "kind": "vfx_emitter",
+      "label": "能力样例（非本图观测）",
+      "emitter": { "type": "持续" },
+      "timeline": { "duration_s": 1.5 },
+      "confidence": 0.55,
+      "provenance": {
+        "origin": "text_prompt:synthetic",
+        "source_image_sha256": "5925fa0b3d1e3deee899a55898eec996cce7984cacd736b95831417a0e5481db",
+        "license": "internal"
+      }
+    },
+    {
+      "id": "unknown_03",
+      "kind": "unknown",
+      "label": "右侧被遮挡结构",
+      "confidence": 0.31,
+      "reason": "单视角遮挡，无法判定是结构、道具还是特效；禁止硬猜，待补多角度截图。",
+      "bbox_px": [1480.0, 210.0, 1680.0, 430.0]
+    }
+  ]
+}

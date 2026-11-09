@@ -1,0 +1,194 @@
+{
+  "schema": "zengine.scene-ir.contract/v1",
+  "version": 1,
+  "status": "P0_ACTIVE",
+  "generated_by": "P0 contract generalization (2026-11-09)",
+  "note": "L0 契约真源：从四份 chessboard 专用契约抽出 AI 可写 / 冻结维度，泛化为引擎无关的 Scene IR。本文件只声明规则与 sha 锁，不改 board-spec.json 冻结几何，不改任何 Unity 资产或配置表。AI 只允许写 scene-ir.json；坐标、变换、格式转换与引擎绑定由确定性 binder 完成。",
+  "engine": {
+    "target": "Unity",
+    "engine_version": "2022.3.5f1 (OSGame custom build)",
+    "project_root": "G:/OSGame/Client_proj",
+    "renderer": "OSGameForwardRenderer (custom SRP)",
+    "resource_system": "QtsVFS (replaces AssetBundle)",
+    "material_template": "Assets/CustomResources/OSG_Default.mat",
+    "material_color_properties": ["_AlbedoColor", "_Color", "_BaseColor"]
+  },
+  "canonical_root": "E:/Engine/ZEngine/integration/chessboard",
+  "canonical_sources": [
+    {
+      "id": "board-spec",
+      "path": "board-spec.json",
+      "sha256": "429adf2b3de1d0cb77703bde046885e3beae93867e2acc42806823961283f1cb",
+      "role": "frozen geometry and decoration zones"
+    },
+    {
+      "id": "style-pack",
+      "path": "style-pack.json",
+      "sha256": "3282450b93b6f61b9d7d627add825242d50d8e7b19270d7bf1f079c629af49a8",
+      "role": "AI free/frozen dimensions and single-mesh asset rules"
+    },
+    {
+      "id": "visual-pack",
+      "path": "visual-pack.json",
+      "sha256": "f39d8392b174e02d89cbfc6b10ad4a1946ebe773f2ed2e78a68e532d11f00d60",
+      "role": "AI visual layer: skybox / post_processing / materials / volume / lighting"
+    },
+    {
+      "id": "external-mesh-manifest",
+      "path": "build/external_mesh.manifest.json",
+      "sha256": "c38c20cb6d4ed2e3f09639f5123f654a399f3fdaa0bbbe38459b5fa6f61247df",
+      "role": "glb provenance, sha256, pivot_offset and anchor placements"
+    }
+  ],
+  "derived_sources": [
+    {
+      "id": "board-manifest",
+      "path": "build/board.manifest.json",
+      "sha256": "7e7b884730a03bc50d7bae6f32bef45b9acb6fd375a21dd0b40635b5969d5fe1",
+      "role": "derived geometry manifest consumed by Unity / Blender / Web"
+    },
+    {
+      "id": "board-zbrd",
+      "path": "build/board.zbrd",
+      "sha256": "86bbd81085e0c7f98668a86db3c45c48f8ca017e05164b04029b848fff4635b5",
+      "role": "derived binary geometry (2 anchors / 17 parts)"
+    }
+  ],
+  "mirrors": [
+    {
+      "id": "osgame-deployed",
+      "root": "G:/OSGame/Client_proj/Project/Assets/ZEngineChessboard",
+      "state": "known_older_revision",
+      "p0_action": "declare and sha-lock only; do NOT overwrite",
+      "reason": "该副本是 2026-11-06 核心契约收敛之前部署的旧版：3 个 anchor（含 info_plinth）、18 parts、frame 7，ZBRD sha 与 canonical 不同；其 Meshes/、Materials/、.unity 场景均按旧版派生。直接覆盖 json 会让契约与已落地 Unity 资产失配。",
+      "evidence": {
+        "anchors": "3 ['seat_home','seat_guest','info_plinth'] vs canonical 2 ['seat_home','seat_guest']",
+        "parts": "18 vs canonical 17",
+        "frame_parts": "7 vs canonical 6",
+        "zbrd_sha256": "f2ece2e4c6c94618b9cf43fc2217e41959920b7786a42dd9cf009c091671029a vs 86bbd81085e0c7f98668a86db3c45c48f8ca017e05164b04029b848fff4635b5"
+      },
+      "align_requires": [
+        "重跑 zboard.py --variants 派生新 ZBRD / manifest",
+        "重建 Assets/ZEngineChessboard/Meshes/ 与 Materials/ 并保留 .meta GUID",
+        "重跑 unity_scene.py 生成 ART_OS_AC90_HD.unity 并 --check",
+        "Unity 编辑器实测打开无 Missing Prefab Asset",
+        "全量回归 test_board.py / test_zbrd_js.mjs"
+      ],
+      "files": [
+        {
+          "canonical_id": "board-spec",
+          "path": "G:/OSGame/Client_proj/Project/Assets/ZEngineChessboard/board-spec.json",
+          "deployed_sha256": "6fbf7b12bdcc67f611c03cd9d1858844c2f9dcf6ca0c5c5f411952f38ba0238e"
+        },
+        {
+          "canonical_id": "style-pack",
+          "path": "G:/OSGame/Client_proj/Project/Assets/ZEngineChessboard/style-pack.json",
+          "deployed_sha256": "3fa3bd347b7b3bf7df1db00f0a5606ee04ebf2bd58dd7f08476a125cd3abbd11"
+        },
+        {
+          "canonical_id": "visual-pack",
+          "path": "G:/OSGame/Client_proj/Project/Assets/ZEngineChessboard/visual-pack.json",
+          "deployed_sha256": "f39d8392b174e02d89cbfc6b10ad4a1946ebe773f2ed2e78a68e532d11f00d60"
+        }
+      ]
+    }
+  ],
+  "ir": {
+    "document_schema": "zengine.scene-ir/v1",
+    "schema_file": "scene-ir.schema.json",
+    "example_file": "scene-ir.example.json",
+    "units": "meter",
+    "coordinate_system": "glTF Y-up right-handed",
+    "placement_formula": "world = anchor + rotY(rotation_y_deg) * scale * (local - pivot_offset)",
+    "kinds": ["ground", "structure", "prop", "character", "vfx_emitter", "camera", "unknown"],
+    "lods": ["HD", "High", "Mid", "Low"],
+    "confidence_unknown_threshold": 0.5,
+    "required_provenance_fields": ["origin", "source_image_sha256", "license"]
+  },
+  "ai_boundary": {
+    "writable_files": ["scene-ir.json"],
+    "forbidden_outputs": [
+      "Unity .unity / .prefab / .mat / .asset 文件",
+      "坐标变换与反投影的实现代码",
+      "board-spec.json 冻结几何的改写",
+      "把 glb 单体资产烘进 ZBRD 或替换 core_slab",
+      "未经人工确认的低置信度推断"
+    ],
+    "deterministic_binder": [
+      "unity_scene.py (offline .unity YAML writer)",
+      "unity/ZExternalMeshBinder.cs (runtime glb manifest consumer)",
+      "external_mesh.py --import-glb (asset import + sha lock)"
+    ]
+  },
+  "free_dimensions": [
+    "装饰物数量与 primitive 类型",
+    "params / 颜色 / 材质白名单内的取值",
+    "槽（decoration zone）内的位置",
+    "min_lod / tag / hint / theme_asset 映射",
+    "单体参考图 prompt 与图像",
+    "天空盒 / 后处理 / 材质 / Volume 白名单参数",
+    "角色 rig 与 animation_slots 声明",
+    "特效 emitter 参数与 timeline"
+  ],
+  "frozen_dimensions": [
+    "核心台面轮廓（连续 slab，不是 56 个独立格子）",
+    "逻辑网格数值（7 列 x 8 行，logical_grid_is_visual=false）",
+    "包边基本形 frame_*",
+    "两个棋手占位 anchor_seat_home / anchor_seat_guest 的位置与对角关系",
+    "decoration_zones 边界与保留槽 corner_sw / corner_ne",
+    "已落地材质名 zboard_<id>",
+    "external_mesh_contract schema 与 glb 单点引用规则"
+  ],
+  "asset_kinds": {
+    "scene": {
+      "nodes": ["ground", "structure", "prop"],
+      "l2_output": "glb 单体 + 全景贴图 + 视觉参数包",
+      "unity_target": "Assets/Art_Prefabs/Prefabs_Scenes/ART_OS_AC**_HD/ 与 Assets/Scenes/pvp/",
+      "constraint": "glb 只产外围装饰与交互物，不生成棋盘本体、不烘进 ZBRD"
+    },
+    "character": {
+      "nodes": ["character"],
+      "required_fields": ["rig", "animation_slots"],
+      "l2_output": "带骨骼 FBX / glb + 动画槽声明",
+      "unity_target": "RawAssets/Prefab_Characters/Prefab_Hero/",
+      "constraint": "只给静态 mesh 不构成角色资产"
+    },
+    "vfx": {
+      "nodes": ["vfx_emitter"],
+      "required_fields": ["emitter", "timeline"],
+      "l2_output": "emitter + material + AGE 事件参数（持续 / 瞬时）",
+      "unity_target": "AGE / UniNode 配置",
+      "constraint": "特效不是 glb；时间轴驱动而非网格驱动"
+    }
+  },
+  "targets": {
+    "scene_naming": "ART_OS_AC{NN}_{HD|High|Mid|Low}",
+    "root_prefix": "P_ART_OS_AC**",
+    "artist_source_root": "RawAssets/SceneExport/Artist/*_Artist/",
+    "hd_template_scene": "Assets/Scenes/pvp/ART_OS_AC10_HD.unity",
+    "delivered_lod": "HD",
+    "lower_lod_policy": "High / Mid / Low 由项目既有自动降配流程从 HD 生成后美术手调，本链路不产出",
+    "untouched_config_tables": ["ResSceneCfg", "ResPersonaliseChessboardDataBin"]
+  },
+  "rules": [
+    "每个 IR 节点必须带 confidence；低于 confidence_unknown_threshold 必须降级为 kind=unknown 并写 reason",
+    "kind=unknown 禁止写 asset_id / anchor / mesh_sha256 等确定性字段",
+    "kind!=unknown 的节点必须带 provenance（origin / source_image_sha256 / license）",
+    "frozen=true 的节点禁止带 asset_id（外部 glb 不得替代冻结几何）",
+    "带 asset_id 的节点必须带 mesh_sha256 / pivot_offset / anchor / rotation_y_deg / scale，且数值有限",
+    "asset_id 必须存在于 build/external_mesh.manifest.json 的 assets[].asset_id",
+    "source.camera 缺 FOV / 俯角时保持 null，不得编造；校验器只告警不报错",
+    "四份 canonical_sources 的 sha256 必须与磁盘一致，任何变更需显式 --refresh-sources 并留下审计",
+    "镜像漂移默认为已知旧版部署告警；--strict 才视为失败（对齐需重派生 Unity 资产，属独立 step）"
+  ],
+  "gates": {
+    "existing": [
+      "python verify/test_board.py",
+      "node verify/test_zbrd_js.mjs"
+    ],
+    "p0": [
+      "python scene-ir/verify_scene_ir.py --check",
+      "python verify/test_scene_ir.py"
+    ]
+  }
+}
