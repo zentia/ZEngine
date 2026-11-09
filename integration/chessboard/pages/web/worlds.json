@@ -1,72 +1,146 @@
 {
   "schema": "zengine.chessboard.world-pack/v1",
-  "name": "Painting Worlds · 十二画境视觉包",
+  "name": "Painting Worlds + 金铲铲 · 十三画境视觉包",
   "generated_by": "zengine-ai/world-pack",
-  "note": "12 套视觉包只定调：调色板、天空、地面笔触、场地线、场景物件、灯光与后处理。棋盘区域轮廓/锚点/逻辑边界永远只来自 build/board.zbrd + board.manifest.json，视觉包不得改写几何；board-spec.json 与 visual-pack.json 仍分别是几何冻结契约与 Unity/Blender 同源视觉层，三份契约互不覆盖。",
+  "note": "13 套视觉包只定调：调色板、天空、地面笔触、场地线、场景物件、灯光与后处理。棋盘区域轮廓/锚点/逻辑边界永远只来自 build/board.zbrd + board.manifest.json，视觉包不得改写几何；board-spec.json 与 visual-pack.json 仍分别是几何冻结契约与 Unity/Blender 同源视觉层，三份契约互不覆盖。",
   "source": {
     "site": "https://painting3d.rockeymen.xyz/",
     "manifest": "data/manifest.json",
-    "count": 12,
-    "policy": "只把 12 个作品的标题 / 作者 / 年代 / 分类与画派色彩作为元数据引用。所有场景都是程序化几何 + canvas 笔触贴图重新表达，不复制原站的模型、贴图、代码或原作构图；概念图由文生图按画派色彩重新生成。"
+    "count": 13,
+    "policy": "前 12 个世界只把作品的标题 / 作者 / 年代 / 分类与画派色彩作为元数据引用，场景都是程序化几何 + canvas 笔触贴图重新表达，不复制原站的模型、贴图、代码或原作构图，概念图由文生图按画派色彩重新生成；第 13 个「枫染棋坪」来自用户提供的金铲铲实机截图，概念图就是这张截图的无损 PNG 转码，页面以 pixel_faithful 原画直出显示，不再用程序化几何去近似原画。"
   },
   "contract": {
     "switch": "URL ?world=<id> 或页面下拉框；切换重载页面并按该视觉包重新生成天空 / 地面 / 物件。",
-    "sky_modes": ["panorama_sha_locked", "procedural_canvas"],
+    "sky_modes": [
+      "panorama_sha_locked",
+      "procedural_canvas"
+    ],
     "tiers": {
-      "high": "高完成度：每个画境都有专属场景物件预设（starry 内建于 starry.js，其余 11 个在 world-scenery.js），与星夜页同等细节。",
-      "tone": "兼容档：完整调色板 + 程序化天空 + 通用树丛/屋舍/石灯；当前 12 个画境均已升级为 high。"
+      "high": "高完成度：每个画境都有专属场景物件预设（starry 内建于 starry.js，其余 12 个在 world-scenery.js），与星夜页同等细节。",
+      "tone": "兼容档：完整调色板 + 程序化天空 + 通用树丛/屋舍/石灯；当前 13 个画境均已升级为 high。"
     },
     "board_is_terrain": "棋盘永远是画进同一片地面贴图的一块区域，不是独立 3D 台面；视觉包只改线的颜色，不改轮廓。",
     "board_required_elements": "冻结元素只有最外面一个方格 + 左下/右上两个棋手占位（位置与半径来自 board.zbrd 的 anchor_*）。中线、两个半圆、中圈同心圆、小圆圈都不是必须元素：overrides.board.marks 默认为空数组，只有某张概念图显式声明 center_line / half_circles / center_emblem 才绘制对应纹样，颜色取该视觉包的 board.line / board.emblem。其余台面表现（底色渐变、笔触、外框色、占位色）全部按概念图配色输出。",
-    "concept_images": "assets/worlds/<id>.png（AI 文生图），sha256 同时落在 worlds.json 与 assets/worlds/manifest.json；status=prompt_only 仍作为缺图时的降级分支保留，页面回退到程序化天空缩略图，不引用缺失文件。",
-    "board_ceremony": "6 类局内演出（入场动画 / 回合胜利 / 回合失败 / 连续胜利 / 升级播报 / 互动彩蛋）的事件 id 与 payload 字段由根目录 ceremony.json 冻结，视觉包只提供 defaults.scenery.ceremony 配色；12 个画境可用 overrides.scenery.ceremony 覆盖。胜负、连胜数、等级一律由宿主传入，棋盘不判定、不推断。"
+    "concept_images": "assets/worlds/<id>.png（11 张 AI 文生图 + 1 张金铲铲实机截图的无损 PNG 转码），starry-night 沿用 assets/concept.jpg；sha256 同时落在 worlds.json 与 assets/worlds/manifest.json；status=prompt_only 仍作为缺图时的降级分支保留。",
+    "board_ceremony": "6 类局内演出（入场动画 / 回合胜利 / 回合失败 / 连续胜利 / 升级播报 / 互动彩蛋）的事件 id 与 payload 字段由根目录 ceremony.json 冻结，视觉包只提供 defaults.scenery.ceremony 配色；13 个画境可用 overrides.scenery.ceremony 覆盖。胜负、连胜数、等级一律由宿主传入，棋盘不判定、不推断。",
+    "artwork_mode": "世界顶层的 artwork.mode=pixel_faithful 把概念图按原比例整幅铺在 3D 画布之上，不做裁切 / 重绘 / 建模，保证与来源图逐像素一致；artwork.image 的 sha256 与 concept.sha256 必须相同。3D 场景照常构建但不显示，boardSlabMeshes 仍为 0，棋盘轮廓仍只来自 board.zbrd。artwork.grid 提供可选的 7 列 × 8 行逻辑格透视叠加（行列 / 逻辑边界 / 棋手锚点一律从 board.manifest.json 读），默认关闭。"
   },
   "default": "starry-night",
-
   "defaults": {
     "sky": {
       "mode": "panorama_sha_locked",
       "panorama_image": "assets/sky_panorama.jpg",
       "panorama_sha256": "c327ebed913ec1dbfcd15497641a6991367dc298bf28591b8e1359c070aaf92e",
-      "top": "#050e1c", "horizon": "#1a3d52", "bottom": "#071426",
-      "sun": null, "clouds": 0.0, "stars": 1.0,
-      "fog": { "color": "#122c3a", "density": 0.006 },
+      "top": "#050e1c",
+      "horizon": "#1a3d52",
+      "bottom": "#071426",
+      "sun": null,
+      "clouds": 0.0,
+      "stars": 1.0,
+      "fog": {
+        "color": "#122c3a",
+        "density": 0.006
+      },
       "exposure": 0.15,
-      "bloom": { "threshold": 1.35, "strength": 0.55, "radius": 0.82 },
+      "bloom": {
+        "threshold": 1.35,
+        "strength": 0.55,
+        "radius": 0.82
+      },
       "rotation_deg": 0.0
     },
     "ground": {
-      "gradient": ["#0b2442", "#071a35", "#041025"],
-      "strokes": ["#12365e", "#1b4c7a", "#2a6d9c", "#3d88b6", "#79b3cf", "#c9deeb", "#e8f1f5"],
+      "gradient": [
+        "#0b2442",
+        "#071a35",
+        "#041025"
+      ],
+      "strokes": [
+        "#12365e",
+        "#1b4c7a",
+        "#2a6d9c",
+        "#3d88b6",
+        "#79b3cf",
+        "#c9deeb",
+        "#e8f1f5"
+      ],
       "path_base": "#16375c",
-      "path_strokes": ["#0e2a4b", "#265481", "#3c72a0", "#5f97bb", "#a8c6d8"],
-      "sea": "#071a33", "rings": "#3d86b8",
-      "stroke_color": "#9cc0d6", "white_stroke": "#dbeaf3"
+      "path_strokes": [
+        "#0e2a4b",
+        "#265481",
+        "#3c72a0",
+        "#5f97bb",
+        "#a8c6d8"
+      ],
+      "sea": "#071a33",
+      "rings": "#3d86b8",
+      "stroke_color": "#9cc0d6",
+      "white_stroke": "#dbeaf3"
     },
     "board": {
       "marks": [],
-      "base": ["rgba(196, 178, 128, 0.22)", "rgba(126, 152, 143, 0.17)", "rgba(96, 132, 142, 0)"],
+      "base": [
+        "rgba(196, 178, 128, 0.22)",
+        "rgba(126, 152, 143, 0.17)",
+        "rgba(96, 132, 142, 0)"
+      ],
       "rim": "rgba(236, 220, 174, 0.58)",
       "rim_halo": "rgba(232, 214, 164, 0.07)",
-      "line": [226, 226, 204],
-      "emblem": [238, 214, 158],
+      "line": [
+        226,
+        226,
+        204
+      ],
+      "emblem": [
+        238,
+        214,
+        158
+      ],
       "emblem_bright": "rgba(244, 226, 176, 0.44)",
       "anchor": "rgba(232, 214, 164, 0.28)",
       "logical": "rgba(206, 226, 238, 0.24)"
     },
     "scenery": {
       "preset": "starry",
-      "foliage_tones": ["#2f6ea8", "#3b83bb", "#54a0c8", "#225c97", "#6ab4d2"],
-      "trunk": "#0a1a2b", "cypress": "#081a22", "house": "#14293f", "roof": "#0b1c30",
-      "window": [2.6, 1.85, 0.85],
-      "foliage_emissive": "#0a2136", "cypress_emissive": "#0d2a2c", "house_emissive": "#0b1e33",
+      "foliage_tones": [
+        "#2f6ea8",
+        "#3b83bb",
+        "#54a0c8",
+        "#225c97",
+        "#6ab4d2"
+      ],
+      "trunk": "#0a1a2b",
+      "cypress": "#081a22",
+      "house": "#14293f",
+      "roof": "#0b1c30",
+      "window": [
+        2.6,
+        1.85,
+        0.85
+      ],
+      "foliage_emissive": "#0a2136",
+      "cypress_emissive": "#0d2a2c",
+      "house_emissive": "#0b1e33",
       "props": {
-        "stone": "#183650", "wick": [1.9, 1.35, 0.7],
+        "stone": "#183650",
+        "wick": [
+          1.9,
+          1.35,
+          0.7
+        ],
         "id_prefix": "lane_lantern",
         "tag": "STREET LANTERN / 路边星灯",
         "hint": "星夜小路旁的一盏石灯，灯芯是这片夜色里为数不多的暖光。"
       },
-      "particles": { "star": [1.5, 1.42, 1.18], "dust": "#a9d4ee", "star_opacity": 0.82 },
+      "particles": {
+        "star": [
+          1.5,
+          1.42,
+          1.18
+        ],
+        "dust": "#a9d4ee",
+        "star_opacity": 0.82
+      },
       "ceremony": {
         "accent": "#e8b96a",
         "win": "#ffd88a",
@@ -77,18 +151,28 @@
       }
     },
     "lighting": {
-      "directional_color": "#ffdca3", "directional_intensity": 1.12,
-      "ambient_color": "#425c6b", "ambient_intensity": 0.62,
-      "hemisphere": ["#2d5b8c", "#071426"],
-      "lamps": "#ffc06a", "lamp_intensity": 6.0
+      "directional_color": "#ffdca3",
+      "directional_intensity": 1.12,
+      "ambient_color": "#425c6b",
+      "ambient_intensity": 0.62,
+      "hemisphere": [
+        "#2d5b8c",
+        "#071426"
+      ],
+      "lamps": "#ffc06a",
+      "lamp_intensity": 6.0
     }
   },
-
   "worlds": [
     {
-      "id": "starry-night", "index": 1, "tier": "high",
-      "title_zh": "星月夜", "title_en": "A STARRY NIGHT",
-      "artist": "文森特·梵高", "year": "1889", "category": "landscape",
+      "id": "starry-night",
+      "index": 1,
+      "tier": "high",
+      "title_zh": "星月夜",
+      "title_en": "A STARRY NIGHT",
+      "artist": "文森特·梵高",
+      "year": "1889",
+      "category": "landscape",
       "description": "柏树、村庄与旋转的夜空。",
       "hud": {
         "eyebrow": "01 / 2026.11 — A STARRY NIGHT",
@@ -100,14 +184,20 @@
         "prompt": "等距视角游戏棋盘场景概念设定：深靛蓝旋转夜空、星云与新月，青灰石质地面与村庄、柏树剪影自然连成一片，地面用浅金笔触划出一块倒角矩形区域作为棋盘，没有凸起台座，冷蓝环境光与暖金灯火对比，厚涂笔触，无文字无人物，游戏美术概念设定图，高清",
         "image": "assets/concept.jpg",
         "sha256": "5925fa0b3d1e3deee899a55898eec996cce7984cacd736b95831417a0e5481db",
-        "status": "asset_ready", "source": "visual-pack.json"
+        "status": "asset_ready",
+        "source": "visual-pack.json"
       },
       "overrides": {}
     },
     {
-      "id": "cafe-terrace", "index": 2, "tier": "high",
-      "title_zh": "夜间咖啡馆", "title_en": "CAFE TERRACE AT NIGHT",
-      "artist": "文森特·梵高", "year": "1888", "category": "city",
+      "id": "cafe-terrace",
+      "index": 2,
+      "tier": "high",
+      "title_zh": "夜间咖啡馆",
+      "title_en": "CAFE TERRACE AT NIGHT",
+      "artist": "文森特·梵高",
+      "year": "1888",
+      "category": "city",
       "description": "暖黄色露台延伸到深蓝色的街巷。",
       "hud": {
         "eyebrow": "02 / 2026.11 — CAFE TERRACE",
@@ -117,20 +207,145 @@
       },
       "concept": {
         "prompt": "游戏场景概念设定：深钴蓝星空下的石板街巷，暖黄色咖啡馆露台的煤气灯把地面染成金黄，一整片连续鹅卵石地面上用浅色粉笔线划出一块倒角矩形作为棋盘区域，与街道共面、没有凸起台座，桌椅与遮阳篷散在四周，梵高式短笔触，无文字无人物，游戏美术概念设定图，高清",
-        "image": "assets/worlds/cafe-terrace.png", "sha256": "81ac79e490a7106052a470435511c2f02e9399b1bc6365e4b8710aa81e75464e", "status": "asset_ready"
+        "image": "assets/worlds/cafe-terrace.png",
+        "sha256": "81ac79e490a7106052a470435511c2f02e9399b1bc6365e4b8710aa81e75464e",
+        "status": "asset_ready"
       },
       "overrides": {
-        "sky": { "mode": "procedural_canvas", "top": "#081432", "horizon": "#244476", "bottom": "#2a3040", "sun": null, "clouds": 0.12, "stars": 0.85, "fog": { "color": "#2a3a5a", "density": 0.008 }, "exposure": 0.22, "bloom": { "threshold": 1.05, "strength": 0.72, "radius": 0.80 } },
-        "ground": { "gradient": ["#4a3d24", "#2c3040", "#141a2b"], "strokes": ["#c99a43", "#e7bb5c", "#8a6c30", "#f0d68a", "#3e5c86", "#6f88aa", "#d9c38b"], "path_base": "#4a3a22", "path_strokes": ["#6b5028", "#a97f3e", "#d0a659", "#e6c47e", "#8d6a34"], "sea": "#101b30", "rings": "#e0b45c", "stroke_color": "#c9a55e", "white_stroke": "#f6dda0" },
-        "board": { "base": ["rgba(246, 209, 128, 0.26)", "rgba(198, 158, 88, 0.18)", "rgba(120, 100, 60, 0)"], "rim": "rgba(255, 226, 158, 0.70)", "rim_halo": "rgba(255, 216, 140, 0.10)", "line": [255, 232, 182], "emblem": [255, 214, 130], "emblem_bright": "rgba(255, 232, 176, 0.56)", "anchor": "rgba(255, 224, 160, 0.34)", "logical": "rgba(220, 228, 246, 0.26)" },
-        "scenery": { "preset": "cafe", "foliage_tones": ["#2e4e78", "#41618a", "#c7a054", "#6b7a9c", "#e0bd6c"], "trunk": "#2b2118", "cypress": "#101f36", "house": "#2c3652", "roof": "#1a2438", "window": [3.0, 2.1, 1.0], "foliage_emissive": "#14233a", "cypress_emissive": "#101c30", "house_emissive": "#3b2c18", "props": { "stone": "#3a3550", "wick": [2.8, 1.9, 0.8], "id_prefix": "terrace_lamp", "tag": "TERRACE LAMP / 露台煤气灯", "hint": "露台边的一盏煤气灯，把鹅卵石照成一圈暖黄。" }, "particles": { "star": [1.5, 1.45, 1.25], "dust": "#e9cd92", "star_opacity": 0.78 } },
-        "lighting": { "directional_color": "#6f8fc4", "directional_intensity": 0.55, "ambient_color": "#4e5570", "ambient_intensity": 0.72, "hemisphere": ["#35507e", "#2a2418"], "lamps": "#ffd07a", "lamp_intensity": 9.0 }
+        "sky": {
+          "mode": "procedural_canvas",
+          "top": "#081432",
+          "horizon": "#244476",
+          "bottom": "#2a3040",
+          "sun": null,
+          "clouds": 0.12,
+          "stars": 0.85,
+          "fog": {
+            "color": "#2a3a5a",
+            "density": 0.008
+          },
+          "exposure": 0.22,
+          "bloom": {
+            "threshold": 1.05,
+            "strength": 0.72,
+            "radius": 0.8
+          }
+        },
+        "ground": {
+          "gradient": [
+            "#4a3d24",
+            "#2c3040",
+            "#141a2b"
+          ],
+          "strokes": [
+            "#c99a43",
+            "#e7bb5c",
+            "#8a6c30",
+            "#f0d68a",
+            "#3e5c86",
+            "#6f88aa",
+            "#d9c38b"
+          ],
+          "path_base": "#4a3a22",
+          "path_strokes": [
+            "#6b5028",
+            "#a97f3e",
+            "#d0a659",
+            "#e6c47e",
+            "#8d6a34"
+          ],
+          "sea": "#101b30",
+          "rings": "#e0b45c",
+          "stroke_color": "#c9a55e",
+          "white_stroke": "#f6dda0"
+        },
+        "board": {
+          "base": [
+            "rgba(246, 209, 128, 0.26)",
+            "rgba(198, 158, 88, 0.18)",
+            "rgba(120, 100, 60, 0)"
+          ],
+          "rim": "rgba(255, 226, 158, 0.70)",
+          "rim_halo": "rgba(255, 216, 140, 0.10)",
+          "line": [
+            255,
+            232,
+            182
+          ],
+          "emblem": [
+            255,
+            214,
+            130
+          ],
+          "emblem_bright": "rgba(255, 232, 176, 0.56)",
+          "anchor": "rgba(255, 224, 160, 0.34)",
+          "logical": "rgba(220, 228, 246, 0.26)"
+        },
+        "scenery": {
+          "preset": "cafe",
+          "foliage_tones": [
+            "#2e4e78",
+            "#41618a",
+            "#c7a054",
+            "#6b7a9c",
+            "#e0bd6c"
+          ],
+          "trunk": "#2b2118",
+          "cypress": "#101f36",
+          "house": "#2c3652",
+          "roof": "#1a2438",
+          "window": [
+            3.0,
+            2.1,
+            1.0
+          ],
+          "foliage_emissive": "#14233a",
+          "cypress_emissive": "#101c30",
+          "house_emissive": "#3b2c18",
+          "props": {
+            "stone": "#3a3550",
+            "wick": [
+              2.8,
+              1.9,
+              0.8
+            ],
+            "id_prefix": "terrace_lamp",
+            "tag": "TERRACE LAMP / 露台煤气灯",
+            "hint": "露台边的一盏煤气灯，把鹅卵石照成一圈暖黄。"
+          },
+          "particles": {
+            "star": [
+              1.5,
+              1.45,
+              1.25
+            ],
+            "dust": "#e9cd92",
+            "star_opacity": 0.78
+          }
+        },
+        "lighting": {
+          "directional_color": "#6f8fc4",
+          "directional_intensity": 0.55,
+          "ambient_color": "#4e5570",
+          "ambient_intensity": 0.72,
+          "hemisphere": [
+            "#35507e",
+            "#2a2418"
+          ],
+          "lamps": "#ffd07a",
+          "lamp_intensity": 9.0
+        }
       }
     },
     {
-      "id": "wheatfield-cypresses", "index": 3, "tier": "high",
-      "title_zh": "麦田与柏树", "title_en": "WHEAT FIELD WITH CYPRESSES",
-      "artist": "文森特·梵高", "year": "1889", "category": "landscape",
+      "id": "wheatfield-cypresses",
+      "index": 3,
+      "tier": "high",
+      "title_zh": "麦田与柏树",
+      "title_en": "WHEAT FIELD WITH CYPRESSES",
+      "artist": "文森特·梵高",
+      "year": "1889",
+      "category": "landscape",
       "description": "走进金色麦浪，绕过银绿橄榄树，仰望柏树与翻卷的白云。",
       "hud": {
         "eyebrow": "03 / 2026.11 — WHEAT FIELD WITH CYPRESSES",
@@ -140,20 +355,150 @@
       },
       "concept": {
         "prompt": "等距视角游戏棋盘场景概念设定：一整片连续金色麦田与石质地面自然融合，麦浪笔触里用浅金刻线划出一块倒角矩形作为棋盘区域，与田地共面、没有凸起台座，银绿色橄榄树、深绿柏树、翻卷的乳白积云、明亮钴蓝天空，午后暖金阳光，厚涂短笔触，风景与棋盘一体，无文字无人物，游戏美术概念设定图，高清",
-        "image": "assets/worlds/wheatfield-cypresses.png", "sha256": "41d8dd48bfe69c9876834ae89c7fef3e66ab480ce5b551072eb2bfb9fd09e645", "status": "asset_ready"
+        "image": "assets/worlds/wheatfield-cypresses.png",
+        "sha256": "41d8dd48bfe69c9876834ae89c7fef3e66ab480ce5b551072eb2bfb9fd09e645",
+        "status": "asset_ready"
       },
       "overrides": {
-        "sky": { "mode": "procedural_canvas", "top": "#1f5bb0", "horizon": "#b9d5ea", "bottom": "#5f89bd", "sun": { "x": 0.73, "y": 0.30, "radius": 0.042, "color": "#fff3c4" }, "clouds": 0.95, "stars": 0.0, "fog": { "color": "#b9cfe0", "density": 0.0035 }, "exposure": 0.30, "bloom": { "threshold": 1.15, "strength": 0.38, "radius": 0.72 } },
-        "ground": { "gradient": ["#e3be58", "#c9972f", "#8a5f1e"], "strokes": ["#f2d77e", "#e8c05a", "#c9902e", "#f6e3a1", "#9f7a2c", "#fff0bd", "#7d6a2a"], "path_base": "#c6a24b", "path_strokes": ["#a97f2e", "#d8b45c", "#efd487", "#8f6e2d", "#f5e2a4"], "sea": "#6f8fae", "rings": "#e8c665", "stroke_color": "#8a6a25", "white_stroke": "#fff1bf" },
-        "board": { "base": ["rgba(255, 244, 205, 0.26)", "rgba(232, 198, 110, 0.18)", "rgba(190, 150, 60, 0)"], "rim": "rgba(255, 247, 214, 0.72)", "rim_halo": "rgba(255, 240, 190, 0.09)", "line": [255, 248, 222], "emblem": [255, 236, 178], "emblem_bright": "rgba(255, 246, 208, 0.58)", "anchor": "rgba(255, 244, 205, 0.34)", "logical": "rgba(255, 250, 225, 0.30)" },
-        "scenery": { "preset": "wheat", "foliage_tones": ["#8aa055", "#a8bb6c", "#c9cf85", "#5f7a3c", "#d8d79a"], "trunk": "#5a3f22", "cypress": "#1b3a25", "house": "#c9a45f", "roof": "#8c5f32", "window": [1.5, 1.1, 0.6], "foliage_emissive": "#3a3a12", "cypress_emissive": "#102b18", "house_emissive": "#4a3517", "props": { "stone": "#b99a5c", "wick": [1.5, 1.1, 0.5], "id_prefix": "field_marker", "tag": "FIELD MARKER / 田埂界石", "hint": "麦田小路旁的界石，被午后的太阳晒得发亮。" }, "particles": { "star": [1.2, 1.3, 1.4], "dust": "#fff0bd", "star_opacity": 0.0 } },
-        "lighting": { "directional_color": "#fff0c0", "directional_intensity": 1.55, "ambient_color": "#8fa8bd", "ambient_intensity": 0.85, "hemisphere": ["#8fc0e8", "#8a6a2a"], "lamps": "#ffe1a0", "lamp_intensity": 2.5 }
+        "sky": {
+          "mode": "procedural_canvas",
+          "top": "#1f5bb0",
+          "horizon": "#b9d5ea",
+          "bottom": "#5f89bd",
+          "sun": {
+            "x": 0.73,
+            "y": 0.3,
+            "radius": 0.042,
+            "color": "#fff3c4"
+          },
+          "clouds": 0.95,
+          "stars": 0.0,
+          "fog": {
+            "color": "#b9cfe0",
+            "density": 0.0035
+          },
+          "exposure": 0.3,
+          "bloom": {
+            "threshold": 1.15,
+            "strength": 0.38,
+            "radius": 0.72
+          }
+        },
+        "ground": {
+          "gradient": [
+            "#e3be58",
+            "#c9972f",
+            "#8a5f1e"
+          ],
+          "strokes": [
+            "#f2d77e",
+            "#e8c05a",
+            "#c9902e",
+            "#f6e3a1",
+            "#9f7a2c",
+            "#fff0bd",
+            "#7d6a2a"
+          ],
+          "path_base": "#c6a24b",
+          "path_strokes": [
+            "#a97f2e",
+            "#d8b45c",
+            "#efd487",
+            "#8f6e2d",
+            "#f5e2a4"
+          ],
+          "sea": "#6f8fae",
+          "rings": "#e8c665",
+          "stroke_color": "#8a6a25",
+          "white_stroke": "#fff1bf"
+        },
+        "board": {
+          "base": [
+            "rgba(255, 244, 205, 0.26)",
+            "rgba(232, 198, 110, 0.18)",
+            "rgba(190, 150, 60, 0)"
+          ],
+          "rim": "rgba(255, 247, 214, 0.72)",
+          "rim_halo": "rgba(255, 240, 190, 0.09)",
+          "line": [
+            255,
+            248,
+            222
+          ],
+          "emblem": [
+            255,
+            236,
+            178
+          ],
+          "emblem_bright": "rgba(255, 246, 208, 0.58)",
+          "anchor": "rgba(255, 244, 205, 0.34)",
+          "logical": "rgba(255, 250, 225, 0.30)"
+        },
+        "scenery": {
+          "preset": "wheat",
+          "foliage_tones": [
+            "#8aa055",
+            "#a8bb6c",
+            "#c9cf85",
+            "#5f7a3c",
+            "#d8d79a"
+          ],
+          "trunk": "#5a3f22",
+          "cypress": "#1b3a25",
+          "house": "#c9a45f",
+          "roof": "#8c5f32",
+          "window": [
+            1.5,
+            1.1,
+            0.6
+          ],
+          "foliage_emissive": "#3a3a12",
+          "cypress_emissive": "#102b18",
+          "house_emissive": "#4a3517",
+          "props": {
+            "stone": "#b99a5c",
+            "wick": [
+              1.5,
+              1.1,
+              0.5
+            ],
+            "id_prefix": "field_marker",
+            "tag": "FIELD MARKER / 田埂界石",
+            "hint": "麦田小路旁的界石，被午后的太阳晒得发亮。"
+          },
+          "particles": {
+            "star": [
+              1.2,
+              1.3,
+              1.4
+            ],
+            "dust": "#fff0bd",
+            "star_opacity": 0.0
+          }
+        },
+        "lighting": {
+          "directional_color": "#fff0c0",
+          "directional_intensity": 1.55,
+          "ambient_color": "#8fa8bd",
+          "ambient_intensity": 0.85,
+          "hemisphere": [
+            "#8fc0e8",
+            "#8a6a2a"
+          ],
+          "lamps": "#ffe1a0",
+          "lamp_intensity": 2.5
+        }
       }
     },
     {
-      "id": "bedroom-arles", "index": 4, "tier": "high",
-      "title_zh": "阿尔勒的卧室", "title_en": "THE BEDROOM IN ARLES",
-      "artist": "文森特·梵高", "year": "1889", "category": "interior",
+      "id": "bedroom-arles",
+      "index": 4,
+      "tier": "high",
+      "title_zh": "阿尔勒的卧室",
+      "title_en": "THE BEDROOM IN ARLES",
+      "artist": "文森特·梵高",
+      "year": "1889",
+      "category": "interior",
       "description": "金黄色木床、红色毯子与淡紫墙面，走进梵高安静的房间。",
       "hud": {
         "eyebrow": "04 / 2026.11 — THE BEDROOM",
@@ -163,20 +508,145 @@
       },
       "concept": {
         "prompt": "游戏场景概念设定：淡紫墙色与金黄色木地板构成的安静房间式庭院，一整片连续木纹地板上用浅色线条划出一块倒角矩形作为棋盘区域，与地板共面、没有凸起台座，简朴木椅、红毯与蓝色门窗散在四周，柔和室内天光，厚涂笔触，无文字无人物，游戏美术概念设定图，高清",
-        "image": "assets/worlds/bedroom-arles.png", "sha256": "a3ce84fef5394f0a81dad568b255bcdef397a3a09ac83d58e731fccfc4e1cbcb", "status": "asset_ready"
+        "image": "assets/worlds/bedroom-arles.png",
+        "sha256": "a3ce84fef5394f0a81dad568b255bcdef397a3a09ac83d58e731fccfc4e1cbcb",
+        "status": "asset_ready"
       },
       "overrides": {
-        "sky": { "mode": "procedural_canvas", "top": "#6b6491", "horizon": "#c2aec0", "bottom": "#847793", "sun": null, "clouds": 0.20, "stars": 0.0, "fog": { "color": "#9a8fa6", "density": 0.005 }, "exposure": 0.28, "bloom": { "threshold": 1.30, "strength": 0.30, "radius": 0.70 } },
-        "ground": { "gradient": ["#d3ae70", "#a9814c", "#6f5334"], "strokes": ["#e3c286", "#c19a5e", "#8a6336", "#f0d9a4", "#a97d4a", "#d9bd88", "#6d4f30"], "path_base": "#b08a52", "path_strokes": ["#8e6838", "#c39b60", "#e0bd84", "#9a7443", "#f0d8a6"], "sea": "#6d6a80", "rings": "#b98c6a", "stroke_color": "#8a6b46", "white_stroke": "#efe0bd" },
-        "board": { "base": ["rgba(246, 232, 208, 0.24)", "rgba(190, 168, 190, 0.16)", "rgba(130, 110, 140, 0)"], "rim": "rgba(250, 238, 216, 0.66)", "rim_halo": "rgba(240, 226, 200, 0.08)", "line": [248, 238, 220], "emblem": [214, 158, 138], "emblem_bright": "rgba(226, 176, 152, 0.50)", "anchor": "rgba(246, 232, 208, 0.30)", "logical": "rgba(228, 218, 240, 0.26)" },
-        "scenery": { "preset": "bedroom", "foliage_tones": ["#6e7098", "#8f86a4", "#b6a0a8", "#5c6488", "#c9b39c"], "trunk": "#5a3f2e", "cypress": "#4a4266", "house": "#b98c62", "roof": "#8c6a5c", "window": [1.6, 1.3, 1.0], "foliage_emissive": "#2e2b44", "cypress_emissive": "#292742", "house_emissive": "#463322", "props": { "stone": "#8a7290", "wick": [1.6, 1.2, 0.8], "id_prefix": "room_sconce", "tag": "ROOM SCONCE / 墙角壁灯", "hint": "墙角一盏小壁灯，把木地板的纹路照得很软。" }, "particles": { "star": [1.2, 1.15, 1.3], "dust": "#e5d6c0", "star_opacity": 0.0 } },
-        "lighting": { "directional_color": "#f0dcc4", "directional_intensity": 0.95, "ambient_color": "#9a91ab", "ambient_intensity": 0.90, "hemisphere": ["#b7a8c4", "#6b4f36"], "lamps": "#ffd9a0", "lamp_intensity": 4.0 }
+        "sky": {
+          "mode": "procedural_canvas",
+          "top": "#6b6491",
+          "horizon": "#c2aec0",
+          "bottom": "#847793",
+          "sun": null,
+          "clouds": 0.2,
+          "stars": 0.0,
+          "fog": {
+            "color": "#9a8fa6",
+            "density": 0.005
+          },
+          "exposure": 0.28,
+          "bloom": {
+            "threshold": 1.3,
+            "strength": 0.3,
+            "radius": 0.7
+          }
+        },
+        "ground": {
+          "gradient": [
+            "#d3ae70",
+            "#a9814c",
+            "#6f5334"
+          ],
+          "strokes": [
+            "#e3c286",
+            "#c19a5e",
+            "#8a6336",
+            "#f0d9a4",
+            "#a97d4a",
+            "#d9bd88",
+            "#6d4f30"
+          ],
+          "path_base": "#b08a52",
+          "path_strokes": [
+            "#8e6838",
+            "#c39b60",
+            "#e0bd84",
+            "#9a7443",
+            "#f0d8a6"
+          ],
+          "sea": "#6d6a80",
+          "rings": "#b98c6a",
+          "stroke_color": "#8a6b46",
+          "white_stroke": "#efe0bd"
+        },
+        "board": {
+          "base": [
+            "rgba(246, 232, 208, 0.24)",
+            "rgba(190, 168, 190, 0.16)",
+            "rgba(130, 110, 140, 0)"
+          ],
+          "rim": "rgba(250, 238, 216, 0.66)",
+          "rim_halo": "rgba(240, 226, 200, 0.08)",
+          "line": [
+            248,
+            238,
+            220
+          ],
+          "emblem": [
+            214,
+            158,
+            138
+          ],
+          "emblem_bright": "rgba(226, 176, 152, 0.50)",
+          "anchor": "rgba(246, 232, 208, 0.30)",
+          "logical": "rgba(228, 218, 240, 0.26)"
+        },
+        "scenery": {
+          "preset": "bedroom",
+          "foliage_tones": [
+            "#6e7098",
+            "#8f86a4",
+            "#b6a0a8",
+            "#5c6488",
+            "#c9b39c"
+          ],
+          "trunk": "#5a3f2e",
+          "cypress": "#4a4266",
+          "house": "#b98c62",
+          "roof": "#8c6a5c",
+          "window": [
+            1.6,
+            1.3,
+            1.0
+          ],
+          "foliage_emissive": "#2e2b44",
+          "cypress_emissive": "#292742",
+          "house_emissive": "#463322",
+          "props": {
+            "stone": "#8a7290",
+            "wick": [
+              1.6,
+              1.2,
+              0.8
+            ],
+            "id_prefix": "room_sconce",
+            "tag": "ROOM SCONCE / 墙角壁灯",
+            "hint": "墙角一盏小壁灯，把木地板的纹路照得很软。"
+          },
+          "particles": {
+            "star": [
+              1.2,
+              1.15,
+              1.3
+            ],
+            "dust": "#e5d6c0",
+            "star_opacity": 0.0
+          }
+        },
+        "lighting": {
+          "directional_color": "#f0dcc4",
+          "directional_intensity": 0.95,
+          "ambient_color": "#9a91ab",
+          "ambient_intensity": 0.9,
+          "hemisphere": [
+            "#b7a8c4",
+            "#6b4f36"
+          ],
+          "lamps": "#ffd9a0",
+          "lamp_intensity": 4.0
+        }
       }
     },
     {
-      "id": "impression-sunrise", "index": 5, "tier": "high",
-      "title_zh": "印象·日出", "title_en": "IMPRESSION, SUNRISE",
-      "artist": "克劳德·莫奈", "year": "1872", "category": "landscape",
+      "id": "impression-sunrise",
+      "index": 5,
+      "tier": "high",
+      "title_zh": "印象·日出",
+      "title_en": "IMPRESSION, SUNRISE",
+      "artist": "克劳德·莫奈",
+      "year": "1872",
+      "category": "landscape",
       "description": "雾中的港口、橙色太阳与一叶小舟。",
       "hud": {
         "eyebrow": "05 / 2026.11 — IMPRESSION, SUNRISE",
@@ -186,20 +656,150 @@
       },
       "concept": {
         "prompt": "等距视角游戏棋盘场景概念设定：灰蓝色晨雾港口，橙色太阳低悬、在水面拉出一道碎金倒影，一整片连续水岸地面上用极淡的暖白线划出一块倒角矩形作为棋盘区域，与水岸共面、没有凸起台座，小舟剪影、桅杆与远处吊车在雾里若隐若现，莫奈式松散笔触，风景与棋盘一体，无文字无人物，游戏美术概念设定图，高清",
-        "image": "assets/worlds/impression-sunrise.png", "sha256": "7c4982714bfda618ca12bb910936f673a7859c63ee29ee55b0a8fe109100b37e", "status": "asset_ready"
+        "image": "assets/worlds/impression-sunrise.png",
+        "sha256": "7c4982714bfda618ca12bb910936f673a7859c63ee29ee55b0a8fe109100b37e",
+        "status": "asset_ready"
       },
       "overrides": {
-        "sky": { "mode": "procedural_canvas", "top": "#4a6b88", "horizon": "#c9a08a", "bottom": "#6a7b8a", "sun": { "x": 0.68, "y": 0.60, "radius": 0.034, "color": "#ff8a3d" }, "clouds": 0.55, "stars": 0.0, "fog": { "color": "#9aa7ad", "density": 0.012 }, "exposure": 0.36, "bloom": { "threshold": 0.92, "strength": 0.88, "radius": 0.90 } },
-        "ground": { "gradient": ["#5c7689", "#425e74", "#2c4358"], "strokes": ["#7d94a4", "#a3b4ba", "#c2b7a6", "#e2a878", "#f0bd86", "#8fa6b2", "#d6c3ac"], "path_base": "#4e687b", "path_strokes": ["#354f63", "#628097", "#8fa8b4", "#c0a894", "#e8b985"], "sea": "#3b5468", "rings": "#d8a479", "stroke_color": "#c19a78", "white_stroke": "#e6d7c4" },
-        "board": { "base": ["rgba(255, 214, 170, 0.20)", "rgba(170, 190, 200, 0.15)", "rgba(90, 120, 140, 0)"], "rim": "rgba(255, 226, 190, 0.55)", "rim_halo": "rgba(255, 206, 160, 0.07)", "line": [236, 226, 212], "emblem": [255, 176, 110], "emblem_bright": "rgba(255, 196, 130, 0.48)", "anchor": "rgba(240, 216, 190, 0.26)", "logical": "rgba(220, 232, 238, 0.20)" },
-        "scenery": { "preset": "sunrise", "foliage_tones": ["#4b6274", "#6a8090", "#8a9aa2", "#3b5062", "#b1a89c"], "trunk": "#293b48", "cypress": "#243846", "house": "#51697b", "roof": "#354b5c", "window": [1.4, 1.0, 0.7], "foliage_emissive": "#1e3040", "cypress_emissive": "#182b38", "house_emissive": "#263844", "props": { "stone": "#5a6f7e", "wick": [2.2, 1.1, 0.5], "id_prefix": "harbour_buoy", "tag": "HARBOUR BUOY / 港湾浮标", "hint": "雾里的一盏浮标灯，橙光落在水面上会被拉得很长。" }, "particles": { "star": [1.2, 1.2, 1.3], "dust": "#d9c8b4", "star_opacity": 0.0 } },
-        "lighting": { "directional_color": "#ffb887", "directional_intensity": 0.85, "ambient_color": "#8fa2b0", "ambient_intensity": 0.95, "hemisphere": ["#a8bcc8", "#405668"], "lamps": "#ff9a54", "lamp_intensity": 5.0 }
+        "sky": {
+          "mode": "procedural_canvas",
+          "top": "#4a6b88",
+          "horizon": "#c9a08a",
+          "bottom": "#6a7b8a",
+          "sun": {
+            "x": 0.68,
+            "y": 0.6,
+            "radius": 0.034,
+            "color": "#ff8a3d"
+          },
+          "clouds": 0.55,
+          "stars": 0.0,
+          "fog": {
+            "color": "#9aa7ad",
+            "density": 0.012
+          },
+          "exposure": 0.36,
+          "bloom": {
+            "threshold": 0.92,
+            "strength": 0.88,
+            "radius": 0.9
+          }
+        },
+        "ground": {
+          "gradient": [
+            "#5c7689",
+            "#425e74",
+            "#2c4358"
+          ],
+          "strokes": [
+            "#7d94a4",
+            "#a3b4ba",
+            "#c2b7a6",
+            "#e2a878",
+            "#f0bd86",
+            "#8fa6b2",
+            "#d6c3ac"
+          ],
+          "path_base": "#4e687b",
+          "path_strokes": [
+            "#354f63",
+            "#628097",
+            "#8fa8b4",
+            "#c0a894",
+            "#e8b985"
+          ],
+          "sea": "#3b5468",
+          "rings": "#d8a479",
+          "stroke_color": "#c19a78",
+          "white_stroke": "#e6d7c4"
+        },
+        "board": {
+          "base": [
+            "rgba(255, 214, 170, 0.20)",
+            "rgba(170, 190, 200, 0.15)",
+            "rgba(90, 120, 140, 0)"
+          ],
+          "rim": "rgba(255, 226, 190, 0.55)",
+          "rim_halo": "rgba(255, 206, 160, 0.07)",
+          "line": [
+            236,
+            226,
+            212
+          ],
+          "emblem": [
+            255,
+            176,
+            110
+          ],
+          "emblem_bright": "rgba(255, 196, 130, 0.48)",
+          "anchor": "rgba(240, 216, 190, 0.26)",
+          "logical": "rgba(220, 232, 238, 0.20)"
+        },
+        "scenery": {
+          "preset": "sunrise",
+          "foliage_tones": [
+            "#4b6274",
+            "#6a8090",
+            "#8a9aa2",
+            "#3b5062",
+            "#b1a89c"
+          ],
+          "trunk": "#293b48",
+          "cypress": "#243846",
+          "house": "#51697b",
+          "roof": "#354b5c",
+          "window": [
+            1.4,
+            1.0,
+            0.7
+          ],
+          "foliage_emissive": "#1e3040",
+          "cypress_emissive": "#182b38",
+          "house_emissive": "#263844",
+          "props": {
+            "stone": "#5a6f7e",
+            "wick": [
+              2.2,
+              1.1,
+              0.5
+            ],
+            "id_prefix": "harbour_buoy",
+            "tag": "HARBOUR BUOY / 港湾浮标",
+            "hint": "雾里的一盏浮标灯，橙光落在水面上会被拉得很长。"
+          },
+          "particles": {
+            "star": [
+              1.2,
+              1.2,
+              1.3
+            ],
+            "dust": "#d9c8b4",
+            "star_opacity": 0.0
+          }
+        },
+        "lighting": {
+          "directional_color": "#ffb887",
+          "directional_intensity": 0.85,
+          "ambient_color": "#8fa2b0",
+          "ambient_intensity": 0.95,
+          "hemisphere": [
+            "#a8bcc8",
+            "#405668"
+          ],
+          "lamps": "#ff9a54",
+          "lamp_intensity": 5.0
+        }
       }
     },
     {
-      "id": "japanese-footbridge", "index": 6, "tier": "high",
-      "title_zh": "睡莲池", "title_en": "THE JAPANESE FOOTBRIDGE",
-      "artist": "克劳德·莫奈", "year": "1899", "category": "landscape",
+      "id": "japanese-footbridge",
+      "index": 6,
+      "tier": "high",
+      "title_zh": "睡莲池",
+      "title_en": "THE JAPANESE FOOTBRIDGE",
+      "artist": "克劳德·莫奈",
+      "year": "1899",
+      "category": "landscape",
       "description": "沿池边走近白粉色睡莲，看青绿色拱桥与垂柳映在水中。",
       "hud": {
         "eyebrow": "06 / 2026.11 — THE JAPANESE FOOTBRIDGE",
@@ -209,122 +809,1232 @@
       },
       "concept": {
         "prompt": "等距视角游戏棋盘场景概念设定：青绿色睡莲池与池岸连成一整片连续地面，水面上用浅白色细线划出一块倒角矩形作为棋盘区域，与池面共面、没有凸起台座，圆形浮叶、白粉睡莲、青绿拱桥与垂柳环绕，午后柔和阳光穿过叶隙，莫奈式细碎笔触，风景与棋盘一体，无文字无人物，游戏美术概念设定图，高清",
-        "image": "assets/worlds/japanese-footbridge.png", "sha256": "482f115064e10eafee9b75f1fbb104389092e8758502f3681cb3ef1b0528a3f9", "status": "asset_ready"
+        "image": "assets/worlds/japanese-footbridge.png",
+        "sha256": "482f115064e10eafee9b75f1fbb104389092e8758502f3681cb3ef1b0528a3f9",
+        "status": "asset_ready"
       },
       "overrides": {
-        "sky": { "mode": "procedural_canvas", "top": "#7fb3a8", "horizon": "#d9dfae", "bottom": "#456f5a", "sun": { "x": 0.30, "y": 0.32, "radius": 0.045, "color": "#fff4c8" }, "clouds": 0.35, "stars": 0.0, "fog": { "color": "#8fb6a0", "density": 0.005 }, "exposure": 0.28, "bloom": { "threshold": 1.22, "strength": 0.36, "radius": 0.76 } },
-        "ground": { "gradient": ["#3f7d6b", "#2c6155", "#173f3c"], "strokes": ["#4e9279", "#6fae8a", "#8fc4a0", "#b9d6a4", "#dce9bd", "#2f6d62", "#a7c9b3"], "path_base": "#5b8b6f", "path_strokes": ["#2c5a4f", "#4a8468", "#79ad86", "#a9cba0", "#d8e6c0"], "sea": "#1c4a43", "rings": "#9fca9d", "stroke_color": "#bcd6a6", "white_stroke": "#eef3d2" },
-        "board": { "base": ["rgba(232, 246, 214, 0.22)", "rgba(150, 200, 170, 0.17)", "rgba(60, 130, 110, 0)"], "rim": "rgba(240, 250, 222, 0.68)", "rim_halo": "rgba(224, 244, 204, 0.08)", "line": [240, 250, 226], "emblem": [246, 214, 208], "emblem_bright": "rgba(250, 226, 218, 0.52)", "anchor": "rgba(232, 246, 214, 0.30)", "logical": "rgba(216, 240, 228, 0.26)" },
-        "scenery": { "preset": "pond", "foliage_tones": ["#4f8a56", "#6fa366", "#8fbb74", "#356b4c", "#b3cd8c"], "trunk": "#3b4a2c", "cypress": "#254c3c", "house": "#6d8a6a", "roof": "#3f624c", "window": [1.2, 1.4, 0.9], "foliage_emissive": "#1e3a24", "cypress_emissive": "#16342a", "house_emissive": "#2a4030", "props": { "stone": "#6b8a72", "wick": [1.4, 1.5, 1.0], "id_prefix": "pond_stone", "tag": "POND STONE / 池畔石灯", "hint": "池畔的矮石灯，光被柳条切碎后落在浮叶上。" }, "particles": { "star": [1.2, 1.35, 1.2], "dust": "#dcecb8", "star_opacity": 0.0 } },
-        "lighting": { "directional_color": "#fff2c8", "directional_intensity": 1.30, "ambient_color": "#8fb9a4", "ambient_intensity": 0.88, "hemisphere": ["#b6d8c0", "#2c4c3e"], "lamps": "#f2e2a8", "lamp_intensity": 3.0 }
+        "sky": {
+          "mode": "procedural_canvas",
+          "top": "#7fb3a8",
+          "horizon": "#d9dfae",
+          "bottom": "#456f5a",
+          "sun": {
+            "x": 0.3,
+            "y": 0.32,
+            "radius": 0.045,
+            "color": "#fff4c8"
+          },
+          "clouds": 0.35,
+          "stars": 0.0,
+          "fog": {
+            "color": "#8fb6a0",
+            "density": 0.005
+          },
+          "exposure": 0.28,
+          "bloom": {
+            "threshold": 1.22,
+            "strength": 0.36,
+            "radius": 0.76
+          }
+        },
+        "ground": {
+          "gradient": [
+            "#3f7d6b",
+            "#2c6155",
+            "#173f3c"
+          ],
+          "strokes": [
+            "#4e9279",
+            "#6fae8a",
+            "#8fc4a0",
+            "#b9d6a4",
+            "#dce9bd",
+            "#2f6d62",
+            "#a7c9b3"
+          ],
+          "path_base": "#5b8b6f",
+          "path_strokes": [
+            "#2c5a4f",
+            "#4a8468",
+            "#79ad86",
+            "#a9cba0",
+            "#d8e6c0"
+          ],
+          "sea": "#1c4a43",
+          "rings": "#9fca9d",
+          "stroke_color": "#bcd6a6",
+          "white_stroke": "#eef3d2"
+        },
+        "board": {
+          "base": [
+            "rgba(232, 246, 214, 0.22)",
+            "rgba(150, 200, 170, 0.17)",
+            "rgba(60, 130, 110, 0)"
+          ],
+          "rim": "rgba(240, 250, 222, 0.68)",
+          "rim_halo": "rgba(224, 244, 204, 0.08)",
+          "line": [
+            240,
+            250,
+            226
+          ],
+          "emblem": [
+            246,
+            214,
+            208
+          ],
+          "emblem_bright": "rgba(250, 226, 218, 0.52)",
+          "anchor": "rgba(232, 246, 214, 0.30)",
+          "logical": "rgba(216, 240, 228, 0.26)"
+        },
+        "scenery": {
+          "preset": "pond",
+          "foliage_tones": [
+            "#4f8a56",
+            "#6fa366",
+            "#8fbb74",
+            "#356b4c",
+            "#b3cd8c"
+          ],
+          "trunk": "#3b4a2c",
+          "cypress": "#254c3c",
+          "house": "#6d8a6a",
+          "roof": "#3f624c",
+          "window": [
+            1.2,
+            1.4,
+            0.9
+          ],
+          "foliage_emissive": "#1e3a24",
+          "cypress_emissive": "#16342a",
+          "house_emissive": "#2a4030",
+          "props": {
+            "stone": "#6b8a72",
+            "wick": [
+              1.4,
+              1.5,
+              1.0
+            ],
+            "id_prefix": "pond_stone",
+            "tag": "POND STONE / 池畔石灯",
+            "hint": "池畔的矮石灯，光被柳条切碎后落在浮叶上。"
+          },
+          "particles": {
+            "star": [
+              1.2,
+              1.35,
+              1.2
+            ],
+            "dust": "#dcecb8",
+            "star_opacity": 0.0
+          }
+        },
+        "lighting": {
+          "directional_color": "#fff2c8",
+          "directional_intensity": 1.3,
+          "ambient_color": "#8fb9a4",
+          "ambient_intensity": 0.88,
+          "hemisphere": [
+            "#b6d8c0",
+            "#2c4c3e"
+          ],
+          "lamps": "#f2e2a8",
+          "lamp_intensity": 3.0
+        }
       }
     },
     {
-      "id": "garden-sainte-adresse", "index": 7, "tier": "high",
-      "title_zh": "圣阿德雷斯的花园", "title_en": "GARDEN AT SAINTE-ADRESSE",
-      "artist": "克劳德·莫奈", "year": "1867", "category": "landscape",
+      "id": "garden-sainte-adresse",
+      "index": 7,
+      "tier": "high",
+      "title_zh": "圣阿德雷斯的花园",
+      "title_en": "GARDEN AT SAINTE-ADRESSE",
+      "artist": "克劳德·莫奈",
+      "year": "1867",
+      "category": "landscape",
       "description": "花园露台的旗帜，在海风里展开。",
-      "hud": { "eyebrow": "07 / 2026.11 — GARDEN AT SAINTE-ADRESSE", "sub": "走进花园露台 · 沉浸式场景预览", "from": "视觉包 07 / 12 · 棋盘轮廓取自 board.zbrd · 几何冻结契约不变", "footer": "程序化海风晴空 · 棋盘轮廓画进花园地面 · 场景物件与花圃同调" },
+      "hud": {
+        "eyebrow": "07 / 2026.11 — GARDEN AT SAINTE-ADRESSE",
+        "sub": "走进花园露台 · 沉浸式场景预览",
+        "from": "视觉包 07 / 12 · 棋盘轮廓取自 board.zbrd · 几何冻结契约不变",
+        "footer": "程序化海风晴空 · 棋盘轮廓画进花园地面 · 场景物件与花圃同调"
+      },
       "concept": {
         "prompt": "游戏场景概念设定：海边花园露台，蓝天与浅色海面，红白旗帜在海风里展开，一整片连续碎石地面与花圃上用白色细线划出一块倒角矩形作为棋盘区域，与地面共面、没有凸起台座，向日葵与栏杆散在四周，明快的印象派笔触，无文字无人物，游戏美术概念设定图，高清",
-        "image": "assets/worlds/garden-sainte-adresse.png", "sha256": "ed3cefcffc02069e38ee7cc99551b2084406e052ded16e25957aaf8c691ba249", "status": "asset_ready"
+        "image": "assets/worlds/garden-sainte-adresse.png",
+        "sha256": "ed3cefcffc02069e38ee7cc99551b2084406e052ded16e25957aaf8c691ba249",
+        "status": "asset_ready"
       },
       "overrides": {
-        "sky": { "mode": "procedural_canvas", "top": "#4d86c8", "horizon": "#d5e7ef", "bottom": "#7ba5bd", "sun": { "x": 0.22, "y": 0.26, "radius": 0.040, "color": "#fff8dc" }, "clouds": 0.50, "stars": 0.0, "fog": { "color": "#b9d2dc", "density": 0.004 }, "exposure": 0.32, "bloom": { "threshold": 1.25, "strength": 0.32, "radius": 0.70 } },
-        "ground": { "gradient": ["#8fa873", "#6f8f66", "#4b6c58"], "strokes": ["#a8bd7e", "#cdd69a", "#e4e3b0", "#d9b765", "#c4634f", "#7fa98a", "#f0ecd2"], "path_base": "#b9b18a", "path_strokes": ["#8f8a67", "#c0b790", "#ded4a8", "#a19a72", "#f2e9c8"], "sea": "#6b9ebc", "rings": "#d9c98d", "stroke_color": "#8b9a68", "white_stroke": "#f4f1d8" },
-        "board": { "base": ["rgba(255, 250, 226, 0.26)", "rgba(206, 218, 168, 0.18)", "rgba(120, 150, 120, 0)"], "rim": "rgba(255, 252, 234, 0.72)", "rim_halo": "rgba(250, 244, 210, 0.08)", "line": [255, 252, 236], "emblem": [214, 96, 72], "emblem_bright": "rgba(230, 120, 88, 0.48)", "anchor": "rgba(255, 250, 226, 0.32)", "logical": "rgba(228, 240, 246, 0.26)" },
-        "scenery": { "preset": "garden", "foliage_tones": ["#5e8a4e", "#7fa85c", "#a8c079", "#3f6b45", "#d2c46e"], "trunk": "#5b4a2c", "cypress": "#315a3e", "house": "#d8c9a0", "roof": "#9a7450", "window": [1.1, 1.2, 0.9], "foliage_emissive": "#253a20", "cypress_emissive": "#1c3624", "house_emissive": "#3d3520", "props": { "stone": "#b6b394", "wick": [1.2, 1.3, 1.0], "id_prefix": "garden_post", "tag": "GARDEN POST / 花圃矮柱", "hint": "花圃边的一根矮石柱，旗影会从它身上慢慢掠过。" }, "particles": { "star": [1.2, 1.3, 1.4], "dust": "#f2e8c4", "star_opacity": 0.0 } },
-        "lighting": { "directional_color": "#fff6d8", "directional_intensity": 1.45, "ambient_color": "#a6c0cf", "ambient_intensity": 0.88, "hemisphere": ["#a9cfe8", "#5c6c46"], "lamps": "#ffe6a8", "lamp_intensity": 2.0 }
+        "sky": {
+          "mode": "procedural_canvas",
+          "top": "#4d86c8",
+          "horizon": "#d5e7ef",
+          "bottom": "#7ba5bd",
+          "sun": {
+            "x": 0.22,
+            "y": 0.26,
+            "radius": 0.04,
+            "color": "#fff8dc"
+          },
+          "clouds": 0.5,
+          "stars": 0.0,
+          "fog": {
+            "color": "#b9d2dc",
+            "density": 0.004
+          },
+          "exposure": 0.32,
+          "bloom": {
+            "threshold": 1.25,
+            "strength": 0.32,
+            "radius": 0.7
+          }
+        },
+        "ground": {
+          "gradient": [
+            "#8fa873",
+            "#6f8f66",
+            "#4b6c58"
+          ],
+          "strokes": [
+            "#a8bd7e",
+            "#cdd69a",
+            "#e4e3b0",
+            "#d9b765",
+            "#c4634f",
+            "#7fa98a",
+            "#f0ecd2"
+          ],
+          "path_base": "#b9b18a",
+          "path_strokes": [
+            "#8f8a67",
+            "#c0b790",
+            "#ded4a8",
+            "#a19a72",
+            "#f2e9c8"
+          ],
+          "sea": "#6b9ebc",
+          "rings": "#d9c98d",
+          "stroke_color": "#8b9a68",
+          "white_stroke": "#f4f1d8"
+        },
+        "board": {
+          "base": [
+            "rgba(255, 250, 226, 0.26)",
+            "rgba(206, 218, 168, 0.18)",
+            "rgba(120, 150, 120, 0)"
+          ],
+          "rim": "rgba(255, 252, 234, 0.72)",
+          "rim_halo": "rgba(250, 244, 210, 0.08)",
+          "line": [
+            255,
+            252,
+            236
+          ],
+          "emblem": [
+            214,
+            96,
+            72
+          ],
+          "emblem_bright": "rgba(230, 120, 88, 0.48)",
+          "anchor": "rgba(255, 250, 226, 0.32)",
+          "logical": "rgba(228, 240, 246, 0.26)"
+        },
+        "scenery": {
+          "preset": "garden",
+          "foliage_tones": [
+            "#5e8a4e",
+            "#7fa85c",
+            "#a8c079",
+            "#3f6b45",
+            "#d2c46e"
+          ],
+          "trunk": "#5b4a2c",
+          "cypress": "#315a3e",
+          "house": "#d8c9a0",
+          "roof": "#9a7450",
+          "window": [
+            1.1,
+            1.2,
+            0.9
+          ],
+          "foliage_emissive": "#253a20",
+          "cypress_emissive": "#1c3624",
+          "house_emissive": "#3d3520",
+          "props": {
+            "stone": "#b6b394",
+            "wick": [
+              1.2,
+              1.3,
+              1.0
+            ],
+            "id_prefix": "garden_post",
+            "tag": "GARDEN POST / 花圃矮柱",
+            "hint": "花圃边的一根矮石柱，旗影会从它身上慢慢掠过。"
+          },
+          "particles": {
+            "star": [
+              1.2,
+              1.3,
+              1.4
+            ],
+            "dust": "#f2e8c4",
+            "star_opacity": 0.0
+          }
+        },
+        "lighting": {
+          "directional_color": "#fff6d8",
+          "directional_intensity": 1.45,
+          "ambient_color": "#a6c0cf",
+          "ambient_intensity": 0.88,
+          "hemisphere": [
+            "#a9cfe8",
+            "#5c6c46"
+          ],
+          "lamps": "#ffe6a8",
+          "lamp_intensity": 2.0
+        }
       }
     },
     {
-      "id": "bridge-argenteuil", "index": 8, "tier": "high",
-      "title_zh": "阿让特伊的桥", "title_en": "THE BRIDGE AT ARGENTEUIL",
-      "artist": "克劳德·莫奈", "year": "1874", "category": "landscape",
+      "id": "bridge-argenteuil",
+      "index": 8,
+      "tier": "high",
+      "title_zh": "阿让特伊的桥",
+      "title_en": "THE BRIDGE AT ARGENTEUIL",
+      "artist": "克劳德·莫奈",
+      "year": "1874",
+      "category": "landscape",
       "description": "石拱桥横跨蓝色河水，帆船停在岸边。",
-      "hud": { "eyebrow": "08 / 2026.11 — THE BRIDGE AT ARGENTEUIL", "sub": "走进河岸 · 沉浸式场景预览", "from": "视觉包 08 / 12 · 棋盘轮廓取自 board.zbrd · 几何冻结契约不变", "footer": "程序化夏日晴空 · 棋盘轮廓画进河岸 · 场景物件与水光同调" },
+      "hud": {
+        "eyebrow": "08 / 2026.11 — THE BRIDGE AT ARGENTEUIL",
+        "sub": "走进河岸 · 沉浸式场景预览",
+        "from": "视觉包 08 / 12 · 棋盘轮廓取自 board.zbrd · 几何冻结契约不变",
+        "footer": "程序化夏日晴空 · 棋盘轮廓画进河岸 · 场景物件与水光同调"
+      },
       "concept": {
         "prompt": "游戏场景概念设定：夏日蓝色河面与石拱桥，白帆小船停在岸边，一整片连续河岸地面上用浅白细线划出一块倒角矩形作为棋盘区域，与河岸共面、没有凸起台座，水面碎光与岸边树影交错，印象派短笔触，无文字无人物，游戏美术概念设定图，高清",
-        "image": "assets/worlds/bridge-argenteuil.png", "sha256": "b8f258bc5cfb3ae3505d41ddf198f27227f9968d467404665e20489fc72c9d76", "status": "asset_ready"
+        "image": "assets/worlds/bridge-argenteuil.png",
+        "sha256": "b8f258bc5cfb3ae3505d41ddf198f27227f9968d467404665e20489fc72c9d76",
+        "status": "asset_ready"
       },
       "overrides": {
-        "sky": { "mode": "procedural_canvas", "top": "#5b9fd6", "horizon": "#dbeaf1", "bottom": "#8fb4ce", "sun": { "x": 0.78, "y": 0.28, "radius": 0.038, "color": "#fffde8" }, "clouds": 0.45, "stars": 0.0, "fog": { "color": "#bcd6e0", "density": 0.004 }, "exposure": 0.30, "bloom": { "threshold": 1.25, "strength": 0.34, "radius": 0.74 } },
-        "ground": { "gradient": ["#4a86a8", "#356b91", "#214c70"], "strokes": ["#5b9cb8", "#7eb8cb", "#a8d2dd", "#d8e9e8", "#eef4ea", "#2f6d94", "#bcd8de"], "path_base": "#7b9fae", "path_strokes": ["#3f7592", "#6699b2", "#93bccb", "#bed8de", "#e0ece8"], "sea": "#35678a", "rings": "#a8cfd8", "stroke_color": "#b9d8de", "white_stroke": "#eef5ee" },
-        "board": { "base": ["rgba(240, 250, 250, 0.24)", "rgba(160, 202, 214, 0.17)", "rgba(70, 130, 160, 0)"], "rim": "rgba(248, 253, 250, 0.70)", "rim_halo": "rgba(230, 246, 246, 0.08)", "line": [246, 252, 250], "emblem": [226, 200, 128], "emblem_bright": "rgba(240, 220, 158, 0.48)", "anchor": "rgba(240, 250, 250, 0.30)", "logical": "rgba(224, 240, 248, 0.26)" },
-        "scenery": { "preset": "argenteuil", "foliage_tones": ["#4f8a76", "#6fa78c", "#94c0a2", "#356b63", "#c2d6ae"], "trunk": "#4a4a34", "cypress": "#2c5a50", "house": "#c9c4a2", "roof": "#8d8a70", "window": [1.1, 1.2, 1.0], "foliage_emissive": "#1f3a32", "cypress_emissive": "#18342e", "house_emissive": "#32362a", "props": { "stone": "#9aa8a4", "wick": [1.2, 1.3, 1.1], "id_prefix": "bank_post", "tag": "BANK POST / 河岸系缆柱", "hint": "河岸的系缆石柱，水面反光在它脚边晃。" }, "particles": { "star": [1.2, 1.3, 1.4], "dust": "#e2f0ec", "star_opacity": 0.0 } },
-        "lighting": { "directional_color": "#fff8e0", "directional_intensity": 1.35, "ambient_color": "#9fbecd", "ambient_intensity": 0.88, "hemisphere": ["#b4d6e8", "#3c6070"], "lamps": "#ffe9b0", "lamp_intensity": 2.0 }
+        "sky": {
+          "mode": "procedural_canvas",
+          "top": "#5b9fd6",
+          "horizon": "#dbeaf1",
+          "bottom": "#8fb4ce",
+          "sun": {
+            "x": 0.78,
+            "y": 0.28,
+            "radius": 0.038,
+            "color": "#fffde8"
+          },
+          "clouds": 0.45,
+          "stars": 0.0,
+          "fog": {
+            "color": "#bcd6e0",
+            "density": 0.004
+          },
+          "exposure": 0.3,
+          "bloom": {
+            "threshold": 1.25,
+            "strength": 0.34,
+            "radius": 0.74
+          }
+        },
+        "ground": {
+          "gradient": [
+            "#4a86a8",
+            "#356b91",
+            "#214c70"
+          ],
+          "strokes": [
+            "#5b9cb8",
+            "#7eb8cb",
+            "#a8d2dd",
+            "#d8e9e8",
+            "#eef4ea",
+            "#2f6d94",
+            "#bcd8de"
+          ],
+          "path_base": "#7b9fae",
+          "path_strokes": [
+            "#3f7592",
+            "#6699b2",
+            "#93bccb",
+            "#bed8de",
+            "#e0ece8"
+          ],
+          "sea": "#35678a",
+          "rings": "#a8cfd8",
+          "stroke_color": "#b9d8de",
+          "white_stroke": "#eef5ee"
+        },
+        "board": {
+          "base": [
+            "rgba(240, 250, 250, 0.24)",
+            "rgba(160, 202, 214, 0.17)",
+            "rgba(70, 130, 160, 0)"
+          ],
+          "rim": "rgba(248, 253, 250, 0.70)",
+          "rim_halo": "rgba(230, 246, 246, 0.08)",
+          "line": [
+            246,
+            252,
+            250
+          ],
+          "emblem": [
+            226,
+            200,
+            128
+          ],
+          "emblem_bright": "rgba(240, 220, 158, 0.48)",
+          "anchor": "rgba(240, 250, 250, 0.30)",
+          "logical": "rgba(224, 240, 248, 0.26)"
+        },
+        "scenery": {
+          "preset": "argenteuil",
+          "foliage_tones": [
+            "#4f8a76",
+            "#6fa78c",
+            "#94c0a2",
+            "#356b63",
+            "#c2d6ae"
+          ],
+          "trunk": "#4a4a34",
+          "cypress": "#2c5a50",
+          "house": "#c9c4a2",
+          "roof": "#8d8a70",
+          "window": [
+            1.1,
+            1.2,
+            1.0
+          ],
+          "foliage_emissive": "#1f3a32",
+          "cypress_emissive": "#18342e",
+          "house_emissive": "#32362a",
+          "props": {
+            "stone": "#9aa8a4",
+            "wick": [
+              1.2,
+              1.3,
+              1.1
+            ],
+            "id_prefix": "bank_post",
+            "tag": "BANK POST / 河岸系缆柱",
+            "hint": "河岸的系缆石柱，水面反光在它脚边晃。"
+          },
+          "particles": {
+            "star": [
+              1.2,
+              1.3,
+              1.4
+            ],
+            "dust": "#e2f0ec",
+            "star_opacity": 0.0
+          }
+        },
+        "lighting": {
+          "directional_color": "#fff8e0",
+          "directional_intensity": 1.35,
+          "ambient_color": "#9fbecd",
+          "ambient_intensity": 0.88,
+          "hemisphere": [
+            "#b4d6e8",
+            "#3c6070"
+          ],
+          "lamps": "#ffe9b0",
+          "lamp_intensity": 2.0
+        }
       }
     },
     {
-      "id": "villeneuve-bridge", "index": 9, "tier": "high",
-      "title_zh": "维伦纽夫的桥", "title_en": "THE BRIDGE AT VILLENEUVE-LA-GARENNE",
-      "artist": "阿尔弗雷德·西斯莱", "year": "1872", "category": "landscape",
+      "id": "villeneuve-bridge",
+      "index": 9,
+      "tier": "high",
+      "title_zh": "维伦纽夫的桥",
+      "title_en": "THE BRIDGE AT VILLENEUVE-LA-GARENNE",
+      "artist": "阿尔弗雷德·西斯莱",
+      "year": "1872",
+      "category": "landscape",
       "description": "从河边望向悬索桥、石桥头和彼岸房屋。",
-      "hud": { "eyebrow": "09 / 2026.11 — VILLENEUVE BRIDGE", "sub": "走进河湾 · 沉浸式场景预览", "from": "视觉包 09 / 12 · 棋盘轮廓取自 board.zbrd · 几何冻结契约不变", "footer": "程序化柔和天光 · 棋盘轮廓画进沙岸 · 场景物件与石桥同调" },
+      "hud": {
+        "eyebrow": "09 / 2026.11 — VILLENEUVE BRIDGE",
+        "sub": "走进河湾 · 沉浸式场景预览",
+        "from": "视觉包 09 / 12 · 棋盘轮廓取自 board.zbrd · 几何冻结契约不变",
+        "footer": "程序化柔和天光 · 棋盘轮廓画进沙岸 · 场景物件与石桥同调"
+      },
       "concept": {
         "prompt": "游戏场景概念设定：柔和灰蓝天空下的河湾与浅色沙岸，石桥头与彼岸房屋安静排列，一整片连续沙地上用浅灰白线划出一块倒角矩形作为棋盘区域，与沙岸共面、没有凸起台座，细碎水光与稀疏树影，西斯莱式克制笔触，无文字无人物，游戏美术概念设定图，高清",
-        "image": "assets/worlds/villeneuve-bridge.png", "sha256": "a45d1e8820f34fe1003f11a37d0b7b78b041801054d1c795dd5dd1f29804a9b9", "status": "asset_ready"
+        "image": "assets/worlds/villeneuve-bridge.png",
+        "sha256": "a45d1e8820f34fe1003f11a37d0b7b78b041801054d1c795dd5dd1f29804a9b9",
+        "status": "asset_ready"
       },
       "overrides": {
-        "sky": { "mode": "procedural_canvas", "top": "#9cc2dc", "horizon": "#e9e5d2", "bottom": "#a9bdc4", "sun": null, "clouds": 0.60, "stars": 0.0, "fog": { "color": "#cbd4cf", "density": 0.005 }, "exposure": 0.26, "bloom": { "threshold": 1.35, "strength": 0.28, "radius": 0.70 } },
-        "ground": { "gradient": ["#c9be9c", "#a9ac96", "#7f938d"], "strokes": ["#d9cfae", "#eae1c4", "#b7b79c", "#8fa79c", "#c0c8b6", "#f0e9d2", "#7d8f88"], "path_base": "#b8b098", "path_strokes": ["#918c74", "#b3ab90", "#d2c9ac", "#9ba18f", "#eae2c8"], "sea": "#8fa9ad", "rings": "#d5cba8", "stroke_color": "#9aa498", "white_stroke": "#f2eddc" },
-        "board": { "base": ["rgba(250, 246, 230, 0.24)", "rgba(198, 198, 178, 0.17)", "rgba(120, 140, 132, 0)"], "rim": "rgba(252, 248, 234, 0.66)", "rim_halo": "rgba(244, 238, 220, 0.08)", "line": [250, 246, 232], "emblem": [176, 156, 120], "emblem_bright": "rgba(198, 180, 144, 0.46)", "anchor": "rgba(250, 246, 230, 0.28)", "logical": "rgba(226, 232, 232, 0.24)" },
-        "scenery": { "preset": "villeneuve", "foliage_tones": ["#7f9c74", "#9aac82", "#b6bd96", "#617d68", "#d0cba8"], "trunk": "#5c5540", "cypress": "#4a6352", "house": "#d2c8ab", "roof": "#9a8f78", "window": [1.0, 1.1, 1.0], "foliage_emissive": "#2c382c", "cypress_emissive": "#26362c", "house_emissive": "#3a362a", "props": { "stone": "#b0ac98", "wick": [1.1, 1.2, 1.0], "id_prefix": "bridge_post", "tag": "BRIDGE POST / 桥头石墩", "hint": "桥头的旧石墩，被河风吹得发白。" }, "particles": { "star": [1.2, 1.2, 1.2], "dust": "#e8e2cc", "star_opacity": 0.0 } },
-        "lighting": { "directional_color": "#f6efd8", "directional_intensity": 1.10, "ambient_color": "#b4c0bd", "ambient_intensity": 0.92, "hemisphere": ["#cfdde0", "#7a806c"], "lamps": "#f4e4b8", "lamp_intensity": 1.8 }
+        "sky": {
+          "mode": "procedural_canvas",
+          "top": "#9cc2dc",
+          "horizon": "#e9e5d2",
+          "bottom": "#a9bdc4",
+          "sun": null,
+          "clouds": 0.6,
+          "stars": 0.0,
+          "fog": {
+            "color": "#cbd4cf",
+            "density": 0.005
+          },
+          "exposure": 0.26,
+          "bloom": {
+            "threshold": 1.35,
+            "strength": 0.28,
+            "radius": 0.7
+          }
+        },
+        "ground": {
+          "gradient": [
+            "#c9be9c",
+            "#a9ac96",
+            "#7f938d"
+          ],
+          "strokes": [
+            "#d9cfae",
+            "#eae1c4",
+            "#b7b79c",
+            "#8fa79c",
+            "#c0c8b6",
+            "#f0e9d2",
+            "#7d8f88"
+          ],
+          "path_base": "#b8b098",
+          "path_strokes": [
+            "#918c74",
+            "#b3ab90",
+            "#d2c9ac",
+            "#9ba18f",
+            "#eae2c8"
+          ],
+          "sea": "#8fa9ad",
+          "rings": "#d5cba8",
+          "stroke_color": "#9aa498",
+          "white_stroke": "#f2eddc"
+        },
+        "board": {
+          "base": [
+            "rgba(250, 246, 230, 0.24)",
+            "rgba(198, 198, 178, 0.17)",
+            "rgba(120, 140, 132, 0)"
+          ],
+          "rim": "rgba(252, 248, 234, 0.66)",
+          "rim_halo": "rgba(244, 238, 220, 0.08)",
+          "line": [
+            250,
+            246,
+            232
+          ],
+          "emblem": [
+            176,
+            156,
+            120
+          ],
+          "emblem_bright": "rgba(198, 180, 144, 0.46)",
+          "anchor": "rgba(250, 246, 230, 0.28)",
+          "logical": "rgba(226, 232, 232, 0.24)"
+        },
+        "scenery": {
+          "preset": "villeneuve",
+          "foliage_tones": [
+            "#7f9c74",
+            "#9aac82",
+            "#b6bd96",
+            "#617d68",
+            "#d0cba8"
+          ],
+          "trunk": "#5c5540",
+          "cypress": "#4a6352",
+          "house": "#d2c8ab",
+          "roof": "#9a8f78",
+          "window": [
+            1.0,
+            1.1,
+            1.0
+          ],
+          "foliage_emissive": "#2c382c",
+          "cypress_emissive": "#26362c",
+          "house_emissive": "#3a362a",
+          "props": {
+            "stone": "#b0ac98",
+            "wick": [
+              1.1,
+              1.2,
+              1.0
+            ],
+            "id_prefix": "bridge_post",
+            "tag": "BRIDGE POST / 桥头石墩",
+            "hint": "桥头的旧石墩，被河风吹得发白。"
+          },
+          "particles": {
+            "star": [
+              1.2,
+              1.2,
+              1.2
+            ],
+            "dust": "#e8e2cc",
+            "star_opacity": 0.0
+          }
+        },
+        "lighting": {
+          "directional_color": "#f6efd8",
+          "directional_intensity": 1.1,
+          "ambient_color": "#b4c0bd",
+          "ambient_intensity": 0.92,
+          "hemisphere": [
+            "#cfdde0",
+            "#7a806c"
+          ],
+          "lamps": "#f4e4b8",
+          "lamp_intensity": 1.8
+        }
       }
     },
     {
-      "id": "port-marly-flood", "index": 10, "tier": "high",
-      "title_zh": "马尔利港的洪水", "title_en": "FLOOD AT PORT-MARLY",
-      "artist": "阿尔弗雷德·西斯莱", "year": "1872", "category": "landscape",
+      "id": "port-marly-flood",
+      "index": 10,
+      "tier": "high",
+      "title_zh": "马尔利港的洪水",
+      "title_en": "FLOOD AT PORT-MARLY",
+      "artist": "阿尔弗雷德·西斯莱",
+      "year": "1872",
+      "category": "landscape",
       "description": "水漫过街道，小船经过杏色的临水建筑。",
-      "hud": { "eyebrow": "10 / 2026.11 — FLOOD AT PORT-MARLY", "sub": "走进水街 · 沉浸式场景预览", "from": "视觉包 10 / 12 · 棋盘轮廓取自 board.zbrd · 几何冻结契约不变", "footer": "程序化阴晴天空 · 棋盘轮廓画进浅水街面 · 场景物件与杏色屋墙同调" },
+      "hud": {
+        "eyebrow": "10 / 2026.11 — FLOOD AT PORT-MARLY",
+        "sub": "走进水街 · 沉浸式场景预览",
+        "from": "视觉包 10 / 12 · 棋盘轮廓取自 board.zbrd · 几何冻结契约不变",
+        "footer": "程序化阴晴天空 · 棋盘轮廓画进浅水街面 · 场景物件与杏色屋墙同调"
+      },
       "concept": {
         "prompt": "游戏场景概念设定：洪水漫过临水街道，杏色屋墙与小船倒映在浅灰蓝水面，一整片连续水街地面上用浅白线划出一块倒角矩形作为棋盘区域，与街面共面、没有凸起台座，细密倒影与阴晴云影，西斯莱式笔触，无文字无人物，游戏美术概念设定图，高清",
-        "image": "assets/worlds/port-marly-flood.png", "sha256": "139818ac0900428512b23d67c1470607496676b8aeb88475b436bccd5b9dbf39", "status": "asset_ready"
+        "image": "assets/worlds/port-marly-flood.png",
+        "sha256": "139818ac0900428512b23d67c1470607496676b8aeb88475b436bccd5b9dbf39",
+        "status": "asset_ready"
       },
       "overrides": {
-        "sky": { "mode": "procedural_canvas", "top": "#8fa9bd", "horizon": "#ded8c8", "bottom": "#9db0b5", "sun": null, "clouds": 0.70, "stars": 0.0, "fog": { "color": "#bfc9c6", "density": 0.006 }, "exposure": 0.28, "bloom": { "threshold": 1.30, "strength": 0.30, "radius": 0.74 } },
-        "ground": { "gradient": ["#7f9aa6", "#667f8f", "#455f70"], "strokes": ["#8faab4", "#adc0c4", "#cdd2c8", "#e6d2b8", "#d8b394", "#6d8c99", "#e0dcd0"], "path_base": "#8b9fa4", "path_strokes": ["#5d7682", "#809aa2", "#a8bcbc", "#c9cfc4", "#e2ddd0"], "sea": "#5b7889", "rings": "#d3c4a8", "stroke_color": "#c2bba4", "white_stroke": "#ece8dc" },
-        "board": { "base": ["rgba(244, 240, 226, 0.22)", "rgba(186, 198, 196, 0.17)", "rgba(90, 120, 130, 0)"], "rim": "rgba(248, 244, 230, 0.64)", "rim_halo": "rgba(238, 232, 214, 0.08)", "line": [246, 244, 232], "emblem": [214, 176, 138], "emblem_bright": "rgba(230, 196, 158, 0.46)", "anchor": "rgba(244, 240, 226, 0.28)", "logical": "rgba(226, 236, 236, 0.24)" },
-        "scenery": { "preset": "marly", "foliage_tones": ["#6f8a80", "#8ca096", "#adb8a6", "#526e6a", "#d0c8ad"], "trunk": "#4f4c40", "cypress": "#3d5b57", "house": "#d8bfa2", "roof": "#9b8b78", "window": [1.1, 1.0, 0.9], "foliage_emissive": "#283630", "cypress_emissive": "#223430", "house_emissive": "#3a3226", "props": { "stone": "#a6aaa2", "wick": [1.2, 1.1, 0.9], "id_prefix": "flood_post", "tag": "FLOOD POST / 水位标柱", "hint": "水街边的水位标柱，刻度被浅水淹了一半。" }, "particles": { "star": [1.2, 1.2, 1.3], "dust": "#e2e2d4", "star_opacity": 0.0 } },
-        "lighting": { "directional_color": "#eee6d4", "directional_intensity": 0.95, "ambient_color": "#aebbbd", "ambient_intensity": 0.92, "hemisphere": ["#cdd8db", "#5d6d70"], "lamps": "#f0dcb0", "lamp_intensity": 2.0 }
+        "sky": {
+          "mode": "procedural_canvas",
+          "top": "#8fa9bd",
+          "horizon": "#ded8c8",
+          "bottom": "#9db0b5",
+          "sun": null,
+          "clouds": 0.7,
+          "stars": 0.0,
+          "fog": {
+            "color": "#bfc9c6",
+            "density": 0.006
+          },
+          "exposure": 0.28,
+          "bloom": {
+            "threshold": 1.3,
+            "strength": 0.3,
+            "radius": 0.74
+          }
+        },
+        "ground": {
+          "gradient": [
+            "#7f9aa6",
+            "#667f8f",
+            "#455f70"
+          ],
+          "strokes": [
+            "#8faab4",
+            "#adc0c4",
+            "#cdd2c8",
+            "#e6d2b8",
+            "#d8b394",
+            "#6d8c99",
+            "#e0dcd0"
+          ],
+          "path_base": "#8b9fa4",
+          "path_strokes": [
+            "#5d7682",
+            "#809aa2",
+            "#a8bcbc",
+            "#c9cfc4",
+            "#e2ddd0"
+          ],
+          "sea": "#5b7889",
+          "rings": "#d3c4a8",
+          "stroke_color": "#c2bba4",
+          "white_stroke": "#ece8dc"
+        },
+        "board": {
+          "base": [
+            "rgba(244, 240, 226, 0.22)",
+            "rgba(186, 198, 196, 0.17)",
+            "rgba(90, 120, 130, 0)"
+          ],
+          "rim": "rgba(248, 244, 230, 0.64)",
+          "rim_halo": "rgba(238, 232, 214, 0.08)",
+          "line": [
+            246,
+            244,
+            232
+          ],
+          "emblem": [
+            214,
+            176,
+            138
+          ],
+          "emblem_bright": "rgba(230, 196, 158, 0.46)",
+          "anchor": "rgba(244, 240, 226, 0.28)",
+          "logical": "rgba(226, 236, 236, 0.24)"
+        },
+        "scenery": {
+          "preset": "marly",
+          "foliage_tones": [
+            "#6f8a80",
+            "#8ca096",
+            "#adb8a6",
+            "#526e6a",
+            "#d0c8ad"
+          ],
+          "trunk": "#4f4c40",
+          "cypress": "#3d5b57",
+          "house": "#d8bfa2",
+          "roof": "#9b8b78",
+          "window": [
+            1.1,
+            1.0,
+            0.9
+          ],
+          "foliage_emissive": "#283630",
+          "cypress_emissive": "#223430",
+          "house_emissive": "#3a3226",
+          "props": {
+            "stone": "#a6aaa2",
+            "wick": [
+              1.2,
+              1.1,
+              0.9
+            ],
+            "id_prefix": "flood_post",
+            "tag": "FLOOD POST / 水位标柱",
+            "hint": "水街边的水位标柱，刻度被浅水淹了一半。"
+          },
+          "particles": {
+            "star": [
+              1.2,
+              1.2,
+              1.3
+            ],
+            "dust": "#e2e2d4",
+            "star_opacity": 0.0
+          }
+        },
+        "lighting": {
+          "directional_color": "#eee6d4",
+          "directional_intensity": 0.95,
+          "ambient_color": "#aebbbd",
+          "ambient_intensity": 0.92,
+          "hemisphere": [
+            "#cdd8db",
+            "#5d6d70"
+          ],
+          "lamps": "#f0dcb0",
+          "lamp_intensity": 2.0
+        }
       }
     },
     {
-      "id": "mont-sainte-victoire", "index": 11, "tier": "high",
-      "title_zh": "圣维克多山下", "title_en": "MONT SAINTE-VICTOIRE",
-      "artist": "保罗·塞尚", "year": "1882–1885", "category": "landscape",
+      "id": "mont-sainte-victoire",
+      "index": 11,
+      "tier": "high",
+      "title_zh": "圣维克多山下",
+      "title_en": "MONT SAINTE-VICTOIRE",
+      "artist": "保罗·塞尚",
+      "year": "1882–1885",
+      "category": "landscape",
       "description": "赭色田埂、绿色林地与有着长肩的蓝灰山峰。",
-      "hud": { "eyebrow": "11 / 2026.11 — MONT SAINTE-VICTOIRE", "sub": "走进山麓 · 沉浸式场景预览", "from": "视觉包 11 / 12 · 棋盘轮廓取自 board.zbrd · 几何冻结契约不变", "footer": "程序化山麓天光 · 棋盘轮廓画进赭色田埂 · 场景物件与林地同调" },
+      "hud": {
+        "eyebrow": "11 / 2026.11 — MONT SAINTE-VICTOIRE",
+        "sub": "走进山麓 · 沉浸式场景预览",
+        "from": "视觉包 11 / 12 · 棋盘轮廓取自 board.zbrd · 几何冻结契约不变",
+        "footer": "程序化山麓天光 · 棋盘轮廓画进赭色田埂 · 场景物件与林地同调"
+      },
       "concept": {
         "prompt": "游戏场景概念设定：普罗旺斯山麓，赭色田埂、绿色林地与蓝灰色长肩山峰，一整片连续田地上用浅赭白线划出一块倒角矩形作为棋盘区域，与田地共面、没有凸起台座，色块分明、笔触沉稳，塞尚式构造感，无文字无人物，游戏美术概念设定图，高清",
-        "image": "assets/worlds/mont-sainte-victoire.png", "sha256": "b6b947a6245116a8d22930cf0d9441a10ec00ad94ae93c7920d2bbf5701bfd67", "status": "asset_ready"
+        "image": "assets/worlds/mont-sainte-victoire.png",
+        "sha256": "b6b947a6245116a8d22930cf0d9441a10ec00ad94ae93c7920d2bbf5701bfd67",
+        "status": "asset_ready"
       },
       "overrides": {
-        "sky": { "mode": "procedural_canvas", "top": "#6e9bc4", "horizon": "#e2d3a9", "bottom": "#9fb0aa", "sun": { "x": 0.62, "y": 0.34, "radius": 0.036, "color": "#fff2cc" }, "clouds": 0.30, "stars": 0.0, "fog": { "color": "#c3c8b4", "density": 0.004 }, "exposure": 0.27, "bloom": { "threshold": 1.32, "strength": 0.28, "radius": 0.70 } },
-        "ground": { "gradient": ["#c39a62", "#a4834e", "#6f7248"], "strokes": ["#d3ad72", "#e6c890", "#b28a50", "#8a9a5c", "#b6bd7a", "#7d8452", "#eddbad"], "path_base": "#b3925f", "path_strokes": ["#8a6c3e", "#b3925c", "#d2b47e", "#94864f", "#e6cf9c"], "sea": "#7f9a95", "rings": "#d2b47a", "stroke_color": "#9a8a5c", "white_stroke": "#f0e2bd" },
-        "board": { "base": ["rgba(248, 230, 194, 0.24)", "rgba(196, 180, 136, 0.17)", "rgba(120, 120, 90, 0)"], "rim": "rgba(250, 236, 204, 0.66)", "rim_halo": "rgba(240, 222, 186, 0.08)", "line": [250, 238, 210], "emblem": [158, 168, 132], "emblem_bright": "rgba(182, 190, 152, 0.46)", "anchor": "rgba(248, 230, 194, 0.28)", "logical": "rgba(230, 234, 216, 0.24)" },
-        "scenery": { "preset": "victoire", "foliage_tones": ["#6e8a52", "#8aa060", "#aab57a", "#4f6c44", "#c2b884"], "trunk": "#5a4a30", "cypress": "#3e5a42", "house": "#c2a276", "roof": "#8a7350", "window": [1.1, 1.0, 0.8], "foliage_emissive": "#2a3620", "cypress_emissive": "#223424", "house_emissive": "#3a3020", "props": { "stone": "#a99a76", "wick": [1.3, 1.1, 0.7], "id_prefix": "field_cairn", "tag": "FIELD CAIRN / 田埂石堆", "hint": "田埂上的一堆小石头，是这块地的老界标。" }, "particles": { "star": [1.2, 1.25, 1.2], "dust": "#e8dcb8", "star_opacity": 0.0 } },
-        "lighting": { "directional_color": "#fff0c8", "directional_intensity": 1.30, "ambient_color": "#a8b4ae", "ambient_intensity": 0.86, "hemisphere": ["#bcd0d8", "#736c46"], "lamps": "#f6dc9c", "lamp_intensity": 2.0 }
+        "sky": {
+          "mode": "procedural_canvas",
+          "top": "#6e9bc4",
+          "horizon": "#e2d3a9",
+          "bottom": "#9fb0aa",
+          "sun": {
+            "x": 0.62,
+            "y": 0.34,
+            "radius": 0.036,
+            "color": "#fff2cc"
+          },
+          "clouds": 0.3,
+          "stars": 0.0,
+          "fog": {
+            "color": "#c3c8b4",
+            "density": 0.004
+          },
+          "exposure": 0.27,
+          "bloom": {
+            "threshold": 1.32,
+            "strength": 0.28,
+            "radius": 0.7
+          }
+        },
+        "ground": {
+          "gradient": [
+            "#c39a62",
+            "#a4834e",
+            "#6f7248"
+          ],
+          "strokes": [
+            "#d3ad72",
+            "#e6c890",
+            "#b28a50",
+            "#8a9a5c",
+            "#b6bd7a",
+            "#7d8452",
+            "#eddbad"
+          ],
+          "path_base": "#b3925f",
+          "path_strokes": [
+            "#8a6c3e",
+            "#b3925c",
+            "#d2b47e",
+            "#94864f",
+            "#e6cf9c"
+          ],
+          "sea": "#7f9a95",
+          "rings": "#d2b47a",
+          "stroke_color": "#9a8a5c",
+          "white_stroke": "#f0e2bd"
+        },
+        "board": {
+          "base": [
+            "rgba(248, 230, 194, 0.24)",
+            "rgba(196, 180, 136, 0.17)",
+            "rgba(120, 120, 90, 0)"
+          ],
+          "rim": "rgba(250, 236, 204, 0.66)",
+          "rim_halo": "rgba(240, 222, 186, 0.08)",
+          "line": [
+            250,
+            238,
+            210
+          ],
+          "emblem": [
+            158,
+            168,
+            132
+          ],
+          "emblem_bright": "rgba(182, 190, 152, 0.46)",
+          "anchor": "rgba(248, 230, 194, 0.28)",
+          "logical": "rgba(230, 234, 216, 0.24)"
+        },
+        "scenery": {
+          "preset": "victoire",
+          "foliage_tones": [
+            "#6e8a52",
+            "#8aa060",
+            "#aab57a",
+            "#4f6c44",
+            "#c2b884"
+          ],
+          "trunk": "#5a4a30",
+          "cypress": "#3e5a42",
+          "house": "#c2a276",
+          "roof": "#8a7350",
+          "window": [
+            1.1,
+            1.0,
+            0.8
+          ],
+          "foliage_emissive": "#2a3620",
+          "cypress_emissive": "#223424",
+          "house_emissive": "#3a3020",
+          "props": {
+            "stone": "#a99a76",
+            "wick": [
+              1.3,
+              1.1,
+              0.7
+            ],
+            "id_prefix": "field_cairn",
+            "tag": "FIELD CAIRN / 田埂石堆",
+            "hint": "田埂上的一堆小石头，是这块地的老界标。"
+          },
+          "particles": {
+            "star": [
+              1.2,
+              1.25,
+              1.2
+            ],
+            "dust": "#e8dcb8",
+            "star_opacity": 0.0
+          }
+        },
+        "lighting": {
+          "directional_color": "#fff0c8",
+          "directional_intensity": 1.3,
+          "ambient_color": "#a8b4ae",
+          "ambient_intensity": 0.86,
+          "hemisphere": [
+            "#bcd0d8",
+            "#736c46"
+          ],
+          "lamps": "#f6dc9c",
+          "lamp_intensity": 2.0
+        }
       }
     },
     {
-      "id": "gauguin-path", "index": 12, "tier": "high",
-      "title_zh": "塔希提的街道", "title_en": "TAHITIAN PATH",
-      "artist": "保罗·高更", "year": "1891", "category": "landscape",
+      "id": "gauguin-path",
+      "index": 12,
+      "tier": "high",
+      "title_zh": "塔希提的街道",
+      "title_en": "TAHITIAN PATH",
+      "artist": "保罗·高更",
+      "year": "1891",
+      "category": "landscape",
       "description": "穿过热带树丛、茅屋与红色小路。",
-      "hud": { "eyebrow": "12 / 2026.11 — TAHITIAN PATH", "sub": "走进热带小路 · 沉浸式场景预览", "from": "视觉包 12 / 12 · 棋盘轮廓取自 board.zbrd · 几何冻结契约不变", "footer": "程序化暮色天空 · 棋盘轮廓画进红土小路 · 场景物件与茅屋同调" },
+      "hud": {
+        "eyebrow": "12 / 2026.11 — TAHITIAN PATH",
+        "sub": "走进热带小路 · 沉浸式场景预览",
+        "from": "视觉包 12 / 12 · 棋盘轮廓取自 board.zbrd · 几何冻结契约不变",
+        "footer": "程序化暮色天空 · 棋盘轮廓画进红土小路 · 场景物件与茅屋同调"
+      },
       "concept": {
         "prompt": "游戏场景概念设定：热带岛屿的红土小路穿过浓绿树丛与茅屋，暮色把云染成橙粉，一整片连续红土上用浅米白线划出一块倒角矩形作为棋盘区域，与地面共面、没有凸起台座，阔叶植物与平涂色块，高更式装饰性色彩，无文字无人物，游戏美术概念设定图，高清",
-        "image": "assets/worlds/gauguin-path.png", "sha256": "f38386a117a718ed37a3f6c61a1d7df395c183f21238d5025eb79799394bbd9b", "status": "asset_ready"
+        "image": "assets/worlds/gauguin-path.png",
+        "sha256": "f38386a117a718ed37a3f6c61a1d7df395c183f21238d5025eb79799394bbd9b",
+        "status": "asset_ready"
       },
       "overrides": {
-        "sky": { "mode": "procedural_canvas", "top": "#3f7f8f", "horizon": "#e8a86a", "bottom": "#7b7f63", "sun": { "x": 0.26, "y": 0.56, "radius": 0.050, "color": "#ffd89a" }, "clouds": 0.45, "stars": 0.10, "fog": { "color": "#b49a80", "density": 0.006 }, "exposure": 0.30, "bloom": { "threshold": 1.15, "strength": 0.45, "radius": 0.78 } },
-        "ground": { "gradient": ["#a4503c", "#7c4336", "#3f5a3c"], "strokes": ["#c2664a", "#d98a58", "#e8b06e", "#4f7a4a", "#7fa05a", "#b6bd6c", "#f0cf96"], "path_base": "#a75a40", "path_strokes": ["#7a3c30", "#b36346", "#d18a5c", "#8f4c38", "#e8b47c"], "sea": "#3f6b68", "rings": "#dda05c", "stroke_color": "#d2915a", "white_stroke": "#f4dcae" },
-        "board": { "base": ["rgba(255, 226, 180, 0.24)", "rgba(214, 132, 88, 0.17)", "rgba(90, 90, 60, 0)"], "rim": "rgba(255, 234, 194, 0.68)", "rim_halo": "rgba(250, 216, 168, 0.08)", "line": [255, 238, 204], "emblem": [168, 196, 108], "emblem_bright": "rgba(196, 216, 138, 0.48)", "anchor": "rgba(255, 226, 180, 0.30)", "logical": "rgba(240, 226, 200, 0.24)" },
-        "scenery": { "preset": "gauguin", "foliage_tones": ["#3f6b3a", "#5f8444", "#82a054", "#2c5238", "#b6a24e"], "trunk": "#4a3424", "cypress": "#264a34", "house": "#b87648", "roof": "#6f5a34", "window": [1.5, 1.0, 0.6], "foliage_emissive": "#1e3420", "cypress_emissive": "#182e22", "house_emissive": "#3a2618", "props": { "stone": "#8a6244", "wick": [2.0, 1.3, 0.6], "id_prefix": "path_torch", "tag": "PATH TORCH / 小路火把", "hint": "小路边的火把，暮色里把红土照得更暖。" }, "particles": { "star": [1.3, 1.2, 1.1], "dust": "#f0c890", "star_opacity": 0.22 } },
-        "lighting": { "directional_color": "#ffce96", "directional_intensity": 1.05, "ambient_color": "#8a9a80", "ambient_intensity": 0.86, "hemisphere": ["#8fb0a8", "#5a3a28"], "lamps": "#ffae62", "lamp_intensity": 5.0 }
+        "sky": {
+          "mode": "procedural_canvas",
+          "top": "#3f7f8f",
+          "horizon": "#e8a86a",
+          "bottom": "#7b7f63",
+          "sun": {
+            "x": 0.26,
+            "y": 0.56,
+            "radius": 0.05,
+            "color": "#ffd89a"
+          },
+          "clouds": 0.45,
+          "stars": 0.1,
+          "fog": {
+            "color": "#b49a80",
+            "density": 0.006
+          },
+          "exposure": 0.3,
+          "bloom": {
+            "threshold": 1.15,
+            "strength": 0.45,
+            "radius": 0.78
+          }
+        },
+        "ground": {
+          "gradient": [
+            "#a4503c",
+            "#7c4336",
+            "#3f5a3c"
+          ],
+          "strokes": [
+            "#c2664a",
+            "#d98a58",
+            "#e8b06e",
+            "#4f7a4a",
+            "#7fa05a",
+            "#b6bd6c",
+            "#f0cf96"
+          ],
+          "path_base": "#a75a40",
+          "path_strokes": [
+            "#7a3c30",
+            "#b36346",
+            "#d18a5c",
+            "#8f4c38",
+            "#e8b47c"
+          ],
+          "sea": "#3f6b68",
+          "rings": "#dda05c",
+          "stroke_color": "#d2915a",
+          "white_stroke": "#f4dcae"
+        },
+        "board": {
+          "base": [
+            "rgba(255, 226, 180, 0.24)",
+            "rgba(214, 132, 88, 0.17)",
+            "rgba(90, 90, 60, 0)"
+          ],
+          "rim": "rgba(255, 234, 194, 0.68)",
+          "rim_halo": "rgba(250, 216, 168, 0.08)",
+          "line": [
+            255,
+            238,
+            204
+          ],
+          "emblem": [
+            168,
+            196,
+            108
+          ],
+          "emblem_bright": "rgba(196, 216, 138, 0.48)",
+          "anchor": "rgba(255, 226, 180, 0.30)",
+          "logical": "rgba(240, 226, 200, 0.24)"
+        },
+        "scenery": {
+          "preset": "gauguin",
+          "foliage_tones": [
+            "#3f6b3a",
+            "#5f8444",
+            "#82a054",
+            "#2c5238",
+            "#b6a24e"
+          ],
+          "trunk": "#4a3424",
+          "cypress": "#264a34",
+          "house": "#b87648",
+          "roof": "#6f5a34",
+          "window": [
+            1.5,
+            1.0,
+            0.6
+          ],
+          "foliage_emissive": "#1e3420",
+          "cypress_emissive": "#182e22",
+          "house_emissive": "#3a2618",
+          "props": {
+            "stone": "#8a6244",
+            "wick": [
+              2.0,
+              1.3,
+              0.6
+            ],
+            "id_prefix": "path_torch",
+            "tag": "PATH TORCH / 小路火把",
+            "hint": "小路边的火把，暮色里把红土照得更暖。"
+          },
+          "particles": {
+            "star": [
+              1.3,
+              1.2,
+              1.1
+            ],
+            "dust": "#f0c890",
+            "star_opacity": 0.22
+          }
+        },
+        "lighting": {
+          "directional_color": "#ffce96",
+          "directional_intensity": 1.05,
+          "ambient_color": "#8a9a80",
+          "ambient_intensity": 0.86,
+          "hemisphere": [
+            "#8fb0a8",
+            "#5a3a28"
+          ],
+          "lamps": "#ffae62",
+          "lamp_intensity": 5.0
+        }
+      }
+    },
+    {
+      "id": "jcc-maple-autumn",
+      "index": 13,
+      "tier": "high",
+      "title_zh": "枫染棋坪",
+      "title_en": "JCC MAPLE AUTUMN BOARD",
+      "artist": "金铲铲之战 · 游戏内棋盘「控件展示」实机截图",
+      "year": "2026",
+      "category": "game_board",
+      "description": "红枫覆地、云纹浅台的秋日棋坪：左侧倾倒的朱红鼓车与两只团子、右侧岩壁上一列橙焰石灯、上方青石踏步、前景一排橙红枫叶，中央是金色光环里的小小英雄。",
+      "hud": {
+        "eyebrow": "13 / 2026.11 — JCC MAPLE AUTUMN",
+        "sub": "枫染棋坪 · 实机画面 1:1 原画直出",
+        "from": "视觉包 13 / 13 · 画面取自游戏内截图 · 棋盘轮廓仍只来自 board.zbrd",
+        "footer": "红枫棋坪原画直出 · 不重建 3D 台面 · 可选叠加 board.zbrd 的 7 列 × 8 行逻辑格"
+      },
+      "concept": {
+        "prompt": "非文生图：金铲铲之战游戏内棋盘「控件展示」模式实机截图（1920x864），经 JPEG→PNG 无损转码后按原比例原画直出，不重绘、不生成、不裁切、不改变任何像素；棋盘轮廓仍只来自 build/board.zbrd。",
+        "image": "assets/worlds/jcc-maple-autumn.png",
+        "sha256": "8ae40f358651234237ff7b32903b24aeca9e4cb0c2e01616b6b8e47f274e910c",
+        "status": "asset_ready",
+        "source": "game_screenshot_pixel_faithful"
+      },
+      "artwork": {
+        "mode": "pixel_faithful",
+        "image": "assets/worlds/jcc-maple-autumn.png",
+        "sha256": "8ae40f358651234237ff7b32903b24aeca9e4cb0c2e01616b6b8e47f274e910c",
+        "size_px": [
+          1920,
+          864
+        ],
+        "source": "in_game_screenshot",
+        "fit": "contain",
+        "backdrop": "#a8788c",
+        "note": "实机截图原画直出：不重建 3D 模型、不重绘、不裁切；按原比例整幅铺在 3D 画布之上。3D 场景仍在后台构建，以维持 13 画境各自的地面签名与探针契约。",
+        "grid": {
+          "cols": 7,
+          "rows": 8,
+          "quad": [
+            [
+              551,
+              196
+            ],
+            [
+              1404,
+              196
+            ],
+            [
+              1511,
+              747
+            ],
+            [
+              480,
+              747
+            ]
+          ],
+          "note": "可选叠加：按 board.zbrd 的 7 列 × 8 行逻辑格在原图棋盘区做透视映射，默认关闭；原图是「控件展示」模式，本身没有格线。行列数 / logical_bounds_xz / 两个棋手锚点一律从 build/board.manifest.json 读取，这里只存原图坐标的四角。"
+        }
+      },
+      "overrides": {
+        "sky": {
+          "mode": "procedural_canvas",
+          "top": "#171233",
+          "horizon": "#5a4775",
+          "bottom": "#2b2246",
+          "sun": null,
+          "clouds": 0.22,
+          "stars": 0.88,
+          "fog": {
+            "color": "#3b2c58",
+            "density": 0.007
+          },
+          "exposure": 0.24,
+          "bloom": {
+            "threshold": 0.95,
+            "strength": 0.86,
+            "radius": 0.88
+          }
+        },
+        "ground": {
+          "gradient": [
+            "#3a2a4e",
+            "#241b3a",
+            "#14102a"
+          ],
+          "strokes": [
+            "#e8b45c",
+            "#ffd98a",
+            "#b9823c",
+            "#ffe6ad",
+            "#4f9a7d",
+            "#8ed1a6",
+            "#7a5f9e"
+          ],
+          "path_base": "#4a3358",
+          "path_strokes": [
+            "#332348",
+            "#5c4170",
+            "#8a6a9e",
+            "#b492c4",
+            "#e0c6e8"
+          ],
+          "sea": "#1a1430",
+          "rings": "#e0b45c",
+          "stroke_color": "#c9a86a",
+          "white_stroke": "#fff0c8"
+        },
+        "board": {
+          "base": [
+            "rgba(255, 226, 158, 0.30)",
+            "rgba(216, 146, 62, 0.20)",
+            "rgba(96, 62, 104, 0)"
+          ],
+          "rim": "rgba(255, 220, 140, 0.74)",
+          "rim_halo": "rgba(255, 190, 90, 0.13)",
+          "line": [
+            255,
+            232,
+            176
+          ],
+          "emblem": [
+            233,
+            150,
+            60
+          ],
+          "emblem_bright": "rgba(255, 208, 122, 0.58)",
+          "anchor": "rgba(255, 224, 160, 0.36)",
+          "logical": "rgba(226, 206, 244, 0.26)"
+        },
+        "scenery": {
+          "preset": "jcc",
+          "foliage_tones": [
+            "#4f9a7d",
+            "#7ec39a",
+            "#a8d98f",
+            "#2f6f5c",
+            "#d8d27a"
+          ],
+          "trunk": "#4a2b1c",
+          "cypress": "#254f42",
+          "house": "#6b3f24",
+          "roof": "#3a2118",
+          "window": [
+            2.8,
+            2.0,
+            0.9
+          ],
+          "foliage_emissive": "#1e3a2c",
+          "cypress_emissive": "#16302a",
+          "house_emissive": "#3a2014",
+          "props": {
+            "stone": "#8a5a30",
+            "wick": [
+              2.6,
+              1.8,
+              0.8
+            ],
+            "id_prefix": "pavilion_lantern",
+            "tag": "PAVILION LANTERN / 亭前宫灯",
+            "hint": "亭前悬着的一盏镂空宫灯，把云纹照成暖金。"
+          },
+          "particles": {
+            "star": [
+              1.5,
+              1.4,
+              1.2
+            ],
+            "dust": "#e8c68e",
+            "star_opacity": 0.8
+          }
+        },
+        "lighting": {
+          "directional_color": "#ffcf86",
+          "directional_intensity": 0.72,
+          "ambient_color": "#5b4a78",
+          "ambient_intensity": 0.78,
+          "hemisphere": [
+            "#6b5a94",
+            "#241a38"
+          ],
+          "lamps": "#ffc257",
+          "lamp_intensity": 8.5
+        }
       }
     }
   ]

@@ -5196,3 +5196,156 @@ https://zentia.github.io/，仓库现有东西都不要了」。
 - 明亮画境（马尔利港 / 阿尔让特伊的浅灰天空）下横幅文字对比度不足 →
   `#ceremony::before` 用**大范围低 alpha** 径向暗衬；小范围高 alpha 会在
   天空上留下一块硬边椭圆污渍。
+
+
+---
+
+## OSGame 棋盘线 · 第 13 画境「流金棋亭」并入十二画境体系（2026-11-09）
+
+用户给金铲铲棋盘参考图 `huaban-7096905062.jpg` 要求复刻；先做出独立 2D
+Canvas 复刻页，随后明确「和其它 12 个棋盘保持一致」⇒ **孤立页已移除**，
+改为 world-pack 的第 13 个画境，走同一套 `?world=` 切换 / 门禁 / Pages 发布。
+以本节为最新状态；§「12 画境视觉包与可切换场景」保留为历史记录。
+
+### 契约与真源
+
+- `web/worlds.json`：`source.count` / `worlds.length` 12→**13**，新增
+  `jcc-golden-pavilion`（index 13 / tier high / preset `jcc`），overrides 仍是
+  `sky / ground / board / scenery / lighting` 五键。`assets/worlds/manifest.json`
+  `count` 11→**12**（11 张 AI 文生图 + 1 张程序化重绘）。
+- **几何冻结契约一个字节没动**：`board-spec.json` / `zboard.py` / ZBRD /
+  `style-pack.json` / `visual-pack.json` / Unity 场景均不改；棋盘仍是画进地形
+  的一块区域（`boardSlabMeshes === 0`）。参考图是花瓣形连续台面 + 亭台 + 飘带，
+  与「最外方格 + 两个棋手占位」不兼容，只能作为**视觉层**，不能成为几何源。
+- 概念图 `assets/worlds/jcc-golden-pavilion.png`（1024×819 / sha 锁定）是
+  参考图的**程序化 Canvas 重绘**，不是 AI 文生图、不是原图复制；用户原 JPG
+  留在 `assets/worlds/jcc-golden-pavilion-reference.jpg` 作溯源，
+  `build_pages.py` 只收 `.png/.json`，不发布它。`worlds.json` 的
+  `source.policy` / `contract.concept_images` 已如实标注这一例外。
+- `web/world-scenery.mjs` 新增 `buildJCC`：双层飞檐亭阁、悬挂宫灯、屏风牌坊、
+  云片盆景、贴地光环、可点击界标，全部 InstancedMesh / 程序化原语 +
+  该画境调色板。**12 个非 starry preset 各登记 3 处 feature = 36**，
+  入场分镜从地标自动派生，没有手写第二份坐标表。
+
+### ⚠️ 3D 飘带的贴脸坑（本轮实测三轮才修掉）
+
+**不要在沉浸式 3D 场景里用「大半径 + 大角度倾斜」的 Torus 模拟飘带。**
+首轮 `TorusGeometry(r=25..32, tube=0.55)` + `rotation.z` 大旋转 → 圆环近端贴到
+半径 32 的相机轨道上，画面被一条淡紫竖带从上到下切成两半；第二轮缩到
+r=20..23、近水平旋转，仍有一条带子斜插天空。根因与既有「相机轨道避让」教训
+同源：只要环平面接近竖直且半径落在 `CAMERA_ORBIT_R ± CAMERA_CLEARANCE`
+(=24..40)，低仰角相机就会被近端糊住。
+**最终解**：改成贴地 `RingGeometry`，水平旋转 `rotateX(-Math.PI/2)` **烘进几何体**
+（不用 object.rotation），`y≈0.09`、`opacity 0.20`。飘带意象只留在概念图里，
+3D 侧与 12 画境的地面笔触同层，零贴脸风险。
+
+### 门禁与验证（全部实跑）
+
+- `verify/test_zbrd_js.mjs` **45 checks**：所有硬编码 12→13 / 11→12 同步
+  （source.count、worlds.length、id 唯一数、index 序列、调色板指纹数、
+  high 数、preset 唯一数、概念图 sha 数、地标 `feature` 计数 33→36）。
+  `verify/test_board.py` **92 tests** 不受影响（几何未改）。
+- `build/_pw/worlds_probe.cjs`：**13/13 ok**、地面签名 13/13 不同、console errors 0。
+  `build/_pw/pages_probe.cjs`：**13 worlds + 根跳转 + 移动端全绿**。
+- **探针 FOV 假失败**：入场环绕镜头会临时接管 `camera.fov`（约 44~58），
+  竖屏在 `loading.done` 后立刻取基线会读到 44；横屏的等待条件 `fov < 80`
+  又会被这个中间值立刻满足。修法：竖屏等 `fov > 80`（tunedPreset 85.8）、
+  横屏等 `66 < fov < 80`（tunedPreset 69.96）。`build/_pw/` 被 `.gitignore`
+  吃掉，该修正只在本地生效，换机器需重打。
+- `tools/build_pages.py` 已本地重建 `pages/`（33 文件 / 22.7 MB / 12 张概念图），
+  title / concepts 断言 11→12。**线上 master + gh-pages 双分支未推送**
+  （清空旧文件 + push 是破坏性远程操作，需用户确认后再做）。
+
+## OSGame 棋盘线 · 第 13 画境改为「枫染棋坪」实机截图原画直出（2026-11-09）
+
+**修正**：上一节「流金棋亭」的复刻方向作废。用户后来提供了真正的金铲铲
+实机棋盘截图（1920×864：红枫覆地 / 云纹浅台 / 左侧朱红鼓车 / 右侧岩壁
+橙焰灯列 / 上方青石踏步 / 前景枫叶 / 中央小小英雄），指出程序化 3D 场景
+「长得一点也不一样」。程序化 Canvas 重绘的概念图与 `replica/` 已删除。
+
+- **唯一能保证「和截图一模一样」的做法 = 直接用这张图**。世界顶层新增
+  `artwork.mode = pixel_faithful`：`web/starry.html` 的 `#artwork` 层把
+  `assets/worlds/jcc-maple-autumn.png` 按原比例整幅居中（`object-fit: contain`、
+  不裁切 / 不重绘 / 不加滤镜），底层用同图放大模糊铺底消除宽高比留白。
+  `body.artwork-mode #stage canvas { opacity: 0 }` 只把 3D 画布藏起来，
+  **3D 场景照常构建**，所以 13 画境各自的地面签名、`boardSlabMeshes === 0`、
+  ceremony、入场分镜与 `gl.readPixels` 探针一个都不破。
+- `?clean=1` 连 HUD / controls / thumb / credits / ceremony 一起隐藏，得到与
+  来源截图逐像素一致的画面；默认仍保留 13 画境统一的 HUD 与画境下拉。
+- 数据契约照旧：`worlds.json` 第 13 个世界（id 由 `jcc-golden-pavilion`
+  改为 `jcc-maple-autumn`）、`?world=` 与下拉、`world-pack.mjs` 深合并、
+  `world-scenery.mjs` 的 12 个非 starry preset（36 处 `feature`）、概念图 sha
+  双写 `assets/worlds/manifest.json`、`build_pages.py` 发布 `pages/`。
+  ⚠️ `artwork` 必须放在**世界顶层**而不是 `overrides`：JS 门禁钉住
+  `overrides` 只允许 sky / ground / board / scenery / lighting 五个视觉层；
+  同时 `concept.prompt` 对每个世界都必须存在（第 13 个写来源说明，不是文生图提示词）。
+- `artwork.image` 的 sha 必须等于 `concept.sha256`，`build_pages.py` 会在
+  发布产物里再校验一次；`artwork.grid`（7 列 × 8 行，quad 是原图像素四角）是
+  **可选**叠加，默认关闭，用于把 board.zbrd 的逻辑格透视映射到原图棋盘区，
+  不产生任何新几何。
+- `buildJCC` 保留为「3D 近似」备份（关掉原画直出即可对照），它不是复刻。
+  探针 `capture()` 只截 WebGL 画布，验收原画必须另用 `page.screenshot()`
+  且加 `&clean=1`。
+
+### 关于「能不能直接生成模型」
+
+- **能，而且项目本来就有**：`style-pack.json` 的 `external_mesh_contract`
+  与 `build/external_mesh.manifest.json` 里 4 个 `asset_origin=hunyuan_3d`
+  的 glb（star_pillar / halo_ring / moon_orrery / ...），带 mesh / texture /
+  ZBRD cache 的 sha256、pivot_offset、`instances[].anchor`，由 Unity
+  （ZExternalMeshBinder）/ Blender（build_ac90.py）/ Web（external_mesh.mjs）
+  三端同源消费。接管流程
+  `python external_mesh.py --import-glb <asset_id> --source <glb>`。
+- `web/starry.js` 的 `USE_EXTERNAL_PROPS = false` 只是沉浸式页默认**不陈列**
+  那 6 个实例，数据验证页仍可验收；不是没有模型链路。
+- 但契约明确禁止用外部 glb 生成「最外方格 / 包边 / 两个棋手占位 / 天穹」，
+  棋盘轮廓仍只来自 `board.zbrd`；整张 2D 等距手绘棋盘要拆十几个单件模型，
+  AI 生成只能语义近似，无法复现笔触 / 透视 / 光照 ⇒ 达不到「一模一样」。
+- 本次也用图生 3D 生成了一个朱红鼓车单件作为能力演示，产物落在
+  `build/_pw/generated/`（不进 git、不进 pages），**没有写进冻结契约**。
+  若要正式接入，必须走 `--import-glb` 重算 sha / pivot / scale 并对拍三端。
+
+**线上 master + gh-pages 双分支仍未推送**（清空旧文件 + push 属破坏性远程操作，
+需用户确认后再做）。
+
+## OSGame 棋盘线 · 第 13 画境补上真正可交互棋盘（2026-11-09）
+
+用户追问「棋盘没有吗，只是一张图吗？」⇒ 补上从 board.zbrd 派生的棋盘层。
+
+- **项目里本来就有真棋盘，不是只有概念图**：`build/board.zbrd` 17 parts，
+  一整块 `core_slab` 连续台面 + 4 段包边 + 2 个 `anchor_*` 棋手占位；
+  `board.manifest.json` 给 `grid.columns=7 / rows=8`（56 逻辑落点）、
+  `logical_bounds_xz=[-8.062, 8.063, -7.2, 7.2]`、
+  `anchors=[seat_home(-10.2,0,9.0), seat_guest(10.2,0,-9.0)]`。
+  Unity HD 场景 / Blender / Web 三端消费同一份几何。沉浸式页刻意把棋盘
+  「画进地面」（`boardSlabMeshes===0`），不是没有棋盘。
+- ⚠️ **修正笔误**：`artwork.grid` 之前写成 `cols=8 / rows=7`（乘积同为 56，
+  门禁只比乘积没抓到）。已改为 `cols=7 / rows=8`，JS 门禁改成逐字段对齐
+  `manifest.grid.columns / rows`。
+- 棋盘交互层：`#artwork-grid` canvas（内部像素 = 原图 1920×864），
+  从 `state.manifest` 读行列 / 逻辑边界 / 锚点，`art.grid.quad` 只负责把
+  世界坐标透视映射到原图像素；双线性四边形用牛顿迭代求逆，把鼠标位置还原成 (u,v)。
+  绘制最外方格 + 7×8 参考线 + 两个棋手占位（外插到左下 / 右上对角），
+  hover 高亮、点击落子（交替两色）、坐标回显（格号 + 世界坐标）。
+- **默认关闭**以保住 `?clean=1` 的逐像素一致；`?board=1` 或右侧
+  「显示棋盘 · 可落子」打开；两者同时给时纯图优先。
+  ⚠️ `applyArtwork(pack)` 必须在 `loadBoardRegion()` **之后**调用（依赖 state.manifest）。
+- probe 增加 `artwork.boardVisible` / `boardLayer{columns,rows,anchors,pieces}`；
+  `worlds_probe.cjs` 在 `?board=1` 下点两格断言 `pieces===2`。
+- 验证：JS 门禁 **49/0**（新增「棋盘真源」check）、Python **92 OK**、
+  worlds_probe **13/13**（board layer 7/8/2/2）、pages_probe all ok、
+  纯净页逐像素 **1,658,880 / 0 差异**。
+
+### 图生 3D 模型「正式接入冻结契约」的影响面（待用户定）
+
+- 已在 `build/_pw/generated/` 生成 `drum_cart.glb`（27.6 MB，PBR）+ OBJ +
+  预览图 + `generated_model_viewer.html`；未进 git / 未进 pages。
+- 走 `external_mesh.py --import-glb` 正式接入需要：在 `style-pack.json`
+  新增第 5 个 `external_mesh_contract.items` + 一个 `decorations` style item，
+  重跑 `zboard.py --variants` 派生 ZBRD / 4 个 Unity 场景 / Blender，
+  刷新 `board.manifest.json`（parts 17→18、variable 6→7、assets 4→5、
+  instances 6→7）与 `external_mesh.manifest.json`，同步改 Python / JS 门禁。
+- ⚠️ **style-pack 是全局真源**：新增资产会出现在**全部 13 个画境**的外围；
+  而第 13 画境走原画直出、3D 画布 opacity 0，**反而看不到这个模型**。
+  所以「正式接入」对本次需求没有视觉收益，却会动冻结几何契约。
+  替代：Web 端局部加载（只在第 13 画境关掉原画时显示），不动三端契约。

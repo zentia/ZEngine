@@ -19,6 +19,16 @@
 <body>
 <div id="stage"></div>
 
+<!-- 原画直出层：只在 overrides.artwork.mode=pixel_faithful 的画境启用。
+     整幅按原比例居中显示，不裁切、不重绘、不加滤镜，保证与来源截图逐像素一致；
+     底层模糊铺底只是消除宽高比留白，不参与主体画面。 -->
+<div id="artwork" hidden>
+  <div id="artwork-frame">
+    <img id="artwork-img" alt="">
+    <canvas id="artwork-grid" hidden></canvas>
+  </div>
+</div>
+
 <div id="loading">
   <div class="loading-title">正在铺开这片画境</div>
   <div class="loading-sub" id="loading-sub">天空盒 · 星夜岛 · 棋盘 · 灯光</div>
@@ -27,7 +37,7 @@
 
 <header id="hud">
   <div class="eyebrow" id="hud-eyebrow">01 / 2026.11 <span>—</span> A STARRY NIGHT</div>
-  <div class="series">IMMERSIVE CHESSBOARD PREVIEW · 12 WORLDS</div>
+  <div class="series">IMMERSIVE CHESSBOARD PREVIEW · 13 WORLDS</div>
   <h1 id="hud-title">星海棋亭</h1>
   <p class="sub" id="hud-sub">走进星夜 · 沉浸式场景预览</p>
   <p class="from" id="hud-from">棋盘轮廓 / 天空盒 与 Unity HD 场景同源 · 单体资产在数据验证页验收</p>
@@ -40,12 +50,18 @@
 </a>
 
 <aside id="controls">
-  <div class="ctl-title">画境 / 12 WORLDS</div>
+  <div class="ctl-title">画境 / 13 WORLDS</div>
   <select id="world-select" aria-label="选择画境"></select>
   <div class="ctl-title mt">视角</div>
   <div class="ctl-row">
     <button id="view-immersive" class="active">沉浸</button>
     <button id="view-overview">俯瞰</button>
+  </div>
+  <div id="artwork-controls" hidden>
+    <div class="ctl-title mt">原画 / ARTWORK</div>
+    <label class="ctl-check"><input type="checkbox" id="toggle-artwork" checked> 原画直出（关掉看 3D）</label>
+    <label class="ctl-check"><input type="checkbox" id="toggle-board"> 显示棋盘 · 可落子</label>
+    <div id="board-readout" hidden></div>
   </div>
   <div class="ctl-title mt">氛围</div>
   <label class="ctl-check"><input type="checkbox" id="toggle-bloom" checked> 星光辉映</label>

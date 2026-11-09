@@ -11,7 +11,9 @@
 - .nojekyll 阻止 Jekyll 处理静态文件；根 index.html 把 / 转到指定画境。
 - 只带 starry 页真正 fetch 的文件，不发布验证页 / Unity / Blender / 探针产物。
 """
+import hashlib
 import io
+import json
 import re
 import shutil
 from pathlib import Path
@@ -91,7 +93,7 @@ write("index.html", """<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ZEngine · 十二画境</title>
+<title>ZEngine · 十三画境</title>
 <script>
   // 默认落在「马尔利港的洪水」；/?world=<id> 与 /?event=<id> 可透传。
   const params = new URLSearchParams(location.search);
@@ -124,10 +126,25 @@ for rel in required:
     assert (OUT / rel).is_file(), "missing " + rel
 assert not list(OUT.rglob("*.mjs")), "Pages 站点不应含 .mjs"
 concepts = list((OUT / "assets/worlds").glob("*.png"))
-assert len(concepts) == 11, len(concepts)
+assert len(concepts) == 12, len(concepts)
+# 原画直出画境：发布产物里的 PNG 必须与 worlds.json 锁定的 sha 逐字节一致，
+# 否则线上会被换成另一张图，「和来源截图一模一样」就不成立。
+artworks = 0
+for world in json.loads(text("web/worlds.json"))["worlds"]:
+    art = world.get("artwork")
+    if not art:
+        continue
+    artworks += 1
+    shipped = OUT / art["image"]
+    assert shipped.is_file(), "missing artwork " + art["image"]
+    assert hashlib.sha256(shipped.read_bytes()).hexdigest() == art["sha256"], \
+        "artwork sha drift " + art["image"]
+    assert art["image"] == world["concept"]["image"], "artwork != concept image"
+assert artworks == 1, artworks
 
 total = sum(size for _, size in written)
 print("pages files:", len(written), "bytes:", total,
       "(%.1f MB)" % (total / 1048576))
 print("entry: / -> web/starry.html?world=port-marly-flood")
-print("all local modules are .js; .nojekyll present; 11 concept PNGs")
+print("all local modules are .js; .nojekyll present; 12 concept PNGs; "
+      "artwork sha pinned")

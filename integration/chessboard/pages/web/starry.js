@@ -1186,7 +1186,7 @@ const CEREMONY_FX = {
 // 方位决定，帧间 smoothstep 不过冲；末帧落回 tunedPreset(viewMode)。
 // 帧字段：az / el 用度，写进 cam.azimuth 时要 * DEG（轨道相机用弧度）。
 // 登记辅助：starry 内建画境（柏树 / 村庄 / 石灯 / 夜空）走这里，
-// 其余 11 个 preset 由 world-scenery.mjs 的 feature() 登记。
+// 其余 12 个 preset 由 world-scenery.mjs 的 feature() 登记。
 function registerFeature(id, label, kind, focus, extra = {}) {
   state.features.push({ id, label, kind, focus, weight: 1, ...extra });
 }
@@ -1748,6 +1748,18 @@ window.__zengineStarry = {
       sceneryPreset: state.skin?.scenery.preset ?? null,
       skyMode: state.pack?.sky.mode ?? null,
       conceptStatus: state.pack?.concept.status ?? null,
+      artwork: state.pack?.artwork ? {
+        mode: state.pack.artwork.mode,
+        image: state.pack.artwork.image,
+        visible: !$("artwork").hidden,
+        boardVisible: !$("artwork-grid").hidden,
+      } : null,
+      boardLayer: state.artBoard ? {
+        columns: state.artBoard.columns,
+        rows: state.artBoard.rows,
+        anchors: state.artBoard.anchors,
+        pieces: state.artBoard.pieces.size,
+      } : null,
       sceneProps,
       canvas: [width, height],
       topSky: pick(0.5, 0.9), horizon: pick(0.5, 0.58),
@@ -1796,6 +1808,201 @@ window.__zengineStarry = {
   },
 };
 
+// 原画直出（第 13 画境）：把实机截图按原比例整幅铺在 3D 画布之上。
+// 这是唯一能保证与来源图逐像素一致的做法 —— 程序化 3D 几何或 AI 生成的单件
+// 模型都只能做语义近似。3D 场景照常构建、只是 opacity 归零，因此 13 画境的
+// 地面签名 / boardSlabMeshes / ceremony / 入场分镜契约一个都不破。
+function applyArtwork(pack) {
+  const art = pack.artwork;
+  if (!art || art.mode !== "pixel_faithful") return;
+  const root = $("artwork");
+  const img = $("artwork-img");
+  const src = `../${art.image}`;
+  img.src = src;
+  img.alt = `${pack.title_zh} · 实机棋盘截图`;
+  root.style.setProperty("--artwork-blur", `url("${src}")`);
+  root.style.backgroundColor = art.backdrop ?? "#2a1a24";
+  root.hidden = false;
+  document.body.classList.add("artwork-mode");
+  // ?clean=1 连 HUD 一起隐藏，得到与来源截图逐像素一致的画面。
+  if (new URLSearchParams(location.search).has("clean")) {
+    document.body.classList.add("clean");
+  }
+  $("artwork-controls").hidden = false;
+  $("thumb").title = `${pack.title_zh} · 实机截图（原画直出）`;
+  $("hint").textContent = "原画直出 · 右侧可切换 3D 近似，或打开可落子的真实棋盘";
+
+  // 真正的棋盘层：行列数 / 逻辑边界 / 两个棋手锚点全部来自
+  // build/board.manifest.json（loadBoardRegion 已写进 state.manifest），
+  // art.grid.quad 只负责把世界坐标透视映射到原图像素坐标。
+  // 冻结契约只要求「最外一个方格 + 两个棋手占位」；7×8 是逻辑落点、不是可见几何，
+  // 所以这一层是**可开关的交互工具层**，默认关闭以保持原画 1:1。
+  const canvas = $("artwork-grid");
+  canvas.width = art.size_px[0];
+  canvas.height = art.size_px[1];
+  const ctx = canvas.getContext("2d");
+  const spec = state.manifest.grid;
+  const cols = spec.columns;               // 7
+  const rows = spec.rows;                   // 8
+  const bounds = spec.logical_bounds_xz;    // [-8.062, 8.063, -7.2, 7.2]
+  const anchors = state.manifest.anchors ?? [];
+  const q = art.grid.quad;
+
+  const at = (u, v) => {
+    const top = [q[0][0] + (q[1][0] - q[0][0]) * u,
+      q[0][1] + (q[1][1] - q[0][1]) * u];
+    const bottom = [q[3][0] + (q[2][0] - q[3][0]) * u,
+      q[3][1] + (q[2][1] - q[3][1]) * u];
+    return [top[0] + (bottom[0] - top[0]) * v,
+      top[1] + (bottom[1] - top[1]) * v];
+  };
+  // 双线性四边形的逆映射（牛顿迭代）：把鼠标像素还原成 (u,v)。
+  const invert = (px, py) => {
+    let u = .5, v = .5;
+    for (let i = 0; i < 20; i += 1) {
+      const p = at(u, v), pu = at(u + 1e-3, v), pv = at(u, v + 1e-3);
+      const a = (pu[0] - p[0]) * 1e3, b = (pv[0] - p[0]) * 1e3;
+      const c = (pu[1] - p[1]) * 1e3, d = (pv[1] - p[1]) * 1e3;
+      const det = a * d - b * c;
+      if (Math.abs(det) < 1e-9) break;
+      const ex = px - p[0], ey = py - p[1];
+      u += (d * ex - b * ey) / det;
+      v += (a * ey - c * ex) / det;
+    }
+    return [u, v];
+  };
+  const worldToUV = (x, z) => [
+    (x - bounds[0]) / (bounds[1] - bounds[0]),
+    (z - bounds[2]) / (bounds[3] - bounds[2]),
+  ];
+  const cellQuad = (col, row) => [
+    at(col / cols, row / rows), at((col + 1) / cols, row / rows),
+    at((col + 1) / cols, (row + 1) / rows), at(col / cols, (row + 1) / rows),
+  ];
+  const fillQuad = (points, color) => {
+    ctx.beginPath();
+    points.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
+    ctx.closePath();
+    ctx.fillStyle = color;
+    ctx.fill();
+  };
+  const stroke = (points, alpha, width) => {
+    ctx.beginPath();
+    points.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
+    ctx.strokeStyle = `rgba(255, 242, 208, ${alpha})`;
+    ctx.lineWidth = width;
+    ctx.stroke();
+  };
+
+  const pieces = new Map();   // "col,row" -> 0/1，交替落子
+  let hover = null;
+  let side = 0;
+  state.artBoard = { columns: cols, rows, anchors: anchors.length, pieces };
+
+  const draw = () => {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    // 冻结核心：最外一个方格（一整块连续台面，不是 56 个独立格子块）。
+    fillQuad([at(0, 0), at(1, 0), at(1, 1), at(0, 1)],
+      "rgba(255, 238, 205, .045)");
+    stroke([at(0, 0), at(1, 0), at(1, 1), at(0, 1), at(0, 0)], .85, 3);
+    // 7×8 逻辑落点：只画参考线，不产生任何几何。
+    const steps = [0, .25, .5, .75, 1];
+    for (let c = 1; c < cols; c += 1) {
+      stroke(steps.map((v) => at(c / cols, v)), .34, 1.6);
+    }
+    for (let r = 1; r < rows; r += 1) {
+      stroke(steps.map((u) => at(u, r / rows)), .34, 1.6);
+    }
+    if (hover) fillQuad(cellQuad(hover[0], hover[1]), "rgba(255, 214, 128, .28)");
+    for (const [key, player] of pieces) {
+      const [col, row] = key.split(",").map(Number);
+      const quad = cellQuad(col, row);
+      const cx = quad.reduce((s, p) => s + p[0], 0) / 4;
+      const cy = quad.reduce((s, p) => s + p[1], 0) / 4;
+      ctx.beginPath();
+      ctx.arc(cx, cy, 15, 0, Math.PI * 2);
+      ctx.fillStyle = player ? "rgba(178, 132, 232, .88)" : "rgba(255, 198, 92, .92)";
+      ctx.shadowColor = player ? "#c9a6f2" : "#ffd27a";
+      ctx.shadowBlur = 18;
+      ctx.fill();
+      ctx.shadowBlur = 0;
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = "rgba(255, 248, 226, .8)";
+      ctx.stroke();
+    }
+    // 冻结核心：左下 / 右上两个棋手占位，坐标来自 anchor_* 部件。
+    ctx.font = "18px system-ui, sans-serif";
+    ctx.textAlign = "center";
+    for (let i = 0; i < anchors.length; i += 1) {
+      const [x, , z] = anchors[i].position;
+      const [u, v] = worldToUV(x, z);
+      const [px, py] = at(u, v);
+      ctx.beginPath();
+      ctx.ellipse(px, py, 30, 18, 0, 0, Math.PI * 2);
+      ctx.strokeStyle = "rgba(255, 230, 180, .9)";
+      ctx.lineWidth = 2.5;
+      ctx.stroke();
+      ctx.fillStyle = "rgba(46, 22, 32, .62)";
+      ctx.fillRect(px - 46, py - 13, 92, 26);
+      ctx.fillStyle = "#ffe9c0";
+      ctx.fillText(`棋手 0${i + 1}`, px, py + 6);
+    }
+  };
+
+  const readout = $("board-readout");
+  const cellAt = (event) => {
+    const rect = canvas.getBoundingClientRect();
+    const px = (event.clientX - rect.left) / rect.width * canvas.width;
+    const py = (event.clientY - rect.top) / rect.height * canvas.height;
+    const [u, v] = invert(px, py);
+    if (u < 0 || u > 1 || v < 0 || v > 1) return null;
+    return [Math.min(cols - 1, Math.floor(u * cols)),
+      Math.min(rows - 1, Math.floor(v * rows))];
+  };
+  canvas.addEventListener("pointermove", (event) => {
+    hover = cellAt(event);
+    if (hover) {
+      const x = bounds[0] + (bounds[1] - bounds[0]) * ((hover[0] + .5) / cols);
+      const z = bounds[2] + (bounds[3] - bounds[2]) * ((hover[1] + .5) / rows);
+      readout.textContent = `格 ${hover[0] + 1}/${cols} · ${hover[1] + 1}/${rows}`
+        + `　世界 (${x.toFixed(2)}, ${z.toFixed(2)})`;
+    } else {
+      readout.textContent = "棋盘外";
+    }
+    draw();
+  });
+  canvas.addEventListener("pointerleave", () => {
+    hover = null; readout.textContent = ""; draw();
+  });
+  canvas.addEventListener("click", (event) => {
+    const cell = cellAt(event);
+    if (!cell) return;
+    const key = cell.join(",");
+    if (pieces.has(key)) pieces.delete(key);
+    else pieces.set(key, side++ % 2);
+    draw();
+  });
+
+  const enableBoard = (on) => {
+    canvas.hidden = !on;
+    readout.hidden = !on;
+    document.body.classList.toggle("board-mode", on);
+    if (on) draw();
+  };
+  const toggleBoard = $("toggle-board");
+  toggleBoard.addEventListener("change", (event) => enableBoard(event.target.checked));
+  // ?board=1 直接以可落子棋盘打开；?clean=1 仍是纯原画（两者同时给时纯图优先）。
+  const params = new URLSearchParams(location.search);
+  const boardParam = params.has("board") && !params.has("clean");
+  toggleBoard.checked = boardParam;
+  enableBoard(boardParam);
+
+  $("toggle-artwork").addEventListener("change", (event) => {
+    document.body.classList.toggle("artwork-mode", event.target.checked);
+    root.hidden = !event.target.checked;
+  });
+}
+
 async function main() {
   if (location.protocol === "file:") {
     fail("请通过专用静态服务打开：python integration/chessboard/tools/serve.py\n\n"
@@ -1832,7 +2039,9 @@ async function main() {
     });
 
     // 先解析 ZBRD 拿到棋盘区域轮廓，再把它画进地形贴图；顺序不能反。
+    // 原画棋盘层也要等 state.manifest 就绪：行列 / 逻辑边界 / 锚点都从它读。
     state.board = await loadBoardRegion();
+    applyArtwork(pack);
     // 星夜用 sha 锁定的同源全景图；另外 11 个世界按视觉包调色板程序化画天穹。
     state.skyTexture = pack.sky.mode === "panorama_sha_locked"
       ? await loadShaTexture(

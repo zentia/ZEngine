@@ -20,6 +20,62 @@ html, body {
   touch-action: none;
 }
 
+/* 原画直出（artwork.mode=pixel_faithful）：主体 img 按原始宽高比整幅居中，
+   不裁切、不缩放重采样、不加滤镜；3D 画布仍在后台渲染（探针 readPixels 依赖它），
+   只是 opacity 归零。::before 用同一张图放大模糊铺底，只为消除宽高比留白。 */
+#artwork {
+  position: fixed; inset: 0; z-index: 3; pointer-events: none;
+  display: grid; place-items: center; overflow: hidden;
+}
+#artwork::before {
+  content: ""; position: absolute; inset: -8%;
+  background-image: var(--artwork-blur, none);
+  background-position: center; background-size: cover;
+  filter: blur(36px) saturate(1.05) brightness(.68);
+  opacity: .92;
+}
+#artwork-frame {
+  position: relative; line-height: 0;
+  max-width: 100%; max-height: 100%;
+}
+#artwork-img {
+  display: block; width: auto; height: auto;
+  max-width: 100vw; max-height: 100vh; object-fit: contain;
+}
+/* canvas 内部像素尺寸 = 原图像素尺寸，CSS 尺寸随 frame 缩放，
+   因此格线可以直接用原图坐标绘制，不需要重算缩放。 */
+#artwork-grid {
+  position: absolute; inset: 0; width: 100%; height: 100%;
+  pointer-events: none;
+}
+/* 棋盘交互：只在这一层接管指针，不吞掉 3D 画布的拖拽。 */
+body.board-mode #artwork-grid { pointer-events: auto; cursor: crosshair; }
+#board-readout {
+  margin-top: 8px; padding: 6px 8px; border-radius: 3px;
+  background: rgba(28, 14, 22, .55); color: #ffe9c0;
+  font-size: 10px; letter-spacing: .04em; font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+body.artwork-mode #stage canvas { opacity: 0; }
+body.artwork-mode::before, body.artwork-mode::after { display: none; }
+body.artwork-mode #hud, body.artwork-mode #credits {
+  text-shadow: 0 1px 3px rgba(42, 16, 24, .9), 0 0 18px rgba(42, 16, 24, .55);
+}
+body.artwork-mode #controls, body.artwork-mode #thumb {
+  background: rgba(38, 18, 26, .72);
+}
+/* ?clean=1：连 HUD 一起隐藏，画面与来源截图逐像素一致（用于出图 / 对拍）。
+   默认仍保留 13 画境统一的下拉与演出控件，不破坏画境体系的一致性。 */
+/* 加载层的淡出文字会在整页截图里留下残影，纯净模式从一开始就不显示它。 */
+body.artwork-mode.clean #loading { display: none !important; }
+body.artwork-mode.clean #hud,
+body.artwork-mode.clean #controls,
+body.artwork-mode.clean #thumb,
+body.artwork-mode.clean #credits,
+body.artwork-mode.clean #hint,
+body.artwork-mode.clean #ceremony,
+body.artwork-mode.clean #inspect { display: none; }
+
 /* 顶部与底部压暗，让 HUD 文字在明亮星空上仍可读（2.png 的层次感）。 */
 body::before, body::after {
   content: ""; position: fixed; left: 0; right: 0; pointer-events: none; z-index: 2;

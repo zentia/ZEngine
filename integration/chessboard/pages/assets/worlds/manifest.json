@@ -1,8 +1,8 @@
 {
   "schema": "zengine.chessboard.world-concept/v1",
   "generated_by": "zengine-ai/image_gen",
-  "note": "11 张画境概念设定图由文生图生成，只作视觉定调；棋盘轮廓仍只来自 build/board.zbrd。starry-night 沿用 assets/concept.jpg。",
-  "count": 11,
+  "note": "12 张画境概念设定图：11 张由文生图生成，第 13 画境「枫染棋坪」是用户提供的金铲铲实机截图的无损 PNG 转码（原画直出，非重绘）；只作视觉定调，棋盘轮廓仍只来自 build/board.zbrd。starry-night 沿用 assets/concept.jpg。",
+  "count": 12,
   "items": [
     {
       "id": "bedroom-arles",
@@ -80,6 +80,17 @@
       ],
       "prompt": "等距视角游戏棋盘场景概念设定：青绿色睡莲池与池岸连成一整片连续地面，水面上用浅白色细线划出一块倒角矩形作为棋盘区域，与池面共面、没有凸起台座，圆形浮叶、白粉睡莲、青绿拱桥与垂柳环绕，午后柔和阳光穿过叶隙，莫奈式细碎笔触，风景与棋盘一体，无文字无人物，游戏美术概念设定图，高清",
       "source": "image_gen"
+    },
+    {
+      "id": "jcc-maple-autumn",
+      "image": "assets/worlds/jcc-maple-autumn.png",
+      "sha256": "8ae40f358651234237ff7b32903b24aeca9e4cb0c2e01616b6b8e47f274e910c",
+      "size_px": [
+        1920,
+        864
+      ],
+      "prompt": "非文生图：金铲铲之战游戏内棋盘「控件展示」模式实机截图（1920x864），经 JPEG→PNG 无损转码后按原比例原画直出，不重绘、不生成、不裁切、不改变任何像素；棋盘轮廓仍只来自 build/board.zbrd。",
+      "source": "game_screenshot"
     },
     {
       "id": "mont-sainte-victoire",

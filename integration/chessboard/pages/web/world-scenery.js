@@ -1,5 +1,5 @@
-// 12 个高完成度画境里，除 starry（沿用 starry.js 已有的树丛 / 柏树 / 村庄）
-// 之外的 11 套专属场景物件。全部是 InstancedMesh / 程序化几何，不引入任何
+// 13 个高完成度画境里，除 starry（沿用 starry.js 已有的树丛 / 柏树 / 村庄）
+// 之外的 12 套专属场景物件。全部是 InstancedMesh / 程序化几何，不引入任何
 // 外部模型或贴图；颜色取自 worlds.json 的 scenery / ground 调色板。
 //
 // 与棋盘的关系不变：所有物件都落在 CLEAR_R 之外，中央那块「画进地形的棋盘
@@ -815,6 +815,157 @@ function buildGauguin(ctx) {
     [-(CLEAR_R + 2), 1, CLEAR_R + 8], { weight: 2 });
 }
 
+
+// 13 金铲铲「枫染棋坪」的 3D 近似备份：双层飞檐亭阁、悬挂宫灯、屏风牌坊、
+// 云片盆景与贴地光环，几何全是程序化原语，颜色取自该画境调色板。
+// ⚠️ 默认不显示：第 13 画境走 overrides.artwork.mode=pixel_faithful，把用户
+// 的实机截图整幅铺在画布之上，与来源图逐像素一致。这里保留 preset 是为了
+// 维持「13 个画境各有一个专属 preset」的契约，并让用户关掉原画直出时有
+// 可对照的程序化 3D 版本 —— 它不是原画的复刻，只是近似。
+function buildJCC(ctx) {
+  const { group, skin, random, CLEAR_R, ISLAND_R } = ctx;
+  const goldTones = tones(skin.ground.strokes.slice(0, 4));
+  const jadeTones = tones(skin.scenery.foliage_tones);
+  const wood = skin.scenery.trunk;
+  const roofColor = skin.scenery.roof;
+
+  strokesOnGround(ctx, 620, tones(skin.ground.strokes), 0.34, [0.8, 3.0]);
+
+  // 亭阁：3 座，台基 / 立柱 / 两层四坡顶 / 翘角 / 暖光窗格共用同一份位置表。
+  const pavilions = Array.from({ length: 3 }, () => ({
+    ...annulus(random, CLEAR_R, ISLAND_R, 9),
+    height: 4.2 + random() * 1.6,
+    width: 2.6 + random() * 0.8,
+    rot: random() * Math.PI,
+  }));
+  instanced(group, new THREE.BoxGeometry(1, 1, 1),
+    flatMaterial({ color: wood }), pavilions.length, (dummy, i) => {
+      const p = pavilions[i];
+      dummy.position.set(p.x, 0.35, p.z);
+      dummy.rotation.set(0, p.rot, 0);
+      dummy.scale.set(p.width * 2.1, 0.7, p.width * 2.1);
+    });
+  instanced(group, new THREE.CylinderGeometry(0.16, 0.20, 1, 6),
+    flatMaterial({ color: skin.scenery.house }), pavilions.length * 4,
+    (dummy, i) => {
+      const p = pavilions[Math.floor(i / 4)];
+      const k = i % 4;
+      dummy.position.set(p.x + (k % 2 ? 1 : -1) * p.width * 0.72,
+        p.height / 2, p.z + (k < 2 ? 1 : -1) * p.width * 0.72);
+      dummy.scale.set(1, p.height, 1);
+    });
+  for (let layer = 0; layer < 2; layer += 1) {
+    instanced(group, new THREE.ConeGeometry(1, 1, 4), flatMaterial(),
+      pavilions.length, (dummy, i, mesh) => {
+        const p = pavilions[i];
+        const w = p.width * (layer === 0 ? 1.7 : 1.15);
+        dummy.position.set(p.x, p.height + (layer === 0 ? 0.5 : 2.0), p.z);
+        dummy.rotation.set(0, p.rot + Math.PI / 4, 0);
+        dummy.scale.set(w, layer === 0 ? 1.5 : 1.2, w);
+        mesh.setColorAt(i, goldTones[layer]);
+      });
+  }
+  instanced(group, new THREE.ConeGeometry(0.16, 0.9, 4),
+    flatMaterial({ color: skin.ground.rings }), pavilions.length * 4,
+    (dummy, i) => {
+      const p = pavilions[Math.floor(i / 4)];
+      const a = p.rot + (i % 4) * Math.PI / 2 + Math.PI / 4;
+      dummy.position.set(p.x + Math.cos(a) * p.width * 1.15,
+        p.height + 1.0, p.z + Math.sin(a) * p.width * 1.15);
+      dummy.rotation.set(Math.sin(a) * 0.5, 0, -Math.cos(a) * 0.5);
+    });
+  instanced(group, new THREE.PlaneGeometry(1, 1),
+    new THREE.MeshBasicMaterial({
+      color: new THREE.Color().setRGB(...skin.scenery.window),
+      side: THREE.DoubleSide, toneMapped: false, transparent: true, opacity: 0.85,
+    }), pavilions.length * 2, (dummy, i) => {
+      const p = pavilions[Math.floor(i / 2)];
+      const side = i % 2 ? 1 : -1;
+      dummy.position.set(p.x + side * p.width * 0.62, p.height * 0.55,
+        p.z + p.width * 0.62);
+      dummy.rotation.set(0, p.rot + Math.PI / 4, 0);
+      dummy.scale.set(1.1, 1.6, 1);
+    });
+
+  // 悬挂宫灯：灯身与 HDR 灯芯分层，位置表共用。
+  const lanterns = Array.from({ length: 14 }, () => ({
+    ...annulus(random, CLEAR_R, ISLAND_R, 4),
+    y: 3.2 + random() * 2.4,
+  }));
+  instanced(group, new THREE.CylinderGeometry(0.26, 0.26, 1, 6),
+    flatMaterial({ color: skin.ground.rings }), lanterns.length,
+    (dummy, i) => {
+      const l = lanterns[i];
+      dummy.position.set(l.x, l.y, l.z);
+      dummy.scale.set(1, 1.5, 1);
+    });
+  glowOrbs(ctx, 26, skin.scenery.props.wick, 0.22, 2.4);
+
+  // 屏风 / 牌坊：布幔与两侧立柱共用同一份位置表。
+  const screens = Array.from({ length: 7 }, () => ({
+    ...annulus(random, CLEAR_R, ISLAND_R, 6),
+    rot: random() * Math.PI,
+    w: 2.2 + random() * 1.4,
+  }));
+  instanced(group, new THREE.PlaneGeometry(1, 1),
+    flatMaterial({ side: THREE.DoubleSide }), screens.length,
+    (dummy, i, mesh) => {
+      const s = screens[i];
+      dummy.position.set(s.x, 1.7, s.z);
+      dummy.rotation.set(0, s.rot, 0);
+      dummy.scale.set(s.w, 3.0, 1);
+      mesh.setColorAt(i, goldTones[i % goldTones.length]);
+    });
+  instanced(group, new THREE.CylinderGeometry(0.10, 0.12, 1, 6),
+    flatMaterial({ color: wood }), screens.length * 2, (dummy, i) => {
+      const s = screens[Math.floor(i / 2)];
+      const side = i % 2 ? 1 : -1;
+      dummy.position.set(s.x + Math.cos(s.rot) * side * s.w * 0.5, 1.7,
+        s.z + Math.sin(s.rot) * side * s.w * 0.5);
+      dummy.scale.set(1, 3.6, 1);
+    });
+
+  // 云片盆景：树干 / 圆冠由 grove 共用锚点，再叠两层压扁云片。
+  const bonsai = grove(ctx, 18, {
+    crown: "round", height: 3.0, radius: 1.35, trunk: wood, palette: jadeTones,
+  });
+  instanced(group, new THREE.IcosahedronGeometry(1, 1), flatMaterial(),
+    bonsai.length * 2, (dummy, i, mesh) => {
+      const t = bonsai[Math.floor(i / 2)];
+      const layer = i % 2;
+      dummy.position.set(t.x, t.height + 0.5 + layer * 0.9, t.z);
+      dummy.scale.set(1.5 - layer * 0.35, 0.35, 1.2 - layer * 0.3);
+      mesh.setColorAt(i, jadeTones[Math.floor(random() * jadeTones.length)]);
+    });
+
+  // 环绕光带：贴地的扁平开口环，水平旋转烘进几何体（不用 object.rotation）。
+  // 首轮用 Torus + 大角度倾斜，圆环近端直接贴脸把画面竖切成两半；第二轮改成
+  // 近水平 Torus 仍会斜插天空。贴地 Ring 与 12 画境的地面笔触同层，绝不进相机轨道。
+  const ribbonColors = ["#fff0bd", "#c9b7e8", "#e8d2f0"];
+  for (let k = 0; k < 3; k += 1) {
+    const inner = CLEAR_R + 1.5 + k * 2.0;
+    const ring = new THREE.RingGeometry(inner, inner + 0.42, 96, 1,
+      k * 0.6, Math.PI * 1.55);
+    ring.rotateX(-Math.PI / 2);
+    const band = new THREE.Mesh(ring, new THREE.MeshBasicMaterial({
+      color: ribbonColors[k], transparent: true, opacity: 0.20,
+      side: THREE.DoubleSide, depthWrite: false, toneMapped: false,
+    }));
+    band.position.y = 0.09 + k * 0.01;
+    group.add(band);
+  }
+
+  interactives(ctx, new THREE.CylinderGeometry(0.18, 0.24, 1.2, 6), 0.6);
+
+  feature(ctx, "jcc_pavilion", "流金亭阁", "building",
+    [pavilions[0].x, pavilions[0].height, pavilions[0].z],
+    { weight: 3, shot: { el: 10 } });
+  feature(ctx, "jcc_lantern", "宫灯长廊", "lantern",
+    [lanterns[0].x, lanterns[0].y, lanterns[0].z], { weight: 2 });
+  feature(ctx, "jcc_ribbon", "环绕缎带", "sky",
+    [0, 6, -(CLEAR_R + 10)], { weight: 2, shot: { el: -2 } });
+}
+
 const PRESETS = {
   wheat: buildWheat,
   pond: buildPond,
@@ -827,6 +978,7 @@ const PRESETS = {
   marly: buildMarly,
   victoire: buildVictoire,
   gauguin: buildGauguin,
+  jcc: buildJCC,
 };
 
 // 返回新增的顶层子对象数量，供无头探针核对「这个 preset 真的建了东西」。

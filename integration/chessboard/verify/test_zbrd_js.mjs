@@ -690,7 +690,7 @@ check("drag uses absolute deltas and scenery replaces board decorations", () => 
 });
 
 // ---------------------------------------------------------------------------
-// 12 画境视觉包：只准覆盖「颜色 / 天空 / 物件 / 灯光」，几何永远来自同一份
+// 13 画境视觉包：只准覆盖「颜色 / 天空 / 物件 / 灯光」，几何永远来自同一份
 // ZBRD 轮廓。无头探针只能证明页面能跑，这些断言锁住数据契约本身。
 // ---------------------------------------------------------------------------
 
@@ -700,15 +700,15 @@ const skySource = readFileSync(new URL("web/world-sky.mjs", root), "utf8");
 const scenerySource = readFileSync(new URL("web/world-scenery.mjs", root), "utf8");
 const worldPackSource = readFileSync(new URL("web/world-pack.mjs", root), "utf8");
 
-check("12 world packs are visual overlays, never a second geometry source", () => {
+check("13 world packs are visual overlays, never a second geometry source", () => {
   assert.equal(worldDoc.schema, WORLD_PACK_SCHEMA);
-  assert.equal(worldDoc.source.count, 12);
-  assert.equal(worldDoc.worlds.length, 12);
+  assert.equal(worldDoc.source.count, 13);
+  assert.equal(worldDoc.worlds.length, 13);
   assert.ok(worldDoc.worlds.some((world) => world.id === worldDoc.default),
     "default must name a real world");
-  assert.equal(new Set(worldDoc.worlds.map((world) => world.id)).size, 12);
+  assert.equal(new Set(worldDoc.worlds.map((world) => world.id)).size, 13);
   assert.deepEqual(worldDoc.worlds.map((world) => world.index),
-    Array.from({ length: 12 }, (_, i) => i + 1));
+    Array.from({ length: 13 }, (_, i) => i + 1));
   // 轮廓 / 锚点 / 逻辑边界只在 board.zbrd + board.manifest.json 里定。
   const visualLayers = new Set(["sky", "ground", "board", "scenery", "lighting"]);
   for (const world of worldDoc.worlds) {
@@ -730,7 +730,7 @@ check("12 world packs are visual overlays, never a second geometry source", () =
   assert.ok(worldDoc.note.includes("build/board.zbrd"));
 });
 
-check("world packs deep-merge defaults and keep 12 distinct palettes", () => {
+check("world packs deep-merge defaults and keep 13 distinct palettes", () => {
   const merged = mergeWorld(
     { strokes: ["a", "b"], sky: { top: "#000000", fog: { density: 1 } } },
     { strokes: ["c"], sky: { horizon: "#ffffff", fog: { color: "#abcdef" } } });
@@ -762,13 +762,13 @@ check("world packs deep-merge defaults and keep 12 distinct palettes", () => {
     fingerprints.add(JSON.stringify([pack.ground.gradient, pack.ground.strokes,
       pack.board.line, pack.sky.top]));
   }
-  assert.equal(fingerprints.size, 12, "each world needs its own palette");
+  assert.equal(fingerprints.size, 13, "each world needs its own palette");
   assert.equal(packs[0].sky.panorama_sha256, visualPack.skybox.panorama_sha256);
 });
 
-check("all 12 worlds are high fidelity with their own scenery preset", () => {
+check("all 13 worlds are high fidelity with their own scenery preset", () => {
   const high = worldDoc.worlds.filter((world) => world.tier === "high");
-  assert.equal(high.length, 12, "no tone worlds left");
+  assert.equal(high.length, 13, "no tone worlds left");
   const expected = {
     "starry-night": "starry", "cafe-terrace": "cafe",
     "wheatfield-cypresses": "wheat", "bedroom-arles": "bedroom",
@@ -776,6 +776,7 @@ check("all 12 worlds are high fidelity with their own scenery preset", () => {
     "garden-sainte-adresse": "garden", "bridge-argenteuil": "argenteuil",
     "villeneuve-bridge": "villeneuve", "port-marly-flood": "marly",
     "mont-sainte-victoire": "victoire", "gauguin-path": "gauguin",
+    "jcc-maple-autumn": "jcc",
   };
   for (const world of worldDoc.worlds) {
     assert.equal(resolveWorldPack(worldDoc, world.id).scenery.preset,
@@ -786,7 +787,7 @@ check("all 12 worlds are high fidelity with their own scenery preset", () => {
     if (preset === "starry") continue; // 内建于 starry.js 的树丛 / 村庄
     assert.ok(declared.includes(preset + ":"), `${preset} preset missing`);
   }
-  assert.equal(new Set(Object.values(expected)).size, 12,
+  assert.equal(new Set(Object.values(expected)).size, 13,
     "no two worlds may share a preset");
   assert.ok(scenerySource.includes("export const SCENERY_PRESETS"));
   assert.ok(scenerySource.includes("InstancedMesh") && scenerySource.includes("CLEAR_R"),
@@ -799,11 +800,11 @@ check("all 12 worlds are high fidelity with their own scenery preset", () => {
   "page must dispatch on the pack's preset");
 });
 
-check("all 12 concept arts are sha-locked AI assets", () => {
+check("all 13 concept arts are sha-locked assets", () => {
   const manifest = json("assets/worlds/manifest.json");
   assert.equal(manifest.schema, "zengine.chessboard.world-concept/v1");
-  assert.equal(manifest.count, 11);
-  assert.equal(manifest.items.length, 11);
+  assert.equal(manifest.count, 12);
+  assert.equal(manifest.items.length, 12);
   const digests = new Set();
   for (const world of worldDoc.worlds) {
     assert.equal(world.concept.status, "asset_ready", world.id);
@@ -826,15 +827,15 @@ check("all 12 concept arts are sha-locked AI assets", () => {
     assert.ok(entry.size_px[0] >= 512 && entry.size_px[1] >= 512);
     assert.equal(entry.prompt, world.concept.prompt);
   }
-  // 并发生成时曾出现「不同 prompt 拿到同一张图」，所以 12 个 sha 必须互异。
-  assert.equal(digests.size, 12, "each world needs its own concept art");
+  // 并发生成时曾出现「不同 prompt 拿到同一张图」，所以 13 个 sha 必须互异。
+  assert.equal(digests.size, 13, "each world needs its own concept art");
   // prompt_only 降级分支仍保留，未来缺图时不会留死链。
   assert.ok(worldPackSource.includes('pack.concept.status === "asset_ready"')
     && worldPackSource.includes("skyPreviewURL(pack)")
     && worldPackSource.includes('image.src = skyPreviewURL(pack)'));
 });
 
-check("promo page switches 12 worlds by URL without rebuilding ZBRD geometry", () => {
+check("promo page switches 13 worlds by URL without rebuilding ZBRD geometry", () => {
   const html = readFileSync(new URL("web/starry.html", root), "utf8");
   const css = readFileSync(new URL("web/starry.css", root), "utf8");
   const serve = readFileSync(new URL("tools/serve.py", root), "utf8");
@@ -929,14 +930,14 @@ check("board ceremony freezes 6 host-dispatched events", () => {
 });
 
 check("entrance shots derive from registered scenery landmarks", () => {
-  // 1. 11 个 preset 在生成几何时登记地标，且坐标与几何同源。
+  // 1. 12 个 preset 在生成几何时登记地标，且坐标与几何同源。
   const presets = ["wheat", "pond", "sunrise", "cafe", "bedroom", "garden",
-    "argenteuil", "villeneuve", "marly", "victoire", "gauguin"];
+    "argenteuil", "villeneuve", "marly", "victoire", "gauguin", "jcc"];
   assert.ok(scenerySource.includes("function feature(")
     && scenerySource.includes("ctx.features ??= []"),
   "world-scenery.mjs 要有地标登记钩子");
   assert.equal((scenerySource.match(/feature\(ctx, "/g) ?? []).length,
-    presets.length * 3, "11 个 preset 各登记 3 处地标");
+    presets.length * 3, "12 个 preset 各登记 3 处地标");
   for (const preset of presets) {
     assert.ok(scenerySource.includes(`"${preset}_`),
       `${preset} 没有登记任何地标`);
@@ -954,7 +955,7 @@ check("entrance shots derive from registered scenery landmarks", () => {
     && starrySource.includes("return { houses, cypressSites }")
     && starrySource.includes("function registerFeature("),
   "starry 内建画境也要把几何锚点登记进 state.features");
-  // 3. 镜头由登记派生，不再有手写的 12 组镜像表。
+  // 3. 镜头由登记派生，不再有手写的 13 组镜像表。
   assert.ok(!starrySource.includes("ENTRANCE_SHOTS")
     && !starrySource.includes("ENTRANCE_START"),
   "不能再维护第二份手写分镜坐标表");
@@ -1036,6 +1037,90 @@ check("mobile portrait blocks pull-to-refresh and keeps HUD usable", () => {
   assert.ok(starrySource.includes("pinchDistance")
     && starrySource.includes("event.isPrimary"),
   "touch devices have no wheel: pinch zooms, only the primary pointer drags");
+});
+
+check("artwork mode is pixel-faithful and sha-locked to the in-game screenshot", () => {
+  const artWorlds = worldDoc.worlds.filter((world) => world.artwork);
+  assert.equal(artWorlds.length, 1, "only one world may use artwork mode");
+  const world = artWorlds[0];
+  const art = world.artwork;
+  assert.equal(resolveWorldPack(worldDoc, world.id).artwork.mode,
+    "pixel_faithful", "artwork must survive deep-merge into the pack");
+  assert.equal(world.id, "jcc-maple-autumn");
+  assert.equal(art.mode, "pixel_faithful");
+  // 原画层与概念图必须是同一个文件、同一个 sha，杜绝「两张图对不上」。
+  assert.equal(art.image, world.concept.image);
+  assert.equal(art.sha256, world.concept.sha256);
+  const bytes = readFileSync(new URL(art.image, root));
+  assert.equal(bytes.readUInt32BE(0), 0x89504e47, "artwork must be PNG");
+  assert.equal(createHash("sha256").update(bytes).digest("hex"), art.sha256);
+  assert.deepEqual(art.size_px, [bytes.readUInt32BE(16), bytes.readUInt32BE(20)]);
+  assert.equal(art.source, "in_game_screenshot");
+  assert.equal(art.fit, "contain");
+  // 可选格线必须沿用 board.zbrd 的 7 列 × 8 行逻辑格，
+  // 行列顺序也要逐字段对齐（只比乘积 56 会把 8×7 放过去）。
+  assert.equal(art.grid.cols, manifest.grid.columns);
+  assert.equal(art.grid.rows, manifest.grid.rows);
+  assert.equal(art.grid.cols * art.grid.rows, 56);
+  assert.equal(art.grid.quad.length, 4);
+  assert.ok(art.grid.quad.every((point) => point.length === 2
+    && point[0] >= 0 && point[0] <= art.size_px[0]
+    && point[1] >= 0 && point[1] <= art.size_px[1]));
+  const starry = readFileSync(new URL("web/starry.js", root), "utf8");
+  const html = readFileSync(new URL("web/starry.html", root), "utf8");
+  const css = readFileSync(new URL("web/starry.css", root), "utf8");
+  assert.ok(starry.includes("function applyArtwork(pack)")
+    && starry.includes('art.mode !== "pixel_faithful"')
+    && starry.includes("applyArtwork(pack);"));
+  assert.ok(html.includes('id="artwork-img"')
+    && html.includes('id="artwork-grid"')
+    && html.includes('id="toggle-artwork"')
+    && html.includes('id="toggle-board"')
+    && html.includes('id="board-readout"'));
+  assert.ok(css.includes("body.artwork-mode #stage canvas { opacity: 0; }")
+    && css.includes("#artwork-img"), "3D canvas must stay alive but hidden");
+  assert.ok(css.includes("body.board-mode #artwork-grid"),
+    "board layer must take pointer events when enabled");
+  // 棋盘不是「另一张图」：行列 / 逻辑边界 / 棋手锚点必须全部从
+  // build/board.manifest.json 读取，不允许在页面里硬编码第二套棋盘数据。
+  assert.ok(starry.includes("const spec = state.manifest.grid")
+    && starry.includes("const cols = spec.columns")
+    && starry.includes("const rows = spec.rows")
+    && starry.includes("spec.logical_bounds_xz")
+    && starry.includes("state.manifest.anchors")
+    && starry.includes("worldToUV")
+    && starry.includes("state.artBoard = {"));
+  // 原画模式不重建 3D 台面：boardSlabMeshes 契约由 probe 侧钉住。
+  assert.ok(starry.includes("boardSlabMeshes"));
+});
+
+check("artwork board layer is a real, switchable 7x8 board from board.zbrd", () => {
+  const starry = readFileSync(new URL("web/starry.js", root), "utf8");
+  // 默认关闭（保住 1:1 原画），?board=1 才打开；?clean=1 优先保持纯图。
+  assert.ok(starry.includes('params.has("board") && !params.has("clean")'));
+  assert.ok(starry.includes('canvas.addEventListener("click"')
+    && starry.includes('canvas.addEventListener("pointermove"'));
+  assert.ok(starry.includes("pieces.set(key, side++ % 2)"),
+    "clicking a cell must actually place a piece");
+  // 冻结核心 = 最外方格 + 两个棋手占位；56 格只是逻辑落点。
+  assert.equal(manifest.core_contract.required_elements.length, 2);
+  assert.equal(manifest.core_contract.player_seats.count, 2);
+  assert.equal(manifest.grid.logical_grid_is_visual, false);
+  assert.equal(manifest.grid.columns * manifest.grid.rows, 56);
+});
+
+check("external glb meshes remain an opt-in, sha-locked model path", () => {
+  // 回答「能不能直接用生成的模型」：能，项目本来就有 4 个混元 3D 图生 3D 的
+  // glb 资产；沉浸式页只是默认关闭陈列（USE_EXTERNAL_PROPS），并非没有模型链路。
+  const contract = stylePack.external_mesh_contract;
+  const external = json("build/external_mesh.manifest.json");
+  assert.equal(contract.asset_format, "glb");
+  assert.equal(external.assets.length, 4);
+  assert.ok(external.assets.every((asset) => asset.asset_origin === "hunyuan_3d"));
+  assert.ok(external.assets.every((asset) => existsSync(new URL(asset.mesh, root))));
+  const starry = readFileSync(new URL("web/starry.js", root), "utf8");
+  assert.ok(starry.includes("const USE_EXTERNAL_PROPS = false")
+    && starry.includes("loadExternalMeshes(visual)"));
 });
 
 console.log(`ZBRD JS cross-check: ${checks.length} checks / 0 failures`);
