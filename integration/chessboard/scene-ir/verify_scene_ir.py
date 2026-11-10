@@ -306,8 +306,12 @@ def validate_ir(ir: Any, contract: dict, schema: dict,
             for key in ASSET_PLACEMENT_FIELDS:
                 if key not in node:
                     errors.append(f"{where}({node_id}): 带 asset_id 必须带 {key}")
+            # anchor / pivot_offset：null 表示 pending（诚实降级），跳过数值校验；
+            # 非 null 才必须是 3 个有限数字。
             for key in ("anchor", "pivot_offset"):
                 values = node.get(key, [])
+                if values is None:
+                    continue  # 显式 null = pending，允许
                 if not isinstance(values, list) or len(values) != 3:
                     errors.append(f"{where}({node_id}): {key} 必须是 3 个数字")
                 elif not all(isinstance(v, (int, float)) and math.isfinite(float(v)) for v in values):

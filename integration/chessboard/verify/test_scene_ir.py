@@ -104,6 +104,30 @@ class SceneIRContractTests(unittest.TestCase):
                 self.assertTrue(any(needle in item for item in errors),
                                 f"{name}: {errors}")
 
+    def test_anchor_null_is_valid_pending(self) -> None:
+        # anchor 显式 null 是诚实降级的 pending，必须不报错（区别于省略 key）
+        doc = copy.deepcopy(self.example)
+        # 找一个带 asset_id 的节点，把 anchor 设为 null
+        for n in doc["nodes"]:
+            if "asset_id" in n:
+                n["anchor"] = None
+                n["rotation_y_deg"] = 0.0
+                break
+        errors, _ = v.validate_ir(doc, self.contract, self.schema, self.asset_ids)
+        self.assertFalse(any("anchor" in e for e in errors),
+                         f"anchor=null 应合法：{errors}")
+
+    def test_anchor_missing_is_still_error(self) -> None:
+        # 带 asset_id 但彻底省略 anchor key -> 仍是契约违约
+        doc = copy.deepcopy(self.example)
+        for n in doc["nodes"]:
+            if "asset_id" in n:
+                n.pop("anchor", None)
+                break
+        errors, _ = v.validate_ir(doc, self.contract, self.schema, self.asset_ids)
+        self.assertTrue(any("必须带 anchor" in e for e in errors),
+                        f"省略 anchor 应报错：{errors}")
+
     def test_example_nodes_cover_three_asset_kinds(self) -> None:
         kinds = {node["kind"] for node in self.example["nodes"]}
         self.assertTrue({"ground", "prop", "character", "vfx_emitter", "unknown"} <= kinds)

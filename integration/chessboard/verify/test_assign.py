@@ -200,11 +200,14 @@ class AssignNodeTests(unittest.TestCase):
         self.assertEqual(out["assignment"]["status"], "needs_generation")
 
     def test_no_camera_no_anchor(self) -> None:
-        # 缺相机：指派成功但不反投影 anchor（诚实边界）
+        # 缺相机：指派成功但 anchor 显式 null（pending）+ rotation_y_deg 默认 0
+        # （诚实边界：anchor 不给 [0,0,0] 错误位置，rotation 朝向未知默认 0）
         node = {"id": "p3", "kind": "prop", "label": "灯笼",
                 "confidence": 0.9, "bbox_px": [0, 0, 10, 10]}
         out = assign.assign_node(node, _MANIFEST, None, (1920, 1080))
-        self.assertNotIn("anchor", out)
+        self.assertIn("anchor", out)
+        self.assertIsNone(out["anchor"])
+        self.assertEqual(out["rotation_y_deg"], 0.0)
 
 
 class AssignAssetsTests(unittest.TestCase):

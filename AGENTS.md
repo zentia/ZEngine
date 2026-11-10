@@ -5531,3 +5531,11 @@ r=20..23、近水平旋转，仍有一条带子斜插天空。根因与既有「
 - **`--check` 语义澄清**：对 patched IR 剥离 `assignment/scale_pending/anchor_estimate` 后跑 `validate_ir`，**如实报告** scene-ir 契约视角的合法性。⚠️ assigned IR 在无相机参数时 `assign.py` 诚实降级（不填 anchor/rotation_y_deg），会触发 schema「带 asset_id 必须带 anchor/rotation_y_deg/scale」报错——这是 L2 既有缝隙（补 L4 前必须补相机反投影），补丁层不掩盖。
 - 门禁：新增 `verify/test_apply_patch.py`（18 用例：validate_patch 9 + apply_patch 8 + assignment frozen 1）。端到端实测 L4 归因 → patch-suggestion → apply_patch 闭环：`prop_1` 漏放 add、`prop_2` 偏移 set、`core_slab` frozen 拒绝。
 - **L5 闭环数据流**：`compare_report.attribution[].nodes[]`（L4 node 级归因）→ `patch-suggestion.json`（AI 语义归因）→ `apply_patch.py`（确定性应用 + frozen 拒绝）→ 重跑 `assign.py`（L2 重新指派补 asset_id）→ `unity_scene.py`（L3）→ `compare.py`（L4 回归门禁）。
+
+### OSGame 棋盘线 · 修复 L2 诚实降级缝隙（2026-11-10）
+
+- **问题**：`assign.py` 无相机时**省略** `anchor`/`rotation_y_deg` key，触发 `verify_scene_ir`「带 asset_id 必须带 anchor/rotation_y_deg/scale」报错（16 个）。诚实降级（不硬算 world）与契约「带 asset_id 必须带完整 placement」冲突。
+- **修复原则**：诚实降级从「隐式省略」改为「显式 pending」，与 `scale` 的既有模式对齐。能给诚实默认值的给默认值（`rotation_y_deg=0.0` 朝向未知、`scale=1.0`）；不能给默认值的用显式 null（`anchor=None`，因为 `[0,0,0]` 是错误位置不是默认）。
+- **改动**：① `assign.py` 无相机时显式填 `anchor=None` + `rotation_y_deg=0.0`；② `scene-ir.schema.json` `anchor` 改 `["array","null"]`（`fov` 等字段已有 null 先例）；③ `verify_scene_ir.py` anchor 为 null 时跳过数值校验（key 仍必须存在）。
+- **关键语义**：显式 null = pending（待补相机反投影，合法）；省略 key = 真漏填（契约违约，报错）。二者可区分，契约约束力不降反升。
+- 门禁：`test_assign` 更新 `test_no_camera_no_anchor`（断言改为 anchor 存在且 None）；`test_scene_ir` 23→25（新增 `anchor=null 合法` + `省略 anchor 仍报错`）。全量回归全绿。实测重跑 assign + validate：errors 16→0，仅剩 2 条相机缺失 warning（诚实降级应有的表现）。

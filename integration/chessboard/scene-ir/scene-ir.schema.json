@@ -114,10 +114,14 @@
             "items": { "type": "number" }
           },
           "anchor": {
-            "type": "array", "minItems": 3, "maxItems": 3,
-            "items": { "type": "number" }
+            "type": ["array", "null"], "minItems": 3, "maxItems": 3,
+            "items": { "type": "number" },
+            "description": "世界坐标锚点；null 表示 pending（待补相机参数反投影）。显式 null 而非省略，使校验器能区分 pending 与真漏填"
           },
-          "rotation_y_deg": { "type": "number" },
+          "rotation_y_deg": {
+            "type": "number",
+            "description": "绕 Y 轴朝向角；单视角检测不出朝向时用 0.0 诚实默认"
+          },
           "scale": { "type": "number", "minimum": 0.0 },
           "material": { "type": "string" },
           "tag": { "type": "string" },

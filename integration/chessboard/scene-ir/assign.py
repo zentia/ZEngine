@@ -237,12 +237,20 @@ def assign_node(node: Dict[str, Any], manifest: Dict[str, Any],
     bbox = node.get("bbox_px")
     has_bbox = bbox and len(bbox) == 4
 
-    # anchor：有相机参数才反投影，缺相机留空（诚实边界，不硬算 world）
+    # anchor：有相机参数才反投影，缺相机显式填 null（诚实边界，不硬算 world）。
+    # 显式 null 而非省略 key，使 verify 能区分「pending（待补相机反投影）」
+    # 与「真漏填（契约违约）」。anchor 无法给诚实默认值（[0,0,0] 是错误的
+    # 位置，不是默认），故用 null + anchor_pending 标记。
+    out["anchor"] = None
     if has_bbox and camera is not None:
         proj = back_project_ground(bbox, camera, image_size)
         if proj is not None:
             out["anchor"] = proj["anchor"]
             out["anchor_estimate"] = True
+
+    # rotation_y_deg：单视角检测不出朝向，默认 0.0（诚实默认，与
+    # ir_to_placements 的 0.0 一致）。不是 pending（0 就是朝向未知的合理默认）。
+    out["rotation_y_deg"] = 0.0
 
     # scale：有相机 + bbox + 资产 bounds 时，用「物体直立地面」假设反推世界
     # 高度，再除以资产原始高度得 scale。缺任一要素则 scale 保持默认 1.0 并
