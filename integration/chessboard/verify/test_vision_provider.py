@@ -1,7 +1,8 @@
 """L1 视觉理解 provider（vision_provider.py）门禁。
 
 只测确定性部分（prompt 构造 / JSON 抽取 / dict->Detection / mock provider /
-图片尺寸探测），不真调混元（需要 HUNYUAN_API_KEY，留作集成测试）。
+图片尺寸探测 / SSE 流解析 / provider 选择），不真调模型（真实调用需要
+WorkBuddy IOA 环境或 HUNYUAN_API_KEY，留作集成测试）。
 运行：python verify/test_vision_provider.py
 """
 
@@ -112,7 +113,7 @@ class ImageSizeProbeTests(unittest.TestCase):
             f.write(png)
             path = f.name
         try:
-            self.assertEqual(vp.HunyuanVisionProvider._probe_image_size(path), (w, h))
+            self.assertEqual(vp._probe_image_size(path), (w, h))
         finally:
             os.unlink(path)
 
@@ -127,6 +128,61 @@ class EnvKeyTests(unittest.TestCase):
         finally:
             if old is not None:
                 os.environ["HUNYUAN_API_KEY"] = old
+
+
+class SseStreamTests(unittest.TestCase):
+    def test_parse_stream_concat_content(self) -> None:
+        body = (
+            ": heartbeat\n"
+            'data: {"choices":[{"delta":{"content":"[{\\"bbox\\":","role":"assistant"}}]}\n'
+            'data: {"choices":[{"delta":{"content":"[0,0,1,1],\\"category\\":\\"prop\\"}]","role":"assistant"}}]}\n'
+            'data: [DONE]\n'
+        )
+        text = vp._parse_sse_stream(body)
+        self.assertIn("[", text)
+        self.assertIn("]", text)
+        self.assertIn("category", text)
+
+    def test_parse_stream_empty(self) -> None:
+        self.assertEqual(vp._parse_sse_stream(": heartbeat\ndata: [DONE]\n"), "")
+
+    def test_parse_stream_non_stream_fallback(self) -> None:
+        body = '{"choices":[{"message":{"content":"[{\\"bbox\\":[0,0,1,1],\\"category\\":\\"prop\\"}]"}}]}'
+        text = vp._parse_sse_stream(body)
+        self.assertIn("category", text)
+
+
+class WorkBuddyProviderTests(unittest.TestCase):
+    def test_missing_auth_raises(self) -> None:
+        # 临时清掉两个鉴权变量，验证缺材料时构造报错
+        token = os.environ.pop("WORKBUDDY_VLM_AUTH_TOKEN", None)
+        ctx = os.environ.pop("WORKBUDDY_VLM_CONTEXT", None)
+        try:
+            with self.assertRaises(RuntimeError):
+                vp.WorkBuddyVLMProvider()
+        finally:
+            if token is not None:
+                os.environ["WORKBUDDY_VLM_AUTH_TOKEN"] = token
+            if ctx is not None:
+                os.environ["WORKBUDDY_VLM_CONTEXT"] = ctx
+
+    def test_default_provider_prefers_workbuddy(self) -> None:
+        # 有鉴权材料 -> WorkBuddy；无 -> Mock 兜底
+        token = os.environ.pop("WORKBUDDY_VLM_AUTH_TOKEN", None)
+        ctx = os.environ.pop("WORKBUDDY_VLM_CONTEXT", None)
+        try:
+            self.assertIsInstance(vp.make_default_provider(), vp.MockVisionProvider)
+        finally:
+            if token is not None:
+                os.environ["WORKBUDDY_VLM_AUTH_TOKEN"] = token
+            if ctx is not None:
+                os.environ["WORKBUDDY_VLM_CONTEXT"] = ctx
+
+    def test_default_provider_with_auth_is_workbuddy(self) -> None:
+        token = os.environ.get("WORKBUDDY_VLM_AUTH_TOKEN")
+        ctx = os.environ.get("WORKBUDDY_VLM_CONTEXT")
+        if token and ctx:
+            self.assertIsInstance(vp.make_default_provider(), vp.WorkBuddyVLMProvider)
 
 
 if __name__ == "__main__":

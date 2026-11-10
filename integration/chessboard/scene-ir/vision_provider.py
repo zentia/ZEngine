@@ -5,17 +5,27 @@
 - 抽象 `VisionProvider.detect(image_path) -> list[Detection]`，与
   `decompose.py` 的确定性装配解耦：模型只负责「看到什么」（类别 + bbox +
   置信度 + 深度），确定性装配负责「归类 / 阈值 / 反投影」。
-- `HunyuanVisionProvider` 是混元 vision 的实现，走 OpenAI 兼容端点
-  `https://api.hunyuan.cloud.tencent.com/v1/chat/completions`（Bearer token，
-  无需 TC3 签名）。
-- API Key 只从环境变量 `HUNYUAN_API_KEY` 读，**绝不硬编码、绝不落盘**。
+- **默认走 WorkBuddy 内部 VLM sidecar（IOA 授权，无需 API Key）**：
+  `WorkBuddyVLMProvider` 从环境变量读鉴权材料，调用本地流式 chat 端点
+  `WORKBUDDY_VLM_CHAT_URL`（OpenAI 兼容的 SSE 流，`stream: true`）。
+  - `WORKBUDDY_VLM_AUTH_TOKEN` -> `Authorization: Bearer <token>`
+  - `WORKBUDDY_VLM_CONTEXT`   -> `X-WorkBuddy-MCP-Context: <context>`
+  - `WORKBUDDY_VLM_MODEL`     -> 模型名（缺省 `kinfra-office-agent`）
+  这套变量由 WorkBuddy 在 IOA 环境下自动注入，用户无需提供任何 key。
+- `HunyuanVisionProvider` 保留为**备用通道**（显式传 api_key 才用），走
+  腾讯云混元公网 OpenAI 端点，适用于脱离 WorkBuddy 的独立运行场景。
+- API Key 只从环境变量读，**绝不硬编码、绝不落盘**。
 - 模型返回 JSON 解析失败 -> 抛 `VisionParseError`（不静默产出假数据）。
 
 用法
 ----
-    export HUNYUAN_API_KEY=...
+    # WorkBuddy IOA 环境（无需 key）
     python scene-ir/vision_provider.py --image assets/worlds/jcc-maple-autumn.png \
         --out build/detections.json
+
+    # 显式走混元公网（需 HUNYUAN_API_KEY）
+    HUNYUAN_API_KEY=... python scene-ir/vision_provider.py \
+        --provider hunyuan --image ... --out ...
 
 结构化 prompt 约束
 ------------------
@@ -47,6 +57,11 @@ sys.path.insert(0, str(HERE))
 import decompose  # noqa: E402
 from decompose import Detection  # noqa: E402
 
+# WorkBuddy 内部 VLM sidecar（IOA 授权，无需 API Key）
+WORKBUDDY_VLM_ENDPOINT = "http://127.0.0.1:50669/skills/vlm/chat"
+WORKBUDDY_VLM_MODEL = "kinfra-office-agent"
+
+# 混元公网（备用通道，显式给 key 才用）
 HUNYUAN_ENDPOINT = "https://api.hunyuan.cloud.tencent.com/v1/chat/completions"
 HUNYUAN_VISION_MODEL = "hunyuan-vision"
 
@@ -143,8 +158,161 @@ def _dict_to_detection(item: Any) -> Detection:
     )
 
 
+def _probe_image_size(image_path: str) -> tuple[int, int]:
+    """读 PNG/JPEG 尺寸头（无第三方库）。失败回退 1920x1080 占位。"""
+    try:
+        with open(image_path, "rb") as handle:
+            head = handle.read(32)
+        if head[:8] == b"\x89PNG\r\n\x1a\n":
+            w = int.from_bytes(head[16:20], "big")
+            h = int.from_bytes(head[20:24], "big")
+            return w, h
+        if head[:2] == b"\xff\xd8":  # JPEG，扫 SOF
+            with open(image_path, "rb") as handle:
+                data = handle.read()
+            return _jpeg_size(data)
+    except Exception:
+        pass
+    return 1920, 1080
+
+
+def _jpeg_size(data: bytes) -> tuple[int, int]:
+    i = 2
+    n = len(data)
+    while i < n:
+        if data[i] != 0xFF:
+            i += 1
+            continue
+        marker = data[i + 1]
+        if marker in (0xC0, 0xC1, 0xC2, 0xC3):
+            h = int.from_bytes(data[i + 5:i + 7], "big")
+            w = int.from_bytes(data[i + 7:i + 9], "big")
+            return w, h
+        seg_len = int.from_bytes(data[i + 2:i + 4], "big")
+        i += 2 + seg_len
+    return 1920, 1080
+
+
+def _parse_sse_stream(body: str) -> str:
+    """解析 OpenAI 兼容的 SSE 流，拼接 assistant 的 content 增量。
+
+    形如：
+        : heartbeat
+        data: {"choices":[{"delta":{"content":"..."}}]}
+        data: [DONE]
+
+    返回拼接后的完整文本内容。若服务返回非流式 JSON（兜底），直接按
+    choices[0].message.content 取。
+    """
+    text_parts: List[str] = []
+    saw_data = False
+    for line in body.splitlines():
+        line = line.strip()
+        if not line.startswith("data:"):
+            continue
+        saw_data = True
+        chunk = line[5:].strip()
+        if chunk == "[DONE]":
+            continue
+        try:
+            obj = json.loads(chunk)
+        except json.JSONDecodeError:
+            continue
+        # SSE chunk 结构
+        try:
+            delta = obj["choices"][0]["delta"]
+            content = delta.get("content", "")
+            if content:
+                text_parts.append(content)
+        except (KeyError, IndexError, TypeError):
+            continue
+    if text_parts:
+        return "".join(text_parts)
+    # 非流式兜底：整个 body 是一个 JSON 对象
+    if not saw_data:
+        try:
+            obj = json.loads(body)
+            return obj["choices"][0]["message"]["content"]
+        except (json.JSONDecodeError, KeyError, IndexError, TypeError):
+            pass
+    return ""
+
+
+class WorkBuddyVLMProvider(VisionProvider):
+    """WorkBuddy 内部 VLM sidecar（IOA 授权，无需 API Key）。
+
+    鉴权材料从环境变量读取（WorkBuddy 在 IOA 环境自动注入）：
+      - WORKBUDDY_VLM_CHAT_URL   端点（缺省 127.0.0.1:50669/skills/vlm/chat）
+      - WORKBUDDY_VLM_AUTH_TOKEN -> Authorization: Bearer
+      - WORKBUDDY_VLM_CONTEXT    -> X-WorkBuddy-MCP-Context
+      - WORKBUDDY_VLM_MODEL      模型名（缺省 kinfra-office-agent）
+
+    服务只支持流式（stream: true）请求，返回 SSE 分片。
+    """
+
+    def __init__(self, endpoint: Optional[str] = None,
+                 model: Optional[str] = None,
+                 timeout: int = 120) -> None:
+        self.endpoint = endpoint or os.environ.get(
+            "WORKBUDDY_VLM_CHAT_URL", WORKBUDDY_VLM_ENDPOINT)
+        self.model = model or os.environ.get(
+            "WORKBUDDY_VLM_MODEL", WORKBUDDY_VLM_MODEL)
+        self.auth_token = os.environ.get("WORKBUDDY_VLM_AUTH_TOKEN", "")
+        self.vlm_context = os.environ.get("WORKBUDDY_VLM_CONTEXT", "")
+        self.timeout = timeout
+        if not self.auth_token or not self.vlm_context:
+            raise RuntimeError(
+                "缺少 WorkBuddy VLM 鉴权材料（WORKBUDDY_VLM_AUTH_TOKEN / "
+                "WORKBUDDY_VLM_CONTEXT）。请确认在 WorkBuddy IOA 环境下运行。")
+
+    def detect(self, image_path: str) -> List[Detection]:
+        data_url = _load_image_base64(image_path)
+        width, height = _probe_image_size(image_path)
+        prompt = build_detection_prompt(width, height)
+
+        body = {
+            "model": self.model,
+            "stream": True,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {"type": "image_url", "image_url": {"url": data_url}},
+                    ],
+                }
+            ],
+        }
+        payload = json.dumps(body, ensure_ascii=False).encode("utf-8")
+        req = urllib.request.Request(
+            self.endpoint,
+            data=payload,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": "Bearer " + self.auth_token,
+                "X-WorkBuddy-MCP-Context": self.vlm_context,
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                raw = resp.read().decode("utf-8")
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", "replace")
+            raise VisionParseError(
+                "WorkBuddy VLM HTTP %d: %s" % (exc.code, detail[:500])) from exc
+
+        content = _parse_sse_stream(raw)
+        if not content:
+            raise VisionParseError(
+                "WorkBuddy VLM 返回空内容: %r" % raw[:500])
+
+        items = _extract_json_array(content)
+        return [_dict_to_detection(it) for it in items]
+
+
 class HunyuanVisionProvider(VisionProvider):
-    """混元 vision 的 OpenAI 兼容实现。"""
+    """混元 vision 的 OpenAI 兼容实现（备用通道，显式给 key 才用）。"""
 
     def __init__(self, api_key: Optional[str] = None,
                  endpoint: str = HUNYUAN_ENDPOINT,
@@ -160,10 +328,7 @@ class HunyuanVisionProvider(VisionProvider):
 
     def detect(self, image_path: str) -> List[Detection]:
         data_url = _load_image_base64(image_path)
-        # 图片尺寸：从 data URL 解码 PNG/JPEG 头太麻烦，这里用 prompt 让模型
-        # 自述，或用一个近似（混元 vision 能自己读图尺寸）。为稳妥，这里先
-        # 用占位宽高，模型通常能按实际图片坐标返回。
-        width, height = self._probe_image_size(image_path)
+        width, height = _probe_image_size(image_path)
         prompt = build_detection_prompt(width, height)
 
         body = {
@@ -196,7 +361,6 @@ class HunyuanVisionProvider(VisionProvider):
             raise VisionParseError(
                 "混元 API HTTP %d: %s" % (exc.code, detail[:500])) from exc
 
-        # OpenAI 兼容返回结构：choices[0].message.content
         try:
             content = result["choices"][0]["message"]["content"]
         except (KeyError, IndexError, TypeError) as exc:
@@ -206,47 +370,24 @@ class HunyuanVisionProvider(VisionProvider):
         items = _extract_json_array(content)
         return [_dict_to_detection(it) for it in items]
 
-    @staticmethod
-    def _probe_image_size(image_path: str) -> tuple[int, int]:
-        """读 PNG/JPEG 尺寸头（无第三方库）。失败回退 1920x1080 占位。"""
-        try:
-            with open(image_path, "rb") as handle:
-                head = handle.read(32)
-            if head[:8] == b"\x89PNG\r\n\x1a\n":
-                w = int.from_bytes(head[16:20], "big")
-                h = int.from_bytes(head[20:24], "big")
-                return w, h
-            if head[:2] == b"\xff\xd8":  # JPEG，扫 SOF
-                with open(image_path, "rb") as handle:
-                    data = handle.read()
-                return HunyuanVisionProvider._jpeg_size(data)
-        except Exception:
-            pass
-        return 1920, 1080
-
-    @staticmethod
-    def _jpeg_size(data: bytes) -> tuple[int, int]:
-        i = 2
-        n = len(data)
-        while i < n:
-            if data[i] != 0xFF:
-                i += 1
-                continue
-            marker = data[i + 1]
-            if marker in (0xC0, 0xC1, 0xC2, 0xC3):
-                h = int.from_bytes(data[i + 5:i + 7], "big")
-                w = int.from_bytes(data[i + 7:i + 9], "big")
-                return w, h
-            seg_len = int.from_bytes(data[i + 2:i + 4], "big")
-            i += 2 + seg_len
-        return 1920, 1080
-
 
 class MockVisionProvider(VisionProvider):
     """兜底 / 测试用：不调模型，直接返回 mock 检测结果。"""
 
     def detect(self, image_path: str) -> List[Detection]:
         return decompose.make_mock_detections()
+
+
+def make_default_provider(model: Optional[str] = None) -> VisionProvider:
+    """按环境选择默认 provider：优先 WorkBuddy IOA sidecar，否则 mock 兜底。
+
+    - 若存在 WORKBUDDY_VLM_AUTH_TOKEN + WORKBUDDY_VLM_CONTEXT -> WorkBuddy
+    - 否则 -> Mock（避免无鉴权材料时直接崩，方便离线跑链路）
+    """
+    if os.environ.get("WORKBUDDY_VLM_AUTH_TOKEN") and \
+       os.environ.get("WORKBUDDY_VLM_CONTEXT"):
+        return WorkBuddyVLMProvider(model=model)
+    return MockVisionProvider()
 
 
 def load_detections(path: str) -> List[Detection]:
@@ -259,10 +400,19 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--image", required=True, help="截图路径")
     parser.add_argument("--out", required=True, help="输出 detections JSON 路径")
     parser.add_argument("--mock", action="store_true", help="用 mock provider，不调模型")
-    parser.add_argument("--model", default=HUNYUAN_VISION_MODEL)
+    parser.add_argument("--provider", default="workbuddy",
+                        choices=["workbuddy", "hunyuan"],
+                        help="provider：workbuddy（默认，IOA 无 key）/ hunyuan（需 HUNYUAN_API_KEY）")
+    parser.add_argument("--model", default=None, help="覆盖模型名")
     args = parser.parse_args(argv)
 
-    provider: VisionProvider = MockVisionProvider() if args.mock else HunyuanVisionProvider(model=args.model)
+    if args.mock:
+        provider: VisionProvider = MockVisionProvider()
+    elif args.provider == "hunyuan":
+        provider = HunyuanVisionProvider(model=args.model or HUNYUAN_VISION_MODEL)
+    else:
+        provider = make_default_provider(model=args.model)
+
     detections = provider.detect(args.image)
 
     payload = [
