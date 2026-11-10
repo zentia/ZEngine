@@ -152,6 +152,31 @@
       "min_lod": "High",
       "theme_asset": "moon_orrery",
       "hint": "南侧月相星象仪；代理几何是 sphere"
+    },
+    {
+      "id": "deco_moon",
+      "zone": "edge_s",
+      "primitive": "sphere",
+      "position": [
+        -3.0,
+        1.8,
+        9.6
+      ],
+      "rotation_y_deg": 0.0,
+      "params": {
+        "radius": 0.5,
+        "segments": 16,
+        "rings": 8
+      },
+      "color": [
+        0.75,
+        0.68,
+        0.45,
+        1.0
+      ],
+      "min_lod": "High",
+      "theme_asset": "moon_orb",
+      "hint": "南侧悬浮月亮摆件（AI 图生 3D 验证资产）；代理几何是 sphere"
     }
   ],
   "interactables": [
@@ -407,6 +432,44 @@
         ],
         "texture": "assets/external_meshes/star_lantern.png",
         "texture_sha256": "b9208d2cbe3eb9753c3d26acad3a37ad0a407186eb944d877cd35228d623ae34"
+      },
+      {
+        "asset_id": "moon_orb",
+        "label": "悬浮月亮摆件",
+        "status": "asset_ready",
+        "reference_image": "assets/style_refs/moon_orb.png",
+        "reference_sha256": "956e9a70051243ed33a3cf5f90f9aba3bbe9bddb6c9048cb47b1069e796d2d9e",
+        "reference_size_px": [
+          1024,
+          1024
+        ],
+        "reference_prompt": "单体3D资产设计图，竖直悬浮的暖金色月牙月亮摆件，月牙表面有中式云纹浮雕，镶嵌青绿菱形宝石，内部透出冷蓝色柔光，环绕一圈细小的暖金星尘，纯白背景，等距视角，单个完整物体，游戏道具风格",
+        "instances": [
+          {
+            "id": "deco_moon",
+            "zone": "edge_s",
+            "anchor": [
+              -3.0,
+              1.8,
+              9.6
+            ],
+            "rotation_y_deg": 0.0,
+            "scale": 1.3474,
+            "proxy_primitive": "sphere"
+          }
+        ],
+        "asset_origin": "hunyuan_3d",
+        "mesh": "assets/external_meshes/moon_orb.glb",
+        "mesh_sha256": "79b184a551c3dd3d0c915dd60b2a4ac35277a218fe7cb2d12e4c028ffff1d152",
+        "cache": "assets/external_meshes/moon_orb.zbrd",
+        "cache_sha256": "2c5c2c70b1b60b32ba907e8d143efd673efbbe8a0c76d69dcce404d4ba85a5d7",
+        "pivot_offset": [
+          0.087186,
+          -0.0,
+          0.001585
+        ],
+        "texture": "assets/external_meshes/moon_orb.png",
+        "texture_sha256": "123285b1d3457a4892617a02cfbe0a0876c87a302a338ccf62d29d29b88f2e44"
       }
     ]
   },
