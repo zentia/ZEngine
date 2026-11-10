@@ -5482,3 +5482,14 @@ r=20..23、近水平旋转，仍有一条带子斜插天空。根因与既有「
 - **实测分流**（真实 11 节点）：assigned=3 / needs_generation=0 / visual_layer=4 / frozen=1（魔法平台）/ sky=1（月亮）/ skipped=2。
 - **诚实结论**：当前金铲铲截图 L1 检测结果里**没有任何节点真正需要单体图生 3D**（needs_generation=0）。图生 3D 机制已探明（§混元 hy-3d），但当前数据喂不出真 needs_generation 节点。要验证闭环需真「可新增实体装饰物」或换概念图。
 - 门禁 `verify/test_assign.py` 31 → 39 tests（FrozenGeometryTests 4 + SkyObjectTests 3 + AssignNodeTests 修正），全绿。
+
+### OSGame 棋盘线 · 图生 3D 端到端闭环验证（moon_orb，2026-11-10）
+
+造「悬浮月亮摆件」验证 needs_generation → hy-3d → import-glb 全链路贯通：
+
+- **五步链路**：① ImageGen 生成参考图（moon_orb.png）② style-pack 声明 decoration deco_moon + contract entry moon_orb(pending) ③ hy-3d 图生 3D 生成 glb（30000 tris）④ external_mesh --import-glb moon_orb --diameter 1.2 --pivot-center 接管 ⑤ --resize-texture 1024 降采样（18.25→1.45MB）+ zboard --variants 同步 + --refresh-sources 刷新 sha 锁。
+- **⚠️ 契约状态机缝隙（重要）**：`pending` 状态**不能**声明 `mesh` 字段（validate_external_mesh_contract 禁止），但 `import_asset`/`_install_asset` 需要 entry 预填 `mesh`/`cache` 路径写文件 ⇒ **从 pending 直接 import-glb 报 `'mesh'` KeyError**。正确流程：**先 `proxy_glb` 生成占位 glb 升级为 asset_ready(proxy_zbrd)（预填 mesh/cache 路径+sha），再 import-glb 用混元 glb 原地替换**。
+- **产物**：assets/external_meshes/moon_orb.{glb 2.34MB, png 1.45MB, zbrd 1.10MB}，assets/style_refs/moon_orb.png。board.zbrd 17→18 parts。EXTERNAL OK 5 assets/7 placements。
+- **门禁全绿**：test_board / test_assign(39) / test_scene_ir(23) / verify_scene_ir --check（仅 3 已知 warning）。提交 `f0acdec3` 已推。
+- **ImageGen 依赖 PIL**：本机 python 原无 PIL，需 `pip install Pillow`（--resize-texture 降采样也依赖）。
+- 【结论】主链路最后一个实质缺口（图生 3D 生成新资产）正式闭合。剩余：环境视觉层（5 节点）→ visual-pack.json（另一条链路）。
