@@ -390,5 +390,78 @@ class VisualOverridesTests(unittest.TestCase):
         self.assertEqual(overrides["overrides"], [])
 
 
+class ApplyVisualOverridesTests(unittest.TestCase):
+    _VISUAL_PACK = {
+        "skybox": {
+            "top_color": [0.02, 0.055, 0.105, 1.0],
+            "horizon_color": [0.10, 0.24, 0.29, 1.0],
+            "fog": {"enabled": 1, "color": [0.07, 0.17, 0.22, 1.0]},
+        },
+        "materials": {
+            "core_slab": {"color": [0.24, 0.38, 0.34, 1.0]},
+        },
+        "post_processing": {"bloom": {"intensity": 0.55}},
+    }
+
+    def _overrides(self) -> dict:
+        return {
+            "overrides": [
+                {"source_node_id": "g1", "label": "夜空",
+                 "target_field": "skybox.top_color", "note": "深空顶色"},
+                {"source_node_id": "g2", "label": "石板地面",
+                 "target_field": "materials.core_slab", "note": "台面材质"},
+                {"source_node_id": "g3", "label": "月亮",
+                 "target_field": "skybox", "note": "天空天体"},
+                {"source_node_id": "g4", "label": "未知语义",
+                 "target_field": None, "note": ""},
+            ],
+        }
+
+    def test_covered_field_reports_current_value(self) -> None:
+        report = assign.apply_visual_overrides(self._VISUAL_PACK, self._overrides())
+        by_label = {e["label"]: e for e in report["entries"]}
+        self.assertEqual(by_label["夜空"]["status"], "covered")
+        self.assertEqual(by_label["夜空"]["current_value"],
+                         [0.02, 0.055, 0.105, 1.0])
+        self.assertEqual(by_label["石板地面"]["status"], "covered")
+        self.assertEqual(by_label["石板地面"]["current_value"],
+                         {"color": [0.24, 0.38, 0.34, 1.0]})
+
+    def test_unmapped_field_reports_unmapped(self) -> None:
+        report = assign.apply_visual_overrides(self._VISUAL_PACK, self._overrides())
+        by_label = {e["label"]: e for e in report["entries"]}
+        self.assertEqual(by_label["未知语义"]["status"], "unmapped")
+
+    def test_missing_field_reports_missing(self) -> None:
+        overrides = {"overrides": [
+            {"source_node_id": "g9", "label": "水面",
+             "target_field": "materials.water", "note": ""},
+        ]}
+        report = assign.apply_visual_overrides(self._VISUAL_PACK, overrides)
+        self.assertEqual(report["entries"][0]["status"], "missing")
+
+    def test_counts_match(self) -> None:
+        report = assign.apply_visual_overrides(self._VISUAL_PACK, self._overrides())
+        self.assertEqual(report["overrides_total"], 4)
+        self.assertEqual(report["covered"], 3)   # 夜空/石板地面/月亮
+        self.assertEqual(report["missing"], 0)
+        self.assertEqual(report["unmapped"], 1)  # 未知语义
+
+    def test_nested_field_lookup(self) -> None:
+        # skybox.fog 是嵌套路径，能正确查到底部值
+        exists, value = assign._lookup_field(self._VISUAL_PACK, "skybox.fog")
+        self.assertTrue(exists)
+        self.assertEqual(value, {"enabled": 1, "color": [0.07, 0.17, 0.22, 1.0]})
+        exists2, _ = assign._lookup_field(self._VISUAL_PACK, "skybox.nonexistent")
+        self.assertFalse(exists2)
+
+    def test_does_not_overwrite(self) -> None:
+        # 关键：apply 是对账，不修改 visual-pack（无 color 覆盖）
+        import copy
+        pack_copy = copy.deepcopy(self._VISUAL_PACK)
+        assign.apply_visual_overrides(pack_copy, self._overrides())
+        self.assertEqual(pack_copy, self._VISUAL_PACK)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

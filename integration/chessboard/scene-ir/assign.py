@@ -424,6 +424,85 @@ def ir_to_visual_overrides(assigned_ir: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _lookup_field(visual_pack: Dict[str, Any], field: str) -> Tuple[bool, Any]:
+    """按点分路径在 visual-pack 里查字段；返回 (是否存在, 字段值)。"""
+    cur: Any = visual_pack
+    for part in field.split("."):
+        if not isinstance(cur, dict) or part not in cur:
+            return (False, None)
+        cur = cur[part]
+    return (True, cur)
+
+
+def apply_visual_overrides(visual_pack: Dict[str, Any],
+                           overrides: Dict[str, Any]) -> Dict[str, Any]:
+    """把 visual overrides 对账到 visual-pack.json（确定性，不覆盖写值）。
+
+    这是 L2 -> visual-pack 的最后一环：对账 + 标注，**不是**覆盖写值。
+    理由（诚实边界）：
+      - overrides 的 color 是 null（单目抽色不可信，不反推颜色）；
+      - visual-pack 已有概念图抽取的完整值（skybox 全景/三色/材质颜色）；
+      - 用 null 覆盖已有值会破坏数据。
+
+    做的事：对每个 override，按其 target_field 在 visual-pack 里查字段：
+      - 存在 -> 标注 covered（并附当前字段值，供下游/人工核对）；
+      - 不存在 -> 标注 missing（语义未被 visual-pack 覆盖）；
+      - target_field 为 None（未命中映射表）-> 标注 unmapped（需人工指派）。
+
+    产出（visual_reconcile 报告）：
+      {
+        "schema": "zengine.visual-reconcile/v1",
+        "overrides_total": N,
+        "covered": M, "missing": K, "unmapped": L,
+        "entries": [ { source_node_id, label, target_field, status,
+                       current_value | null } ]
+      }
+    """
+    entries: List[Dict[str, Any]] = []
+    covered = missing = unmapped = 0
+    for ov in overrides.get("overrides", []):
+        field = ov.get("target_field")
+        if field is None:
+            unmapped += 1
+            entries.append({
+                "source_node_id": ov.get("source_node_id", ""),
+                "label": ov.get("label", ""),
+                "target_field": None,
+                "status": "unmapped",
+                "note": "未命中视觉字段映射表，需人工指派",
+            })
+            continue
+        exists, value = _lookup_field(visual_pack, field)
+        if exists:
+            covered += 1
+            entries.append({
+                "source_node_id": ov.get("source_node_id", ""),
+                "label": ov.get("label", ""),
+                "target_field": field,
+                "status": "covered",
+                "current_value": value,
+                "note": ov.get("note", ""),
+            })
+        else:
+            missing += 1
+            entries.append({
+                "source_node_id": ov.get("source_node_id", ""),
+                "label": ov.get("label", ""),
+                "target_field": field,
+                "status": "missing",
+                "current_value": None,
+                "note": "visual-pack 缺少字段 %s" % field,
+            })
+    return {
+        "schema": "zengine.visual-reconcile/v1",
+        "overrides_total": len(entries),
+        "covered": covered,
+        "missing": missing,
+        "unmapped": unmapped,
+        "entries": entries,
+    }
+
+
 def ir_to_placements(assigned_ir: Dict[str, Any]) -> List[Dict[str, Any]]:
     """把 assigned scene-ir 的节点转成 L3 `build_restored_scene` 消费的 placements。
 
@@ -474,6 +553,11 @@ def main(argv: Optional[List[str]] = None) -> int:
                         help="可选：同时输出 L3 可消费的 placements JSON")
     parser.add_argument("--visual-overrides-out", default="",
                         help="可选：同时输出 visual-pack 覆盖建议 JSON")
+    parser.add_argument("--visual-pack", default="",
+                        help="可选：visual-pack.json 路径，给定则对账并输出"
+                             " visual-reconcile JSON（需配 --visual-overrides-out）")
+    parser.add_argument("--reconcile-out", default="",
+                        help="可选：visual 对账报告输出路径（需配 --visual-pack）")
     parser.add_argument("--camera-json", default="", help="可选相机参数 JSON")
     args = parser.parse_args(argv)
 
@@ -512,6 +596,19 @@ def main(argv: Optional[List[str]] = None) -> int:
             json.dump(overrides, handle, ensure_ascii=False, indent=2)
         print("wrote visual-overrides -> %s (%d 个)"
               % (args.visual_overrides_out, overrides["source_node_count"]))
+
+        # 可选：对账到 visual-pack（L2 -> visual-pack 最后一环）
+        if args.visual_pack:
+            with open(args.visual_pack, "r", encoding="utf-8") as handle:
+                visual_pack = json.load(handle)
+            reconcile = apply_visual_overrides(visual_pack, overrides)
+            out_path = args.reconcile_out or "build/visual_reconcile.json"
+            os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+            with open(out_path, "w", encoding="utf-8", newline="\n") as handle:
+                json.dump(reconcile, handle, ensure_ascii=False, indent=2)
+            print("wrote visual-reconcile -> %s (covered=%d missing=%d unmapped=%d)"
+                  % (out_path, reconcile["covered"], reconcile["missing"],
+                     reconcile["unmapped"]))
 
     # 汇总
     assigned = sum(1 for n in result["nodes"]
