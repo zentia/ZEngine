@@ -5503,3 +5503,11 @@ r=20..23、近水平旋转，仍有一条带子斜插天空。根因与既有「
 - **诚实边界**：只声明归属，color 留 null（单目抽色不可信，与 depth_m 同类），颜色由视觉模型/概念图填。
 - CLI 加 `--visual-overrides-out`。门禁 test_assign 39→48 全绿。提交 `ff04c2f8` 已推。
 - 【剩余】visual_overrides.json 是中间产物，下游还需「应用 overrides 到 visual-pack」的确定性步骤（target_field + 视觉模型抽色写回 visual-pack 字段），这是 L2→visual-pack 最后一环。
+
+### OSGame 棋盘线 · L2→visual-pack 最后一环（apply overrides 对账，2026-11-10）
+
+- **新增** `apply_visual_overrides(visual_pack, overrides)`：把 visual overrides 对账到 visual-pack.json。**对账不覆盖写值**（color null 不反推 + visual-pack 已有概念图完整值）。
+- 对每个 override 按 target_field 查字段：存在→covered（附当前值）/ 不存在→missing / None→unmapped。新增 `_lookup_field` 点分路径查询 + CLI --visual-pack/--reconcile-out。
+- 门禁 test_assign 48→54 全绿。提交 `f2265e24` 已推。
+- **实测对账**：covered=5 missing=0 unmapped=0 —— 当前 visual-pack 完整覆盖 L2 检测的 5 个环境语义。
+- **里程碑**：AI 场景生成链路 L0→L4 全通，几何装饰物（拼现有+图生3D）+ 环境视觉层（分流+映射+对账）两条路径都闭环。唯一剩 L5 局部 IR 补丁（架构最初规划，未开始）。
