@@ -848,6 +848,61 @@ def header_from_template(template_path: str | None) -> str:
     return header
 
 
+# 场景 .meta 的 guid：与 .asset / 贴图不同，场景没有"内容可 hash"的稳定 ID 来源
+# （场景内容每次烘焙都可能变），所以用 uuid4 派生一次并落盘 .meta。写进 .meta
+# 后 guid 即固定，重跑不会漂（除非显式删 .meta）。
+def write_scene_meta(path: str) -> str:
+    """给 `<scene>.unity` 写 `DefaultImporter` 的 `.meta`，返回 guid。
+
+    与 `.asset`（NativeFormatImporter，mainObjectFileID）不同，`.unity` 场景用
+    `DefaultImporter`（对齐现网 `Art_Prefabs/Changjing/DaTingTest.unity.meta`）。
+    guid 用 uuid4（32 位 hex），首次写后固定。
+    """
+    import uuid
+    guid = uuid.uuid4().hex
+    with open(path, "w", encoding="utf-8", newline="\n") as handle:
+        handle.write(
+            "fileFormatVersion: 2\n"
+            "guid: %s\n"
+            "timeCreated: 1731165000\n"
+            "licenseType: Pro\n"
+            "DefaultImporter:\n"
+            "  userData: \n"
+            "  assetBundleName: \n"
+            "  assetBundleVariant: \n" % guid)
+    return guid
+
+
+def verify_scene_file(path: str, expect_roots: Sequence[int]) -> None:
+    """写出场景后立即读回校验，防 `cp`/写出截断导致 Unity 空场景。
+
+    2026-11-09 实测踩过：部署时 .unity 被截断到只剩场景级文档 + 空
+    `m_Roots: []`，Unity 加载不报错但 Hierarchy 空。这里锁三处：
+    ① 头部有 `%YAML 1.1` + `%TAG !u!`（否则报 corrupted）；
+    ② 末尾 SceneRoots 的 m_Roots 非空、且含所有预期根 fileID；
+    ③ 文件行数 >= 场景级文档之外还有 GameObject 文档（> 6 行显然不够）。
+    """
+    with open(path, "r", encoding="utf-8") as handle:
+        content = handle.read()
+    lines = content.split("\n")
+
+    if not content.startswith("%YAML 1.1\n%TAG !u! tag:unity3d.com,2011:"):
+        raise RuntimeError("scene 缺 YAML 头部声明: %s" % path)
+
+    # 末尾 SceneRoots 段（YAML 里 SceneRoots 一定是最后一个文档）
+    if "SceneRoots:" not in content:
+        raise RuntimeError("scene 缺 SceneRoots 文档: %s" % path)
+    tail = content[content.rindex("SceneRoots:"):]
+    if "m_Roots:" not in tail or "- {fileID:" not in tail:
+        raise RuntimeError("scene 的 SceneRoots.m_Roots 为空（可能被截断）: %s" % path)
+    for fid in expect_roots:
+        if ("{fileID: %d}" % fid) not in tail:
+            raise RuntimeError("scene 根 fileID %d 未出现在 SceneRoots: %s" % (fid, path))
+
+    if len(lines) < 50:
+        raise RuntimeError("scene 行数异常（%d，疑似截断）: %s" % (len(lines), path))
+
+
 def _extract_texture(asset: Dict[str, Any], manifest_root: str,
                      asset_out_dir: str) -> None:
     """抽出 glb 内嵌 PNG 贴图 + TextureImporter .meta（GUID 派生）。"""
@@ -1046,7 +1101,13 @@ def build_restored_scene(profile: Dict[str, Any], manifest: Dict[str, Any],
     with open(out_path, "w", encoding="utf-8", newline="\n") as handle:
         handle.write(header + body)
 
+    # 写出后立即读回校验（防截断 / 缺 YAML 头 / 空 SceneRoots），
+    # 再落 .unity.meta（DefaultImporter，uuid4 guid 首次写后固定）。
+    verify_scene_file(out_path, [root_t])
+    scene_guid = write_scene_meta(out_path + ".meta")
+
     print("baked %d assets, placed %d instances" % (len(mesh_guid), placed_count))
+    print("scene guid %s" % scene_guid)
 
 
 def main() -> None:

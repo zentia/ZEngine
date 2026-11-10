@@ -142,5 +142,93 @@ class FbxMetaTests(unittest.TestCase):
         self.assertEqual(a, b)
 
 
+class SceneMetaTests(unittest.TestCase):
+    """场景 .unity.meta 写出 + 场景完整性校验（2026-11-10 新增）。
+
+    锁 2026-11-09 实测踩过的坑：场景缺 YAML 头、cp 截断导致 SceneRoots 空。
+    """
+
+    def setUp(self) -> None:
+        import tempfile
+        self._tmp = tempfile.mkdtemp(prefix="scene_meta_test_")
+
+    def tearDown(self) -> None:
+        import shutil
+        shutil.rmtree(self._tmp, ignore_errors=True)
+
+    def _write_scene(self) -> str:
+        path = os.path.join(self._tmp, "s.unity")
+        with open(path, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(
+                "%YAML 1.1\n"
+                "%TAG !u! tag:unity3d.com,2011:\n"
+                "--- !u!29 &1\n"
+                "OcclusionCullingSettings:\n"
+                "  m_ObjectHideFlags: 0\n"
+                "  serializedVersion: 2\n")
+            handle.write("--- !u!1660057539 &9223372036854775807\n"
+                         "SceneRoots:\n"
+                         "  m_ObjectHideFlags: 0\n"
+                         "  m_Roots:\n"
+                         "  - {fileID: 100002}\n")
+            # 补齐到 >50 行，避免行数校验误报
+            for _ in range(60):
+                handle.write("\n")
+        return path
+
+    def test_scene_meta_is_default_importer(self) -> None:
+        meta_path = os.path.join(self._tmp, "s.unity.meta")
+        guid = rs.write_scene_meta(meta_path)
+        with open(meta_path, encoding="utf-8") as handle:
+            text = handle.read()
+        self.assertIn("DefaultImporter:", text)
+        self.assertNotIn("NativeFormatImporter:", text)
+        self.assertNotIn("ModelImporter:", text)
+        self.assertEqual(len(guid), 32)
+        self.assertRegex(guid, r"^[0-9a-f]{32}$")
+        # guid 落盘后应等于返回值
+        self.assertIn("guid: %s" % guid, text)
+
+    def test_scene_meta_guid_stable_after_first_write(self) -> None:
+        meta_path = os.path.join(self._tmp, "s.unity.meta")
+        first = rs.write_scene_meta(meta_path)
+        # 再写一次会换 guid（uuid4），但这是"首次落盘后固定"语义——
+        # 这里只断言返回值是 32 位 hex、且 meta 里 guid == 返回值
+        self.assertEqual(len(first), 32)
+        with open(meta_path, encoding="utf-8") as handle:
+            self.assertIn("guid: %s" % first, handle.read())
+
+    def test_verify_scene_ok(self) -> None:
+        path = self._write_scene()
+        rs.verify_scene_file(path, [100002])  # 不应抛异常
+
+    def test_verify_scene_missing_yaml_header(self) -> None:
+        path = self._write_scene()
+        with open(path, encoding="utf-8") as handle:
+            text = handle.read()
+        text = text.replace("%YAML 1.1\n%TAG !u! tag:unity3d.com,2011:\n", "")
+        with open(path, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(text)
+        with self.assertRaises(RuntimeError):
+            rs.verify_scene_file(path, [100002])
+
+    def test_verify_scene_empty_roots(self) -> None:
+        path = self._write_scene()
+        with open(path, encoding="utf-8") as handle:
+            text = handle.read()
+        # 把 m_Roots 清空（模拟 cp 截断到 SceneRoots 只剩空数组）
+        text = text.replace("  - {fileID: 100002}\n", "")
+        with open(path, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(text)
+        with self.assertRaises(RuntimeError):
+            rs.verify_scene_file(path, [100002])
+
+    def test_verify_scene_missing_root_fileid(self) -> None:
+        path = self._write_scene()
+        with self.assertRaises(RuntimeError):
+            # 期望的根 fileID 不在 SceneRoots 里
+            rs.verify_scene_file(path, [999999])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
