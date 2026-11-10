@@ -5493,3 +5493,13 @@ r=20..23、近水平旋转，仍有一条带子斜插天空。根因与既有「
 - **门禁全绿**：test_board / test_assign(39) / test_scene_ir(23) / verify_scene_ir --check（仅 3 已知 warning）。提交 `f0acdec3` 已推。
 - **ImageGen 依赖 PIL**：本机 python 原无 PIL，需 `pip install Pillow`（--resize-texture 降采样也依赖）。
 - 【结论】主链路最后一个实质缺口（图生 3D 生成新资产）正式闭合。剩余：环境视觉层（5 节点）→ visual-pack.json（另一条链路）。
+
+### OSGame 棋盘线 · L2 语义映射桥接（visual overrides，2026-11-10）
+
+补上「L2 环境视觉层 → visual-pack.json」桥接缺口：
+
+- **新增** `ir_to_visual_overrides(assigned_ir)`：把 visual_layer/sky 节点转成 visual_overrides.json 中间产物，声明语义→visual-pack 字段归属。
+- **新增** `VISUAL_FIELD_MAP` + `visual_field_for(label)`：语义关键词→字段路径确定性映射。**强信号材质词（装饰线/贴花）优先于泛化「地面」**，避免「地面装饰线」误映射 core_slab。
+- **诚实边界**：只声明归属，color 留 null（单目抽色不可信，与 depth_m 同类），颜色由视觉模型/概念图填。
+- CLI 加 `--visual-overrides-out`。门禁 test_assign 39→48 全绿。提交 `ff04c2f8` 已推。
+- 【剩余】visual_overrides.json 是中间产物，下游还需「应用 overrides 到 visual-pack」的确定性步骤（target_field + 视觉模型抽色写回 visual-pack 字段），这是 L2→visual-pack 最后一环。
