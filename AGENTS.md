@@ -5401,3 +5401,48 @@ r=20..23、近水平旋转，仍有一条带子斜插天空。根因与既有「
 - 门禁 `verify/test_decompose.py` 14 tests 全绿；CLI `--check` 全链路 errors:0（仅相机参数 / capture_profiles 缺失两条预期 warning）。
 - 【待办】接真模型：混元 / 腾讯内部多模态服务产出 `Detection` 列表喂给 `decompose_to_ir`；模型调用走 `connect_cloud_service` 拿 token，接口留成 `Detection` 列表（`make_mock_detections` 演示了形态）。
 - 提交 `81b4bc05` 已推 `origin/main`（`442a6e5a..81b4bc05`）。
+
+### OSGame 棋盘线 · L1 接混元 vision 视觉理解 provider（2026-11-10）
+
+用户「接真模型」→ 选定「腾讯云混元 Chat」。**关键前提**：`buddy-cloud.py` 的 `_PROVIDER_MAP` 只有文生图 / 图生 3D / 视频（`hy-image-v3` / `hy-3d` / `video-effect`），**没有图生文（视觉理解）**，`connect_cloud_service` 也只给多模态**内容生成**（miora 文生图/视频）用，都不可用于 L1 视觉理解。所以 L1 走混元大模型的 **OpenAI 兼容端点**（不是 buddy-cloud 代理、不是 TC3 签名）：
+
+- 端点：`https://api.hunyuan.cloud.tencent.com/v1/chat/completions`，`Authorization: Bearer <API Key>`（OpenAI 兼容，无需 TC3 签名）。
+- 模型：`hunyuan-vision`（图生文）；图片用 `content` 数组 + `image_url`，url 支持 `data:image/*;base64,`（**英文逗号**）。
+- **API Key 从环境变量 `HUNYUAN_API_KEY` 读，不硬编码、不落盘**（用户选定）。
+- 新增 `scene-ir/vision_provider.py`：
+  - `VisionProvider.detect(image) -> list[Detection]` 抽象接口，与 `decompose` 解耦。
+  - `HunyuanVisionProvider`：结构化 prompt 约束模型输出 JSON 数组（`bbox` 像素 / `category` 白名单标签 / `confidence` / `depth_m` / `label`），稳健抽取（容忍 markdown 代码块 / 前后杂质），解析失败抛 `VisionParseError`（不静默产假数据）。
+  - `MockVisionProvider`：兜底 / 测试，复用 `make_mock_detections`。
+  - `_probe_image_size`：无第三方库读 PNG/JPEG 尺寸头。
+- 门禁 `verify/test_vision_provider.py` 14 tests 全绿；mock 全链路 `vision_provider --mock -> decompose --check` errors:0。
+- 用法：`HUNYUAN_API_KEY=... python scene-ir/vision_provider.py --image <截图> --out detections.json`（真调）；`--mock` 不调模型。
+- 提交 `046c40bb` 已推 `origin/main`（`f3ea616e..046c40bb`）。
+
+### OSGame 棋盘线 · L1 视觉理解改走 WorkBuddy 内部 VLM + 深度可信度评估（2026-11-10）
+
+**纠偏**：上一段「接混元 vision 公网 OpenAI 端点 + `HUNYUAN_API_KEY`」方案方向错误——用户纠正「腾讯内部产品走 IOA 授权，不走 API_KEY」。正确通道是 **WorkBuddy 内部 VLM sidecar，零 key**：
+
+- 环境变量（WorkBuddy 在 IOA 环境自动注入）：`WORKBUDDY_VLM_CHAT_URL`（`127.0.0.1:50669/skills/vlm/chat`）、`WORKBUDDY_VLM_AUTH_TOKEN` → `Authorization: Bearer`、`WORKBUDDY_VLM_CONTEXT` → `X-WorkBuddy-MCP-Context`（**两 header 都要带，缺一 401**）、`WORKBUDDY_VLM_MODEL`（`kinfra-office-agent`）。
+- 协议：**只支持流式**（非流式返回 `code 11101`），`stream: true` 返回 OpenAI 兼容 SSE（`: heartbeat` + `data: {...}` + `data: [DONE]`）；图片走 `image_url` + `data:image/*;base64,`。
+- `vision_provider.py` 重做：默认 `WorkBuddyVLMProvider`（零 key）+ `_parse_sse_stream`；`HunyuanVisionProvider` 降为备用通道（显式 key 才用）；`make_default_provider()` 有鉴权材料→WorkBuddy、无→Mock。
+- 提交 `63df76d4` 已推。
+
+**深度可信度评估**（用户「做深度可信度评估」，`eval_depth.py` 4 组受控提问实测）：**VLM 单目绝对米完全不可信，相对层序完全可信**。铁证：同一物体绝对米跨轮漂移 3~80 倍，越强调「真实米制」越编离谱（月亮 50 亿米）；而 `relative_rank` 模式下远近单调零矛盾。⇒ 落地改动 `depth_m → depth_rank`（0=最远→N=最近）：
+
+- `decompose.py`：`Detection` 新增 `depth_rank`（主路径），`depth_m` 降级可选兼容；`decompose_to_ir` 排序 rank 升序优先。
+- `vision_provider.py`：prompt 改问 depth_rank（非米）；**修复 `_CATEGORY_HINT` 斜杠串缺陷**（模型把整串 `prop/lantern/...` 当一个 category 输出→全落 unknown，改为逗号分隔独立词 + 明确「只用其中一个词」）。
+- **架构决策：L1 不拆专门深度模型**，绝对米/世界坐标留给 L3 用真实相机参数（capture_profiles 的 fov/pitch/position）做几何反投影。
+- 提交 `711515c8` 已推。
+
+### OSGame 棋盘线 · L2 资产生成编排层（2026-11-10）
+
+用户「继续推进」→ 推进 L2（scene-ir 语义节点 → 带 asset_id 的形态）。**关键缺口**：L1 产出语义节点（只有 kind+label+bbox+confidence+depth_rank，无 asset_id），L3 `build_restored_scene` 消费的是 manifest 的 placements（带 asset_id+anchor+scale）。中间缺「语义 → 资产指派」的编排层。
+
+- 新增 `scene-ir/assign.py`（L2 编排层，确定性，不调模型）：
+  - `match_asset(label, available_ids)`：语义关键词 → asset_id 确定性映射（`灯柱→star_pillar`、`灯笼→star_lantern`、`圆环/光环→halo_ring`、`星象仪→moon_orrery`），**未命中返回 None 不硬猜**。
+  - `assign_node`：只有 `kind ∈ {ground,structure,prop}` 参与指派；character/vfx/unknown 标记 `skipped`；未命中资产库标记 `needs_generation`（留图生 3D 接口，本轮不接）；有相机才反投影 anchor，缺相机留空（诚实边界）。
+  - `assign_assets`：主入口，产出带 asset_id + mesh_sha256 + pivot_offset 的 scene-ir。
+- **诚实边界**：现有 4 个资产（灯柱/圆环/星象仪/星灯）只能覆盖「装饰物」，背景层（夜空/远山/石板地面）正确标记 `needs_generation`，不硬拼。
+- 端到端实测：L1 真实产出的 scene-ir（11 节点）→ assign：3 灯笼→star_lantern、6 个背景层→needs_generation、2 个 unknown→skipped。
+- 门禁 `verify/test_assign.py` 13 tests 全绿。
+- 【待办】图生 3D 生成新资产（`needs_generation` 节点走混元 `hy-3d`，接口留成可插拔）；L2→L3（`build_restored_scene` 消费 assigned scene-ir 而非 manifest placements）尚未串联。
