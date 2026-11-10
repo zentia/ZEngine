@@ -13,15 +13,21 @@
   只在「现有资产库没有匹配」时被调用去生成新资产，且生成的 glb 仍由
   `external_mesh.py --import-glb` 确定性接管。
 
-拼现有资产 vs 生成新资产 vs 环境视觉层
-----------------------------------------
+拼现有资产 vs 生成新资产 vs 环境视觉层 / 冻结几何 / 天穹
+--------------------------------------------------------
 - 「拼现有资产」：label 命中映射表 -> 直接用 manifest 里的 asset_id（确定性）。
-- 「生成新资产」：label 未命中映射表、且是单体实体（structure/prop 或非环境语义
-  的 ground）-> 标记 `needs_generation`，留接口给图生 3D provider。
-- 「环境视觉层」：label 未命中、且语义是天空/地面/远景/材质（连续铺展的环境），
-  -> 标记 `visual_layer`，真源是 visual-pack.json（天空盒/材质/Volume），
-  **不是**混元图生 3D 的单体 glb。这是 contract.asset_kinds.scene 的 l2_output
-  里「全景贴图 + 视觉参数包」与「glb 单体」两类产物的区分。
+- 「生成新资产」：label 未命中映射表、且是单体实体（可摆放物，如雕像/摆件）
+  -> 标记 `needs_generation`，留接口给图生 3D provider。
+- 「环境视觉层」：label 未命中、且语义是地面/远景/材质（连续铺展的环境），
+  -> 标记 `visual_layer`，真源是 visual-pack.json（材质/Volume）。
+- 「冻结几何」：label 未命中、且语义是棋盘本体核心台面（core_slab），
+  -> 标记 `frozen`，AI 不得改动、不得图生 3D。
+- 「天穹」：label 未命中、且语义是天空中的天体（月亮/太阳/星星），
+  -> 标记 `sky`，真源是 visual-pack.json 天空盒。
+
+这五类是 contract.asset_kinds.scene 的 l2_output 里「glb 单体」（拼现有 /
+图生 3D）与「全景贴图 + 视觉参数包」（visual_layer / sky）与「冻结几何」
+（frozen，不属于 AI 产出）的完整区分。
 
 用法
 ----
@@ -107,6 +113,45 @@ def is_visual_layer(label: str, kind: str) -> bool:
     return any(kw in text for kw in VISUAL_LAYER_GROUND)
 
 
+# 冻结几何语义：棋盘本体核心台面（core_contract.fixed_parts 里的 core_slab）。
+# 这些是 board-spec.json 冻结的连续 slab，AI 不得改动、不得图生 3D 替换。
+# 语义词：平台 / 台面 / 棋盘本体 / 核心台面。L1 把它们检测成 structure/ground。
+FROZEN_GEOMETRY_KEYWORDS: Tuple[str, ...] = (
+    "平台", "台面", "棋盘", "棋盘本体", "核心台面", "底座",
+)
+
+
+def is_frozen_geometry(label: str, kind: str) -> bool:
+    """判断语义节点是否棋盘本体冻结几何（core_slab 等 fixed_parts）。
+
+    只有 structure / ground kind 才可能是棋盘本体（核心台面是连续 slab，
+    不是 prop 装饰物）。命中即标 `frozen`（AI 不得改动 / 图生 3D）。
+    """
+    if kind not in ("structure", "ground"):
+        return False
+    text = label.lower()
+    return any(kw in text for kw in FROZEN_GEOMETRY_KEYWORDS)
+
+
+# 天穹几何语义：天空中的天体（月亮 / 太阳 / 星星 / 星体）。这些属于
+# board-spec.sky 的 sky@* 天穹几何 + visual-pack.json 的 skybox 渲染层，
+# **不是** 单体图生 3D 的可摆放实体。L1 把它们检测成 prop。
+SKY_OBJECT_KEYWORDS: Tuple[str, ...] = (
+    "月亮", "月", "太阳", "日", "星星", "星体", "天体", "星辰", "流星",
+)
+
+
+def is_sky_object(label: str) -> bool:
+    """判断语义节点是否天空中的天体（月亮/太阳/星星等 sky@* 天穹几何）。
+
+    这类天体不是可摆放的单体实体，真源是 visual-pack.json 的天空盒 / 天穹，
+    标 `sky`（区别于地面环境视觉层的 `visual_layer` 与单体实体的
+    `needs_generation`）。
+    """
+    text = label.lower()
+    return any(kw in text for kw in SKY_OBJECT_KEYWORDS)
+
+
 def match_asset(label: str, available_ids: List[str]) -> Optional[str]:
     """按语义关键词把 label 匹配到 asset_id；未命中返回 None（不硬猜）。"""
     text = label.lower()
@@ -137,9 +182,27 @@ def assign_node(node: Dict[str, Any], manifest: Dict[str, Any],
 
     asset_id = match_asset(label, available_ids)
     if asset_id is None:
-        # 未命中现有资产库 -> 区分「环境视觉层」与「单体实体」：
-        #   - 环境视觉层（天空/地面/远景/材质，走 visual-pack.json）标 visual_layer；
-        #   - 单体实体（月亮/平台等可摆放物，走混元图生 3D）标 needs_generation。
+        # 未命中现有资产库 -> 按优先级分流（每种都诚实标记，不硬猜）：
+        #   1. frozen：棋盘本体冻结几何（core_slab 台面），AI 不得改动；
+        #   2. sky：天空中的天体（月亮/太阳/星星），走 visual-pack 天空盒；
+        #   3. visual_layer：环境视觉层（地面材质/远景/贴花），走 visual-pack；
+        #   4. needs_generation：单体实体（可摆放物），走混元图生 3D。
+        if is_frozen_geometry(label, kind):
+            node = dict(node)
+            node["assignment"] = {
+                "status": "frozen",
+                "reason": "label %r 是棋盘本体冻结几何（core_slab 台面），"
+                          "AI 不得改动、不得图生 3D 替换" % label,
+            }
+            return node
+        if is_sky_object(label):
+            node = dict(node)
+            node["assignment"] = {
+                "status": "sky",
+                "reason": "label %r 是天空中的天体（sky@* 天穹），"
+                          "真源是 visual-pack.json 天空盒，不是单体 glb" % label,
+            }
+            return node
         if is_visual_layer(label, kind):
             node = dict(node)
             node["assignment"] = {
@@ -331,10 +394,14 @@ def main(argv: Optional[List[str]] = None) -> int:
                    if n.get("assignment", {}).get("status") == "needs_generation")
     visual = sum(1 for n in result["nodes"]
                  if n.get("assignment", {}).get("status") == "visual_layer")
+    frozen = sum(1 for n in result["nodes"]
+                 if n.get("assignment", {}).get("status") == "frozen")
+    sky = sum(1 for n in result["nodes"]
+              if n.get("assignment", {}).get("status") == "sky")
     skipped = sum(1 for n in result["nodes"]
                   if n.get("assignment", {}).get("status") == "skipped")
-    print("assigned=%d needs_generation=%d visual_layer=%d skipped=%d"
-          % (assigned, need_gen, visual, skipped))
+    print("assigned=%d needs_generation=%d visual_layer=%d frozen=%d sky=%d skipped=%d"
+          % (assigned, need_gen, visual, frozen, sky, skipped))
     return 0
 
 

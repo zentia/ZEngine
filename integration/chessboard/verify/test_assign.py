@@ -104,6 +104,38 @@ class VisualLayerTests(unittest.TestCase):
         self.assertFalse(assign.is_visual_layer("地面雕像", "prop"))
 
 
+class FrozenGeometryTests(unittest.TestCase):
+    def test_structure_platform_frozen(self) -> None:
+        self.assertTrue(assign.is_frozen_geometry("魔法平台", "structure"))
+        self.assertTrue(assign.is_frozen_geometry("棋盘本体", "structure"))
+
+    def test_ground_slab_frozen(self) -> None:
+        self.assertTrue(assign.is_frozen_geometry("核心台面", "ground"))
+
+    def test_prop_not_frozen(self) -> None:
+        # prop 不可能是棋盘本体冻结几何
+        self.assertFalse(assign.is_frozen_geometry("平台", "prop"))
+
+    def test_unrelated_not_frozen(self) -> None:
+        self.assertFalse(assign.is_frozen_geometry("灯笼", "structure"))
+        self.assertFalse(assign.is_frozen_geometry("月亮", "structure"))
+
+
+class SkyObjectTests(unittest.TestCase):
+    def test_moon_is_sky(self) -> None:
+        self.assertTrue(assign.is_sky_object("月亮"))
+        self.assertTrue(assign.is_sky_object("满月"))
+
+    def test_sun_star_is_sky(self) -> None:
+        self.assertTrue(assign.is_sky_object("太阳"))
+        self.assertTrue(assign.is_sky_object("星星"))
+
+    def test_entity_not_sky(self) -> None:
+        self.assertFalse(assign.is_sky_object("灯笼"))
+        self.assertFalse(assign.is_sky_object("雕像"))
+        self.assertFalse(assign.is_sky_object("魔法平台"))
+
+
 class AssignNodeTests(unittest.TestCase):
     def test_assignable_kind_gets_asset(self) -> None:
         node = {"id": "p1", "kind": "prop", "label": "左侧灯笼",
@@ -146,16 +178,24 @@ class AssignNodeTests(unittest.TestCase):
         out = assign.assign_node(node, _MANIFEST, None, (1920, 1080))
         self.assertEqual(out["assignment"]["status"], "visual_layer")
 
-    def test_structure_entity_needs_generation(self) -> None:
-        # structure 是单体实体，未命中 -> needs_generation（不是 visual_layer）
+    def test_structure_platform_is_frozen(self) -> None:
+        # 「魔法平台」是棋盘本体 core_slab 冻结几何，不是可替换装饰物
         node = {"id": "s1", "kind": "structure", "label": "魔法平台",
                 "confidence": 0.95}
         out = assign.assign_node(node, _MANIFEST, None, (1920, 1080))
-        self.assertEqual(out["assignment"]["status"], "needs_generation")
+        self.assertEqual(out["assignment"]["status"], "frozen")
 
-    def test_prop_entity_needs_generation(self) -> None:
+    def test_prop_moon_is_sky(self) -> None:
+        # 「月亮」是天空中的天体（sky@* 天穹），不是可摆放单体实体
         node = {"id": "p4", "kind": "prop", "label": "月亮",
                 "confidence": 0.95}
+        out = assign.assign_node(node, _MANIFEST, None, (1920, 1080))
+        self.assertEqual(out["assignment"]["status"], "sky")
+
+    def test_prop_statue_needs_generation(self) -> None:
+        # 真正的单体实体（雕像）未命中 -> needs_generation（图生 3D）
+        node = {"id": "p5", "kind": "prop", "label": "英雄雕像",
+                "confidence": 0.9}
         out = assign.assign_node(node, _MANIFEST, None, (1920, 1080))
         self.assertEqual(out["assignment"]["status"], "needs_generation")
 

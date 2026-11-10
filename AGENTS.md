@@ -5471,3 +5471,14 @@ r=20..23、近水平旋转，仍有一条带子斜插天空。根因与既有「
 - **实测分流**（真实 L1 scene-ir 11 节点）：assigned=3（3 灯笼）/ needs_generation=2（月亮、魔法平台）/ visual_layer=4（夜空、远山、石板地面、地面装饰线）/ skipped=2（unknown）。
 - 门禁 `verify/test_assign.py` 19 → 31 tests（新增 VisualLayerTests 8 + AssignNodeTests 4），全绿。
 - 【待办】单体实体（月亮/魔法平台）→ 混元 hy-3d 图生 3D，需先在 style-pack.json 声明 decoration 槽位再 `--import-glb`；环境视觉层（4 节点）→ 走 visual-pack.json（另一条链路）。
+
+### OSGame 棋盘线 · L2 分类再修正：frozen / sky 分流（2026-11-10）
+
+推进「单体图生 3D」时核实 board-spec 冻结几何，纠正上一轮把「魔法平台」「月亮」误判为 needs_generation：
+
+- **魔法平台 = core_slab（棋盘本体冻结几何）**：`core_contract.fixed_parts` 含 `core_slab`，bbox 覆盖棋盘中央整个台面，AI 不得改动 → 标 `frozen`。
+- **月亮 = sky@*（天穹几何）**：`board-spec.sky` 已冻结天穹球（radius 62m），bbox 在图像上部天空 → 标 `sky`（走 visual-pack 天空盒）。
+- **改动**：`assign.py` 未命中资产库后按优先级五路分流 `frozen → sky → visual_layer → needs_generation → assigned`。新增 `is_frozen_geometry(label, kind)`（平台/台面/棋盘本体，仅 structure/ground）+ `is_sky_object(label)`（月亮/太阳/星星/天体）。
+- **实测分流**（真实 11 节点）：assigned=3 / needs_generation=0 / visual_layer=4 / frozen=1（魔法平台）/ sky=1（月亮）/ skipped=2。
+- **诚实结论**：当前金铲铲截图 L1 检测结果里**没有任何节点真正需要单体图生 3D**（needs_generation=0）。图生 3D 机制已探明（§混元 hy-3d），但当前数据喂不出真 needs_generation 节点。要验证闭环需真「可新增实体装饰物」或换概念图。
+- 门禁 `verify/test_assign.py` 31 → 39 tests（FrozenGeometryTests 4 + SkyObjectTests 3 + AssignNodeTests 修正），全绿。
