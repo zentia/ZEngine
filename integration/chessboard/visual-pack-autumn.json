@@ -1,0 +1,97 @@
+{
+  "schema": "zengine.chessboard.visual-pack/v1",
+  "name": "枫染秋坪 Maple Autumn Board",
+  "generated_by": "zengine-ai-multimodal/image-to-visual (从金铲铲秋日截图抽取)",
+  "status": "AI_GENERATED —— 由金铲铲秋日截图抽取氛围，可整包替换；几何冻结契约在 board-spec.json 中不受影响",
+  "note": "视觉层从金铲铲秋日枫叶截图（baseline_jcc.jpg，sha 35807c54…c5a3b）抽取：暖红橙棕主色、橙粉晚霞天空、暖秋柔光。只改场景视觉层（天空/后处理/材质/光照/Volume），几何冻结契约 board-spec.json 与外围装饰 style-pack.json 互不覆盖。颜色由截图主色统计派生，非精确取色（单目抽色是氛围参考，不是 1:1 校准）。",
+  "concept": {
+    "prompt": "金铲铲之战秋日枫叶主题棋盘：暖红橙棕色调，中央浅米偏粉棋盘台面散落红枫叶，绿石围栏，左上大红枫树，橙粉晚霞天空与淡色远山，暖秋柔光",
+    "image": "build/baseline_jcc.jpg",
+    "sha256": "35807c54305f5524c06e0f422271891bbfd13d97d819c292cdbda0ce5a5c5a3b",
+    "theme": "暖红橙秋日 / 浅米台面 / 橙粉晚霞 / 绿石点缀",
+    "derivation": "从截图主色统计派生：主色 #c87f6c 暖红褐、辅色 #c9b297 暖米棕、点缀 #bb454a 深红、#e6af7e 橙。天空取橙粉晚霞，光照取暖橙，材质取浅米偏粉。"
+  },
+  "palette": {
+    "primary": [0.78, 0.50, 0.42, 1.0],
+    "accent": [0.73, 0.27, 0.29, 1.0],
+    "glow": [0.90, 0.69, 0.49, 1.0]
+  },
+  "skybox": {
+    "mode": "panorama",
+    "projection": "equirectangular_2_1",
+    "panorama_image": "assets/sky_panorama_autumn.jpg",
+    "panorama_sha256": null,
+    "projection_fidelity": "approximate —— 橙粉晚霞氛围图，用于天穹球/背景，不做几何测量",
+    "exposure": 1.1,
+    "rotation_deg": 0.0,
+    "fog": {
+      "enabled": 1,
+      "mode": 3,
+      "density": 0.004,
+      "linear_start": 0.0,
+      "linear_end": 260.0
+    }
+  },
+  "post_processing": {
+    "exposure_value": 0.25,
+    "tonemap_mode": 3,
+    "color_grading": {
+      "white_balance_temperature": 5600,
+      "white_balance_tint": 6,
+      "blue_correction": 0.45,
+      "expand_gamut": 1,
+      "tone_curve_type": 3
+    },
+    "bloom": {
+      "enabled": 1,
+      "threshold": 1.2,
+      "soft_knee": 0.7,
+      "intensity": 0.45,
+      "diffusion": 0.8,
+      "firefly_removal_strength": 1,
+      "clamp": 65472
+    },
+    "lut": {
+      "texture": null,
+      "intensity": 0
+    }
+  },
+  "materials": {
+    "core_slab": { "color": [0.86, 0.80, 0.74, 1.0] },
+    "frame": { "color": [0.55, 0.38, 0.20, 1.0] },
+    "anchor_seat_home": { "color": [0.78, 0.70, 0.64, 1.0] },
+    "anchor_seat_guest": { "color": [0.78, 0.70, 0.64, 1.0] },
+    "anchor_info_plinth": { "color": [0.78, 0.70, 0.64, 1.0] },
+    "sky_gradient": { "color": [0.85, 0.55, 0.48, 1.0] },
+    "zboard_deco_nw": { "color": [0.62, 0.42, 0.34, 1.0] },
+    "zboard_deco_se": { "color": [0.62, 0.42, 0.34, 1.0] },
+    "zboard_deco_n": { "color": [0.82, 0.55, 0.32, 1.0] },
+    "zboard_orb_s": { "color": [0.90, 0.69, 0.49, 1.0] },
+    "zboard_lantern_w": { "color": [0.95, 0.75, 0.50, 1.0] },
+    "zboard_lantern_e": { "color": [0.95, 0.75, 0.50, 1.0] }
+  },
+  "volume": {
+    "enabled": true,
+    "is_global": 1,
+    "weight": 1.0,
+    "blend_distance": 1.0,
+    "priority": 0,
+    "script_guid": "8b58b33c8d7842a44a07b29f9b2fea73",
+    "script_file_id": 11500000,
+    "template_source": "build/scene_template.unity",
+    "template_document": "114 &126173803",
+    "external_ref_policy": "把模板里所有指向 AC10 场景对象的 fileID（UserDefinedBounds / Root / m_GameObject）改成 {fileID: 0} 或新分配的本地 ID，避免悬空引用"
+  },
+  "lighting": {
+    "directional_color": [1.0, 0.80, 0.60, 1.0],
+    "directional_intensity": 1.15,
+    "ambient_color": [0.55, 0.45, 0.40, 1.0],
+    "ambient_intensity": 0.70,
+    "subtractive_shadow_color": [0.35, 0.22, 0.18, 1.0]
+  },
+  "ai_generation_contract": {
+    "source_image_sha256": "35807c54305f5524c06e0f422271891bbfd13d97d819c292cdbda0ce5a5c5a3b",
+    "color_extraction": "PIL 64x64 降采样主色统计，非精确取色",
+    "honesty_note": "单目抽色是氛围参考，不承诺与截图 1:1 颜色一致；精确对色需 Unity 侧锁机位渲染比对"
+  }
+}

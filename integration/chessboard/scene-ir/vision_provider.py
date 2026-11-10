@@ -146,7 +146,8 @@ def _extract_json_array(text: str) -> List[dict]:
 def _dict_to_detection(item: Any) -> Detection:
     if not isinstance(item, dict):
         raise VisionParseError("检测项不是对象: %r" % str(item)[:100])
-    bbox = item.get("bbox")
+    # 兼容模型吐出的不同字段名：prompt 要求 bbox，但部分 VLM 会吐 bbox_2d。
+    bbox = item.get("bbox") if "bbox" in item else item.get("bbox_2d")
     if not isinstance(bbox, list) or len(bbox) != 4:
         raise VisionParseError("bbox 必须是 4 元素数组: %r" % str(item)[:100])
     category = str(item.get("category", "unknown")).strip()

@@ -1,0 +1,161 @@
+{
+  "schema": "zengine.baseline-manifest/v1",
+  "name": "金铲铲秋日枫叶棋盘（基线语义清单）",
+  "source_image": "build/baseline_jcc.jpg",
+  "source_image_sha256": "35807c54305f5524c06e0f422271891bbfd13d97d819c292cdbda0ce5a5c5a3b",
+  "camera": null,
+  "note": "单张游戏截图 + 无相机参数。本清单只固化『语义成分』（该有什么、在哪、核心与否），是『场景 vs 概念图成分覆盖』验收的 ground truth 基线；不含 world 坐标（逆渲染欠定，anchor 诚实留空）。几何摆放精确对拍（L4 像素 IoU）需相机参数，属可选增量，不在本清单范围。",
+  "derived_from": "L1 视觉检测（WorkBuddy VLM）+ 人工核对截图语义成分",
+  "components": [
+    {
+      "id": "board_ground",
+      "name": "棋盘台面",
+      "kind": "ground",
+      "position": "center",
+      "depth": "near",
+      "core": true,
+      "confidence": 0.95,
+      "note": "中央空旷棋盘地面，散落枫叶，浅米色偏粉"
+    },
+    {
+      "id": "fence_green_stones",
+      "name": "绿石围栏",
+      "kind": "structure",
+      "position": "center",
+      "depth": "mid",
+      "core": true,
+      "confidence": 0.9,
+      "note": "棋盘上边缘一排圆滚滚绿石围栏"
+    },
+    {
+      "id": "autumn_tree_left",
+      "name": "大红枫树",
+      "kind": "structure",
+      "position": "left",
+      "depth": "near",
+      "core": true,
+      "confidence": 0.95,
+      "note": "左上角巨大红枫树，深棕枝干"
+    },
+    {
+      "id": "rock_ledge_right",
+      "name": "右侧石崖",
+      "kind": "structure",
+      "position": "right",
+      "depth": "mid",
+      "core": true,
+      "confidence": 0.95,
+      "note": "右侧隆起青绿岩石高台"
+    },
+    {
+      "id": "cart_wood",
+      "name": "木质手推车",
+      "kind": "prop",
+      "position": "left",
+      "depth": "near",
+      "core": true,
+      "confidence": 0.9,
+      "note": "左下角木推车，带大轮子，载落叶"
+    },
+    {
+      "id": "swing_animal",
+      "name": "树上秋千",
+      "kind": "prop",
+      "position": "left",
+      "depth": "near",
+      "core": false,
+      "confidence": 0.85,
+      "note": "树上秋千坐白色小动物"
+    },
+    {
+      "id": "stone_table_bench",
+      "name": "石桌石凳",
+      "kind": "prop",
+      "position": "left",
+      "depth": "near",
+      "core": false,
+      "confidence": 0.85,
+      "note": "树下石桌石凳茶具"
+    },
+    {
+      "id": "lantern_trunk",
+      "name": "树干灯阵",
+      "kind": "prop",
+      "position": "left",
+      "depth": "near",
+      "core": false,
+      "confidence": 0.9,
+      "note": "树干旁发光灯阵"
+    },
+    {
+      "id": "bird_nest_ledge",
+      "name": "崖边鸟巢",
+      "kind": "prop",
+      "position": "right",
+      "depth": "mid",
+      "core": false,
+      "confidence": 0.85,
+      "note": "右侧石崖边鸟巢"
+    },
+    {
+      "id": "bamboo_hat",
+      "name": "斗笠",
+      "kind": "prop",
+      "position": "right",
+      "depth": "mid",
+      "core": false,
+      "confidence": 0.8,
+      "note": "右侧石崖上斗笠"
+    },
+    {
+      "id": "hero_pawn",
+      "name": "金色头盔英雄",
+      "kind": "character",
+      "position": "center",
+      "depth": "near",
+      "core": true,
+      "confidence": 0.95,
+      "note": "中央偏下紫色小小英雄，金鹿角头饰"
+    },
+    {
+      "id": "pawn_orange_columns",
+      "name": "橙色发光棋子",
+      "kind": "character",
+      "position": "both",
+      "depth": "near",
+      "core": false,
+      "confidence": 0.9,
+      "note": "左右两列竖排橙色发光棋子（松鼠造型）"
+    },
+    {
+      "id": "waterfall",
+      "name": "瀑布溪流",
+      "kind": "vfx",
+      "position": "center",
+      "depth": "far",
+      "core": false,
+      "confidence": 0.85,
+      "note": "绿石围栏后小瀑布流下"
+    },
+    {
+      "id": "autumn_leaves_ground",
+      "name": "前景落叶带",
+      "kind": "decoration",
+      "position": "center",
+      "depth": "near",
+      "core": false,
+      "confidence": 0.9,
+      "note": "前景一排红橙枫叶装饰"
+    },
+    {
+      "id": "sky_dusk",
+      "name": "橙粉晚霞天空",
+      "kind": "visual",
+      "position": "background",
+      "depth": "far",
+      "core": true,
+      "confidence": 0.9,
+      "note": "右上橙粉朦胧天空 + 淡色远山 + 白色飞鸟"
+    }
+  ]
+}
