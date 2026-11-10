@@ -5384,3 +5384,20 @@ r=20..23、近水平旋转，仍有一条带子斜插天空。根因与既有「
 - 部署清单：4 `.asset`+`.meta` → `Meshes/`；4 PNG+`.meta` → `assets/external_meshes/`；`jcc-maple-autumn.unity`+`.meta` → `ZEngineChessboard/`（`DefaultImporter` meta，guid `uuid4`）。旧的 `-fbx` 场景已删。
 - 【遗留】① `external_meshes/` 下 4 个 FBX 已无场景引用，待用户确认是否删除；② `.unity.meta` / 场景 guid 目前是部署时 `uuid4` 随机生成，**未纳入 `restore_scene.py` 自动产出**，建议补「生成 `.unity.meta` + 部署完整性校验」。
 - 提交：`restore_scene.py` 两处修复（`write_texture_meta` + `header_from_template`）合一个 commit `3c076822`，已推 `origin/main`（`def6e13b..3c076822`）。
+
+### OSGame 棋盘线 · L1 分解层确定性装配骨架（2026-11-10）
+
+用户「接着推」→ 继续推进 L1（架构里唯一真缺的层）。用户选定：**先搭确定性骨架 + mock 跑通全链路，AI 能力走混元 / 腾讯内部服务（留可插拔接口）**。
+
+- 新增 `scene-ir/decompose.py`：L1 确定性装配层，职责边界与 `contract.json` 的 `ai_boundary` 严格一致——**AI 只吐类别标签 + bbox + 置信度 + 深度（`Detection`），确定性代码负责归类 / 阈值 / 归一化 / 反投影**。绝不收模型的 scene-ir kind，只收类别标签走白名单映射。
+- 核心规则（全在 `decompose_to_ir`，离线可单测）：
+  1. **类别 → kind 白名单映射**（`CATEGORY_TO_KIND`），未命中一律 unknown（对应「不要自己意淫」）。
+  2. **confidence < 0.5 → 降级 unknown + reason**（阈值复用 `contract.json` 的 `confidence_unknown_threshold`）。
+  3. **bbox 归一化**（像素 → [0,1] quad，跨分辨率可比）。
+  4. **深度排序**（depth_m 降序 = 远→近 = nodes 数组顺序 = 层序）。
+  5. **反投影诚实边界**：只有 source.camera 齐备（fov/pitch/position）才做「bbox 底面中心 → y=0 地面 anchor 估算」并标 `estimate`；缺相机只留 bbox **不硬算 world**（单视角逆渲染欠定，对应需求文档第九节「不承诺 1:1」）。
+  6. **character / vfx_emitter 在 L1 阶段降级 unknown**：这两类 kind 的必需字段（rig/animation_slots、emitter/timeline）是 L2 生成器才产出的，单张截图无法判定——L1 只负责「检测到这里有人/特效」，L2 才补全参数。
+- 反投影符号坑：俯角向下，视线方向 y 分量为 `-sin(v_angle)`，与 y=0 求交 `t = pos.y / sin(v_angle)`（正数）；第一版写成 `t = -pos.y/sin` 得到负 t 全返回 None。
+- 门禁 `verify/test_decompose.py` 14 tests 全绿；CLI `--check` 全链路 errors:0（仅相机参数 / capture_profiles 缺失两条预期 warning）。
+- 【待办】接真模型：混元 / 腾讯内部多模态服务产出 `Detection` 列表喂给 `decompose_to_ir`；模型调用走 `connect_cloud_service` 拿 token，接口留成 `Detection` 列表（`make_mock_detections` 演示了形态）。
+- 提交 `81b4bc05` 已推 `origin/main`（`442a6e5a..81b4bc05`）。
