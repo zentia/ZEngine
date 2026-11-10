@@ -71,6 +71,39 @@ class LabelMatchTests(unittest.TestCase):
         self.assertIsNone(assign.match_asset("灯笼", ["star_pillar"]))
 
 
+class VisualLayerTests(unittest.TestCase):
+    def test_ground_sky_is_visual(self) -> None:
+        self.assertTrue(assign.is_visual_layer("夜空", "ground"))
+        self.assertTrue(assign.is_visual_layer("星空背景", "ground"))
+
+    def test_ground_terrain_is_visual(self) -> None:
+        self.assertTrue(assign.is_visual_layer("石板地面", "ground"))
+        self.assertTrue(assign.is_visual_layer("远山", "ground"))
+        self.assertTrue(assign.is_visual_layer("地面装饰线", "ground"))
+
+    def test_ground_material_is_visual(self) -> None:
+        self.assertTrue(assign.is_visual_layer("水面倒影", "ground"))
+
+    def test_structure_not_visual(self) -> None:
+        # structure 是单体实体，即使 label 带「平台」也不误判为环境层
+        self.assertFalse(assign.is_visual_layer("魔法平台", "structure"))
+
+    def test_prop_not_visual(self) -> None:
+        self.assertFalse(assign.is_visual_layer("月亮", "prop"))
+
+    def test_ground_entity_not_visual(self) -> None:
+        # ground kind 但语义是可摆放实体（罕见），不误判
+        self.assertFalse(assign.is_visual_layer("神秘石碑", "ground"))
+
+    def test_prop_decal_is_visual(self) -> None:
+        # 「装饰线」是强信号材质词，即使 L1 归到 prop（decoration）也判环境层
+        self.assertTrue(assign.is_visual_layer("地面装饰线", "prop"))
+
+    def test_prop_positional_modifier_not_visual(self) -> None:
+        # prop 上的弱信号词「地面」是位置修饰，实体（雕像）仍是单体
+        self.assertFalse(assign.is_visual_layer("地面雕像", "prop"))
+
+
 class AssignNodeTests(unittest.TestCase):
     def test_assignable_kind_gets_asset(self) -> None:
         node = {"id": "p1", "kind": "prop", "label": "左侧灯笼",
@@ -99,6 +132,33 @@ class AssignNodeTests(unittest.TestCase):
         self.assertNotIn("asset_id", out)
         self.assertEqual(out["assignment"]["status"], "needs_generation")
 
+    def test_ground_sky_visual_layer(self) -> None:
+        # 环境视觉层语义（夜空）-> visual_layer，不是 needs_generation
+        node = {"id": "g1", "kind": "ground", "label": "夜空",
+                "confidence": 0.95}
+        out = assign.assign_node(node, _MANIFEST, None, (1920, 1080))
+        self.assertNotIn("asset_id", out)
+        self.assertEqual(out["assignment"]["status"], "visual_layer")
+
+    def test_ground_terrain_visual_layer(self) -> None:
+        node = {"id": "g2", "kind": "ground", "label": "石板地面",
+                "confidence": 0.95}
+        out = assign.assign_node(node, _MANIFEST, None, (1920, 1080))
+        self.assertEqual(out["assignment"]["status"], "visual_layer")
+
+    def test_structure_entity_needs_generation(self) -> None:
+        # structure 是单体实体，未命中 -> needs_generation（不是 visual_layer）
+        node = {"id": "s1", "kind": "structure", "label": "魔法平台",
+                "confidence": 0.95}
+        out = assign.assign_node(node, _MANIFEST, None, (1920, 1080))
+        self.assertEqual(out["assignment"]["status"], "needs_generation")
+
+    def test_prop_entity_needs_generation(self) -> None:
+        node = {"id": "p4", "kind": "prop", "label": "月亮",
+                "confidence": 0.95}
+        out = assign.assign_node(node, _MANIFEST, None, (1920, 1080))
+        self.assertEqual(out["assignment"]["status"], "needs_generation")
+
     def test_no_camera_no_anchor(self) -> None:
         # 缺相机：指派成功但不反投影 anchor（诚实边界）
         node = {"id": "p3", "kind": "prop", "label": "灯笼",
@@ -123,8 +183,11 @@ class AssignAssetsTests(unittest.TestCase):
         }
         out = assign.assign_assets(scene_ir, _MANIFEST)
         statuses = [n.get("assignment", {}).get("status") for n in out["nodes"]]
-        # n1 ground 无匹配 -> needs_generation；n2 -> assigned；n3 -> needs_generation；n4 -> skipped
+        # n1 ground「石板地面」-> visual_layer；n2 -> assigned；
+        # n3 prop「神秘石碑」-> needs_generation；n4 -> skipped
+        self.assertEqual(statuses[0], "visual_layer")
         self.assertEqual(statuses[1], "assigned")
+        self.assertEqual(statuses[2], "needs_generation")
         self.assertEqual(statuses[3], "skipped")
         self.assertEqual(out["nodes"][1]["asset_id"], "star_lantern")
 

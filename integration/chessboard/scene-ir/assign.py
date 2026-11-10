@@ -13,11 +13,15 @@
   只在「现有资产库没有匹配」时被调用去生成新资产，且生成的 glb 仍由
   `external_mesh.py --import-glb` 确定性接管。
 
-拼现有资产 vs 生成新资产
-------------------------
+拼现有资产 vs 生成新资产 vs 环境视觉层
+----------------------------------------
 - 「拼现有资产」：label 命中映射表 -> 直接用 manifest 里的 asset_id（确定性）。
-- 「生成新资产」：label 未命中映射表 -> 标记 `needs_generation`，留接口给
-  图生 3D provider（本轮不接，与 L1 视觉理解同样的可插拔模式）。
+- 「生成新资产」：label 未命中映射表、且是单体实体（structure/prop 或非环境语义
+  的 ground）-> 标记 `needs_generation`，留接口给图生 3D provider。
+- 「环境视觉层」：label 未命中、且语义是天空/地面/远景/材质（连续铺展的环境），
+  -> 标记 `visual_layer`，真源是 visual-pack.json（天空盒/材质/Volume），
+  **不是**混元图生 3D 的单体 glb。这是 contract.asset_kinds.scene 的 l2_output
+  里「全景贴图 + 视觉参数包」与「glb 单体」两类产物的区分。
 
 用法
 ----
@@ -64,6 +68,44 @@ LABEL_TO_ASSET: List[Tuple[str, str]] = [
     ("灯", "star_lantern"),       # 灯（泛化兜底）
 ]
 
+# 环境视觉层语义关键词（走 visual-pack.json 的天空盒 / 地面材质 / 远景 / 后处理，
+# **不是** 混元图生 3D 的单体 glb）。这些语义在 contract.asset_kinds.scene 的
+# l2_output 里对应「全景贴图 + 视觉参数包」，而非「glb 单体」。
+# 命中即标记 `visual_layer`，与 `needs_generation`（单体实体图生 3D）区分开。
+#
+# 分两档，避免误伤真正的单体实体：
+#   - 强信号（材质/贴花词）：无论 kind 是什么都判环境层——「装饰线」「贴花」
+#     「材质」这类词本身就是非实体材质，即使 L1 把它归到 prop（decoration）
+#     也仍是地面贴花，不是可摆放的网格。
+#   - 弱信号（天空/地面/远景词）：只在 ground kind 下才判环境层——这类词
+#     出现在 prop/structure 上时通常是「位置修饰」（如「地面雕像」的「地面」），
+#     实体本身仍是单体（「雕像」），不能误判成环境。
+VISUAL_LAYER_STRONG: Tuple[str, ...] = (
+    "装饰线", "贴花", "贴图", "材质", "纹理",     # 非实体材质 / 贴花
+    "辉光", "光晕", "雾", "氛围",                 # 后处理 / 氛围（Volume）
+)
+VISUAL_LAYER_GROUND: Tuple[str, ...] = (
+    "天空", "夜空", "星空", "云",                 # 天空盒
+    "地面", "地板", "石板", "路面", "沙", "草地", "水面", "泥土", "地砖",  # 地面材质
+    "远山", "山脉", "远景", "剪影", "背景", "山",  # 远景（天空盒 / 背景板）
+)
+
+
+def is_visual_layer(label: str, kind: str) -> bool:
+    """判断语义节点属于「环境视觉层」还是「单体实体」。
+
+    两档判断（见 VISUAL_LAYER_STRONG / VISUAL_LAYER_GROUND 注释）：
+      - 强信号（材质/贴花词）：任何 kind 都判环境层。
+      - 弱信号（天空/地面/远景词）：仅 ground kind 判环境层。
+      - structure/prop 上的弱信号词按「位置修饰」处理，实体仍是单体，不误判。
+    """
+    text = label.lower()
+    if any(kw in text for kw in VISUAL_LAYER_STRONG):
+        return True
+    if kind != "ground":
+        return False
+    return any(kw in text for kw in VISUAL_LAYER_GROUND)
+
 
 def match_asset(label: str, available_ids: List[str]) -> Optional[str]:
     """按语义关键词把 label 匹配到 asset_id；未命中返回 None（不硬猜）。"""
@@ -95,7 +137,17 @@ def assign_node(node: Dict[str, Any], manifest: Dict[str, Any],
 
     asset_id = match_asset(label, available_ids)
     if asset_id is None:
-        # 现有资产库没有匹配 -> 标记需生成新资产（图生 3D 接口，本轮不接）
+        # 未命中现有资产库 -> 区分「环境视觉层」与「单体实体」：
+        #   - 环境视觉层（天空/地面/远景/材质，走 visual-pack.json）标 visual_layer；
+        #   - 单体实体（月亮/平台等可摆放物，走混元图生 3D）标 needs_generation。
+        if is_visual_layer(label, kind):
+            node = dict(node)
+            node["assignment"] = {
+                "status": "visual_layer",
+                "reason": "label %r 是环境视觉层语义（天空/地面/远景/材质），"
+                          "真源是 visual-pack.json，不是单体 glb" % label,
+            }
+            return node
         node = dict(node)
         node["assignment"] = {
             "status": "needs_generation",
@@ -198,7 +250,8 @@ def ir_to_placements(assigned_ir: Dict[str, Any]) -> List[Dict[str, Any]]:
     """把 assigned scene-ir 的节点转成 L3 `build_restored_scene` 消费的 placements。
 
     只转换 `assignment.status == "assigned"` 的节点（已成功拼到现有资产）；
-    needs_generation / skipped 节点跳过（它们没有 asset_id，无法摆放）。
+    needs_generation（单体实体图生 3D）/ visual_layer（环境视觉层）/
+    skipped 节点跳过（它们没有 asset_id，无法摆放）。
 
     诚实默认（单视角检测不到的字段不硬猜）：
       - instance_id   = 节点 id（唯一标识）
@@ -276,10 +329,12 @@ def main(argv: Optional[List[str]] = None) -> int:
                    if n.get("assignment", {}).get("status") == "assigned")
     need_gen = sum(1 for n in result["nodes"]
                    if n.get("assignment", {}).get("status") == "needs_generation")
+    visual = sum(1 for n in result["nodes"]
+                 if n.get("assignment", {}).get("status") == "visual_layer")
     skipped = sum(1 for n in result["nodes"]
                   if n.get("assignment", {}).get("status") == "skipped")
-    print("assigned=%d needs_generation=%d skipped=%d"
-          % (assigned, need_gen, skipped))
+    print("assigned=%d needs_generation=%d visual_layer=%d skipped=%d"
+          % (assigned, need_gen, visual, skipped))
     return 0
 
 

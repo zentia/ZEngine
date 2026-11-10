@@ -5446,3 +5446,28 @@ r=20..23、近水平旋转，仍有一条带子斜插天空。根因与既有「
 - 端到端实测：L1 真实产出的 scene-ir（11 节点）→ assign：3 灯笼→star_lantern、6 个背景层→needs_generation、2 个 unknown→skipped。
 - 门禁 `verify/test_assign.py` 13 tests 全绿。
 - 【待办】图生 3D 生成新资产（`needs_generation` 节点走混元 `hy-3d`，接口留成可插拔）；L2→L3（`build_restored_scene` 消费 assigned scene-ir 而非 manifest placements）尚未串联。
+
+### OSGame 棋盘线 · 图生 3D 接入（混元 hy-3d，2026-11-10）
+
+用户「开始探图生3D的接入方式」→ 探明并**实测贯通**图生 3D。
+
+- **接入链**：复用 CodeBuddy 内置 `buddy-multimodal-generation` skill 的 `buddy-cloud.py`（TC3 签名 + tcproxy 代理 + 轮询），只换 body。封装在 `integration/chessboard/tools/hunyuan3d.py`。
+  - action `SubmitHunyuanTo3DProJob`（service `ai3d`、provider `hy-3d`、version `2025-05-13`）。
+  - body：`{Model, ImageBase64, FaceCount}`，可选 `EnablePBR`。
+- **凭证不是 API Key**：`BUDDY_CLOUD_TOKEN` 是 IDE 会话临时凭证，由 `connect_cloud_service`（WorkBuddy MCP 工具，覆盖「多模态内容生成」场景）下发 `clientTempToken`（`ck_t_` 前缀，有效约数小时）。用 `--token` 传入。环境变量里**没有** `BUDDY_CLOUD_TOKEN`，不要去找。
+- **签名**：TC3-HMAC-SHA256，`secret_id = f"{provider}.{token}"`，`secret_key = "codebuddy"`（硬编码）。
+- **⚠️ 图生/文生互斥**：`Prompt` 与 `ImageBase64` **不能同时存在**。图生只传 `ImageBase64`；文生只传 `Prompt`。首测误传 `--prompt` → `"Prompt和ImageBase64、ImageUrl不能同时存在"`。
+- **实测**：`python tools/hunyuan3d.py --image assets/style_refs/star_pillar.jpg --out .../star_pillar.hunyuan.glb --token <token>` → 提交+轮询（~2m50s）→ 下载 glb（19.5MB，glTF 2.0 校验通过）。
+- 生成文件 URL 仅 24h 有效，脚本立刻下载并打印 sha256。
+- 【待办】把 `needs_generation` 背景层节点喂给 hy-3d 生成 glb → `external_mesh.py --import-glb` 接管，补上 L2→L3 唯一实质缺口。
+
+### OSGame 棋盘线 · L2 分类缺陷修复（environment visual layer vs 单体实体，2026-11-10）
+
+用户「继续推进下一步」→ 修 L2 编排层分类缺陷。**问题**：`assign.py` 把「未命中资产库」一律标 `needs_generation`（图生 3D），没区分「环境视觉层」（天空/地面/材质/远景，真源是 `visual-pack.json`）与「单体实体」（月亮/平台，走混元 hy-3d 图生 3D）。
+
+- **依据**：`contract.asset_kinds.scene.l2_output = "glb 单体 + 全景贴图 + 视觉参数包"` 已天然区分两类；`ai_generation_contract.scene_visual_layer` 明确「天空盒/材质/Volume 归 visual-pack.json，本文件只负责单体资产」。L2 之前没实现这个区分。
+- **改动**：`assign.py` 新增 `VISUAL_LAYER_STRONG`（装饰线/贴花/材质/纹理/辉光/雾等**强信号**，任何 kind 都判环境层）+ `VISUAL_LAYER_GROUND`（天空/地面/石板/远山/剪影等**弱信号**，仅 ground kind 判环境层）。新增 `is_visual_layer(label, kind)`。`assign_node` 未命中时先判环境层 → `visual_layer`，否则 → `needs_generation`。
+- **两档设计的关键**：强信号词（「装饰线」「贴花」）本身即非实体材质，即使 L1 把「地面装饰线」归到 prop（decoration）也判环境层；弱信号词（「地面」「山」）出现在 prop/structure 上时是「位置修饰」（如「地面雕像」的「地面」），实体仍是单体，不误判。
+- **实测分流**（真实 L1 scene-ir 11 节点）：assigned=3（3 灯笼）/ needs_generation=2（月亮、魔法平台）/ visual_layer=4（夜空、远山、石板地面、地面装饰线）/ skipped=2（unknown）。
+- 门禁 `verify/test_assign.py` 19 → 31 tests（新增 VisualLayerTests 8 + AssignNodeTests 4），全绿。
+- 【待办】单体实体（月亮/魔法平台）→ 混元 hy-3d 图生 3D，需先在 style-pack.json 声明 decoration 槽位再 `--import-glb`；环境视觉层（4 节点）→ 走 visual-pack.json（另一条链路）。
