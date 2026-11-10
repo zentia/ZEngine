@@ -82,13 +82,17 @@ class Detection:
     bbox: [x0, y0, x1, y1] 像素坐标（左上 -> 右下，闭区间语义不限）。
     category: 模型语义类别标签（字符串，非 scene-ir kind）。
     confidence: [0,1]。
-    depth_m: 可选，该实例的估计深度（米），用于层序排序；缺省 None。
+    depth_rank: 可选，相对层序（0=最远 -> N=最近）。这是 VLM 单目唯一可信
+        的深度信号（详见 eval_depth.py 的结论：绝对米不可信，相对层序可信）。
+    depth_m: 可选，绝对深度（米）。**不可信**，仅当有真实相机/深度源时才
+        有意义；VLM 单目输出时不要填，用 depth_rank 代替。
     label: 可选，人读标签（如 "朱红鼓车"）。
     mask: 可选，实例分割 mask 的引用（本骨架只透传 id，不做像素处理）。
     """
     bbox: Sequence[float]
     category: str
     confidence: float
+    depth_rank: Optional[float] = None
     depth_m: Optional[float] = None
     label: Optional[str] = None
     mask_id: Optional[str] = None
@@ -211,7 +215,8 @@ def decompose_to_ir(
     """把检测结果列表装配成合法的 scene-ir.json。
 
     确定性装配步骤（全在本函数，不依赖模型）：
-    1. 深度排序（depth_m 降序 = 远 -> 近，作为 nodes 数组顺序 = 层序）；
+    1. 层序排序（优先 depth_rank 升序 = 0 最远在前；无 rank 时退回 depth_m
+       降序；两者皆无保持原序）；
     2. 类别 -> kind 映射（未命中 unknown）；
     3. confidence < threshold -> 降级 unknown + reason；
     4. bbox 归一化 + 反投影（有相机参数时估 anchor）；
@@ -222,9 +227,18 @@ def decompose_to_ir(
     if not (0.0 < threshold < 1.0):
         raise ValueError("threshold 必须落在 (0,1)")
 
-    # 深度排序：有 depth_m 的按深度降序（远的在前），无深度的保持原序靠后
-    def sort_key(d: Detection) -> Tuple[float, int]:
-        return (-(d.depth_m if d.depth_m is not None else 0.0), 0)
+    # 层序排序：depth_rank 是 VLM 唯一可信的深度信号（相对层序，0=最远）。
+    # 有 depth_rank 的按升序排（0 最远在前）；否则退回 depth_m 降序；两者都
+    # 没有的排到有深度信号之后（保持原相对顺序）。
+    def sort_key(d: Detection) -> Tuple[int, float, float]:
+        if d.depth_rank is not None:
+            # rank 优先：有 rank 的排在前面（按 rank 升序）
+            return (0, float(d.depth_rank), 0.0)
+        if d.depth_m is not None:
+            # 退 depth_m：按米降序（远的在前），排在有 rank 的之后
+            return (1, 0.0, -float(d.depth_m))
+        # 都没有：最后，保持原序
+        return (2, 0.0, 0.0)
 
     ordered = sorted(enumerate(detections), key=lambda e: sort_key(e[1]))
 
@@ -319,22 +333,26 @@ def make_mock_detections() -> List[Detection]:
     """一组模拟金铲铲棋盘截图的检测结果（含分层、高低置信度、未知类别）。
 
     仅用于跑通确定性装配链路；真实数据来自混元 / 腾讯内部多模态服务。
+    注意：mock 用 `depth_rank`（相对层序 0=最远）而非 `depth_m`——这是
+    eval_depth.py 验证出的 VLM 真实能力边界（绝对米不可信，层序可信）。
     """
     return [
-        Detection(bbox=[0, 480, 1920, 864], category="board",
-                  confidence=0.94, depth_m=20.0, label="连续台面"),
+        Detection(bbox=[0, 0, 1920, 864], category="board",
+                  confidence=0.94, depth_rank=0, label="夜空背景"),
+        Detection(bbox=[0, 200, 1920, 500], category="ground",
+                  confidence=0.90, depth_rank=1, label="远景山脉"),
         Detection(bbox=[120, 300, 420, 620], category="pillar",
-                  confidence=0.88, depth_m=8.0, label="岩壁灯列"),
+                  confidence=0.88, depth_rank=2, label="岩壁灯列"),
         Detection(bbox=[1500, 280, 1780, 600], category="lantern",
-                  confidence=0.81, depth_m=7.5, label="朱红鼓车"),
+                  confidence=0.81, depth_rank=3, label="朱红鼓车"),
         Detection(bbox=[700, 320, 1220, 560], category="prop",
-                  confidence=0.66, depth_m=6.0, label="云纹浅台"),
+                  confidence=0.66, depth_rank=4, label="云纹浅台"),
         Detection(bbox=[300, 200, 500, 400], category="character",
-                  confidence=0.42, depth_m=4.0, label="人物(低置信)"),
+                  confidence=0.42, depth_rank=5, label="人物(低置信)"),
         Detection(bbox=[800, 500, 900, 560], category="something_unknown",
-                  confidence=0.90, depth_m=3.0, label="无法归类物体"),
+                  confidence=0.90, depth_rank=6, label="无法归类物体"),
         Detection(bbox=[0, 100, 1920, 300], category="vfx",
-                  confidence=0.72, depth_m=2.0, label="飘落枫叶特效"),
+                  confidence=0.72, depth_rank=7, label="飘落枫叶特效"),
     ]
 
 
@@ -346,6 +364,7 @@ def write_mock_detections(path: str) -> None:
             "bbox": [float(v) for v in d.bbox],
             "category": d.category,
             "confidence": d.confidence,
+            "depth_rank": d.depth_rank,
             "depth_m": d.depth_m,
             "label": d.label,
             "mask_id": d.mask_id,
@@ -365,6 +384,7 @@ def load_detections(path: str) -> List[Detection]:
             bbox=item["bbox"],
             category=item["category"],
             confidence=float(item["confidence"]),
+            depth_rank=item.get("depth_rank"),
             depth_m=item.get("depth_m"),
             label=item.get("label"),
             mask_id=item.get("mask_id"),

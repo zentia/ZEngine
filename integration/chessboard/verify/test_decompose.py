@@ -79,6 +79,29 @@ class DecomposeTests(unittest.TestCase):
         self.assertEqual(ir["nodes"][0]["label"], "far")
         self.assertEqual(ir["nodes"][1]["label"], "near")
 
+    def test_depth_rank_sorting_far_to_near(self) -> None:
+        # depth_rank 是主路径：0=最远在前，N=最近在后
+        dets = [
+            dc.Detection(bbox=[0, 0, 10, 10], category="lantern", confidence=0.8, depth_rank=5, label="near"),
+            dc.Detection(bbox=[0, 0, 10, 10], category="board", confidence=0.9, depth_rank=0, label="far"),
+            dc.Detection(bbox=[0, 0, 10, 10], category="ground", confidence=0.9, depth_rank=2, label="mid"),
+        ]
+        ir = dc.decompose_to_ir(dets, "a" * 64)
+        labels = [n["label"] for n in ir["nodes"]]
+        self.assertEqual(labels, ["far", "mid", "near"])
+
+    def test_depth_rank_overrides_depth_m(self) -> None:
+        # 有 depth_rank 时优先用 rank（rank=0 的远，即使 depth_m 标成近）
+        dets = [
+            dc.Detection(bbox=[0, 0, 10, 10], category="board", confidence=0.9,
+                         depth_rank=0, depth_m=5.0, label="rank_far"),
+            dc.Detection(bbox=[0, 0, 10, 10], category="lantern", confidence=0.8,
+                         depth_rank=5, depth_m=50.0, label="rank_near"),
+        ]
+        ir = dc.decompose_to_ir(dets, "a" * 64)
+        self.assertEqual(ir["nodes"][0]["label"], "rank_far")
+        self.assertEqual(ir["nodes"][1]["label"], "rank_near")
+
     def test_bbox_normalized_in_bounds(self) -> None:
         dets = [dc.Detection(bbox=[480, 200, 960, 400], category="prop", confidence=0.7)]
         ir = dc.decompose_to_ir(dets, "a" * 64, image_size=(1920, 864))

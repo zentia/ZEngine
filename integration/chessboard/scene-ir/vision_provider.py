@@ -31,9 +31,13 @@
 ------------------
 让模型输出一个 JSON 数组，每个元素：
     {"bbox": [x0,y0,x1,y1], "category": "<标签>", "confidence": 0.0-1.0,
-     "depth_m": <可选深度>, "label": "<人读名>"}
+     "depth_rank": <0~10 相对层序>, "label": "<人读名>"}
 category 用 `decompose.CATEGORY_TO_KIND` 里的白名单标签（ground/slab/pillar/
 lantern/prop/character/vfx/...），未命中的标签由确定性层降级 unknown。
+
+⚠️ 深度用 `depth_rank`（相对层序，0=最远 -> N=最近），**不用 depth_m**：
+eval_depth.py 已实证 VLM 单目「绝对米」不可信（同一物体跨轮漂移 3~80 倍，
+越强调真实越编离谱），而「相对层序」完全可信。
 """
 
 from __future__ import annotations
@@ -67,9 +71,11 @@ HUNYUAN_VISION_MODEL = "hunyuan-vision"
 
 # 白名单类别标签（与 decompose.CATEGORY_TO_KIND 的 key 对齐），写进 prompt
 # 让模型尽量用这些标签，未命中也由确定性层兜底降级 unknown。
+# 注意：必须用逗号分隔的独立词，不能用斜杠串——否则模型会把整串当成一个
+# category 原样输出，导致 map_kind 全部落 unknown（实测踩坑）。
 _CATEGORY_HINT = (
-    "ground/floor/board, structure/pillar/wall/frame, prop/decoration/lantern/"
-    "orb/furniture, character/hero/monster/pet, vfx/particle/effect"
+    "ground, floor, board, structure, pillar, wall, frame, prop, decoration, "
+    "lantern, orb, furniture, character, hero, monster, pet, vfx, particle, effect"
 )
 
 
@@ -95,7 +101,7 @@ def _load_image_base64(image_path: str) -> str:
 
 
 def build_detection_prompt(image_width: int, image_height: int) -> str:
-    """构造让模型输出结构化检测结果的 prompt（含坐标/类别约束）。"""
+    """构造让模型输出结构化检测结果的 prompt（含坐标/类别/层序约束）。"""
     return (
         "你是游戏场景分解器。请识别这张截图中所有独立的物体层（地面 / 结构 / "
         "道具 / 人物 / 特效），并按从远到近的层序输出一个 JSON 数组。\n"
@@ -105,16 +111,17 @@ def build_detection_prompt(image_width: int, image_height: int) -> str:
         "每个元素必须是如下 JSON 对象（不要输出任何其它文字，只输出 JSON 数组）：\n"
         "{\n"
         '  "bbox": [x0, y0, x1, y1],          // 像素坐标，0<=x0<x1<=宽，0<=y0<y1<=高\n'
-        '  "category": "prop",               // 只用这些标签：%s\n'
+        '  "category": "prop",               // 只用下面列表里的【一个词】：%s\n'
         '  "confidence": 0.9,                // 0.0-1.0，低于 0.5 的模糊物体也照实输出\n'
-        '  "depth_m": 8.0,                   // 该物体离相机的估算距离（米），远->近降序\n'
+        '  "depth_rank": 5,                  // 相对层序 0~10：0=最远，10=最近，只表达远近顺序，不是米\n'
         '  "label": "朱红鼓车"                // 简短人读名，中文\n'
         "}\n"
         "\n"
         "规则：\n"
         "1. 地面 / 台面这种大块背景也作为一层，category 用 ground 或 board。\n"
         "2. 无法归类的物体 category 用 \"unknown\"。\n"
-        "3. 只输出 JSON 数组本身，前后不要有任何解释文字、不要 markdown 代码块。\n"
+        "3. depth_rank 只用来表达从远到近的相对顺序（0=最远），不要估算米数。\n"
+        "4. 只输出 JSON 数组本身，前后不要有任何解释文字、不要 markdown 代码块。\n"
     ) % (image_width, image_height, _CATEGORY_HINT)
 
 
@@ -147,12 +154,16 @@ def _dict_to_detection(item: Any) -> Detection:
     if confidence is None:
         confidence = 0.5
     confidence = float(confidence)
+    # 优先 depth_rank（相对层序，可信）；depth_m 仅作兼容（绝对米，不可信）
+    rank = item.get("depth_rank")
+    rank = float(rank) if rank is not None else None
     depth = item.get("depth_m")
     depth = float(depth) if depth is not None else None
     return Detection(
         bbox=[float(v) for v in bbox],
         category=category,
         confidence=confidence,
+        depth_rank=rank,
         depth_m=depth,
         label=item.get("label"),
     )
@@ -420,6 +431,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             "bbox": [float(v) for v in d.bbox],
             "category": d.category,
             "confidence": d.confidence,
+            "depth_rank": d.depth_rank,
             "depth_m": d.depth_m,
             "label": d.label,
             "mask_id": d.mask_id,
