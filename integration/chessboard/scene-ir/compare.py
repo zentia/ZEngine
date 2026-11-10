@@ -19,7 +19,10 @@
    作为该层的 IoU；渲染帧多出的 bbox 记为「漏放/多放」。
 3. pixel_delta：整图归一化 bbox 面积差（按层累加 |面积差| / 图面积）。
 4. 归因：每层输出 IoU / pixel_delta / 是否达标（对照 acceptance.tolerance），
-   未达标层指向对应节点 id。
+   未达标层指向对应节点 id。归因已下沉到 node 级：`attribution[].nodes[]`
+   携带每个漏放 / 多放 / 低 IoU 节点的 node_id + label + reason，供 L5 补丁
+   「建议改哪个节点、改什么」直接消费（配对优先按 node_id 精确匹配，无
+   node_id 时退回 bbox IoU 贪心匹配兜底）。
 
 用法
 ----
@@ -86,30 +89,85 @@ def group_by_kind(detections: Sequence[Detection]) -> Dict[str, List[Detection]]
 
 
 def compare_layer(baseline: List[Detection], render: List[Detection]) -> Dict[str, Any]:
-    """同一层内，基准帧 vs 渲染帧的 IoU 与数量差异。
+    """同一层内，基准帧 vs 渲染帧的 IoU 与数量差异，并下沉到 node 级明细。
+
+    配对优先级：
+    1. 按 node_id 精确配对：两侧 node_id 相同（非空）直接配对，算 IoU。
+    2. 剩余未配对的用 bbox 贪心 IoU 兜底（兼容无 node_id 的旧检测数据）。
 
     对基准帧每个 bbox，找渲染帧里 IoU 最大的 bbox 配对；无配对记为 miss。
-    渲染帧未被配对的 bbox 记为 extra。
+    渲染帧未被配对的 bbox 记为 extra。返回 node 级明细供 L5 补丁定位。
     """
     render_boxes = [d.bbox for d in render]
     paired = [False] * len(render_boxes)
+
+    # 预索引渲染帧的 node_id -> 下标（用于精确配对）
+    render_by_id: Dict[str, int] = {}
+    for j, d in enumerate(render):
+        if d.node_id:
+            render_by_id.setdefault(d.node_id, j)
+
     ious: List[float] = []
     misses = 0
+    node_details: List[Dict[str, Any]] = []
     for bdet in baseline:
         best_iou = 0.0
         best_idx = -1
-        for j, rbox in enumerate(render_boxes):
-            if paired[j]:
-                continue
-            iou = bbox_iou(bdet.bbox, rbox)
-            if iou > best_iou:
-                best_iou = iou
+        matched_by = "bbox"
+
+        # 1) node_id 精确配对：两侧同 node_id 即视为同一节点，**不依赖 IoU>0**。
+        #    同 node_id 但 bbox 差很远仍是「位置/尺度偏移」，不是「漏放」——
+        #    补丁动作是调 anchor/scale，不是重新生成。IoU 只量化偏移程度。
+        if bdet.node_id and bdet.node_id in render_by_id:
+            j = render_by_id[bdet.node_id]
+            if not paired[j]:
                 best_idx = j
-        if best_idx >= 0 and best_iou > 0.0:
+                best_iou = bbox_iou(bdet.bbox, render[j].bbox)
+                matched_by = "node_id"
+
+        # 2) bbox 贪心兜底（无 node_id 或 node_id 未命中）
+        if best_idx < 0:
+            for j, rbox in enumerate(render_boxes):
+                if paired[j]:
+                    continue
+                iou = bbox_iou(bdet.bbox, rbox)
+                if iou > best_iou:
+                    best_iou = iou
+                    best_idx = j
+
+        if best_idx >= 0 and (matched_by == "node_id" or best_iou > 0.0):
             paired[best_idx] = True
             ious.append(best_iou)
+            node_details.append({
+                "node_id": bdet.node_id,
+                "label": bdet.label,
+                "matched_node_id": render[best_idx].node_id,
+                "matched_label": render[best_idx].label,
+                "iou": round(best_iou, 4),
+                "matched_by": matched_by,
+                "status": "paired",
+            })
         else:
             misses += 1
+            node_details.append({
+                "node_id": bdet.node_id,
+                "label": bdet.label,
+                "iou": 0.0,
+                "matched_by": None,
+                "status": "missed",
+            })
+
+    # 渲染帧未被配对的 -> extra
+    for j, d in enumerate(render):
+        if not paired[j]:
+            node_details.append({
+                "node_id": d.node_id,
+                "label": d.label,
+                "iou": 0.0,
+                "matched_by": None,
+                "status": "extra",
+            })
+
     extras = sum(1 for p in paired if not p)
 
     mean_iou = sum(ious) / len(ious) if ious else 0.0
@@ -120,6 +178,7 @@ def compare_layer(baseline: List[Detection], render: List[Detection]) -> Dict[st
         "missed": misses,       # 基准帧有、渲染帧没有（漏放）
         "extra": extras,        # 渲染帧有、基准帧没有（多放）
         "pair_iou": [round(v, 4) for v in ious],
+        "nodes": node_details,  # node 级明细（供 L5 补丁定位）
     }
 
 
@@ -156,10 +215,13 @@ def compare_detections(
         total_pixel_delta += layer_delta
         layer["pixel_delta"] = round(layer_delta, 6)
 
-        # 达标判定：mean_iou >= threshold 且 miss/extra 可接受
+        # 达标判定：mean_iou >= threshold 且 pixel_delta <= threshold，且
+        # 无漏放/多放（miss/extra 必须为 0）。漏放/多放是「节点数量/身份」错误，
+        # 不能靠 IoU/pixel_delta 的均值掩盖（否则 extra 场景下整层仍误判 pass）。
         layer["iou_pass"] = layer["mean_iou"] >= iou_threshold
         layer["pixel_pass"] = layer_delta <= pixel_threshold
-        layer["pass"] = layer["iou_pass"] and layer["pixel_pass"]
+        layer["count_pass"] = layer["missed"] == 0 and layer["extra"] == 0
+        layer["pass"] = layer["iou_pass"] and layer["pixel_pass"] and layer["count_pass"]
         layers[kind] = layer
 
     overall_iou = sum(l["mean_iou"] for l in layers.values()) / len(layers) if layers else 0.0
@@ -183,6 +245,9 @@ def compare_detections(
                 "missed": layers[kind]["missed"],
                 "extra": layers[kind]["extra"],
                 "note": _attribution_note(kind, layers[kind]),
+                # node 级定位：该层未达标 / 未配对的节点，带 node_id + label，
+                # 供 L5 补丁「建议改哪个节点、改什么」直接消费。
+                "nodes": _attribution_nodes(kind, layers[kind]),
             }
             for kind in all_kinds
             if not layers[kind]["pass"]
@@ -202,6 +267,37 @@ def _attribution_note(kind: str, layer: Dict[str, Any]) -> str:
     if not parts:
         parts.append("面积偏差超阈值")
     return "；".join(parts)
+
+
+def _attribution_nodes(kind: str, layer: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """把该层的 node 级明细收敛成 L5 补丁可消费的定位清单。
+
+    只保留「需要处理」的节点：missed / extra / 低 IoU 配对（IoU 低于 0.9
+    即位置或尺度偏移）。每项带 node_id / label / status / iou / reason，
+    node_id 为空时退回 label（人读）作定位线索。
+    """
+    out: List[Dict[str, Any]] = []
+    for n in layer.get("nodes", []):
+        status = n.get("status")
+        iou = float(n.get("iou", 0.0))
+        if status == "paired" and iou >= 0.9:
+            continue  # 达标配对，无需处理
+        item: Dict[str, Any] = {
+            "kind": kind,
+            "node_id": n.get("node_id"),
+            "label": n.get("label"),
+            "status": status,
+            "iou": round(iou, 4),
+        }
+        if status == "missed":
+            item["reason"] = "基准帧有、渲染帧无（漏放）"
+        elif status == "extra":
+            item["reason"] = "渲染帧有、基准帧无（多放）"
+        else:
+            item["reason"] = "位置/尺度偏移（配对但 IoU 低）"
+            item["matched_node_id"] = n.get("matched_node_id")
+        out.append(item)
+    return out
 
 
 def load_detections(path: str) -> List[Detection]:

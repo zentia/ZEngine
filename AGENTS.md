@@ -5511,3 +5511,23 @@ r=20..23、近水平旋转，仍有一条带子斜插天空。根因与既有「
 - 门禁 test_assign 48→54 全绿。提交 `f2265e24` 已推。
 - **实测对账**：covered=5 missing=0 unmapped=0 —— 当前 visual-pack 完整覆盖 L2 检测的 5 个环境语义。
 - **里程碑**：AI 场景生成链路 L0→L4 全通，几何装饰物（拼现有+图生3D）+ 环境视觉层（分流+映射+对账）两条路径都闭环。唯一剩 L5 局部 IR 补丁（架构最初规划，未开始）。
+
+### OSGame 棋盘线 · L4 归因下沉到 node 级（2026-11-10）
+
+- **背景**：探 L5 时发现「现有 probe」只是需求.md 第 127 行的规划占位，无实现。L5 补丁要「建议改哪个节点」，前置是 L4 归因必须能定位到 node_id（`compare.py` 此前只按 kind 粒度归因，配对用 bbox 贪心，Detection 无 node_id）。
+- **改动 1**：`Detection` 加可选 `node_id` 字段（`decompose.py`），`load_detections`/`write_mock_detections` 透传。`decompose_to_ir` 装配时把生成的 `_unique_id(kind, idx)` **回填**到 `det.node_id`（idx 是原始输入索引，稳定不变），使 L1 装配产出的 node_id 直接成为 L4 对拍锚点，贯通 L1→L4。
+- **改动 2**：`compare_layer` 配对优先级改为「node_id 精确配对优先，bbox 贪心兜底」。**关键语义**：两侧同 node_id 即视为同一节点，**不依赖 IoU>0**——同 node_id 但 bbox 差很远仍是「位置/尺度偏移」（补丁动作是调 anchor/scale），不是「漏放」（漏放=重新生成）。
+- **改动 3**：`compare_detections` 归因新增 `attribution[].nodes[]`（node 级定位清单），每项带 node_id/label/status(missed|extra|paired)/iou/reason；达标配对（IoU>=0.9）不进入。`_attribution_nodes` 收敛。
+- **改动 4（顺手修的既有 bug）**：pass 判定新增 `count_pass = missed==0 and extra==0`。此前 extra（多放）场景下 mean_iou=1.0 + pixel_delta 小 → 整层仍误判 pass，漏掉多放节点；node 级下沉后由 `test_extra_node_attributed_with_node_id` 暴露。
+- 门禁：`test_compare.py` 12→18（新增 `NodeLevelAttributionTests` 6 用例）；decompose 20 / scene_ir 23 / assign 54 全绿。端到端实测 L1 回填 `prop_0/1/2/ground_3` → L4 归因精确到 `ground_3` 漏放、`prop_1` 漏放、`prop_2` 位置偏移。
+- **后续**：L5 本体（`apply_patch.py` + `patch.suggestion.json` 契约）仍待实现，现在归因已能喂给它。
+
+### OSGame 棋盘线 · L5 局部 IR 补丁落地（2026-11-10）
+
+- **新增 `scene-ir/patch-suggestion.schema.json`**（补丁契约）：`zengine.patch-suggestion/v1`，AI 只写 JSON 建议「改哪个节点、改什么字段、改成什么」。三 op：`set`（改字段）/`delete`（删多放节点）/`add`（补漏放节点，需完整合法 node）。字段白名单 = `anchor/rotation_y_deg/scale/asset_id/pivot_offset/material/tag/lod`（摆放/外观，不含身份/合规字段）。
+- **新增 `scene-ir/apply_patch.py`**（确定性应用）：`validate_patch`（契约校验）+ `apply_patch`（逐条应用，frozen 拒绝 / 字段白名单 / 数值类型校验）+ `_strip_l2_fields`（--check 前剥离 L2 中间字段）。
+- **frozen 拒绝三重判定**：`node.frozen==true` / `assignment.status=="frozen"` / `geometry_ref` 存在，任一命中即拒绝改写（core_slab 棋盘本体 / 包边 / 棋手占位）。
+- **语义决策**：局部补丁允许部分失败——rejected 不中断其余 patch，逐条进 `applied`/`rejected` 报告，AI 看 rejected 修正后再提交。
+- **`--check` 语义澄清**：对 patched IR 剥离 `assignment/scale_pending/anchor_estimate` 后跑 `validate_ir`，**如实报告** scene-ir 契约视角的合法性。⚠️ assigned IR 在无相机参数时 `assign.py` 诚实降级（不填 anchor/rotation_y_deg），会触发 schema「带 asset_id 必须带 anchor/rotation_y_deg/scale」报错——这是 L2 既有缝隙（补 L4 前必须补相机反投影），补丁层不掩盖。
+- 门禁：新增 `verify/test_apply_patch.py`（18 用例：validate_patch 9 + apply_patch 8 + assignment frozen 1）。端到端实测 L4 归因 → patch-suggestion → apply_patch 闭环：`prop_1` 漏放 add、`prop_2` 偏移 set、`core_slab` frozen 拒绝。
+- **L5 闭环数据流**：`compare_report.attribution[].nodes[]`（L4 node 级归因）→ `patch-suggestion.json`（AI 语义归因）→ `apply_patch.py`（确定性应用 + frozen 拒绝）→ 重跑 `assign.py`（L2 重新指派补 asset_id）→ `unity_scene.py`（L3）→ `compare.py`（L4 回归门禁）。

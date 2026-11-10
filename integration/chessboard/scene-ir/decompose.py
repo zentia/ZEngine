@@ -88,6 +88,12 @@ class Detection:
         有意义；VLM 单目输出时不要填，用 depth_rank 代替。
     label: 可选，人读标签（如 "朱红鼓车"）。
     mask: 可选，实例分割 mask 的引用（本骨架只透传 id，不做像素处理）。
+    node_id: 可选，该检测对应的 scene-ir 节点 id。这是 L4 对拍下沉到 node
+        级归因的稳定锚点：基准帧与渲染帧两侧用同一个 node_id 才能精确配对
+        （否则退回 bbox IoU 贪心匹配）。注意：decompose_to_ir 装配时生成的
+        `kind_idx` id 依赖排序顺序，不能可靠回填到排序前的 Detection，故
+        node_id 应由上游（模型侧或对拍准备阶段）在检测时显式分配并保持稳定，
+        与 scene-ir.json 的 nodes[].id 一致。
     """
     bbox: Sequence[float]
     category: str
@@ -96,6 +102,7 @@ class Detection:
     depth_m: Optional[float] = None
     label: Optional[str] = None
     mask_id: Optional[str] = None
+    node_id: Optional[str] = None
 
     def __post_init__(self) -> None:
         if len(self.bbox) != 4:
@@ -337,8 +344,12 @@ def decompose_to_ir(
         # 低置信度 / 未命中类别 / L1 阶段缺 L2 必需字段的 kind -> 降级 unknown
         deferred = kind in L1_DEFERRED_KINDS
         if kind == "unknown" or confidence < threshold or deferred:
+            node_id = _unique_id("unknown", idx, seen_ids)
+            # 回填 node_id 到 Detection，使 L4 对拍能拿到同一稳定 id 作锚点
+            if det.node_id is None:
+                det.node_id = node_id
             node: Dict[str, Any] = {
-                "id": _unique_id("unknown", idx, seen_ids),
+                "id": node_id,
                 "kind": "unknown",
                 "confidence": confidence,
                 "reason": _unknown_reason(det, kind, threshold, deferred),
@@ -349,8 +360,11 @@ def decompose_to_ir(
             nodes.append(node)
             continue
 
+        node_id = _unique_id(kind, idx, seen_ids)
+        if det.node_id is None:
+            det.node_id = node_id
         node = {
-            "id": _unique_id(kind, idx, seen_ids),
+            "id": node_id,
             "kind": kind,
             "confidence": confidence,
         }
@@ -454,6 +468,7 @@ def write_mock_detections(path: str) -> None:
             "depth_m": d.depth_m,
             "label": d.label,
             "mask_id": d.mask_id,
+            "node_id": d.node_id,
         }
         for d in dets
     ]
@@ -474,6 +489,7 @@ def load_detections(path: str) -> List[Detection]:
             depth_m=item.get("depth_m"),
             label=item.get("label"),
             mask_id=item.get("mask_id"),
+            node_id=item.get("node_id"),
         ))
     return out
 

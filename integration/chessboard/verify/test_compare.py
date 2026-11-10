@@ -120,5 +120,72 @@ class CompareDetectionsTests(unittest.TestCase):
         self.assertEqual(len(report["layers"]), 0)
 
 
+class NodeLevelAttributionTests(unittest.TestCase):
+    """L4 归因下沉到 node 级：配对优先 node_id，attribution 带 nodes[]。"""
+
+    def test_node_id_exact_pairing(self) -> None:
+        # 两侧同 node_id 直接配对，即使 bbox 略偏移也能对上（IoU 按 bbox 算）
+        b = [det([0, 0, 10, 10], "prop", node_id="lantern_w", label="左灯")]
+        r = [det([2, 2, 12, 12], "prop", node_id="lantern_w", label="左灯")]
+        layer = compare.compare_layer(b, r)
+        self.assertEqual(layer["missed"], 0)
+        self.assertEqual(layer["extra"], 0)
+        self.assertEqual(layer["nodes"][0]["matched_by"], "node_id")
+        self.assertEqual(layer["nodes"][0]["node_id"], "lantern_w")
+
+    def test_missing_node_attributed_with_node_id(self) -> None:
+        # 基准有、渲染无 -> attribution.nodes 带该节点的 node_id + status=missed
+        b = [det([0, 0, 10, 10], "prop", node_id="lantern_c", label="中灯")]
+        r = []
+        report = compare.compare_detections(
+            b, r, (200, 200), {"iou": 0.9, "pixel_delta": 0.05})
+        nodes = report["attribution"][0]["nodes"]
+        self.assertEqual(len(nodes), 1)
+        self.assertEqual(nodes[0]["node_id"], "lantern_c")
+        self.assertEqual(nodes[0]["status"], "missed")
+
+    def test_low_iou_pair_attributed_as_offset(self) -> None:
+        # 同 node_id 配对但 IoU 低 -> status=paired + 位置/尺度偏移 reason
+        b = [det([0, 0, 10, 10], "prop", node_id="lantern_e", label="右灯")]
+        r = [det([50, 50, 60, 60], "prop", node_id="lantern_e", label="右灯")]
+        report = compare.compare_detections(
+            b, r, (200, 200), {"iou": 0.9, "pixel_delta": 0.05})
+        nodes = report["attribution"][0]["nodes"]
+        self.assertEqual(nodes[0]["status"], "paired")
+        self.assertIn("偏移", nodes[0]["reason"])
+        self.assertEqual(nodes[0]["matched_node_id"], "lantern_e")
+
+    def test_extra_node_attributed_with_node_id(self) -> None:
+        # 渲染多放 -> status=extra
+        b = [det([0, 0, 10, 10], "prop", node_id="lantern_w", label="左灯")]
+        r = [
+            det([0, 0, 10, 10], "prop", node_id="lantern_w", label="左灯"),
+            det([50, 50, 60, 60], "prop", node_id="lantern_extra", label="多放灯"),
+        ]
+        report = compare.compare_detections(
+            b, r, (200, 200), {"iou": 0.9, "pixel_delta": 0.05})
+        statuses = [n["status"] for n in report["attribution"][0]["nodes"]]
+        self.assertIn("extra", statuses)
+        extra = next(n for n in report["attribution"][0]["nodes"]
+                     if n["status"] == "extra")
+        self.assertEqual(extra["node_id"], "lantern_extra")
+
+    def test_fallback_to_bbox_when_no_node_id(self) -> None:
+        # 无 node_id 时退回 bbox 贪心配对，matched_by=bbox，仍能 node 级输出
+        b = [det([0, 0, 10, 10], "prop", label="a")]
+        r = [det([0, 0, 10, 10], "prop", label="b")]
+        layer = compare.compare_layer(b, r)
+        self.assertEqual(layer["missed"], 0)
+        self.assertEqual(layer["nodes"][0]["matched_by"], "bbox")
+
+    def test_passing_node_not_in_attribution(self) -> None:
+        # 达标配对（IoU>=0.9 且无漏/多放）不出现在 attribution.nodes 里
+        b = [det([0, 0, 100, 100], "prop", node_id="a", label="x")]
+        r = [det([0, 0, 100, 100], "prop", node_id="a", label="x")]
+        report = compare.compare_detections(
+            b, r, (200, 200), {"iou": 0.9, "pixel_delta": 0.05})
+        self.assertEqual(report["attribution"], [])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

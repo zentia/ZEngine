@@ -1,0 +1,54 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://zengine.local/schema/patch-suggestion/v1.json",
+  "title": "ZEngine L5 Patch Suggestion v1",
+  "description": "L5 局部 IR 补丁：AI 从 L4 对拍归因（attribution[].nodes[]）出发，只写 JSON 建议「改哪个节点、改什么字段、改成什么」。坐标/数值校验、frozen 拒绝、字段白名单、应用与回归由 apply_patch.py 确定性完成。AI 不直接改 scene-ir.json。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "source_report_sha256", "patches"],
+  "properties": {
+    "schema": { "const": "zengine.patch-suggestion/v1" },
+    "source_report_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "本补丁依据的 compare_report.json 的 sha256（审计回溯）"
+    },
+    "note": { "type": "string" },
+    "patches": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["op", "node_id", "reason"],
+        "properties": {
+          "op": {
+            "enum": ["set", "delete", "add"],
+            "description": "set=改现有节点某字段；delete=删除多余节点（多放）；add=补一个漏放的节点（需完整合法节点）"
+          },
+          "node_id": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
+          "field": {
+            "enum": ["anchor", "rotation_y_deg", "scale", "asset_id", "pivot_offset", "material", "tag", "lod"],
+            "description": "set 时必填；仅允许白名单内的摆放/外观字段，身份字段（id/kind/confidence/provenance/geometry_ref）禁止"
+          },
+          "value": { "description": "set/add 时的目标值；类型由 apply_patch 按 field 校验" },
+          "node": {
+            "type": "object",
+            "description": "add 时必填：完整合法的 scene-ir 节点（含 id/kind/confidence/provenance），缺失字段按 unknown 规则处理"
+          },
+          "reason": { "type": "string", "description": "为什么这么改（语义归因，需人能看懂）" }
+        },
+        "allOf": [
+          {
+            "if": { "properties": { "op": { "const": "set" } } },
+            "then": { "required": ["field", "value"] }
+          },
+          {
+            "if": { "properties": { "op": { "const": "add" } } },
+            "then": { "required": ["node"] }
+          }
+        ]
+      }
+    }
+  }
+}
