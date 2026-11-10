@@ -201,6 +201,92 @@ def back_project_ground(bbox: Sequence[float], camera: Dict[str, Any],
     }
 
 
+def estimate_world_height(bbox: Sequence[float], camera: Dict[str, Any],
+                          image_size: Tuple[int, int]) -> Optional[float]:
+    """估算 bbox 对应物体的世界高度（米），基于「物体直立在地面」假设。
+
+    原理：bbox 底边反投影到地面得 anchor 与视线距离 t_bottom；bbox 顶边的
+    视线与「过 anchor 的竖直线」相交，交点高度即物体世界高度 H。
+    这是单视角的确定性近似（非 ground truth）：假设物体直立、无遮挡、
+    底边确实贴地。返回 None 表示无法估算（缺相机 / 视线近乎平行地面 /
+    bbox 退化）。
+
+    与 back_project_ground 共享同一相机模型（fov/pitch/position/target）。
+    """
+    required = ("fov", "pitch_deg", "position")
+    if not isinstance(camera, dict) or any(camera.get(k) is None for k in required):
+        return None
+    try:
+        fov = float(camera["fov"])
+        pitch = math.radians(float(camera["pitch_deg"]))
+        pos = [float(v) for v in camera["position"]]
+        target = camera.get("target")
+        target = [float(v) for v in target] if isinstance(target, (list, tuple)) and len(target) == 3 else [0.0, 0.0, 0.0]
+    except (TypeError, ValueError):
+        return None
+
+    width, height = image_size
+    if width <= 0 or height <= 0:
+        return None
+
+    x0, y0, x1, y1 = (float(v) for v in bbox)
+    if y1 <= y0 or y0 < 0:
+        return None  # bbox 退化或顶边越界
+
+    # 相机朝向
+    dx = target[0] - pos[0]
+    dz = target[2] - pos[2]
+    yaw = math.atan2(dx, dz)
+    aspect = width / height
+    vfov = math.radians(fov)
+    hfov = 2.0 * math.atan(math.tan(vfov / 2.0) * aspect)
+
+    # bbox 底面中心的像素 -> 归一化
+    cx = (x0 + x1) / 2.0 / width
+    cy_bottom = y1 / height
+
+    # 底面视线方向（用于反投影 anchor 与距离）
+    off_x = (cx - 0.5) * hfov
+    off_y_bottom = (cy_bottom - 0.5) * vfov
+    h_angle = yaw + off_x
+    v_angle_bottom = pitch + off_y_bottom
+
+    sin_v = math.sin(v_angle_bottom)
+    if abs(sin_v) < 1e-6:
+        return None
+    t_bottom = pos[1] / sin_v
+    if t_bottom <= 0:
+        return None
+
+    # anchor 的世界 XZ
+    anchor_x = pos[0] + t_bottom * math.sin(h_angle) * math.cos(v_angle_bottom)
+    anchor_z = pos[2] + t_bottom * math.cos(h_angle) * math.cos(v_angle_bottom)
+
+    # 顶边视线：同一 cx，但 cy 用顶边 y0
+    cy_top = y0 / height
+    off_y_top = (cy_top - 0.5) * vfov
+    v_angle_top = pitch + off_y_top
+
+    # 顶边视线方向（水平角度不变 h_angle）
+    # 方向向量：d = (sin(h_angle)*cos(v_top), -sin(v_top), cos(h_angle)*cos(v_top))
+    # 求 λ 使 XZ 到达 anchor：pos + λ*d 的 XZ == anchor 的 XZ
+    #   水平分量：cos(v_top)；水平位移 = t_top * cos(v_top)
+    #   水平位移需等于 anchor 到相机的地面投影距离
+    # 用 y 分量求交：pos.y + λ * (-sin(v_top)) = H => H = pos.y - λ*sin(v_top)
+    # 而 λ 由水平位移决定：λ = 水平距离 / cos(v_top)
+    # 水平距离 = sqrt((anchor_x-pos[0])^2 + (anchor_z-pos[2])^2)
+    cos_top = math.cos(v_angle_top)
+    if abs(cos_top) < 1e-6:
+        return None
+    horiz_dist = math.hypot(anchor_x - pos[0], anchor_z - pos[2])
+    lam = horiz_dist / cos_top
+    # 物体世界高度 = 顶边视线在 anchor 水平位置处的高度
+    H = pos[1] - lam * math.sin(v_angle_top)
+    if H < 0:
+        return None  # 顶边视线在 anchor 处低于地面（bbox 顶边低于地平线，异常）
+    return H
+
+
 def decompose_to_ir(
     detections: Sequence[Detection],
     source_image_sha256: str,

@@ -152,6 +152,38 @@ class BackProjectTests(unittest.TestCase):
         self.assertTrue(abs(proj["anchor"][2]) < 10.0)
 
 
+class WorldHeightTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.camera = {
+            "fov": 31.0,
+            "pitch_deg": 50.0,
+            "position": [0.0, 22.46, -19.64],
+            "target": [0.0, 0.0, -0.794],
+        }
+
+    def test_missing_camera_returns_none(self) -> None:
+        self.assertIsNone(dc.estimate_world_height([0, 0, 10, 10], {}, (1920, 864)))
+
+    def test_degenerate_bbox_returns_none(self) -> None:
+        # 顶边 >= 底边（y0 >= y1）是退化 bbox
+        self.assertIsNone(dc.estimate_world_height([0, 700, 10, 700], self.camera, (1920, 864)))
+
+    def test_height_is_positive_and_reasonable(self) -> None:
+        # 一个直立在画面中央的物体，高度应 > 0 且 < 50 米（合理区间）
+        h = dc.estimate_world_height([900, 600, 1020, 720], self.camera, (1920, 864))
+        self.assertIsNotNone(h)
+        self.assertGreater(h, 0.0)
+        self.assertLess(h, 50.0)
+
+    def test_taller_bbox_gives_greater_height(self) -> None:
+        # bbox 越高（y0 越小），反推的世界高度越大
+        h_short = dc.estimate_world_height([900, 680, 1020, 720], self.camera, (1920, 864))
+        h_tall = dc.estimate_world_height([900, 500, 1020, 720], self.camera, (1920, 864))
+        self.assertIsNotNone(h_short)
+        self.assertIsNotNone(h_tall)
+        self.assertGreater(h_tall, h_short)
+
+
 class MockDataTests(unittest.TestCase):
     def test_mock_detections_are_valid(self) -> None:
         dets = dc.make_mock_detections()

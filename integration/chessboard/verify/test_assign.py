@@ -22,14 +22,25 @@ import assign  # noqa: E402
 _MANIFEST = {
     "assets": [
         {"asset_id": "star_pillar", "label": "星象灯柱",
-         "mesh_sha256": "a" * 64, "pivot_offset": [0.0, 0.0, 0.0]},
+         "mesh_sha256": "a" * 64, "pivot_offset": [0.0, 0.0, 0.0],
+         "bounds": {"min": [-0.28, 0.0, -0.28], "max": [0.28, 1.063, 0.28]}},
         {"asset_id": "halo_ring", "label": "悬浮星象圆环",
-         "mesh_sha256": "b" * 64, "pivot_offset": [0.0, 0.0, 0.0]},
+         "mesh_sha256": "b" * 64, "pivot_offset": [0.0, 0.0, 0.0],
+         "bounds": {"min": [-0.57, 0.0, -0.23], "max": [0.57, 1.121, 0.23]}},
         {"asset_id": "moon_orrery", "label": "月相星象仪",
-         "mesh_sha256": "c" * 64, "pivot_offset": [0.0, 0.0, 0.0]},
+         "mesh_sha256": "c" * 64, "pivot_offset": [0.0, 0.0, 0.0],
+         "bounds": {"min": [-0.50, 0.0, -0.23], "max": [0.50, 1.093, 0.23]}},
         {"asset_id": "star_lantern", "label": "可点击星灯",
-         "mesh_sha256": "d" * 64, "pivot_offset": [0.0, 0.0, 0.0]},
+         "mesh_sha256": "d" * 64, "pivot_offset": [0.0, 0.0, 0.0],
+         "bounds": {"min": [-0.47, 0.0, -0.34], "max": [0.47, 1.007, 0.34]}},
     ]
+}
+
+_CAMERA = {
+    "fov": 31.0,
+    "pitch_deg": 50.0,
+    "position": [0.0, 22.46, -19.64],
+    "target": [0.0, 0.0, -0.794],
 }
 
 
@@ -176,6 +187,33 @@ class IrToPlacementsTests(unittest.TestCase):
         placements = assign.ir_to_placements(ir)
         self.assertEqual(placements[0]["anchor"], [1.0, 0.0, 2.0])
         self.assertFalse(placements[0]["anchor_pending"])
+
+
+class ScaleEstimateTests(unittest.TestCase):
+    def test_scale_estimated_with_camera_and_bounds(self) -> None:
+        # 有相机 + bbox + 资产 bounds -> scale 被反推，落入合理区间
+        node = {"id": "p1", "kind": "prop", "label": "灯笼",
+                "confidence": 0.9, "bbox_px": [900, 600, 1020, 720]}
+        out = assign.assign_node(node, _MANIFEST, _CAMERA, (1920, 864))
+        self.assertIn("scale", out)
+        self.assertGreater(out["scale"], 0.0)
+        self.assertFalse(out["scale_pending"])
+
+    def test_scale_pending_without_camera(self) -> None:
+        # 无相机 -> scale 保持 1.0 + scale_pending
+        node = {"id": "p1", "kind": "prop", "label": "灯笼",
+                "confidence": 0.9, "bbox_px": [900, 600, 1020, 720]}
+        out = assign.assign_node(node, _MANIFEST, None, (1920, 864))
+        self.assertEqual(out["scale"], 1.0)
+        self.assertTrue(out["scale_pending"])
+
+    def test_scale_in_reasonable_range(self) -> None:
+        # 反推的 scale 必须在 [0.01, 100] 合理区间内（数值保护）
+        node = {"id": "p1", "kind": "prop", "label": "灯笼",
+                "confidence": 0.9, "bbox_px": [900, 600, 1020, 720]}
+        out = assign.assign_node(node, _MANIFEST, _CAMERA, (1920, 864))
+        self.assertGreaterEqual(out["scale"], 0.01)
+        self.assertLessEqual(out["scale"], 100.0)
 
 
 if __name__ == "__main__":

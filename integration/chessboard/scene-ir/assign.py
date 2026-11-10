@@ -40,7 +40,7 @@ ROOT = HERE.parent
 sys.path.insert(0, str(HERE))
 
 import decompose  # noqa: E402
-from decompose import back_project_ground  # noqa: E402
+from decompose import back_project_ground, estimate_world_height  # noqa: E402
 
 # kind -> 可指派资产的 kind 集合。只有这三种场景类 kind 参与资产指派；
 # character / vfx_emitter 在 L1 已降级 unknown，L2 不再碰（它们的必需字段
@@ -110,17 +110,32 @@ def assign_node(node: Dict[str, Any], manifest: Dict[str, Any],
     out["mesh_sha256"] = asset.get("mesh_sha256")
     out["pivot_offset"] = asset.get("pivot_offset", [0.0, 0.0, 0.0])
 
-    # anchor：有相机参数才反投影，缺相机留空（诚实边界，不硬算 world）
     bbox = node.get("bbox_px")
-    if bbox and camera is not None and len(bbox) == 4:
+    has_bbox = bbox and len(bbox) == 4
+
+    # anchor：有相机参数才反投影，缺相机留空（诚实边界，不硬算 world）
+    if has_bbox and camera is not None:
         proj = back_project_ground(bbox, camera, image_size)
         if proj is not None:
             out["anchor"] = proj["anchor"]
             out["anchor_estimate"] = True
 
-    # scale：有资产 bounds + bbox 时反推；本轮先不自动算（单视角 bbox 高度
-    # 反推 scale 欠定，留 L3 用资产默认尺度），仅记录待定。
-    out["scale_pending"] = True
+    # scale：有相机 + bbox + 资产 bounds 时，用「物体直立地面」假设反推世界
+    # 高度，再除以资产原始高度得 scale。缺任一要素则 scale 保持默认 1.0 并
+    # 标 scale_pending（单视角逆渲染欠定，不硬猜）。
+    scale = 1.0
+    scale_pending = True
+    asset_height = _asset_height(asset)
+    if has_bbox and camera is not None and asset_height is not None:
+        world_h = estimate_world_height(bbox, camera, image_size)
+        if world_h is not None and world_h > 0:
+            s = world_h / asset_height
+            # 数值保护：尺度必须在合理区间，异常值（>100x 或 <0.01x）视为欠定
+            if 0.01 <= s <= 100.0:
+                scale = round(s, 4)
+                scale_pending = False
+    out["scale"] = scale
+    out["scale_pending"] = scale_pending
 
     out["assignment"] = {
         "status": "assigned",
@@ -128,6 +143,21 @@ def assign_node(node: Dict[str, Any], manifest: Dict[str, Any],
         "matched_keyword": _matched_keyword(label),
     }
     return out
+
+
+def _asset_height(asset: Dict[str, Any]) -> Optional[float]:
+    """从资产 bounds 取世界高度（Y 方向跨度）；无 bounds 返回 None。"""
+    bounds = asset.get("bounds")
+    if not isinstance(bounds, dict):
+        return None
+    mn = bounds.get("min")
+    mx = bounds.get("max")
+    if not isinstance(mn, (list, tuple)) or not isinstance(mx, (list, tuple)):
+        return None
+    if len(mn) < 2 or len(mx) < 2:
+        return None
+    h = float(mx[1]) - float(mn[1])
+    return h if h > 0 else None
 
 
 def _matched_keyword(label: str) -> str:
@@ -174,7 +204,7 @@ def ir_to_placements(assigned_ir: Dict[str, Any]) -> List[Dict[str, Any]]:
       - instance_id   = 节点 id（唯一标识）
       - anchor        = 反投影结果（有相机时）；缺相机用 [0,0,0] 占位并标 anchor_pending
       - rotation_y_deg = 0.0（单视角检测不出朝向）
-      - scale          = 1.0（资产原始尺度；真实尺度需 L3 用资产 bounds 归一，本轮标 scale_pending）
+      - scale          = 反推的世界尺度（有相机+bbox+bounds 时）；否则 1.0 并标 scale_pending
       - material       = ""（用资产默认材质）
     """
     placements: List[Dict[str, Any]] = []
@@ -185,17 +215,19 @@ def ir_to_placements(assigned_ir: Dict[str, Any]) -> List[Dict[str, Any]]:
             continue
         anchor = node.get("anchor")
         anchor_pending = anchor is None
+        scale = node.get("scale", 1.0)
+        scale_pending = node.get("scale_pending", True)
         placement = {
             "asset_id": node["asset_id"],
             "instance_id": node.get("id", ""),
             "anchor": anchor if anchor is not None else [0.0, 0.0, 0.0],
             "rotation_y_deg": 0.0,
-            "scale": 1.0,
+            "scale": scale,
             "material": "",
             "tag": "",
             "asset_ready": True,
             "anchor_pending": anchor_pending,
-            "scale_pending": True,
+            "scale_pending": scale_pending,
             "source_node_id": node.get("id", ""),
         }
         placements.append(placement)
