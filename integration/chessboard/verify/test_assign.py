@@ -130,5 +130,53 @@ class AssignAssetsTests(unittest.TestCase):
         self.assertEqual(n["confidence"], 0.9)
 
 
+class IrToPlacementsTests(unittest.TestCase):
+    def _assigned_ir(self) -> dict:
+        scene_ir = {
+            "schema": "zengine.scene-ir/v1",
+            "nodes": [
+                {"id": "n1", "kind": "prop", "label": "左侧灯笼",
+                 "confidence": 0.9, "bbox_px": [100, 200, 200, 400]},
+                {"id": "n2", "kind": "prop", "label": "神秘石碑",
+                 "confidence": 0.8},
+                {"id": "n3", "kind": "unknown", "confidence": 0.3},
+            ],
+        }
+        return assign.assign_assets(scene_ir, _MANIFEST)
+
+    def test_only_assigned_nodes_converted(self) -> None:
+        ir = self._assigned_ir()
+        placements = assign.ir_to_placements(ir)
+        # 只有 n1（灯笼 -> assigned）被转换；n2 needs_generation、n3 skipped 跳过
+        self.assertEqual(len(placements), 1)
+        self.assertEqual(placements[0]["asset_id"], "star_lantern")
+        self.assertEqual(placements[0]["instance_id"], "n1")
+
+    def test_placement_has_honest_defaults(self) -> None:
+        ir = self._assigned_ir()
+        placements = assign.ir_to_placements(ir)
+        p = placements[0]
+        # 无相机 -> anchor 用占位 + anchor_pending；scale 默认 1.0 + scale_pending
+        self.assertEqual(p["anchor"], [0.0, 0.0, 0.0])
+        self.assertTrue(p["anchor_pending"])
+        self.assertEqual(p["scale"], 1.0)
+        self.assertTrue(p["scale_pending"])
+        self.assertEqual(p["rotation_y_deg"], 0.0)
+
+    def test_placement_carries_anchor_when_present(self) -> None:
+        # 手工构造一个已带 anchor 的节点，验证 placements 透传 anchor
+        ir = {
+            "schema": "zengine.scene-ir/v1",
+            "nodes": [
+                {"id": "p1", "kind": "prop", "label": "灯笼", "confidence": 0.9,
+                 "asset_id": "star_lantern", "anchor": [1.0, 0.0, 2.0],
+                 "assignment": {"status": "assigned", "asset_id": "star_lantern"}},
+            ],
+        }
+        placements = assign.ir_to_placements(ir)
+        self.assertEqual(placements[0]["anchor"], [1.0, 0.0, 2.0])
+        self.assertFalse(placements[0]["anchor_pending"])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

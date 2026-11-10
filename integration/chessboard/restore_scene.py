@@ -999,15 +999,24 @@ def build_restored_scene(profile: Dict[str, Any], manifest: Dict[str, Any],
                          guids: Dict[str, Dict[str, str]],
                          manifest_root: str, asset_out_dir: str,
                          out_path: str, template_path: str | None,
-                         use_fbx: bool = False) -> None:
+                         use_fbx: bool = False,
+                         placements_override: List[Dict[str, Any]] | None = None) -> None:
     # 确定要烘焙哪些资产：output.reuse_asset_ids 为空 -> 烘焙全部 4 个 glb
     assets = manifest["assets"]
-    placements = manifest["placements"]
+    # placements：默认用 manifest 内置的；L2->L3 串联时用外部传入的
+    # （assign.py 的 ir_to_placements 产出，来自 assigned scene-ir 节点）。
+    placements = placements_override if placements_override is not None \
+        else manifest["placements"]
 
     reuse = profile.get("output", {}).get("reuse_asset_ids") or []
     asset_by_id = {a["asset_id"]: a for a in assets}
     if reuse:
         selected_ids = [aid for aid in reuse if aid in asset_by_id]
+    elif placements_override is not None:
+        # L2->L3 串联：只烘焙 placements 实际用到的资产，不烘焙无关资产
+        selected_ids = list(dict.fromkeys(
+            p["asset_id"] for p in placements_override
+            if p.get("asset_id") in asset_by_id))
     else:
         selected_ids = [a["asset_id"] for a in assets]
 
@@ -1125,6 +1134,10 @@ def main() -> None:
     parser.add_argument("--to-fbx", action="store_true",
                         help="把 glb 转成 FBX 原始资产（type:3 引用），"
                              "对齐现网 235 个 FBX 的管线；默认烘焙 .asset（type:2）")
+    parser.add_argument("--placements", default="",
+                        help="可选：外部 placements JSON（L2 assign.py 的 "
+                             "--placements-out 产出），用于 L2->L3 串联；"
+                             "缺省用 manifest 内置 placements")
     args = parser.parse_args()
 
     with open(args.profile, "r", encoding="utf-8") as handle:
@@ -1132,17 +1145,25 @@ def main() -> None:
     manifest = load_manifest(args.manifest)
     guids = load_guids(args.guids)
 
+    placements_override = None
+    if args.placements:
+        with open(args.placements, "r", encoding="utf-8") as handle:
+            placements_override = json.load(handle).get("placements", [])
+
     profile_id = profile.get("id", "restored")
     out_path = args.out or os.path.join(
         ROOT, "build", "restored_scenes", profile_id + ".unity")
 
     build_restored_scene(profile, manifest, guids, os.path.dirname(args.manifest),
                          args.asset_dir, out_path, args.template,
-                         use_fbx=args.to_fbx)
+                         use_fbx=args.to_fbx,
+                         placements_override=placements_override)
     print("wrote scene -> %s" % out_path)
     print("baked assets -> %s" % args.asset_dir)
     if args.to_fbx:
         print("mode: FBX (type:3, 原始资产，对齐现网管线)")
+    if placements_override is not None:
+        print("placements: 外部输入 %d 个（L2->L3 串联）" % len(placements_override))
 
 
 if __name__ == "__main__":

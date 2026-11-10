@@ -164,11 +164,51 @@ def _image_size_from_ir(scene_ir: Dict[str, Any]) -> Tuple[int, int]:
     return (1920, 1080)
 
 
+def ir_to_placements(assigned_ir: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """把 assigned scene-ir 的节点转成 L3 `build_restored_scene` 消费的 placements。
+
+    只转换 `assignment.status == "assigned"` 的节点（已成功拼到现有资产）；
+    needs_generation / skipped 节点跳过（它们没有 asset_id，无法摆放）。
+
+    诚实默认（单视角检测不到的字段不硬猜）：
+      - instance_id   = 节点 id（唯一标识）
+      - anchor        = 反投影结果（有相机时）；缺相机用 [0,0,0] 占位并标 anchor_pending
+      - rotation_y_deg = 0.0（单视角检测不出朝向）
+      - scale          = 1.0（资产原始尺度；真实尺度需 L3 用资产 bounds 归一，本轮标 scale_pending）
+      - material       = ""（用资产默认材质）
+    """
+    placements: List[Dict[str, Any]] = []
+    for node in assigned_ir.get("nodes", []):
+        if node.get("assignment", {}).get("status") != "assigned":
+            continue
+        if "asset_id" not in node:
+            continue
+        anchor = node.get("anchor")
+        anchor_pending = anchor is None
+        placement = {
+            "asset_id": node["asset_id"],
+            "instance_id": node.get("id", ""),
+            "anchor": anchor if anchor is not None else [0.0, 0.0, 0.0],
+            "rotation_y_deg": 0.0,
+            "scale": 1.0,
+            "material": "",
+            "tag": "",
+            "asset_ready": True,
+            "anchor_pending": anchor_pending,
+            "scale_pending": True,
+            "source_node_id": node.get("id", ""),
+        }
+        placements.append(placement)
+    return placements
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="L2 编排：语义节点 -> 资产指派")
     parser.add_argument("--ir", required=True, help="L1 产出的 scene-ir.json")
     parser.add_argument("--manifest", required=True, help="资产清单 manifest")
     parser.add_argument("--out", required=True, help="输出 assigned scene-ir.json")
+    parser.add_argument("--placements-out", default="",
+                        help="可选：同时输出 L3 可消费的 placements JSON")
     parser.add_argument("--camera-json", default="", help="可选相机参数 JSON")
     args = parser.parse_args(argv)
 
@@ -190,6 +230,14 @@ def main(argv: Optional[List[str]] = None) -> int:
     with open(args.out, "w", encoding="utf-8", newline="\n") as handle:
         json.dump(result, handle, ensure_ascii=False, indent=2)
     print("wrote assigned scene-ir -> %s" % args.out)
+
+    # 可选：输出 placements（L2 -> L3 桥接产物）
+    if args.placements_out:
+        placements = ir_to_placements(result)
+        os.makedirs(os.path.dirname(args.placements_out) or ".", exist_ok=True)
+        with open(args.placements_out, "w", encoding="utf-8", newline="\n") as handle:
+            json.dump({"placements": placements}, handle, ensure_ascii=False, indent=2)
+        print("wrote placements -> %s (%d 个)" % (args.placements_out, len(placements)))
 
     # 汇总
     assigned = sum(1 for n in result["nodes"]
