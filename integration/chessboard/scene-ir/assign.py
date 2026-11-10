@@ -33,7 +33,16 @@
 ----
     python scene-ir/assign.py --ir build/scene-ir.json \
         --manifest build/external_mesh.manifest.json \
-        --out build/scene-ir.assigned.json [--camera-json cam.json]
+        --out build/scene-ir.assigned.json [--camera-json cam.json] \
+        [--placements-out build/placements.json] \
+        [--visual-overrides-out build/visual_overrides.json]
+
+桥接产物
+--------
+- `--placements-out`：assigned 节点 -> L3 `build_restored_scene` 的 placements。
+- `--visual-overrides-out`：visual_layer / sky 节点 -> visual-pack.json 字段的
+  语义映射（visual_overrides.json），只声明「夜空→skybox」「石板地面→
+  materials.core_slab」这类归属，**不反推颜色**（单目抽色不可信）。
 """
 
 from __future__ import annotations
@@ -309,6 +318,112 @@ def _image_size_from_ir(scene_ir: Dict[str, Any]) -> Tuple[int, int]:
     return (1920, 1080)
 
 
+# 环境视觉层语义 -> visual-pack.json 字段的确定性映射（语义映射桥接）。
+# key 是 label 里会出现的关键词（小写匹配），value 是 visual-pack 里的字段路径。
+# **不反推颜色**：单目视觉抽出的绝对颜色不可信（与 depth_m 同一类问题），
+# 这里只声明「夜空属于 skybox、石板地面属于 materials.core_slab」这类归属；
+# 颜色仍由视觉模型 / 概念图（concept 抽取）填，本映射不产颜色值。
+# 顺序有意义：先匹配更具体的词（「石板」→core_slab），再匹配泛化词（「地面」）。
+VISUAL_FIELD_MAP: List[Tuple[str, str, str]] = [
+    # 强信号材质词优先（「地面装饰线」的「装饰线」是材质，不是「地面」位置修饰）
+    ("装饰线", "materials", "地面纹样 / 贴花"),
+    ("贴花", "materials", "地面贴花"),
+    ("贴图", "materials", "贴图"),
+    ("纹理", "materials", "纹理"),
+    ("材质", "materials", "材质"),
+    # 具体材质词（先于泛化「地面」）
+    ("石板", "materials.core_slab", "台面材质 —— 石板地面"),
+    ("地砖", "materials.core_slab", "台面材质 —— 地砖"),
+    ("地板", "materials.core_slab", "台面材质 —— 地板"),
+    ("路面", "materials.core_slab", "台面材质 —— 路面"),
+    ("水面", "materials", "水面材质"),
+    ("草地", "materials", "草地材质"),
+    ("泥土", "materials", "泥土材质"),
+    # 天空天体 / 天空盒
+    ("月亮", "skybox", "天空天体（新月）—— 天空盒元素"),
+    ("太阳", "skybox", "天空天体 —— 天空盒元素"),
+    ("星星", "skybox", "天空天体 —— 天空盒元素"),
+    ("星尘", "skybox", "天空天体 —— 天空盒元素"),
+    ("夜空", "skybox.top_color", "深空顶色 —— 天空盒"),
+    ("星空", "skybox.top_color", "深空顶色 —— 天空盒"),
+    ("天空", "skybox", "天空盒整体"),
+    ("云", "skybox", "云层 —— 天空盒"),
+    ("远山", "skybox", "远景剪影 —— 天空盒地平线"),
+    ("山脉", "skybox", "远景 —— 天空盒地平线"),
+    ("远景", "skybox", "远景 —— 天空盒"),
+    ("剪影", "skybox", "远景剪影 —— 天空盒"),
+    ("背景", "skybox", "背景 —— 天空盒"),
+    # 后处理 / 氛围
+    ("辉光", "post_processing.bloom", "辉光 —— 后处理"),
+    ("光晕", "post_processing.bloom", "光晕 —— 后处理"),
+    ("雾", "skybox.fog", "雾 —— 天空盒雾效"),
+    ("氛围", "volume", "氛围 —— Volume"),
+    # 泛化「地面」兜底（放最后，具体词都匹配不到才落这里）
+    ("地面", "materials.core_slab", "台面材质 —— 地面"),
+]
+
+
+def visual_field_for(label: str) -> Optional[Tuple[str, str]]:
+    """按语义关键词把 label 映射到 visual-pack 字段路径；未命中返回 None。
+
+    返回 (字段路径, 语义说明)；不反推颜色（单目抽色不可信）。
+    """
+    text = label.lower()
+    for keyword, field, note in VISUAL_FIELD_MAP:
+        if keyword in text:
+            return (field, note)
+    return None
+
+
+def ir_to_visual_overrides(assigned_ir: Dict[str, Any]) -> Dict[str, Any]:
+    """把 assigned scene-ir 的环境视觉层节点转成 visual-pack 覆盖建议。
+
+    只处理 `assignment.status ∈ {visual_layer, sky}` 的节点（环境视觉层 /
+    天空天体）；assigned / needs_generation / frozen / skipped 节点跳过。
+
+    产出结构（visual_overrides.json）：
+      {
+        "schema": "zengine.visual-overrides/v1",
+        "source_node_count": N,
+        "overrides": [
+          {
+            "source_node_id": "...",
+            "label": "...",
+            "kind": "ground",
+            "assignment": "visual_layer",
+            "target_field": "materials.core_slab",   # visual-pack 字段路径
+            "note": "台面材质 —— 石板地面",          # 语义说明
+            "color": null                            # 颜色留空（不反推）
+          }
+        ]
+      }
+
+    诚实边界：只声明「语义 -> 字段」的归属，颜色留 null（单目视觉抽出的绝对
+    颜色不可信，与 depth_m 同类问题），由下游视觉模型 / 概念图填充。
+    """
+    overrides: List[Dict[str, Any]] = []
+    for node in assigned_ir.get("nodes", []):
+        status = node.get("assignment", {}).get("status")
+        if status not in ("visual_layer", "sky"):
+            continue
+        label = node.get("label") or ""
+        mapping = visual_field_for(label)
+        overrides.append({
+            "source_node_id": node.get("id", ""),
+            "label": label,
+            "kind": node.get("kind", ""),
+            "assignment": status,
+            "target_field": mapping[0] if mapping else None,
+            "note": mapping[1] if mapping else "未命中视觉字段映射表，留人工指派",
+            "color": None,  # 颜色留空，不反推（单目抽色不可信）
+        })
+    return {
+        "schema": "zengine.visual-overrides/v1",
+        "source_node_count": len(overrides),
+        "overrides": overrides,
+    }
+
+
 def ir_to_placements(assigned_ir: Dict[str, Any]) -> List[Dict[str, Any]]:
     """把 assigned scene-ir 的节点转成 L3 `build_restored_scene` 消费的 placements。
 
@@ -357,6 +472,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--out", required=True, help="输出 assigned scene-ir.json")
     parser.add_argument("--placements-out", default="",
                         help="可选：同时输出 L3 可消费的 placements JSON")
+    parser.add_argument("--visual-overrides-out", default="",
+                        help="可选：同时输出 visual-pack 覆盖建议 JSON")
     parser.add_argument("--camera-json", default="", help="可选相机参数 JSON")
     args = parser.parse_args(argv)
 
@@ -386,6 +503,15 @@ def main(argv: Optional[List[str]] = None) -> int:
         with open(args.placements_out, "w", encoding="utf-8", newline="\n") as handle:
             json.dump({"placements": placements}, handle, ensure_ascii=False, indent=2)
         print("wrote placements -> %s (%d 个)" % (args.placements_out, len(placements)))
+
+    # 可选：输出 visual overrides（L2 -> visual-pack 语义映射桥接产物）
+    if args.visual_overrides_out:
+        overrides = ir_to_visual_overrides(result)
+        os.makedirs(os.path.dirname(args.visual_overrides_out) or ".", exist_ok=True)
+        with open(args.visual_overrides_out, "w", encoding="utf-8", newline="\n") as handle:
+            json.dump(overrides, handle, ensure_ascii=False, indent=2)
+        print("wrote visual-overrides -> %s (%d 个)"
+              % (args.visual_overrides_out, overrides["source_node_count"]))
 
     # 汇总
     assigned = sum(1 for n in result["nodes"]

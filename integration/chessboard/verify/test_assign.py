@@ -319,5 +319,76 @@ class ScaleEstimateTests(unittest.TestCase):
         self.assertLessEqual(out["scale"], 100.0)
 
 
+class VisualFieldMapTests(unittest.TestCase):
+    def test_moon_maps_to_skybox(self) -> None:
+        field, _ = assign.visual_field_for("月亮")
+        self.assertEqual(field, "skybox")
+
+    def test_night_sky_maps_to_top_color(self) -> None:
+        field, _ = assign.visual_field_for("夜空")
+        self.assertEqual(field, "skybox.top_color")
+
+    def test_stone_slab_maps_to_core_slab(self) -> None:
+        field, _ = assign.visual_field_for("石板地面")
+        self.assertEqual(field, "materials.core_slab")
+
+    def test_decal_maps_to_materials(self) -> None:
+        field, _ = assign.visual_field_for("地面装饰线")
+        self.assertEqual(field, "materials")
+
+    def test_unmapped_returns_none(self) -> None:
+        self.assertIsNone(assign.visual_field_for("英雄雕像"))
+
+
+class VisualOverridesTests(unittest.TestCase):
+    def _assigned_ir(self) -> dict:
+        scene_ir = {
+            "schema": "zengine.scene-ir/v1",
+            "nodes": [
+                {"id": "g1", "kind": "ground", "label": "夜空", "confidence": 0.95},
+                {"id": "p1", "kind": "prop", "label": "月亮", "confidence": 0.95},
+                {"id": "g2", "kind": "ground", "label": "石板地面", "confidence": 0.95},
+                {"id": "g3", "kind": "ground", "label": "远山", "confidence": 0.90},
+                {"id": "p2", "kind": "prop", "label": "地面装饰线", "confidence": 0.85},
+                {"id": "l1", "kind": "prop", "label": "灯笼", "confidence": 0.9},
+            ],
+        }
+        return assign.assign_assets(scene_ir, _MANIFEST)
+
+    def test_only_visual_nodes_converted(self) -> None:
+        overrides = assign.ir_to_visual_overrides(self._assigned_ir())
+        # 夜空/月亮/石板地面/远山/地面装饰线 5 个 visual_layer/sky；
+        # 灯笼是 assigned，不参与
+        self.assertEqual(overrides["source_node_count"], 5)
+        labels = [o["label"] for o in overrides["overrides"]]
+        self.assertIn("夜空", labels)
+        self.assertIn("月亮", labels)
+        self.assertIn("石板地面", labels)
+        self.assertIn("远山", labels)
+        self.assertIn("地面装饰线", labels)
+        self.assertNotIn("灯笼", labels)
+
+    def test_override_has_target_field_and_null_color(self) -> None:
+        overrides = assign.ir_to_visual_overrides(self._assigned_ir())
+        by_label = {o["label"]: o for o in overrides["overrides"]}
+        # 颜色留空（不反推，单目抽色不可信）
+        self.assertIsNone(by_label["石板地面"]["color"])
+        self.assertEqual(by_label["石板地面"]["target_field"], "materials.core_slab")
+        self.assertEqual(by_label["月亮"]["target_field"], "skybox")
+        self.assertEqual(by_label["夜空"]["target_field"], "skybox.top_color")
+        self.assertEqual(by_label["地面装饰线"]["target_field"], "materials")
+
+    def test_override_carries_assignment_status(self) -> None:
+        overrides = assign.ir_to_visual_overrides(self._assigned_ir())
+        by_label = {o["label"]: o for o in overrides["overrides"]}
+        self.assertEqual(by_label["月亮"]["assignment"], "sky")
+        self.assertEqual(by_label["夜空"]["assignment"], "visual_layer")
+
+    def test_empty_ir_gives_empty_overrides(self) -> None:
+        overrides = assign.ir_to_visual_overrides({"nodes": []})
+        self.assertEqual(overrides["source_node_count"], 0)
+        self.assertEqual(overrides["overrides"], [])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
